@@ -1,0 +1,268 @@
+//@version=6
+
+// @description Risk Management Library for ORB Strategy
+// Handles position initialization, trailing stops, exits, and R-level calculations
+library("orb_risk_lib", overlay=true)
+
+// @type PositionData
+// @field entry_price Entry price of the position
+// @field initial_stop Initial stop loss price
+// @field initial_risk Initial risk amount per share
+// @field current_trailing_stop Current trailing stop price
+// @field highest_r_achieved Highest R multiple reached
+// @field position_is_long Whether position is long (true) or short (false)
+export type PositionData
+    float entry_price
+    float initial_stop
+    float initial_risk
+    float current_trailing_stop
+    float highest_r_achieved
+    bool position_is_long
+
+// @type RiskLevels
+// @field r2_level 2R profit target level
+// @field r3_level 3R profit target level
+// @field r4_level 4R profit target level
+export type RiskLevels
+    float r2_level
+    float r3_level
+    float r4_level
+
+// @function Initialize position data when entering a trade
+// @param is_long Whether the position is long
+// @param entry_price The entry price
+// @param or_high Opening range high
+// @param or_low Opening range low
+// @param or_stop_level Percentage of OR range for stop placement
+// @returns PositionData object with initialized values
+export initialize_position(bool is_long, float entry_price, float or_high, float or_low, float or_stop_level) =>
+    pos = PositionData.new()
+    pos.entry_price := entry_price
+    pos.position_is_long := is_long
+    
+    if is_long
+        pos.initial_stop := or_low + (or_high - or_low) * or_stop_level
+        pos.initial_risk := entry_price - pos.initial_stop
+    else
+        pos.initial_stop := or_high - (or_high - or_low) * or_stop_level
+        pos.initial_risk := pos.initial_stop - entry_price
+    
+    pos.current_trailing_stop := pos.initial_stop
+    pos.highest_r_achieved := 0.0
+    pos
+
+// @type Configuration for trailing stop behavior
+// @field levels Array of R levels where trailing stop adjustments occur
+// @field stops Array of corresponding trailing stop R values
+// @field step_size Minimum step size for stop adjustments (in R)
+// @field start_level R level where trailing begins
+// @field trail_behind How much to trail behind highest R (for dynamic trailing)
+// @field use_dynamic_trail Whether to use dynamic trailing (true) or fixed levels (false)
+export type TrailingStopConfig
+    array<float> levels
+    array<float> stops  
+    float step_size = 0.5
+    float start_level = 2.0
+    float trail_behind = 0.5
+    bool use_dynamic_trail = false
+
+// @function Create a standard trailing stop configuration (like your original)
+// @returns TrailingStopConfig
+export create_standard_config() =>
+    levels = array.from(2.0, 3.0, 3.5)
+    stops = array.from(1.5, 2.5, 0.0)  // 0.0 means dynamic trailing
+    TrailingStopConfig.new(levels, stops, 0.5, 2.0, 0.5, false)
+
+// @function Create a custom step-based trailing stop configuration
+// @param start_r R level to start trailing
+// @param step_r Step size in R multiples
+// @param trail_r How much to trail behind
+// @returns TrailingStopConfig
+export create_step_config(float start_r = 2.0, float step_r = 0.5, float trail_r = 0.5) =>
+    TrailingStopConfig.new(array.new<float>(), array.new<float>(), step_r, start_r, trail_r, true)
+
+// @function Create configuration from your table example with dynamic trailing above 5R
+// @returns TrailingStopConfig for the table system with dynamic extension
+export create_table_config_with_dynamic() =>
+    levels = array.from(2.0, 3.0, 4.0, 4.5, 5.0)
+    stops = array.from(1.0, 2.0, 3.5, 4.0, 0.0)  // 0.0 triggers dynamic trailing above 5R
+    TrailingStopConfig.new(levels, stops, 0.5, 2.0, 0.5, false)
+
+// @function Update trailing stop based on current price and configurable parameters
+// @param pos_data Current position data
+// @param current_price Current market price
+// @param config Trailing stop configuration
+// @returns Updated PositionData with new trailing stop
+export update_trailing_stop(PositionData pos_data, float current_price, TrailingStopConfig config) =>
+    if na(pos_data.entry_price) or na(pos_data.initial_risk) or pos_data.initial_risk <= 0
+        pos_data
+    else
+        // Calculate current R multiple
+        current_r = pos_data.position_is_long ? 
+             (current_price - pos_data.entry_price) / pos_data.initial_risk : 
+             (pos_data.entry_price - current_price) / pos_data.initial_risk
+        
+        // Update highest R achieved
+        if current_r > pos_data.highest_r_achieved
+            pos_data.highest_r_achieved := current_r
+        
+        // Only proceed if we've reached the start level
+        if pos_data.highest_r_achieved >= config.start_level
+
+            
+            target_trailing_r = 0.0
+            
+            if config.use_dynamic_trail
+                // Dynamic trailing - trail behind by fixed amount with step size
+                stepped_r = math.floor(pos_data.highest_r_achieved / config.step_size) * config.step_size
+                target_trailing_r := math.max(0.0, stepped_r - config.trail_behind)
+            else
+                // Level-based trailing using configuration arrays
+                if array.size(config.levels) > 0 and array.size(config.stops) > 0
+                    // Find the appropriate trailing stop level
+                    for i = array.size(config.levels) - 1 to 0
+                        level = array.get(config.levels, i)
+                        if pos_data.highest_r_achieved >= level
+                            stop_value = array.get(config.stops, i)
+                            if stop_value == 0.0  // Dynamic trailing indicator
+                                target_trailing_r := math.max(0.0, pos_data.highest_r_achieved - config.trail_behind)
+                            else
+                                target_trailing_r := stop_value
+                            break
+            
+            // Apply step size constraint if specified
+            if config.step_size > 0
+                target_trailing_r := math.floor(target_trailing_r / config.step_size) * config.step_size
+            
+            // Calculate the actual stop price based on target R
+            new_trailing_stop = pos_data.position_is_long ? 
+                 pos_data.entry_price + (target_trailing_r * pos_data.initial_risk) :
+                 pos_data.entry_price - (target_trailing_r * pos_data.initial_risk)
+            
+            // Only move stop in favorable direction
+            if (pos_data.position_is_long and new_trailing_stop > pos_data.current_trailing_stop) or
+               (not pos_data.position_is_long and new_trailing_stop < pos_data.current_trailing_stop)
+                pos_data.current_trailing_stop := new_trailing_stop
+        
+        pos_data
+
+// @function Simplified wrapper that uses standard configuration
+// @param pos_data Current position data
+// @param current_price Current market price
+// @returns Updated PositionData with new trailing stop
+export update_trailing_stop_standard(PositionData pos_data, float current_price) =>
+    config = create_standard_config()
+    update_trailing_stop(pos_data, current_price, config)
+
+// Usage Examples:
+
+// Example 1: Using the original system
+// config = create_standard_config()
+// pos_data := update_trailing_stop(pos_data, close, config)
+
+// Example 2a: Using your table system (fixed stops)
+// config = create_table_config()
+// pos_data := update_trailing_stop(pos_data, close, config)
+
+// Example 2b: Using your table system with dynamic trailing above 5R
+// config = create_table_config_with_dynamic()
+// pos_data := update_trailing_stop(pos_data, close, config)
+
+// Example 3: Dynamic step-based trailing (2R start, 0.25R steps, 0.5R trail)
+// config = create_step_config(2.0, 0.25, 0.5)
+// pos_data := update_trailing_stop(pos_data, close, config)
+
+// Example 4: Custom configuration  
+// levels = array.from(1.5, 2.5, 4.0, 6.0)
+// stops = array.from(0.5, 1.5, 3.0, 5.0)
+// config = TrailingStopConfig.new(levels, stops, 0.25, 1.5, 0.5, false)
+// pos_data := update_trailing_stop(pos_data, close, config)
+
+// Example 5: Simple dynamic trailing (starts at 3R, steps every 0.5R, trails 1R behind)
+// config = create_step_config(3.0, 0.5, 1.0)  
+// pos_data := update_trailing_stop(pos_data, close, config)
+
+// @function Check if position should be closed due to day trading rules
+// @param current_hour Current hour
+// @param current_minute Current minute
+// @param market_close_hour Market close hour
+// @param market_close_minute Market close minute
+// @returns True if position should be closed
+export check_day_close(int current_hour, int current_minute, int market_close_hour, int market_close_minute) =>
+    current_time = current_hour * 60 + current_minute
+    market_close_time = market_close_hour * 60 + market_close_minute
+    current_time >= market_close_time
+
+// @function Check EMA 30 exit condition
+// @param current_price Current price
+// @param ema30 EMA 30 value
+// @param position_is_long Whether position is long
+// @param enable_ema30_exit Whether EMA 30 exit is enabled
+// @returns True if EMA 30 exit should trigger
+export check_ema30_exit(float current_price, float ema30, bool position_is_long, bool enable_ema30_exit) =>
+    if enable_ema30_exit
+        if position_is_long
+            current_price < ema30
+        else
+            current_price > ema30
+    else
+        false
+
+// @function Calculate R-multiple profit levels
+// @param pos_data Position data
+// @returns RiskLevels object with R-multiple levels
+export calculate_r_levels(PositionData pos_data) =>
+    levels = RiskLevels.new()
+    
+    if not na(pos_data.entry_price) and not na(pos_data.initial_risk)
+        if pos_data.position_is_long
+            levels.r2_level := pos_data.entry_price + (2 * pos_data.initial_risk)
+            levels.r3_level := pos_data.entry_price + (3 * pos_data.initial_risk)
+            levels.r4_level := pos_data.entry_price + (4 * pos_data.initial_risk)
+        else
+            levels.r2_level := pos_data.entry_price - (2 * pos_data.initial_risk)
+            levels.r3_level := pos_data.entry_price - (3 * pos_data.initial_risk)
+            levels.r4_level := pos_data.entry_price - (4 * pos_data.initial_risk)
+    else
+        levels.r2_level := na
+        levels.r3_level := na
+        levels.r4_level := na
+    
+    levels
+
+// @function Get current R multiple for position
+// @param pos_data Position data
+// @param current_price Current market price
+// @returns Current R multiple (can be negative)
+export get_current_r_multiple(PositionData pos_data, float current_price) =>
+    if na(pos_data.entry_price) or na(pos_data.initial_risk) or pos_data.initial_risk <= 0
+        0.0
+    else
+        pos_data.position_is_long ? 
+             (current_price - pos_data.entry_price) / pos_data.initial_risk :
+             (pos_data.entry_price - current_price) / pos_data.initial_risk
+
+// @function Calculate position size based on confidence score
+// @param confidence_score Confidence score (1-4)
+// @returns Position size percentage
+export calculate_position_size(int confidence_score) =>
+    switch confidence_score
+        4 => 100
+        3 => 75
+        2 => 50
+        1 => 25
+        => 25  // Default for scores below 1
+
+// @function Check if trailing stop should trigger exit
+// @param current_price Current market price
+// @param trailing_stop Current trailing stop price
+// @param position_is_long Whether position is long
+// @returns True if trailing stop exit should trigger
+export should_exit_trailing_stop(float current_price, float trailing_stop, bool position_is_long) =>
+    if not na(trailing_stop)
+        if position_is_long
+            current_price <= trailing_stop
+        else
+            current_price >= trailing_stop
+    else
+        false

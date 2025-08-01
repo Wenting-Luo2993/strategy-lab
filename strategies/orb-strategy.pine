@@ -1,0 +1,141 @@
+//@version=6
+strategy("Simple ORB Strategy", overlay=true, margin_long=100, margin_short=100)
+
+// Import your libraries (you'll need to replace with your actual published library names)
+import kimluo2993/orb_range_lib/1 as orb_range
+import kimluo2993/orb_conditions_lib/1 as orb_conditions
+import kimluo2993/orb_display_lib/2 as orb_display
+import kimluo2993/orb_risk_lib/2 as orb_risk
+
+// Input parameters
+or_minutes = input.int(5, "Opening Range Minutes", minval=5, maxval=120)
+market_open_hour = input.int(9, "Market Open Hour", minval=0, maxval=23)
+market_open_minute = input.int(30, "Market Open Minute", minval=0, maxval=59)
+vol_multiplier = input.float(2.0, "Volume Multiplier", minval=1.0, maxval=5.0)
+body_threshold = input.float(0.5, "Body Threshold", minval=0.1, maxval=1.0)
+min_confidence = input.int(2, "Minimum Confidence Score", minval=1, maxval=5)
+show_confidence = input.bool(true, "Show Confidence Labels")
+
+// Initialize data structures
+var orb_range.ORData or_data = orb_range.ORData.new()
+var orb_risk.PositionData position_data = orb_risk.PositionData.new()
+var bool in_position = false
+
+// levels = array.from(2, 2.5, 3, 4.0, 5, 6.0)
+// stops = array.from(1, 1.5, 2, 3.0, 4, 5.0, 0.0)
+var orb_risk.TrailingStopConfig trailing_stop_config = orb_risk.create_step_config(2.0, 1, 1.0) 
+
+// Create configuration objects
+time_config = orb_range.TimeConfig.new(market_open_hour, market_open_minute, or_minutes)
+vol_config = orb_conditions.VolumeConfig.new(vol_multiplier)
+body_config = orb_conditions.BodyConfig.new(body_threshold, true)
+
+// Calculate EMAs
+ema20 = ta.ema(close, 20)
+ema30 = ta.ema(close, 30)
+ema200 = ta.ema(close, 200)
+ema_data = orb_conditions.EMAData.new(ema20, ema30, ema200)
+
+// Update OR data each bar
+or_data := orb_range.update_or_data(or_data, time_config, high, low, open, close, volume)
+
+// Get entry signals
+entry_signals = orb_conditions.get_entry_signals(
+     or_data.is_established, or_data.breakout_occurred, 
+     high, low, open, close, volume,
+     or_data.or_high, or_data.or_low, or_data.or_volume, or_data.prev_day_volume,
+     ema_data, vol_config, body_config, min_confidence)
+
+// Plot Opening Range lines
+plot(or_data.is_established ? or_data.or_high : na, "OR High", color=color.red, linewidth=2)
+plot(or_data.is_established ? or_data.or_low : na, "OR Low", color=color.green, linewidth=2)
+
+// Plot EMAs
+plot(ema30, "EMA 30", color=color.yellow, linewidth=1)
+plot(ema200, "EMA 200", color=color.orange, linewidth=1)
+
+// Entry logic
+var bool first_breakout_today = true
+
+// Reset first breakout flag on new day
+if orb_range.detect_new_session()
+    first_breakout_today := true
+    in_position := false
+
+// Handle entries
+if entry_signals.bullish_signal and first_breakout_today and not in_position
+    strategy.entry("Long", strategy.long)  // Fixed position size, no confidence-based sizing
+    position_data := orb_risk.initialize_position(true, close, or_data.or_high, or_data.or_low, 0.6)
+    in_position := true
+    first_breakout_today := false
+    or_data := orb_range.mark_breakout_occurred(or_data)
+    
+    // Create confidence label
+    if show_confidence
+        condition_ids = orb_conditions.generate_condition_ids(entry_signals, true)
+        orb_display.create_confidence_label(true, entry_signals.bullish_confidence, condition_ids)
+
+if entry_signals.bearish_signal and first_breakout_today and not in_position
+    strategy.entry("Short", strategy.short)  // Fixed position size, no confidence-based sizing
+    position_data := orb_risk.initialize_position(false, close, or_data.or_high, or_data.or_low, 0.6)
+    in_position := true
+    first_breakout_today := false
+    or_data := orb_range.mark_breakout_occurred(or_data)
+    
+    // Create confidence label
+    if show_confidence
+        condition_ids = orb_conditions.generate_condition_ids(entry_signals, false)
+        orb_display.create_confidence_label(false, entry_signals.bearish_confidence, condition_ids)
+
+// Update trailing stop if in position
+if in_position
+    position_data := orb_risk.update_trailing_stop(position_data, close, trailing_stop_config)
+
+// Calculate R-levels for display
+r_levels = orb_risk.calculate_r_levels(position_data)
+
+// Exit conditions
+day_close_exit = orb_risk.check_day_close(hour, minute, 15, 30) // Close at 3:30 PM
+trailing_stop_exit = orb_risk.should_exit_trailing_stop(close, position_data.current_trailing_stop, position_data.position_is_long)
+
+// EMA 30 exit with entry price filter
+ema30_exit = false
+if in_position
+    // Only apply EMA 30 exit if entry price was above EMA 30 for longs, below EMA 30 for shorts
+    if position_data.position_is_long and position_data.entry_price > ema30
+        ema30_exit := orb_risk.check_ema30_exit(close, ema30, position_data.position_is_long, true)
+    else if not position_data.position_is_long and position_data.entry_price < ema30
+        ema30_exit := orb_risk.check_ema30_exit(close, ema30, position_data.position_is_long, true)
+
+if in_position and (day_close_exit or trailing_stop_exit or ema30_exit)
+    if strategy.position_size > 0
+        strategy.close("Long")
+    else if strategy.position_size < 0
+        strategy.close("Short")
+    in_position := false
+
+// Plot trailing stop if in position
+plot(in_position ? position_data.current_trailing_stop : na, "Trailing Stop", color=color.rgb(234, 160, 248), linewidth=2, style=plot.style_circles)
+
+// Plot initial stop level
+plot(in_position ? position_data.initial_stop : na, "Initial Stop", color=color.fuchsia, linewidth=1, style=plot.style_circles)
+
+// Plot R-multiple profit levels
+plot(in_position ? r_levels.r2_level : na, "2R Level", color=color.new(color.purple, 30), linewidth=1, style=plot.style_stepline)
+plot(in_position ? r_levels.r3_level : na, "3R Level", color=color.new(color.purple, 30), linewidth=1, style=plot.style_stepline)
+plot(in_position ? r_levels.r4_level : na, "4R Level", color=color.new(color.purple, 30), linewidth=1, style=plot.style_stepline)
+
+// Plot entry line for reference
+// plot(in_position ? position_data.entry_price : na, "Entry Price", color=color.new(color.gray, 50), linewidth=1, style=plot.style_circles)
+
+// Entry signals on chart
+plotshape(entry_signals.bullish_signal, "Bullish Entry", shape.triangleup, location.belowbar, 
+          color=entry_signals.bullish_confidence >= 3 ? color.green : color.yellow, size=size.normal)
+plotshape(entry_signals.bearish_signal, "Bearish Entry", shape.triangledown, location.abovebar, 
+          color=entry_signals.bearish_confidence >= 3 ? color.red : color.yellow, size=size.normal)
+
+// Background color during OR period
+bgcolor(orb_range.is_in_or_period(time_config) ? color.new(color.gray, 95) : na, title="OR Period")
+
+// Use library function for info table display
+orb_display.create_simple_info_table(show_confidence, vol_multiplier, body_threshold)

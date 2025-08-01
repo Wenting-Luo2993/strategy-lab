@@ -1,0 +1,279 @@
+//@version=6
+
+// @description Conditions Library for ORB Trading Strategy
+// This library handles all entry conditions, confidence scoring, and signal generation
+library("orb_conditions_lib", overlay=true)
+
+// Import the OR library (assuming it's published)
+// import your_username/orb_range_lib/1 as orb_range
+
+// @type EMA Configuration
+// @field ema20 (float) 20-period EMA value
+// @field ema30 (float) 30-period EMA value
+// @field ema200 (float) 200-period EMA value
+export type EMAData
+    float ema20
+    float ema30
+    float ema200
+
+// @type Volume Configuration
+// @field vol_multiplier (float) Volume multiplier for OR volume comparison
+export type VolumeConfig
+    float vol_multiplier = 2.0
+
+// @type Body Breakout Configuration
+// @field body_threshold (float) Minimum body threshold for breakout (0.5 = 50%)
+// @field use_body_breakout (bool) Whether to use body breakout condition
+export type BodyConfig
+    float body_threshold = 0.5
+    bool use_body_breakout = true
+
+// @type Entry Signals Result
+// @field bullish_signal (bool) Final bullish entry signal
+// @field bearish_signal (bool) Final bearish entry signal
+// @field bullish_confidence (int) Bullish confidence score (0-5)
+// @field bearish_confidence (int) Bearish confidence score (0-5)
+// @field condition1 (bool) Volume condition 1 status
+// @field condition2 (bool) Volume condition 2 status
+// @field condition3 (bool) Body breakout condition status
+// @field condition4_bull (bool) EMA 200 bullish condition status
+// @field condition4_bear (bool) EMA 200 bearish condition status
+// @field condition5_bull (bool) EMA 20 bullish condition status
+// @field condition5_bear (bool) EMA 20 bearish condition status
+export type EntrySignals
+    bool bullish_signal = false
+    bool bearish_signal = false
+    int bullish_confidence = 0
+    int bearish_confidence = 0
+    bool condition1 = false
+    bool condition2 = false
+    bool condition3 = false
+    bool condition4_bull = false
+    bool condition4_bear = false
+    bool condition5_bull = false
+    bool condition5_bear = false
+
+// @function Condition 1: OR Volume > Volume Multiplier × Previous Day Volume
+// @param or_volume (float) Opening Range accumulated volume
+// @param prev_day_volume (float) Previous day's volume
+// @param vol_config (VolumeConfig) Volume configuration
+// @returns (bool) True if condition met
+export check_condition1(float or_volume, float prev_day_volume, VolumeConfig vol_config) =>
+    not na(or_volume) and not na(prev_day_volume) and 
+     or_volume > (vol_config.vol_multiplier * prev_day_volume)
+
+// @function Condition 2: Current Volume > OR Volume
+// @param current_volume (float) Current bar's volume
+// @param or_volume (float) Opening Range accumulated volume
+// @returns (bool) True if condition met
+export check_condition2(float current_volume, float or_volume) =>
+    not na(current_volume) and not na(or_volume) and current_volume > or_volume
+
+// @function Condition 3: Body Breakout - Body size meets threshold and directional breakout
+// @param current_open (float) Current bar's open
+// @param current_close (float) Current bar's close
+// @param current_high (float) Current bar's high
+// @param current_low (float) Current bar's low
+// @param or_high (float) Opening Range high
+// @param or_low (float) Opening Range low
+// @param body_config (BodyConfig) Body breakout configuration
+// @returns (bool) True if condition met
+export check_condition3(float current_open, float current_close, float current_high, float current_low, float or_high, float or_low, BodyConfig body_config) =>
+    body_size = math.abs(current_close - current_open)
+    bar_range = current_high - current_low
+    body_threshold_met = body_size >= (body_config.body_threshold * bar_range)
+    
+    // Check directional breakout
+    bullish_breakout = current_high > or_high and current_close > current_open
+    bearish_breakout = current_low < or_low and current_close < current_open
+    
+    body_threshold_met and (bullish_breakout or bearish_breakout)
+
+// @function Condition 4: EMA 200 Direction Filter
+// @param current_close (float) Current bar's close
+// @param ema_data (EMAData) EMA values
+// @returns [bool, bool] [bullish_condition, bearish_condition]
+export check_condition4(float current_close, EMAData ema_data) =>
+    bullish = current_close > ema_data.ema200
+    bearish = current_close < ema_data.ema200
+    [bullish, bearish]
+
+// @function Condition 5: EMA 20 Entry Filter (Mandatory)
+// @param current_close (float) Current bar's close
+// @param ema_data (EMAData) EMA values
+// @returns [bool, bool] [bullish_condition, bearish_condition]
+export check_condition5(float current_close, EMAData ema_data) =>
+    bullish = current_close > ema_data.ema20
+    bearish = current_close < ema_data.ema20
+    [bullish, bearish]
+
+// @function Check optional body breakout condition for OR breakout
+// @param current_open (float) Current bar's open
+// @param current_close (float) Current bar's close
+// @param current_high (float) Current bar's high
+// @param current_low (float) Current bar's low
+// @param or_high (float) Opening Range high
+// @param or_low (float) Opening Range low
+// @param body_config (BodyConfig) Body configuration
+// @returns [bool, bool] [bullish_body_condition, bearish_body_condition]
+export check_optional_body_breakout(float current_open, float current_close, float current_high, float current_low, float or_high, float or_low, BodyConfig body_config) =>
+    if not body_config.use_body_breakout
+        [true, true]  // Always true if not using body breakout
+    else
+        current_body_size = math.abs(current_close - current_open)
+        current_body_top = math.max(current_open, current_close)
+        current_body_bottom = math.min(current_open, current_close)
+        
+        // For bullish breakout: check how much of body is above OR high
+        bullish_body_above_or = current_body_top > or_high ? 
+             math.min(current_body_top, current_high) - math.max(current_body_bottom, or_high) : 0
+        bullish_body_outside_pct = current_body_size > 0 ? (bullish_body_above_or / current_body_size) : 0
+        
+        // For bearish breakout: check how much of body is below OR low  
+        bearish_body_below_or = current_body_bottom < or_low ? 
+             math.max(current_body_bottom, current_low) - math.min(current_body_top, or_low) : 0
+        bearish_body_outside_pct = current_body_size > 0 ? (bearish_body_below_or / current_body_size) : 0
+        
+        bullish_condition = bullish_body_outside_pct >= 0.5
+        bearish_condition = bearish_body_outside_pct >= 0.5
+        
+        [bullish_condition, bearish_condition]
+
+// @function Calculate confidence scores for both directions
+// @param condition1 (bool) Volume condition 1
+// @param condition2 (bool) Volume condition 2  
+// @param condition3 (bool) Body breakout condition
+// @param condition4_bull (bool) EMA 200 bullish condition
+// @param condition4_bear (bool) EMA 200 bearish condition
+// @param condition5_bull (bool) EMA 20 bullish condition
+// @param condition5_bear (bool) EMA 20 bearish condition
+// @returns [int, int] [bullish_score, bearish_score]
+export calculate_confidence_scores(bool condition1, bool condition2, bool condition3, bool condition4_bull, bool condition4_bear, bool condition5_bull, bool condition5_bear) =>
+    bullish_score = 0
+    bearish_score = 0
+    
+    if condition1
+        bullish_score += 1
+        bearish_score += 1
+    if condition2
+        bullish_score += 1
+        bearish_score += 1
+    if condition3
+        bullish_score += 1
+        bearish_score += 1
+    if condition4_bull
+        bullish_score += 1
+    if condition4_bear
+        bearish_score += 1
+    if condition5_bull
+        bullish_score += 1
+    if condition5_bear
+        bearish_score += 1
+        
+    [bullish_score, bearish_score]
+
+// @function Check time-based conditions (before 12 PM)
+// @returns (bool) True if before 12 PM
+export check_time_condition() =>
+    current_time = hour * 60 + minute
+    current_time < (12 * 60)
+
+// @function Main function to get entry signals with all conditions
+// @param or_established (bool) Whether OR is established
+// @param breakout_occurred (bool) Whether breakout already happened today
+// @param current_high (float) Current bar's high
+// @param current_low (float) Current bar's low
+// @param current_open (float) Current bar's open
+// @param current_close (float) Current bar's close
+// @param current_volume (float) Current bar's volume
+// @param or_high (float) Opening Range high
+// @param or_low (float) Opening Range low
+// @param or_volume (float) Opening Range volume
+// @param prev_day_volume (float) Previous day volume
+// @param ema_data (EMAData) EMA values
+// @param vol_config (VolumeConfig) Volume configuration
+// @param body_config (BodyConfig) Body configuration
+// @param min_confidence (int) Minimum confidence score for entry
+// @returns (EntrySignals) Complete entry signals with all conditions
+export get_entry_signals(bool or_established, bool breakout_occurred, float current_high, float current_low, float current_open, float current_close, float current_volume, float or_high, float or_low, float or_volume, float prev_day_volume, EMAData ema_data, VolumeConfig vol_config, BodyConfig body_config, int min_confidence) =>
+    
+    signals = EntrySignals.new()
+    
+    // Only proceed if OR is established
+    if not or_established
+        signals
+    else
+        // Check all conditions
+        signals.condition1 := check_condition1(or_volume, prev_day_volume, vol_config)
+        signals.condition2 := check_condition2(current_volume, or_volume)
+        signals.condition3 := check_condition3(current_open, current_close, current_high, current_low, or_high, or_low, body_config)
+        
+		[cond4_bull, cond4_bear] = check_condition4(current_close, ema_data)
+		signals.condition4_bull := cond4_bull
+		signals.condition4_bear := cond4_bear 
+		[cond5_bull, cond5_bear] = check_condition5(current_close, ema_data)
+		signals.condition5_bull := cond5_bull
+		signals.condition5_bear := cond5_bear
+        
+        // Calculate confidence scores
+        [bull_confidence, bear_confidence] = calculate_confidence_scores(
+             signals.condition1, signals.condition2, signals.condition3, 
+             signals.condition4_bull, signals.condition4_bear, 
+             signals.condition5_bull, signals.condition5_bear)
+		signals.bullish_confidence := bull_confidence
+		signals.bearish_confidence := bear_confidence
+        
+        // Check optional body breakout
+        [bullish_body, bearish_body] = check_optional_body_breakout(current_open, current_close, current_high, current_low, or_high, or_low, body_config)
+        
+        // Time condition
+        time_ok = check_time_condition()
+        
+        // Basic breakout conditions
+        bullish_breakout = current_high > or_high and current_close > or_high
+        bearish_breakout = current_low < or_low and current_close < or_low
+        
+        // Final entry signals (first breakout only)
+        signals.bullish_signal := not breakout_occurred and bullish_breakout and bullish_body and 
+                                 signals.bullish_confidence >= min_confidence and time_ok
+                                 
+        signals.bearish_signal := not breakout_occurred and bearish_breakout and bearish_body and 
+                                 signals.bearish_confidence >= min_confidence and time_ok
+        
+        signals
+
+// @function Get position size based on confidence score
+// @param confidence_score (int) Confidence score (1-5)
+// @returns (float) Position size percentage
+export get_position_size(int confidence_score) =>
+    switch confidence_score
+        5 => 100.0
+        4 => 100.0  
+        3 => 75.0
+        2 => 50.0
+        1 => 25.0
+        => 0.0
+
+// @function Generate condition ID string for display
+// @param signals (EntrySignals) Entry signals data
+// @param is_bullish (bool) Whether to generate for bullish or bearish
+// @returns (string) Comma-separated condition IDs
+export generate_condition_ids(EntrySignals signals, bool is_bullish) =>
+    condition_ids = ""
+    
+    if signals.condition1
+        condition_ids += "1,"
+    if signals.condition2
+        condition_ids += "2,"
+    if signals.condition3
+        condition_ids += "3,"
+    if (is_bullish and signals.condition4_bull) or (not is_bullish and signals.condition4_bear)
+        condition_ids += "4,"
+    if (is_bullish and signals.condition5_bull) or (not is_bullish and signals.condition5_bear)
+        condition_ids += "5,"
+    
+    // Remove trailing comma
+    if str.length(condition_ids) > 0
+        str.substring(condition_ids, 0, str.length(condition_ids) - 1)
+    else
+        ""

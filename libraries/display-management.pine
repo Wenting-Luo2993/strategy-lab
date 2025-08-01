@@ -1,0 +1,391 @@
+//@version=6
+
+// @description Display Library for ORB Strategy
+// Handles all visual elements including shapes, tables, highlighting, and plot data preparation
+library("orb_display_lib", overlay=true)
+
+import kimluo2993/orb_risk_lib/1 as risk
+
+// @type DisplayConfig
+// @field show_confidence Whether to show confidence labels and table
+// @field show_risk_levels Whether to show R-level plots
+// @field ema_length EMA length for display
+// @field vol_multiplier Volume multiplier for table display
+// @field body_threshold Body threshold percentage for table display
+export type DisplayConfig
+    bool show_confidence
+    bool show_risk_levels
+    int ema_length
+    float vol_multiplier
+    float body_threshold
+
+// @type PlotData
+// @field or_high Opening Range high for plotting
+// @field or_low Opening Range low for plotting
+// @field or_color_high Color for OR high line
+// @field or_color_low Color for OR low line
+// @field ema200 EMA 200 value for plotting
+// @field ema30 EMA 30 value for plotting
+// @field trailing_stop Trailing stop value for plotting
+// @field r2_level 2R level for plotting
+// @field r3_level 3R level for plotting
+// @field r4_level 4R level for plotting
+// @field entry_line Entry price line for plotting
+export type PlotData
+    float or_high
+    float or_low
+    color or_color_high
+    color or_color_low
+    float ema200
+    float ema30
+    float trailing_stop
+    float r2_level
+    float r3_level
+    float r4_level
+    float entry_line
+
+// @type SignalData
+// @field show_signal Whether to show the signal
+// @field signal_color Color for the signal
+// @field signal_size Size for the signal
+// @field signal_style Shape style for the signal
+// @field signal_location Location for the signal
+export type SignalData
+    bool show_signal
+    color signal_color
+    string signal_size
+    string signal_style
+    string signal_location
+
+// @type ExitSignalData
+// @field day_close_exit Day close exit signal data
+// @field trailing_stop_exit Trailing stop exit signal data
+// @field ema30_exit EMA 30 exit signal data
+export type ExitSignalData
+    SignalData day_close_exit
+    SignalData trailing_stop_exit
+    SignalData ema30_exit
+
+// @function Prepare OR line data for plotting
+// @param or_high Opening Range high price
+// @param or_low Opening Range low price
+// @param or_established Whether OR is established
+// @returns Array [or_high, or_low, color_high, color_low]
+export get_or_plot_data(float or_high, float or_low, bool or_established) =>
+    color_high = or_established ? color.red : color.gray
+    color_low = or_established ? color.green : color.gray
+    [or_high, or_low, color_high, color_low]
+
+// @function Prepare EMA data for plotting
+// @param ema200 EMA 200 value
+// @param ema30 EMA 30 value (optional)
+// @returns Array [ema200, ema30]
+export get_ema_plot_data(float ema200, float ema30 = na) =>
+    [ema200, ema30]
+
+// @function Prepare risk level data for plotting
+// @param pos_data Position data from risk library
+// @param r_levels R-levels from risk library  
+// @param show_risk_levels Whether to show risk levels
+// @param in_position Whether currently in position
+// @returns Array [trailing_stop, r2, r3, r4, entry_line]
+export get_risk_plot_data(risk.PositionData pos_data, risk.RiskLevels r_levels, bool show_risk_levels, bool in_position) =>
+    trailing_stop = in_position ? pos_data.current_trailing_stop : na
+    r2 = (show_risk_levels and in_position) ? r_levels.r2_level : na
+    r3 = (show_risk_levels and in_position) ? r_levels.r3_level : na
+    r4 = (show_risk_levels and in_position) ? r_levels.r4_level : na
+    entry_line = (in_position and not na(pos_data.entry_price)) ? pos_data.entry_price : na
+    [trailing_stop, r2, r3, r4, entry_line]
+
+// @function Create complete plot data structure
+// @param or_high Opening Range high
+// @param or_low Opening Range low
+// @param or_established OR established status
+// @param ema200 EMA 200 value
+// @param ema30 EMA 30 value
+// @param pos_data Position data
+// @param r_levels R levels data
+// @param show_risk_levels Show risk levels flag
+// @param in_position In position flag
+// @returns PlotData object with all plot values
+export create_plot_data(float or_high, float or_low, bool or_established, float ema200, float ema30, risk.PositionData pos_data, risk.RiskLevels r_levels, bool show_risk_levels, bool in_position) =>
+    plot_data = PlotData.new()
+    
+    // OR data
+    plot_data.or_high := or_high
+    plot_data.or_low := or_low
+    plot_data.or_color_high := or_established ? color.red : color.gray
+    plot_data.or_color_low := or_established ? color.green : color.gray
+    
+    // EMA data
+    plot_data.ema200 := ema200
+    plot_data.ema30 := ema30
+    
+    // Risk data
+    plot_data.trailing_stop := in_position ? pos_data.current_trailing_stop : na
+    plot_data.r2_level := (show_risk_levels and in_position) ? r_levels.r2_level : na
+    plot_data.r3_level := (show_risk_levels and in_position) ? r_levels.r3_level : na
+    plot_data.r4_level := (show_risk_levels and in_position) ? r_levels.r4_level : na
+    plot_data.entry_line := (in_position and not na(pos_data.entry_price)) ? pos_data.entry_price : na
+    
+    plot_data
+
+// @function Get entry signal data for plotting
+// @param bullish_entry First bullish breakout signal
+// @param bearish_entry First bearish breakout signal
+// @param bullish_confidence Bullish confidence score
+// @param bearish_confidence Bearish confidence score
+// @param subsequent_bullish Subsequent bullish signals (not first)
+// @param subsequent_bearish Subsequent bearish signals (not first)
+// @returns Array [bullish_signal_data, bearish_signal_data, subsequent_bullish_data, subsequent_bearish_data]
+export get_entry_signal_data(bool bullish_entry, bool bearish_entry, int bullish_confidence, int bearish_confidence, bool subsequent_bullish = false, bool subsequent_bearish = false) =>
+    // Bullish signal data
+    bullish_signal = SignalData.new()
+    bullish_signal.show_signal := bullish_entry
+    bullish_signal.signal_color := bullish_confidence >= 3 ? color.green : 
+                                   bullish_confidence >= 2 ? color.yellow : color.orange
+    bullish_signal.signal_size := "large"
+    bullish_signal.signal_style := "triangleup"
+    bullish_signal.signal_location := "belowbar"
+    
+    // Bearish signal data
+    bearish_signal = SignalData.new()
+    bearish_signal.show_signal := bearish_entry
+    bearish_signal.signal_color := bearish_confidence >= 3 ? color.red : 
+                                   bearish_confidence >= 2 ? color.yellow : color.orange
+    bearish_signal.signal_size := "large"
+    bearish_signal.signal_style := "triangledown"
+    bearish_signal.signal_location := "abovebar"
+    
+    // Subsequent bullish signal data
+    subsequent_bull_signal = SignalData.new()
+    subsequent_bull_signal.show_signal := subsequent_bullish
+    subsequent_bull_signal.signal_color := color.new(color.gray, 70)
+    subsequent_bull_signal.signal_size := "tiny"
+    subsequent_bull_signal.signal_style := "circle"
+    subsequent_bull_signal.signal_location := "belowbar"
+    
+    // Subsequent bearish signal data
+    subsequent_bear_signal = SignalData.new()
+    subsequent_bear_signal.show_signal := subsequent_bearish
+    subsequent_bear_signal.signal_color := color.new(color.gray, 70)
+    subsequent_bear_signal.signal_size := "tiny"
+    subsequent_bear_signal.signal_style := "circle"
+    subsequent_bear_signal.signal_location := "abovebar"
+    
+    [bullish_signal, bearish_signal, subsequent_bull_signal, subsequent_bear_signal]
+
+// @function Create confidence label for entry signals
+// @param is_bullish Whether signal is bullish
+// @param confidence_score Confidence score (1-4)
+// @param condition_ids String of condition IDs that triggered
+// @returns void
+export create_confidence_label(bool is_bullish, int confidence_score, string condition_ids) =>
+    if confidence_score > 0
+        confidence_text = confidence_score == 4 ? "Very High" : 
+                         confidence_score == 3 ? "High" : 
+                         confidence_score == 2 ? "Medium" : 
+                         confidence_score == 1 ? "Low" : "None"
+        
+        position_size = confidence_score == 4 ? 100 : 
+                       confidence_score == 3 ? 75 : 
+                       confidence_score == 2 ? 50 : 25
+        
+        label_text = "BREAKOUT\nConditions: " + condition_ids + 
+                     "\nConfidence: " + str.tostring(confidence_score) + "/4\n" + 
+                     confidence_text + "\nSize: " + str.tostring(position_size) + "%"
+        
+        label_color = confidence_score >= 3 ? color.green : 
+                     confidence_score >= 2 ? color.yellow : color.orange
+        
+        label.new(bar_index, is_bullish ? low * 0.99 : high * 1.01, 
+                  text=label_text, 
+                  style=is_bullish ? label.style_label_up : label.style_label_down,
+                  color=label_color, textcolor=color.white, size=size.normal)
+
+// @function Create information table showing conditions
+// @param config Display configuration
+// @param pos_data Position data (optional)
+// @param current_price Current price for R calculation (optional)
+// @returns void
+export create_info_table(DisplayConfig config, risk.PositionData pos_data = na, float current_price = na) =>
+    if config.show_confidence
+        var table info_table = table.new(position.top_right, 2, 6, bgcolor=color.white, border_width=1)
+        
+        // Headers
+        table.cell(info_table, 0, 0, "Condition ID", text_color=color.black, bgcolor=color.gray)
+        table.cell(info_table, 1, 0, "Description", text_color=color.black, bgcolor=color.gray)
+        
+        // Condition descriptions
+        table.cell(info_table, 0, 1, "1", text_color=color.black)
+        table.cell(info_table, 1, 1, "OR Vol > " + str.tostring(config.vol_multiplier) + "x Prev", text_color=color.black)
+        
+        table.cell(info_table, 0, 2, "2", text_color=color.black)
+        table.cell(info_table, 1, 2, "Current Vol > OR", text_color=color.black)
+        
+        table.cell(info_table, 0, 3, "3", text_color=color.black)
+        table.cell(info_table, 1, 3, str.tostring(config.body_threshold*100) + "% Body Breakout", text_color=color.black)
+        
+        table.cell(info_table, 0, 4, "4", text_color=color.black)
+        table.cell(info_table, 1, 4, "EMA " + str.tostring(config.ema_length) + " Direction", text_color=color.black)
+        
+        // Add position info if in position
+        if not na(pos_data) and not na(pos_data.entry_price) and not na(current_price)
+            current_r = risk.get_current_r_multiple(pos_data, current_price)
+            table.cell(info_table, 0, 5, "Position", text_color=color.black, bgcolor=color.orange)
+            position_text = (pos_data.position_is_long ? "LONG" : "SHORT") + 
+                           " | R:" + str.tostring(math.round(current_r, 2)) + 
+                           " | Stop:" + str.tostring(math.round(pos_data.current_trailing_stop, 2))
+            table.cell(info_table, 1, 5, position_text, text_color=color.black, bgcolor=color.orange)
+
+// @function Create simple information table for strategy conditions
+// @param show_table Whether to show the table
+// @param vol_multiplier Volume multiplier value
+// @param body_threshold Body threshold value
+// @returns void
+export create_simple_info_table(bool show_table, float vol_multiplier, float body_threshold) =>
+    if show_table and barstate.islast
+        var table info_table = table.new(position.top_right, 2, 5, bgcolor=color.white, border_width=1)
+        
+        // Headers
+        table.cell(info_table, 0, 0, "Condition", text_color=color.black, bgcolor=color.gray)
+        table.cell(info_table, 1, 0, "Description", text_color=color.black, bgcolor=color.gray)
+        
+        // Condition descriptions
+        table.cell(info_table, 0, 1, "1", text_color=color.black)
+        table.cell(info_table, 1, 1, "OR Vol > " + str.tostring(vol_multiplier) + "x Prev", text_color=color.black)
+        
+        table.cell(info_table, 0, 2, "2", text_color=color.black)
+        table.cell(info_table, 1, 2, "Current Vol > OR Vol", text_color=color.black)
+        
+        table.cell(info_table, 0, 3, "3", text_color=color.black)
+        table.cell(info_table, 1, 3, str.tostring(body_threshold*100) + "% Body Breakout", text_color=color.black)
+        
+        table.cell(info_table, 0, 4, "4&5", text_color=color.black)
+        table.cell(info_table, 1, 4, "EMA 200 & EMA 20 Filter", text_color=color.black)
+
+// @function Create condition IDs string from individual conditions
+// @param condition1 Volume condition 1
+// @param condition2 Volume condition 2  
+// @param condition3 Body breakout condition
+// @param condition4 EMA condition
+// @param condition5 EMA 30 condition (optional)
+// @returns String of active condition IDs
+export build_condition_ids(bool condition1, bool condition2, bool condition3, bool condition4, bool condition5 = false) =>
+    condition_ids = ""
+    if condition1
+        condition_ids := condition_ids + "1,"
+    if condition2
+        condition_ids := condition_ids + "2,"
+    if condition3
+        condition_ids := condition_ids + "3,"
+    if condition4
+        condition_ids := condition_ids + "4,"
+    if condition5
+        condition_ids := condition_ids + "5,"
+    
+    // Remove trailing comma
+    if str.length(condition_ids) > 0
+        condition_ids := str.substring(condition_ids, 0, str.length(condition_ids) - 1)
+    
+    condition_ids
+
+// @function Get exit signal data for plotting
+// @param day_close_exit Day close exit signal
+// @param trailing_stop_exit Trailing stop exit signal
+// @param ema30_exit EMA 30 exit signal
+// @returns ExitSignalData object with all exit signal data
+export get_exit_signal_data(bool day_close_exit, bool trailing_stop_exit, bool ema30_exit) =>
+    exit_signals = ExitSignalData.new()
+    
+    // Day close exit signal
+    day_close_signal = SignalData.new()
+    day_close_signal.show_signal := day_close_exit
+    day_close_signal.signal_color := color.blue
+    day_close_signal.signal_size := "small"
+    day_close_signal.signal_style := "square"
+    day_close_signal.signal_location := "abovebar"
+    exit_signals.day_close_exit := day_close_signal
+    
+    // Trailing stop exit signal
+    trailing_stop_signal = SignalData.new()
+    trailing_stop_signal.show_signal := trailing_stop_exit
+    trailing_stop_signal.signal_color := color.orange
+    trailing_stop_signal.signal_size := "small"
+    trailing_stop_signal.signal_style := "diamond"
+    trailing_stop_signal.signal_location := "abovebar"
+    exit_signals.trailing_stop_exit := trailing_stop_signal
+    
+    // EMA 30 exit signal
+    ema30_signal = SignalData.new()
+    ema30_signal.show_signal := ema30_exit
+    ema30_signal.signal_color := color.purple
+    ema30_signal.signal_size := "small"
+    ema30_signal.signal_style := "xcross"
+    ema30_signal.signal_location := "abovebar"
+    exit_signals.ema30_exit := ema30_signal
+    
+    exit_signals
+
+// @function Create display configuration
+// @param show_confidence Show confidence elements
+// @param show_risk_levels Show risk level plots
+// @param ema_length EMA length for table
+// @param vol_multiplier Volume multiplier for table
+// @param body_threshold Body threshold for table
+// @returns DisplayConfig object
+export create_display_config(bool show_confidence, bool show_risk_levels, int ema_length, float vol_multiplier, float body_threshold) =>
+    config = DisplayConfig.new()
+    config.show_confidence := show_confidence
+    config.show_risk_levels := show_risk_levels
+    config.ema_length := ema_length
+    config.vol_multiplier := vol_multiplier
+    config.body_threshold := body_threshold
+    config
+
+// @function Get plot colors for risk levels
+// @param show_levels Whether to show the levels
+// @returns Array of colors [trailing_stop, r2, r3, r4, entry]
+export get_risk_colors(bool show_levels) =>
+    trailing_color = color.orange
+    r2_color = show_levels ? color.new(color.blue, 50) : na
+    r3_color = show_levels ? color.new(color.purple, 50) : na
+    r4_color = show_levels ? color.new(color.maroon, 50) : na
+    entry_color = color.new(color.gray, 30)
+    [trailing_color, r2_color, r3_color, r4_color, entry_color]
+
+// @function Convert signal size string to Pine Script size constant
+// @param size_str Size as string ("tiny", "small", "normal", "large", "huge")
+// @returns Pine Script size constant
+export get_plot_size(string size_str) =>
+    switch size_str
+        "tiny" => size.tiny
+        "small" => size.small
+        "normal" => size.normal
+        "large" => size.large
+        "huge" => size.huge
+        => size.normal
+
+// @function Convert signal style string to Pine Script shape constant
+// @param style_str Style as string
+// @returns Pine Script shape constant
+export get_plot_style(string style_str) =>
+    switch style_str
+        "triangleup" => shape.triangleup
+        "triangledown" => shape.triangledown
+        "circle" => shape.circle
+        "square" => shape.square
+        "diamond" => shape.diamond
+        "xcross" => shape.xcross
+        => shape.circle
+
+// @function Convert location string to Pine Script location constant
+// @param location_str Location as string
+// @returns Pine Script location constant
+export get_plot_location(string location_str) =>
+    switch location_str
+        "abovebar" => location.abovebar
+        "belowbar" => location.belowbar
+        "top" => location.top
+        "bottom" => location.bottom
+        => location.abovebar

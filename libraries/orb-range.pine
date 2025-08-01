@@ -1,0 +1,193 @@
+//@version=6
+
+// @description Opening Range Library for ORB Trading Strategy
+// This library handles all opening range detection, building, and tracking functionality
+library("orb_range_lib", overlay=true)
+
+// @type Opening Range Data Structure
+// @field or_high (float) Opening Range High
+// @field or_low (float) Opening Range Low  
+// @field or_volume (float) Accumulated volume during OR period
+// @field prev_day_volume (float) Previous day's volume for comparison
+// @field is_established (bool) Whether OR period has completed
+// @field bars_count (int) Number of bars processed in OR period
+// @field breakout_occurred (bool) Whether breakout already happened today
+export type ORData
+    float or_high = na
+    float or_low = na
+    float or_volume = 0.0
+    float prev_day_volume = na
+    bool is_established = false
+    int bars_count = 0
+    bool breakout_occurred = false
+
+// @type Time Configuration
+// @field market_open_hour (int) Market open hour
+// @field market_open_minute (int) Market open minute  
+// @field or_minutes (int) Opening range duration in minutes
+export type TimeConfig
+    int market_open_hour
+    int market_open_minute
+    int or_minutes
+
+// @function Detects if we're at the start of a new trading session
+// @returns (bool) True if new session detected
+export detect_new_session() =>
+    ta.change(time("1D")) != 0
+
+// @function Calculates current time in minutes since midnight
+// @returns (int) Current time in minutes
+export get_current_time_minutes() =>
+    hour * 60 + minute
+
+// @function Checks if current time is within the Opening Range period
+// @param time_config (TimeConfig) Time configuration settings
+// @returns (bool) True if currently in OR period
+export is_in_or_period(TimeConfig time_config) =>
+    current_time = get_current_time_minutes()
+    session_start_time = time_config.market_open_hour * 60 + time_config.market_open_minute
+    or_end_time = session_start_time + time_config.or_minutes
+    current_time >= session_start_time and current_time < or_end_time
+
+// @function Resets Opening Range data at start of new session
+// @param or_data (ORData) Opening Range data to reset
+// @returns (ORData) Reset OR data
+export reset_or_data() =>
+    new_data = ORData.new()
+    new_data.or_high := na
+    new_data.or_low := na
+    new_data.or_volume := 0.0
+    new_data.prev_day_volume := na
+    new_data.is_established := false
+    new_data.bars_count := 0
+    new_data.breakout_occurred := false
+    new_data
+
+// @function Builds Opening Range by tracking high/low and volume during OR period
+// @param or_data (ORData) Current OR data
+// @param current_high (float) Current bar's high
+// @param current_low (float) Current bar's low
+// @param current_volume (float) Current bar's volume
+// @returns (ORData) Updated OR data
+export build_opening_range(ORData or_data, float current_high, float current_low, float current_volume) =>
+    updated_data = or_data
+    
+    // Increment bar count and accumulate volume
+    updated_data.bars_count := updated_data.bars_count + 1
+    updated_data.or_volume := updated_data.or_volume + current_volume
+    
+    // Update OR high and low
+    if na(updated_data.or_high)
+        updated_data.or_high := current_high
+        updated_data.or_low := current_low
+    else
+        updated_data.or_high := math.max(updated_data.or_high, current_high)
+        updated_data.or_low := math.min(updated_data.or_low, current_low)
+    
+    // Capture previous day volume on first bar (simplified)
+    if updated_data.bars_count == 1
+        updated_data.prev_day_volume := current_volume
+    
+    updated_data
+
+// @function Marks Opening Range as established when OR period ends
+// @param or_data (ORData) Current OR data
+// @param time_config (TimeConfig) Time configuration
+// @returns (ORData) Updated OR data with established status
+export establish_or(ORData or_data, TimeConfig time_config) =>
+    updated_data = or_data
+    
+    // Mark as established if not in OR period and OR high exists
+    if not is_in_or_period(time_config) and not updated_data.is_established and not na(updated_data.or_high)
+        updated_data.is_established := true
+    
+    updated_data
+
+// @function Checks if price has moved back inside OR range (resets breakout flag)
+// @param or_data (ORData) Current OR data
+// @param prev_open (float) Previous bar's open
+// @param prev_close (float) Previous bar's close
+// @returns (ORData) Updated OR data with potentially reset breakout flag
+export check_price_return_to_or(ORData or_data, float prev_open, float prev_close) =>
+    updated_data = or_data
+    
+    if updated_data.is_established and updated_data.breakout_occurred
+        // Calculate previous bar's body metrics
+        prev_body_size = math.abs(prev_close - prev_open)
+        prev_body_top = math.max(prev_open, prev_close)
+        prev_body_bottom = math.min(prev_open, prev_close)
+        
+        // Check overlap with OR range
+        overlap_top = math.min(prev_body_top, updated_data.or_high)
+        overlap_bottom = math.max(prev_body_bottom, updated_data.or_low)
+        overlap_size = math.max(0, overlap_top - overlap_bottom)
+        
+        // If >50% of previous bar's body was inside OR, reset breakout flag
+        if prev_body_size > 0 and (overlap_size / prev_body_size) > 0.5
+            updated_data.breakout_occurred := false
+    
+    updated_data
+
+// @function Marks that a breakout has occurred
+// @param or_data (ORData) Current OR data
+// @returns (ORData) Updated OR data with breakout flag set
+export mark_breakout_occurred(ORData or_data) =>
+    updated_data = or_data
+    updated_data.breakout_occurred := true
+    updated_data
+
+// @function Gets OR range size
+// @param or_data (ORData) Opening Range data
+// @returns (float) OR range size (high - low)
+export get_or_range_size(ORData or_data) =>
+    if not na(or_data.or_high) and not na(or_data.or_low)
+        or_data.or_high - or_data.or_low
+    else
+        na
+
+// @function Checks if current price is breaking above OR high
+// @param or_data (ORData) Opening Range data
+// @param current_high (float) Current bar's high
+// @param current_close (float) Current bar's close
+// @returns (bool) True if breaking above OR high
+export is_bullish_breakout(ORData or_data, float current_high, float current_close) =>
+    or_data.is_established and not na(or_data.or_high) and 
+	 current_high > or_data.or_high and current_close > or_data.or_high
+
+// @function Checks if current price is breaking below OR low
+// @param or_data (ORData) Opening Range data
+// @param current_low (float) Current bar's low
+// @param current_close (float) Current bar's close
+// @returns (bool) True if breaking below OR low
+export is_bearish_breakout(ORData or_data, float current_low, float current_close) =>
+    or_data.is_established and not na(or_data.or_low) and 
+     current_low < or_data.or_low and current_close < or_data.or_low
+
+// @function Main function to update OR data each bar
+// @param or_data (ORData) Current OR data
+// @param time_config (TimeConfig) Time configuration
+// @param current_high (float) Current bar's high
+// @param current_low (float) Current bar's low
+// @param current_open (float) Current bar's open
+// @param current_close (float) Current bar's close
+// @param current_volume (float) Current bar's volume
+// @returns (ORData) Updated OR data
+export update_or_data(ORData or_data, TimeConfig time_config, float current_high, float current_low, float current_open, float current_close, float current_volume) =>
+    updated_data = or_data
+    
+    // Reset on new session
+    if detect_new_session()
+        updated_data := reset_or_data()
+    
+    // Build OR during OR period
+    if is_in_or_period(time_config)
+        updated_data := build_opening_range(updated_data, current_high, current_low, current_volume)
+    
+    // Establish OR when period ends
+    updated_data := establish_or(updated_data, time_config)
+    
+    // Check if price returned to OR
+    if not na(updated_data.or_high)
+        updated_data := check_price_return_to_or(updated_data, current_open[1], current_close[1])
+    
+    updated_data
