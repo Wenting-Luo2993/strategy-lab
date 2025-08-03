@@ -4,8 +4,6 @@
 // Handles position initialization, trailing stops, exits, and R-level calculations
 library("orb_risk_lib", overlay=true)
 
-import kimluo2993/orb_conditions_lib/1 as orb_conditions
-
 // @type PositionData
 // @field entry_price Entry price of the position
 // @field initial_stop Initial stop loss price
@@ -481,22 +479,25 @@ export calculate_trade_position_size_enhanced(bool is_long, float entry_price, i
         [final_shares, actual_risk, is_cap_constrained, false]
 
 // @function Handle complete trade entry logic with risk management
-// @param entry_signals Entry signals from conditions library (must have bullish_signal, bearish_signal, bullish_confidence, bearish_confidence)
+// @param bullish_signal Whether bullish entry signal is triggered
+// @param bearish_signal Whether bearish entry signal is triggered
+// @param bullish_confidence Confidence score for bullish entry (1-5)
+// @param bearish_confidence Confidence score for bearish entry (1-5)
 // @param trading_state Current trading state
 // @param position_config Enhanced position sizing configuration
 // @param show_confidence Whether to show confidence labels
 // @returns [TradeExecutionResult, TradeExecutionResult] [bullish_result, bearish_result]
-export handle_trade_entries_with_risk(orb_conditions.EntrySignals entry_signals, TradingState trading_state, EnhancedPositionSizeConfig position_config, bool show_confidence) =>
+export handle_trade_entries_with_risk(bool bullish_signal, bool bearish_signal, int bullish_confidence, int bearish_confidence, TradingState trading_state, EnhancedPositionSizeConfig position_config, bool show_confidence) =>
     
     bullish_result = TradeExecutionResult.new()
     bearish_result = TradeExecutionResult.new()
     
     // Handle bullish entry
-    if entry_signals.bullish_signal and trading_state.first_breakout_today and not trading_state.in_position
+    if bullish_signal and trading_state.first_breakout_today and not trading_state.in_position
         // Calculate position size
         [shares_to_buy, actual_risk, is_cap_constrained, is_risk_constrained] = 
              calculate_trade_position_size_enhanced(
-                 true, trading_state.current_price, entry_signals.bullish_confidence,
+                 true, trading_state.current_price, bullish_confidence,
                  trading_state.or_high, trading_state.or_low, position_config
              )
         
@@ -525,12 +526,12 @@ export handle_trade_entries_with_risk(orb_conditions.EntrySignals entry_signals,
                              "\nStop: $" + str.tostring(initial_stop, "#.##") +
                              "\nRisk: $" + str.tostring(actual_risk, "#.##") +
                              "\nR/Share: $" + str.tostring(risk_reward_ratio, "#.##") +
-                             "\nConf: " + str.tostring(entry_signals.bullish_confidence) + "/5" +
+                             "\nConf: " + str.tostring(bullish_confidence) + "/5" +
                              (is_cap_constrained ? "\n(Cap Limited)" : "")
                 
-                label.new(bar_index, low * 0.8, label_text, 
-                         color=color.new(color.green, 20), 
-                         textcolor=color.white, 
+                label.new(bar_index, low * (1-position_config.label_distance), label_text, 
+                         color=color.new(color.green, 70), 
+                         textcolor=color.black, 
                          size=size.normal,
                          style=label.style_label_up)
         else
@@ -540,21 +541,21 @@ export handle_trade_entries_with_risk(orb_conditions.EntrySignals entry_signals,
             bullish_result.initial_stop := calculate_initial_stop_price(true, trading_state.or_high, trading_state.or_low, position_config.initial_stop_buffer_percentage)
             
             if is_risk_constrained and show_confidence
-                label.new(bar_index, low * 0.998, 
+                label.new(bar_index, low * (1-position_config.label_distance), 
                          "LONG SKIPPED\nEntry: $" + str.tostring(trading_state.current_price, "#.##") +
                          "\nStop: $" + str.tostring(bullish_result.initial_stop, "#.##") +
                          "\nRisk < $" + str.tostring(position_config.min_risk_per_share, "#.##"), 
-                         color=color.new(color.gray, 50), 
-                         textcolor=color.white, 
+                         color=color.new(color.gray, 70), 
+                         textcolor=color.black, 
                          size=size.small,
                          style=label.style_label_up)
 
     // Handle bearish entry
-    if entry_signals.bearish_signal and trading_state.first_breakout_today and not trading_state.in_position
+    if bearish_signal and trading_state.first_breakout_today and not trading_state.in_position
         // Calculate position size
         [shares_to_sell, actual_risk, is_cap_constrained, is_risk_constrained] = 
              calculate_trade_position_size_enhanced(
-                 false, trading_state.current_price, entry_signals.bearish_confidence,
+                 false, trading_state.current_price, bearish_confidence,
                  trading_state.or_high, trading_state.or_low, position_config
              )
         
@@ -583,12 +584,12 @@ export handle_trade_entries_with_risk(orb_conditions.EntrySignals entry_signals,
                              "\nStop: $" + str.tostring(initial_stop, "#.##") +
                              "\nRisk: $" + str.tostring(actual_risk, "#.##") +
                              "\nR/Share: $" + str.tostring(risk_reward_ratio, "#.##") +
-                             "\nConf: " + str.tostring(entry_signals.bearish_confidence) + "/5" +
+                             "\nConf: " + str.tostring(bearish_confidence) + "/5" +
                              (is_cap_constrained ? "\n(Cap Limited)" : "")
                 
-                label.new(bar_index, high * 1.002, label_text, 
-                         color=color.new(color.red, 20), 
-                         textcolor=color.white, 
+                label.new(bar_index, high * (1+position_config.label_distance), label_text, 
+                         color=color.new(color.red, 70), 
+                         textcolor=color.black, 
                          size=size.normal,
                          style=label.style_label_down)
         else
@@ -598,12 +599,12 @@ export handle_trade_entries_with_risk(orb_conditions.EntrySignals entry_signals,
             bearish_result.initial_stop := calculate_initial_stop_price(false, trading_state.or_high, trading_state.or_low, 0.6)
             
             if is_risk_constrained and show_confidence
-                label.new(bar_index, high * 1.002, 
+                label.new(bar_index, high * (1+position_config.label_distance), 
                          "SHORT SKIPPED\nEntry: $" + str.tostring(trading_state.current_price, "#.##") +
                          "\nStop: $" + str.tostring(bearish_result.initial_stop, "#.##") +
                          "\nRisk < $" + str.tostring(position_config.min_risk_per_share, "#.##"), 
-                         color=color.new(color.gray, 50), 
-                         textcolor=color.white, 
+                         color=color.new(color.gray, 70), 
+                         textcolor=color.black, 
                          size=size.small,
                          style=label.style_label_down)
     

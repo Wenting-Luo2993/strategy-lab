@@ -110,13 +110,11 @@ export check_condition5(float current_close, EMAData ema_data) =>
 // @function Check optional body breakout condition for OR breakout
 // @param current_open (float) Current bar's open
 // @param current_close (float) Current bar's close
-// @param current_high (float) Current bar's high
-// @param current_low (float) Current bar's low
 // @param or_high (float) Opening Range high
 // @param or_low (float) Opening Range low
 // @param body_config (BodyConfig) Body configuration
 // @returns [bool, bool] [bullish_body_condition, bearish_body_condition]
-export check_optional_body_breakout(float current_open, float current_close, float current_high, float current_low, float or_high, float or_low, BodyConfig body_config) =>
+export check_optional_body_breakout(float current_open, float current_close, float or_high, float or_low, BodyConfig body_config) =>
     if not body_config.use_body_breakout
         [true, true]  // Always true if not using body breakout
     else
@@ -126,12 +124,12 @@ export check_optional_body_breakout(float current_open, float current_close, flo
         
         // For bullish breakout: check how much of body is above OR high
         bullish_body_above_or = current_body_top > or_high ? 
-             math.min(current_body_top, current_high) - math.max(current_body_bottom, or_high) : 0
+             current_body_top - math.max(current_body_bottom, or_high) : 0
         bullish_body_outside_pct = current_body_size > 0 ? (bullish_body_above_or / current_body_size) : 0
         
         // For bearish breakout: check how much of body is below OR low  
         bearish_body_below_or = current_body_bottom < or_low ? 
-             math.max(current_body_bottom, current_low) - math.min(current_body_top, or_low) : 0
+             math.min(current_body_top, or_low) - current_body_bottom : 0
         bearish_body_outside_pct = current_body_size > 0 ? (bearish_body_below_or / current_body_size) : 0
         
         bullish_condition = bullish_body_outside_pct >= 0.5
@@ -224,7 +222,7 @@ export get_entry_signals(bool or_established, bool breakout_occurred, float curr
 		signals.bearish_confidence := bear_confidence
         
         // Check optional body breakout
-        [bullish_body, bearish_body] = check_optional_body_breakout(current_open, current_close, current_high, current_low, or_high, or_low, body_config)
+        [bullish_body, bearish_body] = check_optional_body_breakout(current_open, current_close, or_high, or_low, body_config)
         
         // Time condition
         time_ok = check_time_condition()

@@ -3,17 +3,17 @@ strategy("Simple ORB Strategy", overlay=true, margin_long=100, margin_short=100,
 
 // Import your libraries
 import kimluo2993/orb_range_lib/1 as orb_range
-import kimluo2993/orb_conditions_lib/1 as orb_conditions
+import kimluo2993/orb_conditions_lib/3 as orb_conditions
 import kimluo2993/orb_display_lib/2 as orb_display
-import kimluo2993/orb_risk_lib/5 as orb_risk
+import kimluo2993/orb_risk_lib/7 as orb_risk
 
 // Input parameters
-or_minutes = input.int(5, "Opening Range Minutes", minval=5, maxval=120)
+or_minutes = input.int(15, "Opening Range Minutes", minval=5, maxval=120)
 market_open_hour = input.int(9, "Market Open Hour", minval=0, maxval=23)
 market_open_minute = input.int(30, "Market Open Minute", minval=0, maxval=59)
 vol_multiplier = input.float(2.0, "Volume Multiplier", minval=1.0, maxval=5.0)
 body_threshold = input.float(0.5, "Body Threshold", minval=0.1, maxval=1.0)
-min_confidence = input.int(2, "Minimum Confidence Score", minval=1, maxval=5)
+min_confidence = input.int(1, "Minimum Confidence Score", minval=1, maxval=5)
 show_confidence = input.bool(true, "Show Confidence Labels")
 enable_ema30_exit = input.bool(false, "Should Enable EMA 30 Exit")
 
@@ -76,6 +76,8 @@ var orb_risk.EnhancedPositionSizeConfig enhanced_position_config = orb_risk.crea
      account_capital, risk_percentage, max_position_percentage, 
      use_confidence_sizing, min_risk_per_share, enable_min_risk_filter
  )
+enhanced_position_config.initial_stop_buffer_percentage := 80
+enhanced_position_config.label_distance := 0.05 // 5% distance for labels
 
 // Create trading state for current bar
 trading_state = orb_risk.create_trading_state(
@@ -84,7 +86,8 @@ trading_state = orb_risk.create_trading_state(
 
 // Handle entries using the risk management library
 [bullish_result, bearish_result] = orb_risk.handle_trade_entries_with_risk(
-     entry_signals,
+     entry_signals.bullish_signal, entry_signals.bearish_signal,
+     entry_signals.bullish_confidence, entry_signals.bearish_confidence,
      trading_state,
      enhanced_position_config,
      show_confidence
@@ -145,6 +148,3 @@ plot(in_position ? r_levels.r4_level : na, "4R Level", color=color.new(color.pur
 
 // Background color during OR period
 bgcolor(orb_range.is_in_or_period(time_config) ? color.new(color.gray, 95) : na, title="OR Period")
-
-// Use library function for info table display
-orb_display.create_simple_info_table(show_confidence, vol_multiplier, body_threshold)
