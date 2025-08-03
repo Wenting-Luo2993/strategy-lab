@@ -4,6 +4,8 @@
 // Handles position initialization, trailing stops, exits, and R-level calculations
 library("orb_risk_lib", overlay=true)
 
+import kimluo2993/orb_conditions_lib/1 as orb_conditions
+
 // @type PositionData
 // @field entry_price Entry price of the position
 // @field initial_stop Initial stop loss price
@@ -18,6 +20,41 @@ export type PositionData
     float current_trailing_stop
     float highest_r_achieved
     bool position_is_long
+
+// Enhanced PositionSizeConfig to include all trading parameters
+// @type PositionSizeConfig (Enhanced)
+// @field account_capital Total account capital
+// @field risk_percentage Risk percentage per trade (as decimal, e.g., 0.01 for 1%)
+// @field max_position_percentage Maximum position value as percentage of capital (as decimal)
+// @field min_risk_per_share Minimum risk per share threshold
+// @field cash_buffer_percentage Cash buffer to maintain (as decimal)
+// @field use_confidence_sizing Whether to use confidence-based position sizing
+// @field enable_min_risk_filter Whether to enable minimum risk filtering
+// @field label_distance Y Distance for entry labels (default 0.8 of low)
+// @field initial_stop_buffer_percentage Percentage of OR range for stop placement (default 0.6 = 60%)
+export type EnhancedPositionSizeConfig
+    float account_capital
+    float risk_percentage = 0.01
+    float max_position_percentage = 0.80
+    float min_risk_per_share = 0.0
+    float cash_buffer_percentage = 0.10
+    bool use_confidence_sizing = false
+    bool enable_min_risk_filter = true
+    float label_distance = 0.8
+    float initial_stop_buffer_percentage = 0.6
+
+// @type TradingState
+// @field first_breakout_today Whether this is first breakout today
+// @field in_position Whether already in position
+// @field current_price Current price for entry
+// @field or_high Opening Range high
+// @field or_low Opening Range low
+export type TradingState
+    bool first_breakout_today
+    bool in_position
+    float current_price
+    float or_high
+    float or_low
 
 // @type RiskLevels
 // @field r2_level 2R profit target level
@@ -56,6 +93,23 @@ export type PositionSizeResult
     bool is_capital_constrained
     bool is_risk_constrained
 
+// @type TradeExecutionResult
+// @field trade_executed Whether trade was executed
+// @field shares Number of shares traded
+// @field actual_risk Actual risk amount
+// @field entry_price Entry price
+// @field initial_stop Initial stop price
+// @field is_cap_constrained Whether position was capital constrained
+// @field is_risk_constrained Whether position was risk constrained
+export type TradeExecutionResult
+    bool trade_executed = false
+    float shares = 0.0
+    float actual_risk = 0.0
+    float entry_price = na
+    float initial_stop = na
+    bool is_cap_constrained = false
+    bool is_risk_constrained = false
+
 // @function Initialize position data when entering a trade
 // @param is_long Whether the position is long
 // @param entry_price The entry price
@@ -78,6 +132,55 @@ export initialize_position(bool is_long, float entry_price, float or_high, float
     pos.current_trailing_stop := pos.initial_stop
     pos.highest_r_achieved := 0.0
     pos
+
+// @function Calculate initial stop price based on OR levels
+// @param is_long True for long position
+// @param or_high Opening Range high
+// @param or_low Opening Range low
+// @param stop_buffer_percentage Buffer percentage (default 0.6 = 60%)
+// @returns Initial stop price
+export calculate_initial_stop_price(bool is_long, float or_high, float or_low, float stop_buffer_percentage = 0.6) =>
+    if is_long
+        or_low + (or_high - or_low) * (stop_buffer_percentage / 100.0)
+    else
+        or_high - (or_high - or_low)* (stop_buffer_percentage / 100.0)
+
+
+// @function Create enhanced position sizing configuration
+// @param account_capital Total account capital
+// @param risk_percentage Risk percentage per trade (as decimal)
+// @param max_position_percentage Maximum position percentage (as decimal)
+// @param use_confidence_sizing Whether to use confidence-based sizing
+// @param min_risk_per_share Minimum risk per share
+// @param enable_min_risk_filter Whether to enable minimum risk filter
+// @returns EnhancedPositionSizeConfig object
+export create_enhanced_position_config(float account_capital, float risk_percentage, float max_position_percentage, bool use_confidence_sizing, float min_risk_per_share, bool enable_min_risk_filter) =>
+    config = EnhancedPositionSizeConfig.new()
+    config.account_capital := account_capital
+    config.risk_percentage := risk_percentage
+    config.max_position_percentage := max_position_percentage
+    config.use_confidence_sizing := use_confidence_sizing
+    config.min_risk_per_share := min_risk_per_share
+    config.enable_min_risk_filter := enable_min_risk_filter
+    config.cash_buffer_percentage := 0.10
+    config
+
+// @function Create trading state object
+// @param first_breakout_today Whether this is first breakout today
+// @param in_position Whether already in position
+// @param current_price Current price for entry
+// @param or_high Opening Range high
+// @param or_low Opening Range low
+// @returns TradingState object
+export create_trading_state(bool first_breakout_today, bool in_position, float current_price, float or_high, float or_low) =>
+    state = TradingState.new()
+    state.first_breakout_today := first_breakout_today
+    state.in_position := in_position
+    state.current_price := current_price
+    state.or_high := or_high
+    state.or_low := or_low
+    state
+
 
 // @type Configuration for trailing stop behavior
 // @field levels Array of R levels where trailing stop adjustments occur
@@ -337,6 +440,191 @@ export create_tight_stop_config(float account_capital, float max_position_percen
     config.min_risk_per_share := min_risk_threshold
     config.cash_buffer_percentage := 0.20  // Higher buffer for tight stops
     config
+
+// @function Calculate trade position size with confidence adjustment
+// @param is_long Whether position is long
+// @param entry_price Entry price
+// @param confidence_score Confidence score (1-5)
+// @param or_high Opening Range high
+// @param or_low Opening Range low
+// @param config Enhanced position sizing configuration
+// @returns [shares, actual_risk, is_cap_constrained, is_risk_constrained]
+export calculate_trade_position_size_enhanced(bool is_long, float entry_price, int confidence_score, float or_high, float or_low, EnhancedPositionSizeConfig config) =>
+    // Calculate initial stop and risk per share
+    initial_stop = calculate_initial_stop_price(is_long, or_high, or_low, config.initial_stop_buffer_percentage)
+    risk_per_share = math.abs(entry_price - initial_stop)
+    
+    // Determine effective risk percentage
+    effective_risk_pct = config.risk_percentage
+    if config.use_confidence_sizing
+        confidence_multiplier = calculate_position_size_confidence(confidence_score) / 100.0
+        effective_risk_pct := config.risk_percentage * confidence_multiplier
+    
+    // Check minimum risk filter
+    if config.enable_min_risk_filter and risk_per_share < config.min_risk_per_share
+        [0.0, 0.0, false, true]
+    else
+        // Calculate position size
+        target_risk_amount = config.account_capital * effective_risk_pct
+        risk_based_shares = math.floor(target_risk_amount / risk_per_share)
+        
+        // Calculate capital constraints
+        available_capital = config.account_capital * (1.0 - config.cash_buffer_percentage)
+        max_position_value = available_capital * config.max_position_percentage
+        capital_constrained_shares = math.floor(max_position_value / entry_price)
+        
+        // Use the smaller of the two
+        final_shares = math.min(risk_based_shares, capital_constrained_shares)
+        actual_risk = final_shares * risk_per_share
+        is_cap_constrained = capital_constrained_shares < risk_based_shares
+        
+        [final_shares, actual_risk, is_cap_constrained, false]
+
+// @function Handle complete trade entry logic with risk management
+// @param entry_signals Entry signals from conditions library (must have bullish_signal, bearish_signal, bullish_confidence, bearish_confidence)
+// @param trading_state Current trading state
+// @param position_config Enhanced position sizing configuration
+// @param show_confidence Whether to show confidence labels
+// @returns [TradeExecutionResult, TradeExecutionResult] [bullish_result, bearish_result]
+export handle_trade_entries_with_risk(orb_conditions.EntrySignals entry_signals, TradingState trading_state, EnhancedPositionSizeConfig position_config, bool show_confidence) =>
+    
+    bullish_result = TradeExecutionResult.new()
+    bearish_result = TradeExecutionResult.new()
+    
+    // Handle bullish entry
+    if entry_signals.bullish_signal and trading_state.first_breakout_today and not trading_state.in_position
+        // Calculate position size
+        [shares_to_buy, actual_risk, is_cap_constrained, is_risk_constrained] = 
+             calculate_trade_position_size_enhanced(
+                 true, trading_state.current_price, entry_signals.bullish_confidence,
+                 trading_state.or_high, trading_state.or_low, position_config
+             )
+        
+        // Calculate initial stop
+        initial_stop = calculate_initial_stop_price(true, trading_state.or_high, trading_state.or_low, position_config.initial_stop_buffer_percentage)
+        
+        // Only enter if position size is valid and passes risk filter
+        if shares_to_buy > 0 and not is_risk_constrained
+            strategy.entry("Long", strategy.long, qty=shares_to_buy)
+            
+            // Fill result object
+            bullish_result.trade_executed := true
+            bullish_result.shares := shares_to_buy
+            bullish_result.actual_risk := actual_risk
+            bullish_result.entry_price := trading_state.current_price
+            bullish_result.initial_stop := initial_stop
+            bullish_result.is_cap_constrained := is_cap_constrained
+            bullish_result.is_risk_constrained := is_risk_constrained
+            
+            // Create enhanced label with all risk information
+            if show_confidence
+                risk_reward_ratio = math.abs(trading_state.current_price - initial_stop)
+                label_text = "LONG ENTRY" + 
+                             "\nShares: " + str.tostring(math.round(shares_to_buy, 0)) + 
+                             "\nEntry: $" + str.tostring(trading_state.current_price, "#.##") +
+                             "\nStop: $" + str.tostring(initial_stop, "#.##") +
+                             "\nRisk: $" + str.tostring(actual_risk, "#.##") +
+                             "\nR/Share: $" + str.tostring(risk_reward_ratio, "#.##") +
+                             "\nConf: " + str.tostring(entry_signals.bullish_confidence) + "/5" +
+                             (is_cap_constrained ? "\n(Cap Limited)" : "")
+                
+                label.new(bar_index, low * 0.8, label_text, 
+                         color=color.new(color.green, 20), 
+                         textcolor=color.white, 
+                         size=size.normal,
+                         style=label.style_label_up)
+        else
+            // Handle risk-constrained case
+            bullish_result.is_risk_constrained := is_risk_constrained
+            bullish_result.entry_price := trading_state.current_price
+            bullish_result.initial_stop := calculate_initial_stop_price(true, trading_state.or_high, trading_state.or_low, position_config.initial_stop_buffer_percentage)
+            
+            if is_risk_constrained and show_confidence
+                label.new(bar_index, low * 0.998, 
+                         "LONG SKIPPED\nEntry: $" + str.tostring(trading_state.current_price, "#.##") +
+                         "\nStop: $" + str.tostring(bullish_result.initial_stop, "#.##") +
+                         "\nRisk < $" + str.tostring(position_config.min_risk_per_share, "#.##"), 
+                         color=color.new(color.gray, 50), 
+                         textcolor=color.white, 
+                         size=size.small,
+                         style=label.style_label_up)
+
+    // Handle bearish entry
+    if entry_signals.bearish_signal and trading_state.first_breakout_today and not trading_state.in_position
+        // Calculate position size
+        [shares_to_sell, actual_risk, is_cap_constrained, is_risk_constrained] = 
+             calculate_trade_position_size_enhanced(
+                 false, trading_state.current_price, entry_signals.bearish_confidence,
+                 trading_state.or_high, trading_state.or_low, position_config
+             )
+        
+        // Calculate initial stop
+        initial_stop = calculate_initial_stop_price(false, trading_state.or_high, trading_state.or_low, position_config.initial_stop_buffer_percentage)
+        
+        // Only enter if position size is valid and passes risk filter
+        if shares_to_sell > 0 and not is_risk_constrained
+            strategy.entry("Short", strategy.short, qty=shares_to_sell)
+            
+            // Fill result object
+            bearish_result.trade_executed := true
+            bearish_result.shares := shares_to_sell
+            bearish_result.actual_risk := actual_risk
+            bearish_result.entry_price := trading_state.current_price
+            bearish_result.initial_stop := initial_stop
+            bearish_result.is_cap_constrained := is_cap_constrained
+            bearish_result.is_risk_constrained := is_risk_constrained
+            
+            // Create enhanced label with all risk information
+            if show_confidence
+                risk_reward_ratio = math.abs(trading_state.current_price - initial_stop)
+                label_text = "SHORT ENTRY" + 
+                             "\nShares: " + str.tostring(math.round(shares_to_sell, 0)) + 
+                             "\nEntry: $" + str.tostring(trading_state.current_price, "#.##") +
+                             "\nStop: $" + str.tostring(initial_stop, "#.##") +
+                             "\nRisk: $" + str.tostring(actual_risk, "#.##") +
+                             "\nR/Share: $" + str.tostring(risk_reward_ratio, "#.##") +
+                             "\nConf: " + str.tostring(entry_signals.bearish_confidence) + "/5" +
+                             (is_cap_constrained ? "\n(Cap Limited)" : "")
+                
+                label.new(bar_index, high * 1.002, label_text, 
+                         color=color.new(color.red, 20), 
+                         textcolor=color.white, 
+                         size=size.normal,
+                         style=label.style_label_down)
+        else
+            // Handle risk-constrained case
+            bearish_result.is_risk_constrained := is_risk_constrained
+            bearish_result.entry_price := trading_state.current_price
+            bearish_result.initial_stop := calculate_initial_stop_price(false, trading_state.or_high, trading_state.or_low, 0.6)
+            
+            if is_risk_constrained and show_confidence
+                label.new(bar_index, high * 1.002, 
+                         "SHORT SKIPPED\nEntry: $" + str.tostring(trading_state.current_price, "#.##") +
+                         "\nStop: $" + str.tostring(bearish_result.initial_stop, "#.##") +
+                         "\nRisk < $" + str.tostring(position_config.min_risk_per_share, "#.##"), 
+                         color=color.new(color.gray, 50), 
+                         textcolor=color.white, 
+                         size=size.small,
+                         style=label.style_label_down)
+    
+    [bullish_result, bearish_result]
+
+// @function Create position data from trade execution result
+// @param result Trade execution result
+// @param is_long Whether position is long
+// @returns PositionData object initialized from trade result
+export create_position_from_trade_result(TradeExecutionResult result, bool is_long) =>
+    if result.trade_executed
+        pos = PositionData.new()
+        pos.entry_price := result.entry_price
+        pos.initial_stop := result.initial_stop
+        pos.initial_risk := result.actual_risk / result.shares  // Risk per share
+        pos.current_trailing_stop := result.initial_stop
+        pos.highest_r_achieved := 0.0
+        pos.position_is_long := is_long
+        pos
+    else
+        PositionData.new()  // Empty position data
 
 // Trailing Stop Usage Examples:
 

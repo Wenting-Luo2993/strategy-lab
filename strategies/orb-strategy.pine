@@ -1,11 +1,11 @@
 //@version=6
-strategy("Simple ORB Strategy", overlay=true, margin_long=100, margin_short=100)
+strategy("Simple ORB Strategy", overlay=true, margin_long=100, margin_short=100, initial_capital=10000)
 
-// Import your libraries (you'll need to replace with your actual published library names)
+// Import your libraries
 import kimluo2993/orb_range_lib/1 as orb_range
 import kimluo2993/orb_conditions_lib/1 as orb_conditions
 import kimluo2993/orb_display_lib/2 as orb_display
-import kimluo2993/orb_risk_lib/2 as orb_risk
+import kimluo2993/orb_risk_lib/5 as orb_risk
 
 // Input parameters
 or_minutes = input.int(5, "Opening Range Minutes", minval=5, maxval=120)
@@ -15,14 +15,22 @@ vol_multiplier = input.float(2.0, "Volume Multiplier", minval=1.0, maxval=5.0)
 body_threshold = input.float(0.5, "Body Threshold", minval=0.1, maxval=1.0)
 min_confidence = input.int(2, "Minimum Confidence Score", minval=1, maxval=5)
 show_confidence = input.bool(true, "Show Confidence Labels")
+enable_ema30_exit = input.bool(false, "Should Enable EMA 30 Exit")
+
+// Position Sizing Parameters
+account_capital = input.float(10000, "Account Capital", minval=1000, maxval=1000000)
+risk_percentage = input.float(0.5, "Risk Per Trade (%)", minval=0.1, maxval=5.0) / 100
+max_position_percentage = input.float(60.0, "Max Position Size (%)", minval=10.0, maxval=95.0) / 100
+use_confidence_sizing = input.bool(false, "Use Confidence-Based Sizing")
+min_risk_per_share = input.float(0.01, "Minimum Risk Per Share ($)", minval=0.01, maxval=1.0)
+enable_min_risk_filter = input.bool(true, "Enable Minimum Risk Filter")
 
 // Initialize data structures
 var orb_range.ORData or_data = orb_range.ORData.new()
 var orb_risk.PositionData position_data = orb_risk.PositionData.new()
 var bool in_position = false
 
-// levels = array.from(2, 2.5, 3, 4.0, 5, 6.0)
-// stops = array.from(1, 1.5, 2, 3.0, 4, 5.0, 0.0)
+// Create trailing stop configuration
 var orb_risk.TrailingStopConfig trailing_stop_config = orb_risk.create_step_config(2.0, 1, 1.0) 
 
 // Create configuration objects
@@ -62,30 +70,40 @@ if orb_range.detect_new_session()
     first_breakout_today := true
     in_position := false
 
-// Handle entries
-if entry_signals.bullish_signal and first_breakout_today and not in_position
-    strategy.entry("Long", strategy.long)  // Fixed position size, no confidence-based sizing
-    position_data := orb_risk.initialize_position(true, close, or_data.or_high, or_data.or_low, 0.6)
-    in_position := true
-    first_breakout_today := false
-    or_data := orb_range.mark_breakout_occurred(or_data)
-    
-    // Create confidence label
-    if show_confidence
-        condition_ids = orb_conditions.generate_condition_ids(entry_signals, true)
-        orb_display.create_confidence_label(true, entry_signals.bullish_confidence, condition_ids)
+// ===== REFACTORED ENTRY HANDLING =====
+// Create enhanced position configuration once (in risk library)
+var orb_risk.EnhancedPositionSizeConfig enhanced_position_config = orb_risk.create_enhanced_position_config(
+     account_capital, risk_percentage, max_position_percentage, 
+     use_confidence_sizing, min_risk_per_share, enable_min_risk_filter
+ )
 
-if entry_signals.bearish_signal and first_breakout_today and not in_position
-    strategy.entry("Short", strategy.short)  // Fixed position size, no confidence-based sizing
-    position_data := orb_risk.initialize_position(false, close, or_data.or_high, or_data.or_low, 0.6)
+// Create trading state for current bar
+trading_state = orb_risk.create_trading_state(
+     first_breakout_today, in_position, close, or_data.or_high, or_data.or_low
+ )
+
+// Handle entries using the risk management library
+[bullish_result, bearish_result] = orb_risk.handle_trade_entries_with_risk(
+     entry_signals,
+     trading_state,
+     enhanced_position_config,
+     show_confidence
+ )
+
+// Update position state based on execution results
+if bullish_result.trade_executed
+    position_data := orb_risk.create_position_from_trade_result(bullish_result, true)
     in_position := true
     first_breakout_today := false
     or_data := orb_range.mark_breakout_occurred(or_data)
-    
-    // Create confidence label
-    if show_confidence
-        condition_ids = orb_conditions.generate_condition_ids(entry_signals, false)
-        orb_display.create_confidence_label(false, entry_signals.bearish_confidence, condition_ids)
+
+if bearish_result.trade_executed
+    position_data := orb_risk.create_position_from_trade_result(bearish_result, false)
+    in_position := true
+    first_breakout_today := false
+    or_data := orb_range.mark_breakout_occurred(or_data)
+
+// ===== END REFACTORED SECTION =====
 
 // Update trailing stop if in position
 if in_position
@@ -100,7 +118,7 @@ trailing_stop_exit = orb_risk.should_exit_trailing_stop(close, position_data.cur
 
 // EMA 30 exit with entry price filter
 ema30_exit = false
-if in_position
+if in_position and enable_ema30_exit
     // Only apply EMA 30 exit if entry price was above EMA 30 for longs, below EMA 30 for shorts
     if position_data.position_is_long and position_data.entry_price > ema30
         ema30_exit := orb_risk.check_ema30_exit(close, ema30, position_data.position_is_long, true)
@@ -124,15 +142,6 @@ plot(in_position ? position_data.initial_stop : na, "Initial Stop", color=color.
 plot(in_position ? r_levels.r2_level : na, "2R Level", color=color.new(color.purple, 30), linewidth=1, style=plot.style_stepline)
 plot(in_position ? r_levels.r3_level : na, "3R Level", color=color.new(color.purple, 30), linewidth=1, style=plot.style_stepline)
 plot(in_position ? r_levels.r4_level : na, "4R Level", color=color.new(color.purple, 30), linewidth=1, style=plot.style_stepline)
-
-// Plot entry line for reference
-// plot(in_position ? position_data.entry_price : na, "Entry Price", color=color.new(color.gray, 50), linewidth=1, style=plot.style_circles)
-
-// Entry signals on chart
-plotshape(entry_signals.bullish_signal, "Bullish Entry", shape.triangleup, location.belowbar, 
-          color=entry_signals.bullish_confidence >= 3 ? color.green : color.yellow, size=size.normal)
-plotshape(entry_signals.bearish_signal, "Bearish Entry", shape.triangledown, location.abovebar, 
-          color=entry_signals.bearish_confidence >= 3 ? color.red : color.yellow, size=size.normal)
 
 // Background color during OR period
 bgcolor(orb_range.is_in_or_period(time_config) ? color.new(color.gray, 95) : na, title="OR Period")
