@@ -28,6 +28,34 @@ export type RiskLevels
     float r3_level
     float r4_level
 
+// @type PositionSizeConfig
+// @field account_capital Total account capital
+// @field risk_percentage Risk percentage per trade (as decimal, e.g., 0.01 for 1%)
+// @field max_position_percentage Maximum position value as percentage of capital (as decimal)
+// @field min_risk_per_share Minimum risk per share threshold
+// @field cash_buffer_percentage Cash buffer to maintain (as decimal)
+export type PositionSizeConfig
+    float account_capital
+    float risk_percentage = 0.01
+    float max_position_percentage = 0.80
+    float min_risk_per_share = 0.0
+    float cash_buffer_percentage = 0.10
+
+// @type PositionSizeResult
+// @field shares Number of shares to buy/sell
+// @field position_value Total position value (shares * entry_price)
+// @field actual_risk Actual risk amount for this position
+// @field actual_risk_percentage Actual risk as percentage of capital
+// @field is_capital_constrained Whether position was limited by capital constraints
+// @field is_risk_constrained Whether position was limited by minimum risk threshold
+export type PositionSizeResult
+    int shares
+    float position_value
+    float actual_risk
+    float actual_risk_percentage
+    bool is_capital_constrained
+    bool is_risk_constrained
+
 // @function Initialize position data when entering a trade
 // @param is_long Whether the position is long
 // @param entry_price The entry price
@@ -154,7 +182,163 @@ export update_trailing_stop_standard(PositionData pos_data, float current_price)
     config = create_standard_config()
     update_trailing_stop(pos_data, current_price, config)
 
-// Usage Examples:
+// @function Calculate position size using risk-based approach with capital constraints
+// @param entry_price Entry price per share
+// @param risk_per_share Risk per share (entry - stop for long, stop - entry for short)
+// @param config PositionSizeConfig object with parameters
+// @returns PositionSizeResult with calculated position details
+export calculate_position_size_advanced(float entry_price, float risk_per_share, PositionSizeConfig config) =>
+    result = PositionSizeResult.new()
+    
+    if na(entry_price) or na(risk_per_share) or entry_price <= 0 or risk_per_share <= 0 or config.account_capital <= 0
+        // Invalid inputs
+        result.shares := 0
+        result.position_value := 0.0
+        result.actual_risk := 0.0
+        result.actual_risk_percentage := 0.0
+        result.is_capital_constrained := false
+        result.is_risk_constrained := false
+        result
+    else
+        // Check minimum risk threshold
+        if config.min_risk_per_share > 0 and risk_per_share < config.min_risk_per_share
+            result.shares := 0
+            result.position_value := 0.0
+            result.actual_risk := 0.0
+            result.actual_risk_percentage := 0.0
+            result.is_capital_constrained := false
+            result.is_risk_constrained := true
+            result
+        else
+            // Calculate target risk amount
+            target_risk_amount = config.account_capital * config.risk_percentage
+            
+            // Calculate risk-based shares
+            risk_based_shares = math.floor(target_risk_amount / risk_per_share)
+            
+            // Calculate maximum allowed position value
+            available_capital = config.account_capital * (1.0 - config.cash_buffer_percentage)
+            max_position_value = available_capital * config.max_position_percentage
+            
+            // Calculate capital-constrained shares
+            capital_constrained_shares = math.floor(max_position_value / entry_price)
+            
+            // Use the smaller of the two
+            final_shares = math.min(risk_based_shares, capital_constrained_shares)
+            
+            // Calculate actual values
+            result.shares := int(final_shares)
+            result.position_value := final_shares * entry_price
+            result.actual_risk := final_shares * risk_per_share
+            result.actual_risk_percentage := result.actual_risk / config.account_capital
+            result.is_capital_constrained := capital_constrained_shares < risk_based_shares
+            result.is_risk_constrained := false
+            
+            result
+
+// @function Calculate position size with fixed maximum position value
+// @param entry_price Entry price per share
+// @param risk_per_share Risk per share
+// @param account_capital Total account capital
+// @param risk_percentage Risk percentage per trade (as decimal)
+// @param max_position_value Fixed maximum position value in dollars
+// @returns PositionSizeResult
+export calculate_position_size_fixed_max(float entry_price, float risk_per_share, float account_capital, float risk_percentage, float max_position_value) =>
+    config = PositionSizeConfig.new()
+    config.account_capital := account_capital
+    config.risk_percentage := risk_percentage
+    config.max_position_percentage := max_position_value / account_capital
+    config.min_risk_per_share := 0.0
+    config.cash_buffer_percentage := 0.0
+    
+    calculate_position_size_advanced(entry_price, risk_per_share, config)
+
+// @function Calculate position size with percentage-based maximum
+// @param entry_price Entry price per share
+// @param risk_per_share Risk per share
+// @param account_capital Total account capital
+// @param risk_percentage Risk percentage per trade (as decimal)
+// @param max_position_percentage Maximum position as percentage of capital (as decimal)
+// @returns PositionSizeResult
+export calculate_position_size_percentage_max(float entry_price, float risk_per_share, float account_capital, float risk_percentage, float max_position_percentage) =>
+    config = PositionSizeConfig.new()
+    config.account_capital := account_capital
+    config.risk_percentage := risk_percentage
+    config.max_position_percentage := max_position_percentage
+    config.min_risk_per_share := 0.0
+    config.cash_buffer_percentage := 0.0
+    
+    calculate_position_size_advanced(entry_price, risk_per_share, config)
+
+// @function Calculate position size with minimum risk per share filter
+// @param entry_price Entry price per share
+// @param risk_per_share Risk per share
+// @param account_capital Total account capital
+// @param risk_percentage Risk percentage per trade (as decimal)
+// @param min_risk_per_share Minimum risk per share threshold (trades below this are skipped)
+// @returns PositionSizeResult
+export calculate_position_size_min_risk(float entry_price, float risk_per_share, float account_capital, float risk_percentage, float min_risk_per_share) =>
+    config = PositionSizeConfig.new()
+    config.account_capital := account_capital
+    config.risk_percentage := risk_percentage
+    config.max_position_percentage := 0.90
+    config.min_risk_per_share := min_risk_per_share
+    config.cash_buffer_percentage := 0.10
+    
+    calculate_position_size_advanced(entry_price, risk_per_share, config)
+
+// @function Simple position size calculation (basic risk-based)
+// @param entry_price Entry price per share
+// @param risk_per_share Risk per share
+// @param account_capital Total account capital
+// @param risk_percentage Risk percentage per trade (as decimal, e.g., 0.01 for 1%)
+// @returns Number of shares (integer)
+export calculate_position_size_simple(float entry_price, float risk_per_share, float account_capital, float risk_percentage) =>
+    if na(entry_price) or na(risk_per_share) or entry_price <= 0 or risk_per_share <= 0 or account_capital <= 0
+        0
+    else
+        target_risk = account_capital * risk_percentage
+        shares = math.floor(target_risk / risk_per_share)
+        int(shares)
+
+// @function Calculate position size based on confidence score
+// @param confidence_score Confidence score (1-4)
+// @returns Position size percentage
+export calculate_position_size_confidence(int confidence_score) =>
+    switch confidence_score
+        4 => 100
+        3 => 75
+        2 => 50
+        1 => 25
+        => 25  // Default for scores below 1
+
+// @function Create default position sizing configuration
+// @param account_capital Total account capital
+// @returns PositionSizeConfig with sensible defaults
+export create_default_position_config(float account_capital) =>
+    config = PositionSizeConfig.new()
+    config.account_capital := account_capital
+    config.risk_percentage := 0.01  // 1%
+    config.max_position_percentage := 0.80  // 80%
+    config.min_risk_per_share := 0.0  // No minimum
+    config.cash_buffer_percentage := 0.10  // 10%
+    config
+
+// @function Create position sizing configuration for tight stops
+// @param account_capital Total account capital
+// @param max_position_percentage Maximum position percentage (lower for tight stops)
+// @param min_risk_threshold Minimum risk per share to accept trade
+// @returns PositionSizeConfig optimized for tight stop scenarios
+export create_tight_stop_config(float account_capital, float max_position_percentage = 0.50, float min_risk_threshold = 0.05) =>
+    config = PositionSizeConfig.new()
+    config.account_capital := account_capital
+    config.risk_percentage := 0.005  // 0.5% for tight stops
+    config.max_position_percentage := max_position_percentage
+    config.min_risk_per_share := min_risk_threshold
+    config.cash_buffer_percentage := 0.20  // Higher buffer for tight stops
+    config
+
+// Trailing Stop Usage Examples:
 
 // Example 1: Using the original system
 // config = create_standard_config()
@@ -181,6 +365,39 @@ export update_trailing_stop_standard(PositionData pos_data, float current_price)
 // Example 5: Simple dynamic trailing (starts at 3R, steps every 0.5R, trails 1R behind)
 // config = create_step_config(3.0, 0.5, 1.0)  
 // pos_data := update_trailing_stop(pos_data, close, config)
+
+// Position Sizing Examples:
+
+// Example 1: Simple calculation
+// shares = calculate_position_size_simple(close, 0.50, 10000, 0.01)
+
+// Example 2: With fixed maximum position value
+// result = calculate_position_size_fixed_max(close, 0.25, 10000, 0.01, 8000)
+// shares = result.shares
+
+// Example 3: With percentage-based maximum
+// result = calculate_position_size_percentage_max(close, 0.10, 10000, 0.01, 0.75)
+// shares = result.shares
+
+// Example 4: With minimum risk filter (skip trades with risk < $0.10)
+// result = calculate_position_size_min_risk(close, 0.03, 10000, 0.01, 0.10)
+// if result.shares > 0
+//     // Take the trade
+//     shares = result.shares
+// else
+//     // Skip trade due to minimum risk threshold
+
+// Example 5: Advanced configuration
+// config = create_default_position_config(10000)
+// config.risk_percentage := 0.015  // 1.5%
+// config.max_position_percentage := 0.70  // 70%
+// result = calculate_position_size_advanced(close, 0.20, config)
+
+// Example 6: Tight stop configuration
+// config = create_tight_stop_config(10000, 0.40, 0.05)
+// result = calculate_position_size_advanced(close, 0.02, config)
+// if not result.is_risk_constrained
+//     shares = result.shares
 
 // @function Check if position should be closed due to day trading rules
 // @param current_hour Current hour
@@ -241,17 +458,6 @@ export get_current_r_multiple(PositionData pos_data, float current_price) =>
         pos_data.position_is_long ? 
              (current_price - pos_data.entry_price) / pos_data.initial_risk :
              (pos_data.entry_price - current_price) / pos_data.initial_risk
-
-// @function Calculate position size based on confidence score
-// @param confidence_score Confidence score (1-4)
-// @returns Position size percentage
-export calculate_position_size(int confidence_score) =>
-    switch confidence_score
-        4 => 100
-        3 => 75
-        2 => 50
-        1 => 25
-        => 25  // Default for scores below 1
 
 // @function Check if trailing stop should trigger exit
 // @param current_price Current market price
