@@ -1,1 +1,1 @@
-# pine-strategy-lab
+# strategy-lab
