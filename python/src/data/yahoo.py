@@ -9,7 +9,7 @@ class YahooDataLoader(DataLoader):
 
     def fetch(self, symbol: str, start: str, end: str):
         df = yf.download(symbol, start=start, end=end, interval=self.interval)
-        df.reset_index(inplace=True)
+        # df.reset_index(inplace=True)
         df.rename(columns={
             "Date": "datetime",
             "Open": "open",
