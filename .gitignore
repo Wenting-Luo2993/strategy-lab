@@ -15,6 +15,9 @@ ENV/
 # Jupyter
 .ipynb_checkpoints/
 
+# Data cache
+data_cache/
+
 # Logs
 *.log
 

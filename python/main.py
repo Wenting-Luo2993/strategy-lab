@@ -1,10 +1,11 @@
-from src.data import DataLoaderFactory, DataSource, Timeframe
+from src.data import DataLoaderFactory, DataSource, Timeframe, CacheDataLoader
 from src.indicators import add_basic_indicators, calculate_orb_levels
 
 def main():
     # Example: Yahoo loader
     loader = DataLoaderFactory.create(DataSource.YAHOO, interval=Timeframe.MIN_5.value)
-    df = loader.fetch("AAPL", start="2025-08-01", end="2025-08-05")
+    cachedLoader = CacheDataLoader(loader)  # Wrap with cache
+    df = cachedLoader.fetch("AAPL", timeframe=Timeframe.MIN_5.value, start="2025-08-01", end="2025-08-05")
     print("Raw data fetched:")
     print(df.head())
     df = add_basic_indicators(df)
