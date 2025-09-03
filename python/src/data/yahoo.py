@@ -18,4 +18,5 @@ class YahooDataLoader(DataLoader):
             "Close": "close",
             "Volume": "volume"
         }, inplace=True)
+        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         return df
