@@ -10,13 +10,6 @@ class YahooDataLoader(DataLoader):
     def fetch(self, symbol: str, start: str, end: str):
         df = yf.download(symbol, start=start, end=end, interval=self.interval)
         # df.reset_index(inplace=True)
-        df.rename(columns={
-            "Date": "datetime",
-            "Open": "open",
-            "High": "high",
-            "Low": "low",
-            "Close": "close",
-            "Volume": "volume"
-        }, inplace=True)
+        df.columns = [c.lower() for c in df.columns]
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         return df

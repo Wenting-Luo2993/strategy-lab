@@ -7,6 +7,7 @@ def add_basic_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     # Appends new columns in-place
     df.ta.sma(length=20, append=True)   # adds "SMA_20"
+    df.ta.sma(length=30, append=True)   # adds "SMA_30"
     df.ta.sma(length=50, append=True)   # adds "SMA_50"
     df.ta.rsi(length=14, append=True)   # adds "RSI_14"
     df.ta.atr(length=14, append=True)   # adds "ATRr_14"

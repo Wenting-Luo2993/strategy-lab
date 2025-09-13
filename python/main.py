@@ -1,5 +1,6 @@
 from src.data import DataLoaderFactory, DataSource, Timeframe, CacheDataLoader
 from src.indicators import add_basic_indicators, calculate_orb_levels
+from src.visualization import plot_candlestick
 
 def main():
     # Example: Yahoo loader
@@ -13,10 +14,12 @@ def main():
     df = add_basic_indicators(df)
     print("Data with technical indicators:")
     print(df.tail())
+
+    plot_candlestick(df, indicators=["SMA_20", "SMA_50"], title="AAPL with SMA20/50")
     
     df = calculate_orb_levels(df, bars=1)  # First 5 minutes
     print("Data with ORB levels:")
-    print(df['ORB_Low'].head())
+    print(df.tail())
     print("Main function executed successfully.")
 
 if __name__ == "__main__":
