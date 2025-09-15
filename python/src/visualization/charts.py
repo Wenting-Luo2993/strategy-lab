@@ -1,6 +1,6 @@
 import mplfinance as mpf
 
-def plot_candlestick(df, indicators=None, title="Candlestick Chart"):
+def plot_candlestick(df, indicators=None, moreplots=None, title="Candlestick Chart"):
     """
     Plots a candlestick chart with optional indicator overlays.
     
@@ -13,12 +13,13 @@ def plot_candlestick(df, indicators=None, title="Candlestick Chart"):
         indicators = []
 
     # Build list of addplots
-    addplots = []
+    addplots = moreplots if moreplots else []
     for ind in indicators:
         if ind in df.columns:
+            # print(f"Adding indicator to plot: {ind}. Number of NaNs: ", df[ind].isna().sum())
             addplots.append(mpf.make_addplot(df[ind], panel=0, ylabel=ind))
 
-    mpf.plot(
+    return mpf.plot(
         df,
         type="candle",
         style="yahoo",

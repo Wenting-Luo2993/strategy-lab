@@ -5,14 +5,13 @@ from src.strategies.orb import ORBStrategy
 from src.backtester.engine import Backtester
 
 def main():
-
     loader = DataLoaderFactory.create(DataSource.YAHOO, interval=Timeframe.MIN_5.value)
     cachedLoader = CacheDataLoader(loader)  # Wrap with cache
     df = cachedLoader.fetch("AAPL", timeframe=Timeframe.MIN_5.value, start="2025-08-01", end="2025-08-05")
 
     df = add_basic_indicators(df)
 
-    df = calculate_orb_levels(df, bars=1)  # First 5 minutes
+    df = calculate_orb_levels(df)  # First 5 minutes
     print("Data with ORB levels:")
     print(df.tail())
 
@@ -24,10 +23,11 @@ def main():
     backtester = Backtester(initial_capital=10000)
     result = backtester.run(df, signals)
 
-    print(df.tail())
+    result
+    print(result["ORB_High"].tail())
 
     # 4. Visualize equity curve vs. price
-    plot_candlestick(result, indicators=["SMA_20", "SMA_50"], title="AAPL ORB Backtest")
+    # plot_candlestick(result, indicators=["SMA_20", "SMA_50",], title="AAPL ORB Backtest")
 
     print("Main function executed successfully.")
 

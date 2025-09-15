@@ -9,15 +9,16 @@ def add_basic_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df.ta.sma(length=20, append=True)   # adds "SMA_20"
     df.ta.sma(length=30, append=True)   # adds "SMA_30"
     df.ta.sma(length=50, append=True)   # adds "SMA_50"
+    df.ta.sma(length=200, append=True)   # adds "SMA_200"
     df.ta.rsi(length=14, append=True)   # adds "RSI_14"
     df.ta.atr(length=14, append=True)   # adds "ATRr_14"
 
     # Print summary for SMA20
-    sma20 = df["SMA_20"]
-    print(
-        f"SMA20 -> non-null count: {sma20.notna().sum()}, "
-        f"total rows: {len(sma20)}, "
-        f"average: {sma20.mean():.2f}"
-    )
+    # sma20 = df["SMA_20"]
+    # print(
+    #     f"SMA20 -> non-null count: {sma20.notna().sum()}, "
+    #     f"total rows: {len(sma20)}, "
+    #     f"average: {sma20.mean():.2f}"
+    # )
 
     return df
