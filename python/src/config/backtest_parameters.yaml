@@ -1,0 +1,27 @@
+orb:
+  timeframe: ["5m", "15m", "30m"]
+  start_time: ["09:30"]
+
+entry:
+  volume_filter: [1.0, 1.2, 1.5]   # relative volume threshold
+  trend_filter: [true, false]
+  body_size: [0.1, 0.2, 0.5, 0.6, 0.8, 1]  # in percentage of breakout candle size
+
+risk:
+  stop_loss:
+    - type: "percent"
+      values: [0.5, 1.0, 2.0]
+    - type: "atr"
+      values: [1.0, 1.5, 2.0]
+
+exit:
+  take_profit:
+    - type: "atr"
+      values: [1.0, 2.0, 3.0]
+    - type: "percent"
+      values: [1.0, 2.0]
+  eod_exit: [true, false]
+
+trade_management:
+  max_trades_per_day: [1, 2, 3]
+  position_sizing: ["fixed", "risk_percent"]

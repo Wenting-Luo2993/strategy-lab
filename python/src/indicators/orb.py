@@ -49,7 +49,7 @@ def calculate_orb_levels(
 
     print(f"Processing {len(df.groupby('date'))} trading days for ORB calculation.")
     for date, group in df.groupby("date"):
-        print(f"Date: {date}, Bars: {len(group)}")
+        # print(f"Date: {date}, Bars: {len(group)}")
         group_times = pd.to_datetime(group[time_col]) if time_col else group.index
         day_start = pd.Timestamp(f"{date} {start_time}", tz=group_times.tz if hasattr(group_times, 'tz') else None)
         day_end = day_start + pd.Timedelta(minutes=duration_minutes)
@@ -58,30 +58,29 @@ def calculate_orb_levels(
         if not opening_bars.empty:
             high = opening_bars["high"].max()
             low = opening_bars["low"].min()
-            print(f"ORB window found: High={high}, Low={low}")
+            # print(f"ORB window found: High={high}, Low={low}")
         else:
             high = low = None
-            print(f"No ORB window found for {date}")
+            # print(f"No ORB window found for {date}")
         orb_high.extend([high] * len(group))
         orb_low.extend([low] * len(group))
         orb_start.extend([day_start] * len(group))
         orb_end.extend([day_end] * len(group))
 
         flags = get_orb_breakout_flags(group, high, low, body_pct)
-        print(f"Breakout flags for {date}: {flags}")
+        # print(f"Breakout flags for {date}: {flags}")
         breakout_flags.extend(flags)
 
     df["ORB_High"] = orb_high
     df["ORB_Low"] = orb_low
     df["ORB_Range"] = df["ORB_High"] - df["ORB_Low"]
-    print(f"ORB_Breakout flags length: {len(breakout_flags)}, DataFrame length: {len(df)}")
+    # print(f"ORB_Breakout flags length: {len(breakout_flags)}, DataFrame length: {len(df)}")
     df["ORB_Breakout"] = breakout_flags
     if "ORB_Breakout" in df.columns:
         print("ORB_Breakout column successfully added to DataFrame.")
     else:
         print("ORB_Breakout column NOT added to DataFrame!")
     df.drop(["date", "time"], axis=1, inplace=True)
-    print(f"Final DataFrame columns: {df.columns}")
     return df
 
 def get_orb_breakout_flags(group: pd.DataFrame, high: float, low: float, body_pct: float):

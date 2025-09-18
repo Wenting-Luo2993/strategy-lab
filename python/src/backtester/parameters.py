@@ -1,0 +1,75 @@
+#%%
+import itertools
+import os
+import yaml
+
+from dataclasses import dataclass
+
+@dataclass
+class RiskConfig:
+    stop_loss_type: str
+    stop_loss_value: float
+    take_profit_type: str
+    take_profit_value: float
+
+@dataclass
+class StrategyConfig:
+    orb_timeframe: str
+    start_time: str
+    entry_volume_filter: float
+    risk: RiskConfig
+    eod_exit: bool
+
+def load_strategy_parameters():
+
+    config_path = os.path.join(os.path.dirname(__file__), "../config/backtest_parameters.yaml")
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    # Pre-process nested parameters
+    take_profit_combos = []
+    for tp_config in config["exit"]["take_profit"]:
+        for value in tp_config["values"]:
+            take_profit_combos.append({"type": tp_config["type"], "value": value})
+
+    stop_loss_combos = []
+    for sl_config in config["risk"]["stop_loss"]:
+        for value in sl_config["values"]:
+            stop_loss_combos.append({"type": sl_config["type"], "value": value})
+
+    # Flatten parameters for grid search
+    param_grid = {
+        "timeframe": config["orb"]["timeframe"],
+        "start_time": config["orb"]["start_time"],
+        "volume_filter": config["entry"]["volume_filter"],
+        "trend_filter": config["entry"]["trend_filter"],
+        "stop_loss": stop_loss_combos,
+        "take_profit": take_profit_combos,
+        "eod_exit": [True] # config["exit"]["eod_exit"]
+    }
+
+    # Create all parameter combos
+    all_combinations = list(itertools.product(*param_grid.values()))
+
+    configs = []
+    for combo in all_combinations:
+        params = dict(zip(param_grid.keys(), combo))
+        config = StrategyConfig(
+            orb_timeframe=params["timeframe"],
+            start_time=params["start_time"],
+            entry_volume_filter=params["volume_filter"],
+            risk=RiskConfig(
+                stop_loss_type=params["stop_loss"]["type"],
+                stop_loss_value=params["stop_loss"]["value"],
+                take_profit_type=params["take_profit"]["type"],
+                take_profit_value=params["take_profit"]["value"]
+            ),
+            eod_exit=params["eod_exit"]
+        )
+        configs.append(config)
+
+    print(f"Generated {len(configs)} parameter configurations.")
+    print("Sample first configuration:", configs[0])
+    print("Sample last configuration:", configs[-1])
+    return configs
+# %%

@@ -1,0 +1,139 @@
+# tickers.yaml
+# Backtest universe for ORB strategy
+# Grouped by sector and price range
+
+# -------------------
+# Technology
+# -------------------
+tech_high:
+  - AAPL
+  - MSFT
+  - AMZN
+  - GOOGL
+  - META
+  - NVDA
+  - TSLA
+
+tech_mid:
+  - AMD
+  - INTC
+  - MU
+  - SNAP
+  - PYPL
+  - SQ
+  - UBER
+  - LYFT
+  - SHOP
+  - CRWD
+
+# -------------------
+# Financials
+# -------------------
+financials_high:
+  - JPM
+  - GS
+  - MS
+  - BLK
+
+financials_mid:
+  - C
+  - BAC
+  - WFC
+  - COIN
+  - SOFI
+  - SCHW
+  - AXP
+
+# -------------------
+# Healthcare
+# -------------------
+healthcare_high:
+  - JNJ
+  - UNH
+  - ABBV
+  - LLY
+
+healthcare_mid:
+  - PFE
+  - BMY
+  - VRTX
+  - REGN
+  - ZBH
+  - MRNA
+
+# -------------------
+# Energy & Materials
+# -------------------
+energy_high:
+  - XOM
+  - CVX
+  - SLB
+  - COP
+
+energy_mid:
+  - DVN
+  - MRO
+  - APA
+  - FCX
+  - NEM
+
+# -------------------
+# Industrials
+# -------------------
+industrials_high:
+  - CAT
+  - DE
+  - NOC
+  - RTX
+
+industrials_mid:
+  - GE
+  - F
+  - GM
+  - BA
+
+# -------------------
+# Consumer / Retail
+# -------------------
+consumer_high:
+  - NKE
+  - TGT
+  - MCD
+  - DIS
+  - HD
+  - COST
+
+consumer_mid:
+  - SBUX
+  - RCL
+  - CCL
+  - KO
+  - PEP
+
+# -------------------
+# Momentum / Meme
+# -------------------
+momentum:
+  - GME
+  - AMC
+  - PLTR
+  - HOOD
+  # - BBBYQ    # (bankruptcy meme, can skip if no data)
+  - LCID
+  - RIVN
+  - NKLA
+  - CLOV
+  - TLRY
+
+# -------------------
+# ETFs (Benchmark)
+# -------------------
+etfs:
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - VIXY
+  - XLF
+  - XLE
+  - XLK
