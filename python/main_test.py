@@ -42,7 +42,7 @@ apds = [
 print("Buy signals:", buy_markers.dropna().head())
 print("Sell signals:", sell_markers.dropna().head())
 
-plot_candlestick(result, indicators=["SMA_20", "ATRr_14", "ORB_High", "ORB_Low"], moreplots=apds, title="AAPL ORB Backtest")
+plot_candlestick(result, indicators=["SMA_20", "ORB_High", "ORB_Low", "equity"], moreplots=apds, title="AAPL ORB Backtest")
 
 
 print("Main function executed successfully.")

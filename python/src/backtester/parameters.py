@@ -1,9 +1,14 @@
-#%%
 import itertools
 import os
 import yaml
 
 from dataclasses import dataclass
+
+@dataclass
+class OrbConfig:
+    timeframe: str
+    start_time: str
+    body_breakout_percentage: float
 
 @dataclass
 class RiskConfig:
@@ -14,8 +19,7 @@ class RiskConfig:
 
 @dataclass
 class StrategyConfig:
-    orb_timeframe: str
-    start_time: str
+    orb_config: OrbConfig
     entry_volume_filter: float
     risk: RiskConfig
     eod_exit: bool
@@ -41,6 +45,7 @@ def load_strategy_parameters():
     param_grid = {
         "timeframe": config["orb"]["timeframe"],
         "start_time": config["orb"]["start_time"],
+        "body_breakout_percentage": config["orb"]["body_breakout_percentage"],
         "volume_filter": config["entry"]["volume_filter"],
         "trend_filter": config["entry"]["trend_filter"],
         "stop_loss": stop_loss_combos,
@@ -55,8 +60,11 @@ def load_strategy_parameters():
     for combo in all_combinations:
         params = dict(zip(param_grid.keys(), combo))
         config = StrategyConfig(
-            orb_timeframe=params["timeframe"],
-            start_time=params["start_time"],
+            orb_config=OrbConfig(
+                timeframe=params["timeframe"], 
+                start_time=params["start_time"],
+                body_breakout_percentage=params["body_breakout_percentage"]
+            ),
             entry_volume_filter=params["volume_filter"],
             risk=RiskConfig(
                 stop_loss_type=params["stop_loss"]["type"],
@@ -72,4 +80,3 @@ def load_strategy_parameters():
     print("Sample first configuration:", configs[0])
     print("Sample last configuration:", configs[-1])
     return configs
-# %%
