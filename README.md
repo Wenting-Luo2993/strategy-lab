@@ -15,7 +15,7 @@ Strategy Lab is a toolkit for developing, backtesting, and executing trading str
   - `src/indicators/` — Technical indicators and ORB (Opening Range Breakout) logic.
   - `src/strategies/` — Strategy base classes and ORB strategy implementation.
   - `src/visualization/` — Charting and result visualization.
-  - `main.py` / `main_test.py` — Example: run a backtest from end-to-end.
+  - `main.py` — Example: run a backtest from end-to-end.
 
 - `pine/` — Pine Script libraries and strategies for TradingView.
   - `libraries/` — Modular Pine Script libraries for display, entry, range, and risk management.
