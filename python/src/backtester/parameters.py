@@ -16,6 +16,7 @@ class RiskConfig:
     stop_loss_value: float
     take_profit_type: str
     take_profit_value: float
+    risk_per_trade: float = 0.01  # Default to 1% if not specified
 
 @dataclass
 class StrategyConfig:
@@ -50,7 +51,8 @@ def load_strategy_parameters():
         "trend_filter": config["entry"]["trend_filter"],
         "stop_loss": stop_loss_combos,
         "take_profit": take_profit_combos,
-        "eod_exit": [True] # config["exit"]["eod_exit"]
+        "risk_per_trade": config["risk"]["risk_per_trade"],
+        "eod_exit": [True]  # config["exit"]["eod_exit"]
     }
 
     # Create all parameter combos
@@ -70,7 +72,8 @@ def load_strategy_parameters():
                 stop_loss_type=params["stop_loss"]["type"],
                 stop_loss_value=params["stop_loss"]["value"],
                 take_profit_type=params["take_profit"]["type"],
-                take_profit_value=params["take_profit"]["value"]
+                take_profit_value=params["take_profit"]["value"],
+                risk_per_trade=params["risk_per_trade"]
             ),
             eod_exit=params["eod_exit"]
         )
