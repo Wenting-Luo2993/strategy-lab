@@ -1,0 +1,9 @@
+# Core scientific and data packages
+pandas
+PyYAML
+matplotlib
+mplfinance
+yfinance
+pandas_ta
+# For interactive work
+IPython
