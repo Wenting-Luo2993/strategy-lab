@@ -25,7 +25,7 @@ class StrategyConfig:
     risk: RiskConfig
     eod_exit: bool
 
-def load_strategy_parameters():
+def load_strategy_parameters() -> list[StrategyConfig]:
 
     config_path = os.path.join(os.path.dirname(__file__), "../config/backtest_parameters.yaml")
     with open(config_path, "r") as f:
