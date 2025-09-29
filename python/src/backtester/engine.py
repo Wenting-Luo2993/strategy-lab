@@ -1,4 +1,5 @@
 import pandas as pd
+from ..config.columns import TradeColumns
 
 
 class BacktestEngine:
@@ -34,10 +35,10 @@ class BacktestEngine:
             # Entry
             if signal == 1 and position is None:
                 position = {
-                    "entry_idx": i,
-                    "entry_time": self.data.index[i],
-                    "entry_price": price,
-                    "size": self.config.get("trade_size", 1)
+                    TradeColumns.ENTRY_IDX.value: i,
+                    TradeColumns.ENTRY_TIME.value: self.data.index[i],
+                    TradeColumns.ENTRY_PRICE.value: price,
+                    TradeColumns.SIZE.value: self.config.get("trade_size", 1)
                 }
                 position = self.risk_manager.apply(position, self.data, i, self.config)
 
@@ -46,18 +47,18 @@ class BacktestEngine:
                 exit_price = price
                 trade = {
                     **position,
-                    "exit_idx": i,
-                    "exit_time": self.data.index[i],
-                    "exit_price": exit_price,
-                    "pnl": (exit_price - position["entry_price"]) * position["size"]
+                    TradeColumns.EXIT_IDX.value: i,
+                    TradeColumns.EXIT_TIME.value: self.data.index[i],
+                    TradeColumns.EXIT_PRICE.value: exit_price,
+                    TradeColumns.PNL.value: (exit_price - position[TradeColumns.ENTRY_PRICE.value]) * position[TradeColumns.SIZE.value]
                 }
                 self.trades.append(trade)
                 position = None
 
             # Check stop loss/take profit if in position
             elif position is not None:
-                stop_loss = position.get("stop_loss")
-                take_profit = position.get("take_profit")
+                stop_loss = position.get(TradeColumns.STOP_LOSS.value)
+                take_profit = position.get(TradeColumns.TAKE_PROFIT.value)
                 low = self.data["low"].iloc[i]
                 high = self.data["high"].iloc[i]
                 exit_reason = None
@@ -73,11 +74,11 @@ class BacktestEngine:
                 if exit_price is not None:
                     trade = {
                         **position,
-                        "exit_idx": i,
-                        "exit_time": self.data.index[i],
-                        "exit_price": exit_price,
-                        "exit_reason": exit_reason,
-                        "pnl": (exit_price - position["entry_price"]) * position["size"]
+                        TradeColumns.EXIT_IDX.value: i,
+                        TradeColumns.EXIT_TIME.value: self.data.index[i],
+                        TradeColumns.EXIT_PRICE.value: exit_price,
+                        TradeColumns.EXIT_REASON.value: exit_reason,
+                        TradeColumns.PNL.value: (exit_price - position[TradeColumns.ENTRY_PRICE.value]) * position[TradeColumns.SIZE.value]
                     }
                     self.trades.append(trade)
                     position = None
@@ -87,11 +88,11 @@ class BacktestEngine:
             exit_price = self.data["close"].iloc[-1]
             trade = {
                 **position,
-                "exit_idx": len(self.data) - 1,
-                "exit_time": self.data.index[-1],
-                "exit_price": exit_price,
-                "exit_reason": "end_of_data",
-                "pnl": (exit_price - position["entry_price"]) * position["size"]
+                TradeColumns.EXIT_IDX.value: len(self.data) - 1,
+                TradeColumns.EXIT_TIME.value: self.data.index[-1],
+                TradeColumns.EXIT_PRICE.value: exit_price,
+                TradeColumns.EXIT_REASON.value: "end_of_data",
+                TradeColumns.PNL.value: (exit_price - position[TradeColumns.ENTRY_PRICE.value]) * position[TradeColumns.SIZE.value]
             }
             self.trades.append(trade)
 
