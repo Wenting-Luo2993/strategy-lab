@@ -1,42 +1,98 @@
 import pandas as pd
 
-class Backtester:
-    def __init__(self, initial_capital=10000):
-        self.initial_capital = initial_capital
 
-    def run(self, df: pd.DataFrame, signals: pd.Series) -> pd.DataFrame:
+class BacktestEngine:
+    """
+    Modular backtest engine for simulating trading strategies.
+
+    Args:
+        strategy: Object with generate_signal(df, i) -> int (+1=buy, -1=sell, 0=hold)
+        risk_manager: Object with apply(trade, df, i, config) -> dict (sets stop loss/take profit)
+        data (pd.DataFrame): Historical OHLCV data.
+        config (dict): Configuration parameters.
+    """
+
+    def __init__(self, strategy, risk_manager, data: pd.DataFrame, config: dict):
+        self.strategy = strategy
+        self.risk_manager = risk_manager
+        self.data = data
+        self.config = config
+        self.trades = []
+
+    def run(self) -> list:
         """
-        Runs a basic backtest (long-only for now).
-        
-        Args:
-            df (pd.DataFrame): OHLCV data with 'close'
-            signals (pd.Series): trading signals (+1 = buy, -1 = sell, 0 = hold)
+        Runs the backtest loop over the data.
 
         Returns:
-            pd.DataFrame with added 'equity' column
+            List of trade dictionaries with entry/exit info and PnL.
         """
-        cash = self.initial_capital
-        position = 0
-        equity_curve = []
+        position = None  # None or dict with entry info
+        for i in range(len(self.data)):
+            signal = self.strategy.generate_signal(self.data, i)
+            price = self.data["close"].iloc[i]
 
-        for i in range(len(df)):
-            signal = signals.iloc[i]
-            price = df["close"].iloc[i]
+            # Entry
+            if signal == 1 and position is None:
+                position = {
+                    "entry_idx": i,
+                    "entry_time": self.data.index[i],
+                    "entry_price": price,
+                    "size": self.config.get("trade_size", 1)
+                }
+                position = self.risk_manager.apply(position, self.data, i, self.config)
 
-            # Buy
-            if signal == 1 and cash > 0:
-                position = cash / price
-                cash = 0
+            # Exit
+            elif signal == -1 and position is not None:
+                exit_price = price
+                trade = {
+                    **position,
+                    "exit_idx": i,
+                    "exit_time": self.data.index[i],
+                    "exit_price": exit_price,
+                    "pnl": (exit_price - position["entry_price"]) * position["size"]
+                }
+                self.trades.append(trade)
+                position = None
 
-            # Sell
-            elif signal == -1 and position > 0:
-                cash = position * price
-                position = 0
+            # Check stop loss/take profit if in position
+            elif position is not None:
+                stop_loss = position.get("stop_loss")
+                take_profit = position.get("take_profit")
+                low = self.data["low"].iloc[i]
+                high = self.data["high"].iloc[i]
+                exit_reason = None
+                exit_price = None
 
-            # Track equity
-            equity = cash + position * price
-            equity_curve.append(equity)
+                if stop_loss is not None and low <= stop_loss:
+                    exit_price = stop_loss
+                    exit_reason = "stop_loss"
+                elif take_profit is not None and high >= take_profit:
+                    exit_price = take_profit
+                    exit_reason = "take_profit"
 
-        df = df.copy()
-        df["equity"] = equity_curve
-        return df
+                if exit_price is not None:
+                    trade = {
+                        **position,
+                        "exit_idx": i,
+                        "exit_time": self.data.index[i],
+                        "exit_price": exit_price,
+                        "exit_reason": exit_reason,
+                        "pnl": (exit_price - position["entry_price"]) * position["size"]
+                    }
+                    self.trades.append(trade)
+                    position = None
+
+        # If still in position at end, close at last price
+        if position is not None:
+            exit_price = self.data["close"].iloc[-1]
+            trade = {
+                **position,
+                "exit_idx": len(self.data) - 1,
+                "exit_time": self.data.index[-1],
+                "exit_price": exit_price,
+                "exit_reason": "end_of_data",
+                "pnl": (exit_price - position["entry_price"]) * position["size"]
+            }
+            self.trades.append(trade)
+
+        return self.trades
