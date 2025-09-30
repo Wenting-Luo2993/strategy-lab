@@ -41,13 +41,24 @@ class BacktestEngine:
 
             # Entry
             if signal == 1 and position is None:
+                # Create a signal Series with the required structure for risk_manager.apply()
+                signal_series = pd.Series({
+                    'entry_price': price,
+                    'signal': signal,
+                    'index': i
+                })
+                # Apply risk management
+                risk_result = self.risk_manager.apply(signal_series, self.data)
+                
+                # Create position dictionary with trade information
                 position = {
                     TradeColumns.ENTRY_IDX.value: i,
                     TradeColumns.ENTRY_TIME.value: self.data.index[i],
                     TradeColumns.ENTRY_PRICE.value: price,
-                    TradeColumns.SIZE.value: self.config.trade_size
+                    TradeColumns.SIZE.value: self.config.risk.risk_per_trade,
+                    TradeColumns.STOP_LOSS.value: risk_result.get('stop_loss'),
+                    TradeColumns.TAKE_PROFIT.value: risk_result.get('take_profit')
                 }
-                position = self.risk_manager.apply(position, self.data, i, self.config)
 
             # Exit
             elif signal == -1 and position is not None:

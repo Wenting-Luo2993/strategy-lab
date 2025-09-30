@@ -2,7 +2,7 @@
 FixedATRStop: Risk management strategy using fixed ATR-based stops and targets.
 """
 import pandas as pd
-from typing import Any, Dict
+from typing import Dict
 from .base import RiskManagement
 from ..backtester.parameters import RiskConfig
 
@@ -34,9 +34,9 @@ class FixedATRStop(RiskManagement):
             dict: {'entry': entry_price, 'stop_loss': stop, 'take_profit': tp}
         """
         entry_price = signal['entry_price']
-        idx = signal['index']
+        idx = int(signal['index'])
         direction = signal['signal']
-        atr = data.at[idx, self.atr_col]
+        atr = data.iloc[idx][self.atr_col]
         stop_multiple = self.config.stop_loss_value
         tp_multiple = self.config.take_profit_value
         if direction == 1:

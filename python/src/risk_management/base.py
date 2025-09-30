@@ -23,14 +23,14 @@ class RiskManagement(ABC):
         self.config = config
 
     @abstractmethod
-    def apply(self, signal: pd.Series, data: Any) -> pd.Series:
+    def apply(self, signal: pd.Series, data: pd.DataFrame) -> pd.Series:
         """
         Apply stop loss and take profit rules to a trade signal.
         Must be implemented by subclasses.
         
         Args:
             signal (dict): Trade signal to modify.
-            data (Any): Market data relevant to the trade.
+            data (pd.DataFrame): Market data relevant to the trade.
         Returns:
             dict: Modified trade signal with risk management applied.
         """

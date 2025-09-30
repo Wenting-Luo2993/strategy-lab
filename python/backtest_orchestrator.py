@@ -9,6 +9,7 @@ from src.backtester.parameters import load_strategy_parameters, StrategyConfig
 from src.backtester.data_fetcher import fetch_backtest_data
 from src.strategies.orb import ORBStrategy
 from src.risk_management.fixed_atr_stop import FixedATRStop
+from src.indicators import IndicatorFactory
 
 strategy_name = "ORB"
 
@@ -32,6 +33,33 @@ def BackTestOrchestrator():
     print(f"Running backtest 1/{len(configs)}: {config}")
     for ticker, data in ticker_data.items():
         print(f"Ticker: {ticker}")
+        
+        # Ensure required indicators exist based on risk config
+        required_indicators = []
+        
+        # Check if ATR is needed for stop loss or take profit
+        if config.risk.stop_loss_type == "atr" or config.risk.take_profit_type == "atr":
+            required_indicators.append({
+                'name': 'atr',
+                'params': {'length': 14},
+                'column': 'ATRr_14'
+            })
+            
+        # Ensure ORB levels are calculated
+        required_indicators.append({
+            'name': 'orb_levels',
+            'params': {
+                'start_time': config.orb_config.start_time,
+                'duration_minutes': int(config.orb_config.timeframe),
+                'body_pct': config.orb_config.body_breakout_percentage
+            },
+            'column': 'ORB_Breakout'
+        })
+        
+        # Ensure all required indicators exist
+        if required_indicators:
+            data = IndicatorFactory.ensure_indicators(data, required_indicators)
+            
         # Initialize strategy and risk manager with config
         strategy = ORBStrategy(strategy_config=config)
         risk_manager = FixedATRStop(config.risk)

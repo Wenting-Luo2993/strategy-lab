@@ -53,6 +53,41 @@ class IndicatorFactory:
         return list(cls._registry.keys())
     
     @classmethod
+    def ensure_indicators(cls, df: pd.DataFrame, indicators: List[Dict[str, Any]]) -> pd.DataFrame:
+        """
+        Ensures specified indicator columns exist in the DataFrame, adding only missing ones.
+        
+        Args:
+            df: Input DataFrame with OHLCV data
+            indicators: List of indicator configurations, each a dict with:
+                        'name': Indicator type (e.g., 'sma', 'atr')
+                        'params': Optional parameters for the indicator
+                        'column': Expected column name in the DataFrame
+                        Example: [{'name': 'atr', 'params': {'length': 14}, 'column': 'ATRr_14'}]
+                        
+        Returns:
+            DataFrame with any missing indicators added
+        """
+        result_df = df.copy()
+        indicators_to_apply = []
+        
+        for ind_config in indicators:
+            name = ind_config['name']
+            params = ind_config.get('params', {})
+            column = ind_config['column']
+            
+            # Check if column already exists
+            if column not in result_df.columns:
+                print(f"Indicator column '{column}' not found. Generating using indicator factory...")
+                indicators_to_apply.append({'name': name, 'params': params})
+            
+        # Only apply indicators that don't already exist
+        if indicators_to_apply:
+            result_df = cls.apply(result_df, indicators_to_apply)
+            
+        return result_df
+    
+    @classmethod
     def apply(cls, df: pd.DataFrame, indicators: List[Dict[str, Any]]) -> pd.DataFrame:
         """
         Apply multiple indicators to a DataFrame.
