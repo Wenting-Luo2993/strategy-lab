@@ -1,24 +1,147 @@
 import pandas as pd
 import pandas_ta as ta
+from typing import Dict, Callable, List, Any, Optional
+
+
+class IndicatorFactory:
+    """
+    Factory class for managing and applying technical indicators.
+    Uses a registry pattern to store indicator calculation functions.
+    """
+    # Registry to store indicator calculation functions
+    _registry: Dict[str, Callable] = {}
+    
+    @classmethod
+    def register(cls, name: str):
+        """
+        Decorator to register an indicator function in the registry.
+        
+        Args:
+            name: Name to register the indicator function under
+        """
+        def decorator(func: Callable):
+            cls._registry[name] = func
+            return func
+        return decorator
+    
+    @classmethod
+    def get_indicator(cls, name: str):
+        """
+        Get an indicator function by name.
+        
+        Args:
+            name: Name of the indicator
+            
+        Returns:
+            The indicator calculation function
+        
+        Raises:
+            ValueError: If indicator name is not in registry
+        """
+        if name not in cls._registry:
+            raise ValueError(f"Indicator '{name}' not found in registry")
+        return cls._registry[name]
+    
+    @classmethod
+    def list_indicators(cls):
+        """
+        List all registered indicators.
+        
+        Returns:
+            List of indicator names
+        """
+        return list(cls._registry.keys())
+    
+    @classmethod
+    def apply(cls, df: pd.DataFrame, indicators: List[Dict[str, Any]]) -> pd.DataFrame:
+        """
+        Apply multiple indicators to a DataFrame.
+        
+        Args:
+            df: Input DataFrame with OHLCV data
+            indicators: List of indicator configurations, each a dict with 'name' and optional 'params'
+                        Example: [{'name': 'sma', 'params': {'length': 20}}]
+                        
+        Returns:
+            DataFrame with added indicators
+        """
+        result_df = df.copy()
+        
+        for ind_config in indicators:
+            name = ind_config['name']
+            params = ind_config.get('params', {})
+            
+            indicator_func = cls.get_indicator(name)
+            result_df = indicator_func(result_df, **params)
+            
+        return result_df
+
+
+# Register SMA indicator
+@IndicatorFactory.register('sma')
+def calculate_sma(df: pd.DataFrame, length: int = 20) -> pd.DataFrame:
+    """Calculate Simple Moving Average"""
+    df_copy = df.copy()
+    df_copy.ta.sma(length=length, append=True)
+    return df_copy
+
+
+# Register EMA indicator
+@IndicatorFactory.register('ema')
+def calculate_ema(df: pd.DataFrame, length: int = 20) -> pd.DataFrame:
+    """Calculate Exponential Moving Average"""
+    df_copy = df.copy()
+    df_copy.ta.ema(length=length, append=True)
+    return df_copy
+
+
+# Register RSI indicator
+@IndicatorFactory.register('rsi')
+def calculate_rsi(df: pd.DataFrame, length: int = 14) -> pd.DataFrame:
+    """Calculate Relative Strength Index"""
+    df_copy = df.copy()
+    df_copy.ta.rsi(length=length, append=True)
+    return df_copy
+
+
+# Register ATR indicator
+@IndicatorFactory.register('atr')
+def calculate_atr(df: pd.DataFrame, length: int = 14) -> pd.DataFrame:
+    """Calculate Average True Range"""
+    df_copy = df.copy()
+    df_copy.ta.atr(length=length, append=True)
+    return df_copy
+
+
+# Register MACD indicator
+@IndicatorFactory.register('macd')
+def calculate_macd(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
+    """Calculate MACD (Moving Average Convergence Divergence)"""
+    df_copy = df.copy()
+    df_copy.ta.macd(fast=fast, slow=slow, signal=signal, append=True)
+    return df_copy
+
+
+# Register Bollinger Bands
+@IndicatorFactory.register('bbands')
+def calculate_bbands(df: pd.DataFrame, length: int = 20, std: float = 2.0) -> pd.DataFrame:
+    """Calculate Bollinger Bands"""
+    df_copy = df.copy()
+    df_copy.ta.bbands(length=length, std=std, append=True)
+    return df_copy
+
 
 def add_basic_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Add common technical indicators using pandas_ta.
+    Add common technical indicators using the IndicatorFactory.
     """
-    # Appends new columns in-place
-    df.ta.sma(length=20, append=True)   # adds "SMA_20"
-    df.ta.sma(length=30, append=True)   # adds "SMA_30"
-    df.ta.sma(length=50, append=True)   # adds "SMA_50"
-    df.ta.sma(length=200, append=True)   # adds "SMA_200"
-    df.ta.rsi(length=14, append=True)   # adds "RSI_14"
-    df.ta.atr(length=14, append=True)   # adds "ATRr_14"
-
-    # Print summary for SMA20
-    # sma20 = df["SMA_20"]
-    # print(
-    #     f"SMA20 -> non-null count: {sma20.notna().sum()}, "
-    #     f"total rows: {len(sma20)}, "
-    #     f"average: {sma20.mean():.2f}"
-    # )
-
-    return df
+    indicators = [
+        {'name': 'sma', 'params': {'length': 20}},
+        {'name': 'sma', 'params': {'length': 30}},
+        {'name': 'sma', 'params': {'length': 50}},
+        {'name': 'sma', 'params': {'length': 200}},
+        {'name': 'rsi', 'params': {'length': 14}},
+        {'name': 'atr', 'params': {'length': 14}},
+    ]
+    
+    return IndicatorFactory.apply(df, indicators)

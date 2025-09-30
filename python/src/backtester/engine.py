@@ -1,4 +1,8 @@
 import pandas as pd
+
+from ..risk_management.base import RiskManagement
+from .parameters import StrategyConfig
+from ..strategies.base import StrategyBase
 from ..config.columns import TradeColumns
 
 
@@ -7,13 +11,13 @@ class BacktestEngine:
     Modular backtest engine for simulating trading strategies.
 
     Args:
-        strategy: Object with generate_signal(df, i) -> int (+1=buy, -1=sell, 0=hold)
+        strategy: Object with generate_signals(df) -> pd.Series (+1=buy, -1=sell, 0=hold)
         risk_manager: Object with apply(trade, df, i, config) -> dict (sets stop loss/take profit)
         data (pd.DataFrame): Historical OHLCV data.
         config (dict): Configuration parameters.
     """
 
-    def __init__(self, strategy, risk_manager, data: pd.DataFrame, config: dict):
+    def __init__(self, strategy: StrategyBase, risk_manager: RiskManagement, data: pd.DataFrame, config: StrategyConfig):
         self.strategy = strategy
         self.risk_manager = risk_manager
         self.data = data
@@ -28,8 +32,11 @@ class BacktestEngine:
             List of trade dictionaries with entry/exit info and PnL.
         """
         position = None  # None or dict with entry info
+        # Generate signals once for all data
+        signals = self.strategy.generate_signals(self.data)
+        
         for i in range(len(self.data)):
-            signal = self.strategy.generate_signal(self.data, i)
+            signal = signals.iloc[i]  # Get signal for current bar
             price = self.data["close"].iloc[i]
 
             # Entry
@@ -38,7 +45,7 @@ class BacktestEngine:
                     TradeColumns.ENTRY_IDX.value: i,
                     TradeColumns.ENTRY_TIME.value: self.data.index[i],
                     TradeColumns.ENTRY_PRICE.value: price,
-                    TradeColumns.SIZE.value: self.config.get("trade_size", 1)
+                    TradeColumns.SIZE.value: self.config.trade_size
                 }
                 position = self.risk_manager.apply(position, self.data, i, self.config)
 

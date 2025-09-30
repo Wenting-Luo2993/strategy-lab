@@ -1,5 +1,7 @@
 import pandas as pd
+from .ta import IndicatorFactory
 
+@IndicatorFactory.register('orb_levels')
 def calculate_orb_levels(
     df: pd.DataFrame,
     start_time: str = "09:30",

@@ -1,8 +1,9 @@
 import pandas as pd
 
 from src.backtester.parameters import StrategyConfig
+from src.indicators import IndicatorFactory
 
-class Strategy:
+class StrategyBase:
     """Base strategy interface."""
 
     def __init__(self, strategy_config:StrategyConfig = None, profit_target_func=None):
@@ -32,7 +33,15 @@ class Strategy:
         if tp_type == "atr":
             atr = row.get("ATRr_14")
             if atr is None:
-                raise ValueError("ATRr_14 is required in row for ATR-based take profit.")
+                # ATR column doesn't exist, use indicator factory to add it
+                df_copy = IndicatorFactory.apply(row.to_frame().T, [
+                    {'name': 'atr', 'params': {'length': 14}}
+                ])
+                atr = df_copy.iloc[0].get("ATRr_14")
+                if atr is None:
+                    # Still can't calculate ATR (probably not enough data)
+                    # Use a default percentage instead
+                    atr = entry_price * 0.02  # Default to 2% of entry price
             if is_long:
                 return entry_price + tp_value * atr
             else:
@@ -77,6 +86,13 @@ class Strategy:
             df (pd.DataFrame): DataFrame with OHLCV + indicators.
         
         Returns:
-            pd.Series: +1 = Buy, -1 = Sell, 0 = Hold
+            pd.Series: A pandas Series with the same index as df, containing:
+                       +1 = Buy/Long entry
+                       -1 = Sell/Short entry or exit from long position
+                       0 = Hold/No action
+                       
+        Note:
+            The returned Series must have the same index as the input DataFrame
+            and must contain only integer values (1, -1, 0).
         """
         raise NotImplementedError

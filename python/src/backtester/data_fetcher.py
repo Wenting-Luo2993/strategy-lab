@@ -61,8 +61,9 @@ def fetch_backtest_data():
         config = yaml.safe_load(f)
     tickers = [t for _, tickers in config.items() for t in tickers]
     print("Fetching data for tickers:", tickers)
-    end_date = datetime(2025, 9, 17).date()
+    end_date = datetime(2025, 9, 29).date()
     start_date = end_date - timedelta(days=55)
     data = fetch_ticker_data(tickers, interval=Timeframe.MIN_5.value, start_date=start_date, end_date=end_date, batch_size=5)
     print(f"Fetched data for {len(data)} tickers.")
+    return data
 
