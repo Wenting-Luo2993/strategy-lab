@@ -4,6 +4,10 @@ import pandas as pd
 from pathlib import Path
 from typing import Optional
 from src.data.base import DataLoader
+from src.utils.logger import get_logger
+
+# Get a configured logger for this module
+logger = get_logger("Cache")
 
 class CacheDataLoader(DataLoader):
     def __init__(self, wrapped_loader: DataLoader, cache_dir: str = "data_cache"):
@@ -25,14 +29,14 @@ class CacheDataLoader(DataLoader):
 
         # 1. Try cache
         if cache_file.exists():
-            print(f"[Cache] Loaded from {cache_file}")
+            logger.debug(f"Loaded from {cache_file}")
             return pd.read_parquet(cache_file)
 
         # 2. Fetch via wrapped loader
-        print(f"[Cache] Miss → fetching {symbol} {timeframe} from API")
-        df = self.wrapped_loader.fetch(symbol, start, end)
+        logger.debug(f"Miss → fetching {symbol} {timeframe} from API")
+        df = self.wrapped_loader.fetch(symbol, timeframe, start, end)  # Fixed parameter order
 
         # 3. Store in cache
         df.to_parquet(cache_file)
-        print(f"[Cache] Saved to {cache_file}")
+        logger.debug(f"Saved to {cache_file}")
         return df
