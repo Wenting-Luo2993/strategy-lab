@@ -13,6 +13,7 @@ class MetricsColumns(Enum):
     PROFIT_FACTOR = "profit_factor"
     AVERAGE_TRADE_RETURN = "average_trade_return"
     AVERAGE_HOLDING_TIME = "average_holding_time"
+    NUM_TRADES = "num_trades"
 
 def win_rate(trades: List[Dict[str, Any]]) -> float:
     wins = [t for t in trades if t[TradeColumns.PNL.value] > 0]
@@ -74,5 +75,6 @@ def summarize_metrics(trades: List[Dict[str, Any]]) -> Dict[str, float]:
         MetricsColumns.SHARPE_RATIO.value: sharpe_ratio(trades),
         MetricsColumns.PROFIT_FACTOR.value: profit_factor(trades),
         MetricsColumns.AVERAGE_TRADE_RETURN.value: average_trade_return(trades),
-        MetricsColumns.AVERAGE_HOLDING_TIME.value: average_holding_time(trades)
+        MetricsColumns.AVERAGE_HOLDING_TIME.value: average_holding_time(trades),
+        MetricsColumns.NUM_TRADES.value: len(trades)
     }
