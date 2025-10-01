@@ -4,6 +4,8 @@ import yaml
 
 from dataclasses import dataclass
 
+from src.utils.logger import get_logger
+
 @dataclass
 class OrbConfig:
     timeframe: str
@@ -24,6 +26,8 @@ class StrategyConfig:
     entry_volume_filter: float
     risk: RiskConfig
     eod_exit: bool
+
+logger = get_logger("ConfigLoader")
 
 def load_strategy_parameters() -> list[StrategyConfig]:
 
@@ -79,7 +83,5 @@ def load_strategy_parameters() -> list[StrategyConfig]:
         )
         configs.append(config)
 
-    print(f"Generated {len(configs)} parameter configurations.")
-    print("Sample first configuration:", configs[0])
-    print("Sample last configuration:", configs[-1])
+    logger.info(f"Generated {len(configs)} parameter configurations.")
     return configs

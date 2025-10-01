@@ -1,5 +1,9 @@
 import pandas as pd
+
+from src.utils.logger import get_logger
 from .ta import IndicatorFactory
+
+logger = get_logger("IndicatorFactory")
 
 @IndicatorFactory.register('orb_levels')
 def calculate_orb_levels(
@@ -38,7 +42,7 @@ def calculate_orb_levels(
         times = pd.to_datetime(df[time_col])
     else:
         if not isinstance(df.index, pd.DatetimeIndex):
-            print("DataFrame index must be a DatetimeIndex or provide time_col")
+            logger.error("DataFrame index must be a DatetimeIndex or provide time_col")
             raise ValueError("DataFrame index must be a DatetimeIndex or provide time_col")
         times = df.index
     df["date"] = times.date
@@ -49,7 +53,7 @@ def calculate_orb_levels(
     orb_end = []
     breakout_flags = []
 
-    print(f"Processing {len(df.groupby('date'))} trading days for ORB calculation.")
+    logger.info(f"Processing {len(df.groupby('date'))} trading days for ORB calculation.")
     for date, group in df.groupby("date"):
         # print(f"Date: {date}, Bars: {len(group)}")
         group_times = pd.to_datetime(group[time_col]) if time_col else group.index
@@ -79,9 +83,9 @@ def calculate_orb_levels(
     # print(f"ORB_Breakout flags length: {len(breakout_flags)}, DataFrame length: {len(df)}")
     df["ORB_Breakout"] = breakout_flags
     if "ORB_Breakout" in df.columns:
-        print("ORB_Breakout column successfully added to DataFrame.")
+        logger.info("ORB_Breakout column successfully added to DataFrame.")
     else:
-        print("ORB_Breakout column NOT added to DataFrame!")
+        logger.error("ORB_Breakout column NOT added to DataFrame!")
     df.drop(["date", "time"], axis=1, inplace=True)
     return df
 

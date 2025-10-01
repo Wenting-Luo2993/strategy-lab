@@ -1,7 +1,9 @@
+from src.utils.logger import get_logger
 import pandas as pd
 import pandas_ta as ta
 from typing import Dict, Callable, List, Any, Optional
 
+logger = get_logger("IndicatorFactory")
 
 class IndicatorFactory:
     """
@@ -78,8 +80,10 @@ class IndicatorFactory:
             
             # Check if column already exists
             if column not in result_df.columns:
-                print(f"Indicator column '{column}' not found. Generating using indicator factory...")
+                logger.info(f"Indicator column '{column}' not found. Generating using indicator factory...")
                 indicators_to_apply.append({'name': name, 'params': params})
+            else:
+                logger.info(f"Indicator column '{column}' already exists. Skipping generation.")
             
         # Only apply indicators that don't already exist
         if indicators_to_apply:

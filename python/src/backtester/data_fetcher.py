@@ -2,7 +2,10 @@ import os
 import yaml
 import time
 from datetime import datetime, timedelta
+from src.utils.logger import get_logger
 from src.data import DataLoaderFactory, DataSource, Timeframe, CacheDataLoader
+
+logger = get_logger("DataLoader")
 
 def batch_list(lst, batch_size):
     for i in range(0, len(lst), batch_size):
@@ -35,7 +38,7 @@ def fetch_ticker_data(tickers, interval, start_date, end_date, batch_size=5, max
             attempt = 0
             while attempt < max_retries:
                 try:
-                    print(f"Fetching {ticker} ({interval}) [{start_date} - {end_date}], attempt {attempt+1}")
+                    logger.info(f"Fetching {ticker} ({interval}) [{start_date} - {end_date}], attempt {attempt+1}")
                     df = cached_loader.fetch(
                         ticker,
                         timeframe=interval,
@@ -45,25 +48,25 @@ def fetch_ticker_data(tickers, interval, start_date, end_date, batch_size=5, max
                     results[ticker] = df
                     break
                 except Exception as e:
-                    print(f"Error fetching {ticker}: {e}")
+                    logger.error(f"Error fetching {ticker}: {e}")
                     attempt += 1
                     if attempt < max_retries:
-                        print(f"Retrying {ticker} after {sleep_seconds} seconds...")
+                        logger.info(f"Retrying {ticker} after {sleep_seconds} seconds...")
                         time.sleep(sleep_seconds)
                     else:
-                        print(f"Failed to fetch {ticker} after {max_retries} attempts.")
+                        logger.error(f"Failed to fetch {ticker} after {max_retries} attempts.")
     return results
 
 def fetch_backtest_data():
-    print("Current directory:", os.getcwd())
+    logger.info("Current directory: %s", os.getcwd())
     config_path = os.path.join(os.path.dirname(__file__), "../config/backtest_tickers.yaml")
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
     tickers = [t for _, tickers in config.items() for t in tickers]
-    print("Fetching data for tickers:", tickers)
+    logger.info("Fetching data for tickers: %s", tickers)
     end_date = datetime(2025, 9, 29).date()
     start_date = end_date - timedelta(days=55)
     data = fetch_ticker_data(tickers, interval=Timeframe.MIN_5.value, start_date=start_date, end_date=end_date, batch_size=5)
-    print(f"Fetched data for {len(data)} tickers.")
+    logger.info("Fetched data for %d tickers.", len(data))
     return data
 
