@@ -227,11 +227,11 @@ def BackTestOrchestrator(dry_run: bool = False):
                 
             # End tracking for this parameter group
             param_group_time = end_track(param_group_tracking)
-            log_info(f"    Completed processing config group {orb_params} for ticker: {ticker} in {param_group_time:.2f}s", console=True)
+            log_info(f"    Completed processing config group {orb_params} for ticker: {ticker} in {param_group_time:.2}s", console=True)
                 
         # End tracking for this ticker
         ticker_time = end_track(ticker_tracking)
-        log_info(f"Completed processing ticker {ticker} with all configs in {ticker_time:.2f}s", console=True)
+        log_info(f"Completed processing ticker {ticker} with all configs in {ticker_time:.2f}s")
 
     # Log overall completion
     log_info("All tickers and configs processed successfully")
@@ -241,11 +241,11 @@ def BackTestOrchestrator(dry_run: bool = False):
     df_results = pd.DataFrame(all_results)
     df_results.to_csv(results_file, index=False)
     save_time = end_track(save_tracking)
-    log_info(f"All backtest results saved to {results_file} in {save_time:.2f}s", console=True)
+    log_info(f"All backtest results saved to {results_file} in {save_time:.2f}s")
 
     # End tracking for the main orchestrator function
     total_time = end_track(main_tracking)
-    log_info(f"BackTestOrchestrator completed in {total_time:.2f}s", console=True)
+    log_info(f"BackTestOrchestrator completed in {total_time:.2f}s")
     
     # Get and save the performance report
     tracker = PerformanceTracker.get_instance()
@@ -254,7 +254,7 @@ def BackTestOrchestrator(dry_run: bool = False):
     performance_file = results_dir / f'{file_prefix}{strategy_name}_performance_metrics.txt'
     with open(performance_file, 'w') as f:
         f.write(tracker.generate_report(include_root=False))
-    log_info(f"Performance report saved to {performance_file}", console=True)
+    log_info(f"Performance report saved to {performance_file}")
     
     # Log slow operations
     tracker.log_slow_operations(threshold_seconds=0.5)

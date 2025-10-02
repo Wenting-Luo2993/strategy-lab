@@ -2,7 +2,7 @@
 # %%
 from matplotlib import pyplot as plt
 from src.backtester.data_fetcher import fetch_backtest_data
-from src.backtester.engine import Backtester
+from src.backtester.engine import BacktestEngine
 from src.backtester.parameters import load_strategy_parameters
 from src.data.base import DataLoaderFactory, DataSource, Timeframe
 from src.data.cache import CacheDataLoader
@@ -11,10 +11,9 @@ from src.strategies.orb import ORBStrategy
 from src.visualization.charts import plot_candlestick
 import mplfinance as mpf
 
-
 loader = DataLoaderFactory.create(DataSource.YAHOO, interval=Timeframe.MIN_5.value)
 cachedLoader = CacheDataLoader(loader)  # Wrap with cache
-df = cachedLoader.fetch("AAPL", timeframe=Timeframe.MIN_5.value, start="2025-07-24", end="2025-09-17")
+df = cachedLoader.fetch("AAPL", timeframe=Timeframe.MIN_5.value, start="2025-08-05", end="2025-09-28")
 
 df = add_basic_indicators(df)
 
@@ -27,7 +26,7 @@ strategy = ORBStrategy(strategy_config=configs[0])
 signals = strategy.generate_signals(df)
 
 # 3. Backtest
-backtester = Backtester(initial_capital=10000)
+backtester = BacktestEngine(initial_capital=10000)
 result = backtester.run(df, signals)
 
 print("Equity curve: ", result["equity"].tail())
@@ -44,10 +43,23 @@ print("Sell signals:", sell_markers.dropna().head())
 
 plot_candlestick(result, indicators=["SMA_20", "ORB_High", "ORB_Low", "equity"], moreplots=apds, title="AAPL ORB Backtest")
 
-
 print("Main function executed successfully.")
 
 # %%
 from src.backtester.data_fetcher import fetch_backtest_data
 fetch_backtest_data()
+
+# %%
+from datetime import datetime, timedelta
+from src.data.base import DataLoaderFactory, DataSource, Timeframe
+from src.data.cache import CacheDataLoader
+loader = DataLoaderFactory.create(DataSource.YAHOO, interval=Timeframe.MIN_5.value)
+cachedLoader = CacheDataLoader(loader)  # Wrap with cache
+end_date = datetime(2025, 9, 29).date()
+start_date = end_date - timedelta(days=55)
+df = cachedLoader.fetch("SQ", timeframe=Timeframe.MIN_5.value, start=start_date, end=end_date)
+
+print(df.tail())
+print(df.describe())
+
 # %%
