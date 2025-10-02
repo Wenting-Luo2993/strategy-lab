@@ -15,6 +15,23 @@ risk:
       values: [1.0, 1.5, 2.0]
   risk_per_trade: [0.005, 0.01, 0.02] # 0.5%, 1%, 2%
 
+trailing_stop:
+  enabled: true
+  dynamic_mode: true # When true, uses the breakpoints list instead of levels dict
+  base_trail_r: 0.5 # Base trailing amount (used before first breakpoint)
+  breakpoints:
+    - [2.0, 1.0] # At 2R profit, trail by 1R
+    - [3.0, 1.5] # At 3R profit, trail by 1.5R
+    - [5.0, 2.0] # At 5R profit, trail by 2R
+    - [10.0, 3.0] # At 10R profit, trail by 3R
+  # Alternative static configuration (used when dynamic_mode: false)
+  levels:
+    2.0: 0.5 # At 2 ATR profit, trail by 0.5 ATR
+    2.5: 1.0 # At 2.5 ATR profit, trail by 1 ATR
+    3.0: 2.0 # At 3 ATR profit, trail by 2 ATR
+    4.0: 3.0 # At 4 ATR profit, trail by 3 ATR
+    5.0: 4.0 # At 5 ATR profit, trail by 4 ATR
+
 exit:
   take_profit:
     - type: "atr"

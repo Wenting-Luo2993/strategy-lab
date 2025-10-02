@@ -100,14 +100,16 @@ class BacktestEngine:
                     TradeColumns.SIZE.value: position_size,
                     TradeColumns.STOP_LOSS.value: risk_result.get('stop_loss'),
                     TradeColumns.TAKE_PROFIT.value: risk_result.get('take_profit'),
-                    'account_balance': self.current_balance,
-                    'direction': signal  # Store position direction (1 for long, -1 for short)
+                    TradeColumns.ACCOUNT_BALANCE.value: self.current_balance,
+                    TradeColumns.DIRECTION.value: signal,  # Store position direction (1 for long, -1 for short)
+                    # Store trailing stop data if provided
+                    TradeColumns.TRAILING_STOP_DATA.value: risk_result.get('trailing_stop_data', None)
                 }
 
             # Exit
             elif signal == -1 and position is not None:
                 exit_price = price
-                direction = position.get('direction', 1)  # Default to long if not specified
+                direction = position.get(TradeColumns.DIRECTION.value, 1)  # Default to long if not specified
                 entry_price = position[TradeColumns.ENTRY_PRICE.value]
                 position_size = position[TradeColumns.SIZE.value]
                 
@@ -117,22 +119,38 @@ class BacktestEngine:
                 # Update account balance with trade profit/loss
                 self.current_balance += pnl
                 
+                # Get trailing stop info if available
+                trailing_info = {}
+                ts_data = position.get(TradeColumns.TRAILING_STOP_DATA.value, None)
+                if ts_data and ts_data.get('trailing_active', False):
+                    trailing_info = {
+                        TradeColumns.TRAILING_ACTIVE.value: True,
+                        TradeColumns.HIGHEST_PROFIT_ATR.value: ts_data.get('highest_profit_atr', 0.0),
+                        TradeColumns.INITIAL_STOP.value: ts_data.get('initial_stop', None)
+                    }
+                
                 trade = {
                     **position,
                     TradeColumns.EXIT_IDX.value: i,
                     TradeColumns.EXIT_TIME.value: data_to_use.index[i],
                     TradeColumns.EXIT_PRICE.value: exit_price,
                     TradeColumns.PNL.value: pnl,
-                    TradeColumns.EXIT_REASON.value: "signal"
+                    TradeColumns.EXIT_REASON.value: "signal",
+                    **trailing_info
                 }
                 self.trades.append(trade)
                 position = None
 
             # Check stop loss/take profit if in position
             elif position is not None:
+                # Update trailing stop if applicable
+                if self.risk_manager and hasattr(self.risk_manager, 'update_trailing_stop'):
+                    close_price = data_to_use["close"].iloc[i]
+                    position = self.risk_manager.update_trailing_stop(position, close_price)
+                
                 stop_loss = position.get(TradeColumns.STOP_LOSS.value)
                 take_profit = position.get(TradeColumns.TAKE_PROFIT.value)
-                direction = position.get('direction', 1)  # Default to long if direction not specified
+                direction = position.get(TradeColumns.DIRECTION.value, 1)  # Default to long if direction not specified
                 low = data_to_use["low"].iloc[i]
                 high = data_to_use["high"].iloc[i]
                 exit_reason = None
@@ -157,7 +175,7 @@ class BacktestEngine:
                         exit_reason = "take_profit"
 
                 if exit_price is not None:
-                    direction = position.get('direction', 1)  # Default to long if not specified
+                    direction = position.get(TradeColumns.DIRECTION.value, 1)  # Default to long if not specified
                     entry_price = position[TradeColumns.ENTRY_PRICE.value]
                     position_size = position[TradeColumns.SIZE.value]
                     
@@ -169,13 +187,24 @@ class BacktestEngine:
                     # Update account balance with trade profit/loss
                     self.current_balance += pnl
                     
+                    # Get trailing stop info if available
+                    trailing_info = {}
+                    ts_data = position.get(TradeColumns.TRAILING_STOP_DATA.value, None)
+                    if ts_data and ts_data.get('trailing_active', False):
+                        trailing_info = {
+                            TradeColumns.TRAILING_ACTIVE.value: True,
+                            TradeColumns.HIGHEST_PROFIT_ATR.value: ts_data.get('highest_profit_atr', 0.0),
+                            TradeColumns.INITIAL_STOP.value: ts_data.get('initial_stop', None)
+                        }
+                    
                     trade = {
                         **position,
                         TradeColumns.EXIT_IDX.value: i,
                         TradeColumns.EXIT_TIME.value: data_to_use.index[i],
                         TradeColumns.EXIT_PRICE.value: exit_price,
                         TradeColumns.EXIT_REASON.value: exit_reason,
-                        TradeColumns.PNL.value: pnl
+                        TradeColumns.PNL.value: pnl,
+                        **trailing_info
                     }
                     self.trades.append(trade)
                     position = None
@@ -183,7 +212,7 @@ class BacktestEngine:
         # If still in position at end, close at last price
         if position is not None:
             exit_price = data_to_use["close"].iloc[-1]
-            direction = position.get('direction', 1)  # Default to long if not specified
+            direction = position.get(TradeColumns.DIRECTION.value, 1)  # Default to long if not specified
             entry_price = position[TradeColumns.ENTRY_PRICE.value]
             position_size = position[TradeColumns.SIZE.value]
             
@@ -193,13 +222,24 @@ class BacktestEngine:
             # Update account balance with trade profit/loss
             self.current_balance += pnl
             
+            # Get trailing stop info if available
+            trailing_info = {}
+            ts_data = position.get(TradeColumns.TRAILING_STOP_DATA.value, None)
+            if ts_data and ts_data.get('trailing_active', False):
+                trailing_info = {
+                    TradeColumns.TRAILING_ACTIVE.value: True,
+                    TradeColumns.HIGHEST_PROFIT_ATR.value: ts_data.get('highest_profit_atr', 0.0),
+                    TradeColumns.INITIAL_STOP.value: ts_data.get('initial_stop', None)
+                }
+            
             trade = {
                 **position,
                 TradeColumns.EXIT_IDX.value: len(data_to_use) - 1,
                 TradeColumns.EXIT_TIME.value: data_to_use.index[-1],
                 TradeColumns.EXIT_PRICE.value: exit_price,
                 TradeColumns.EXIT_REASON.value: "end_of_data",
-                TradeColumns.PNL.value: pnl
+                TradeColumns.PNL.value: pnl,
+                **trailing_info
             }
             self.trades.append(trade)
         

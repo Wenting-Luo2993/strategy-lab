@@ -1,32 +1,28 @@
 """
-FixedATRStop: Risk management strategy using fixed and trailing ATR-based stops and targets.
+PercentageStop: Risk management strategy using percentage-based stops and targets.
 """
 import pandas as pd
 from typing import Dict, Optional
 from .base import RiskManagement
 from ..backtester.parameters import RiskConfig, TrailingStopConfig
 
-class FixedATRStop(RiskManagement):
+class PercentageStop(RiskManagement):
     """
-    Risk management strategy that sets stop loss and take profit based on ATR multiples.
-    Supports both fixed and trailing stops.
+    Risk management strategy that sets stop loss and take profit based on price percentages.
+    Inherits trailing stop functionality from the RiskManagement base class.
     """
     def __init__(
         self,
         config: RiskConfig,
-        atr_col: str = "ATRr_14",
     ) -> None:
         """
-        Initialize FixedATRStop.
+        Initialize PercentageStop.
         Args:
             config (RiskConfig): Risk configuration object.
-            atr_col (str): Column name for ATR in the DataFrame.
         """
         super().__init__(config)
-        self.atr_col = atr_col
         
         # If trailing stop config is not provided, create a default one
-        # Moved to base class, but we can still add ATR-specific defaults here if needed
         if not self.config.trailing_stop:
             # Use dynamic trailing stop by default
             self.config.trailing_stop = TrailingStopConfig(
@@ -38,26 +34,17 @@ class FixedATRStop(RiskManagement):
                     [3.0, 1.5],   # At 3R profit, trail by 1.5R
                     [5.0, 2.0],   # At 5R profit, trail by 2R
                     [10.0, 3.0],  # At 10R profit, trail by 3R
-                ],
-                # Also provide static levels as fallback
-                levels={
-                    2.0: 0.5,  # At 2 ATR profit, trail by 0.5 ATR
-                    2.5: 1.0,  # At 2.5 ATR profit, trail by 1 ATR
-                    3.0: 2.0,  # At 3 ATR profit, trail by 2 ATR
-                    4.0: 3.0,  # At 4 ATR profit, trail by 3 ATR
-                    5.0: 4.0   # At 5 ATR profit, trail by 4 ATR
-                }
+                ]
             )
 
     def apply(self, signal: pd.Series, data: pd.DataFrame) -> Dict[str, float]:
         """
-        Apply ATR-based stop loss and take profit to a trade signal.
-        Respects strategy-provided initial stops when they are stricter.
+        Apply percentage-based stop loss and take profit to a trade signal.
         
         Args:
             signal (pd.Series): Trade signal (must contain 'signal', 'entry_price', and 'index').
                                May contain 'initial_stop' from strategy.
-            data (pd.DataFrame): Market data with ATR column.
+            data (pd.DataFrame): Market data.
         Returns:
             dict: {'entry': entry_price, 'stop_loss': stop, 'take_profit': tp}
         """
@@ -66,47 +53,45 @@ class FixedATRStop(RiskManagement):
         direction = signal['signal']
         strategy_stop = signal.get('initial_stop')
         
-        # Get the ATR value
-        atr = data.iloc[idx][self.atr_col]
-        
-        # Store ATR value for later use
-        self.current_atr = atr
-        
         # Calculate stop loss and take profit using the template method
+        # This method supports different types including 'percent'
         risk_values = self._calculate_stop_and_target(
             entry_price=entry_price,
             direction=direction,
             risk_value=self.config.stop_loss_value,
             reward_value=self.config.take_profit_value,
-            risk_type=self.config.stop_loss_type,
-            reward_type=self.config.take_profit_type
+            risk_type='percent',  # Override to use percentage-based stops
+            reward_type='percent'  # Override to use percentage-based targets
         )
         
         # Extract calculated values
-        atr_stop = risk_values['stop_loss']
+        percent_stop = risk_values['stop_loss']
         tp = risk_values['take_profit']
         
         # Consider strategy-provided stop if available (use the stricter one)
         if strategy_stop is not None:
             if direction == 1:  # Long position - higher stop is stricter
-                stop = max(strategy_stop, atr_stop)
+                stop = max(strategy_stop, percent_stop)
             else:  # Short position - lower stop is stricter
-                stop = min(strategy_stop, atr_stop)
+                stop = min(strategy_stop, percent_stop)
         else:
-            stop = atr_stop
+            stop = percent_stop
+            
+        # Store average volatility for later use in trailing stop calculations
+        # This is the percentage volatility used instead of ATR
+        percent_volatility = self._calculate_percent_volatility(data, idx)
+        self.current_volatility = percent_volatility
         
         # Initialize trailing stop data using the base class method
-        # and then extend it with ATR-specific data
         trailing_stop_data = self.initialize_trailing_stop_data(
             entry_price=entry_price,
             initial_stop=stop,
             direction=direction
         )
         
-        # Add ATR-specific data if trailing stops are enabled
+        # Add percentage-specific data if trailing stops are enabled
         if trailing_stop_data.get('enabled', False):
-            trailing_stop_data['atr'] = atr
-            trailing_stop_data['highest_profit_atr'] = 0.0
+            trailing_stop_data['volatility'] = percent_volatility
         
         from ..config.columns import TradeColumns
         
@@ -116,52 +101,62 @@ class FixedATRStop(RiskManagement):
             "take_profit": tp, 
             TradeColumns.TRAILING_STOP_DATA.value: trailing_stop_data
         }
-
+        
+    def _calculate_percent_volatility(self, data: pd.DataFrame, idx: int) -> float:
+        """
+        Calculate percentage volatility based on recent price action.
+        
+        Args:
+            data: DataFrame with market data
+            idx: Current index in the dataframe
+            
+        Returns:
+            float: Percentage volatility
+        """
+        # Use a simple method - average daily range as percentage of close
+        # Look back up to 10 periods if available
+        start_idx = max(0, idx - 10)
+        recent_data = data.iloc[start_idx:idx+1]
+        
+        if len(recent_data) > 1:
+            # Calculate average daily range as percentage
+            daily_ranges = (recent_data['high'] - recent_data['low']) / recent_data['close']
+            avg_range_pct = daily_ranges.mean() * 100  # Convert to percentage
+            return max(0.5, avg_range_pct)  # Minimum 0.5% volatility
+        else:
+            # Default if not enough data
+            return 1.0  # Default 1% volatility
+            
     def _calculate_risk_values(self, entry_price: float, direction: int,
                               risk_value: float, reward_value: float,
                               risk_type: str, reward_type: str) -> Dict[str, float]:
         """
-        ATR-specific implementation to calculate stop loss and take profit values.
+        Percentage-specific implementation to calculate stop loss and take profit values.
         
         Args:
             entry_price (float): Entry price of the position
             direction (int): Position direction (1 for long, -1 for short)
-            risk_value (float): ATR multiplier for stop loss
-            reward_value (float): ATR multiplier for take profit
-            risk_type (str): Type of risk calculation ('atr', 'percent', 'fixed')
-            reward_type (str): Type of reward calculation ('atr', 'percent', 'fixed', 'r_multiple')
+            risk_value (float): Percentage for stop loss
+            reward_value (float): Percentage for take profit
+            risk_type (str): Type of risk calculation (usually 'percent')
+            reward_type (str): Type of reward calculation (usually 'percent')
             
         Returns:
             dict: Dictionary with stop_loss and take_profit keys
         """
-        # Use current_atr which was set in apply() method
-        atr = getattr(self, 'current_atr', 1.0)
+        # Calculate stop loss distance based on percentage
+        stop_distance = entry_price * (risk_value / 100)
         
-        # Calculate stop loss distance based on type
-        if risk_type == 'atr':
-            stop_distance = risk_value * atr
-        elif risk_type == 'percent':
-            stop_distance = entry_price * (risk_value / 100)
-        elif risk_type == 'fixed':
-            stop_distance = risk_value
-        else:
-            stop_distance = risk_value * atr  # Default to ATR
-            
         # Apply stop distance based on direction
         stop_loss = entry_price - (direction * stop_distance)
         
-        # Calculate take profit distance based on type
-        if reward_type == 'atr':
-            tp_distance = reward_value * atr
-        elif reward_type == 'percent':
-            tp_distance = entry_price * (reward_value / 100)
-        elif reward_type == 'fixed':
-            tp_distance = reward_value
-        elif reward_type == 'r_multiple' and stop_distance > 0:
+        # Calculate take profit distance based on percentage or R-multiple
+        if reward_type == 'r_multiple' and stop_distance > 0:
             # R-multiple is based on the risk distance
             tp_distance = stop_distance * reward_value
         else:
-            tp_distance = reward_value * atr  # Default to ATR
+            # Default to percentage
+            tp_distance = entry_price * (reward_value / 100)
             
         # Apply take profit distance based on direction
         take_profit = entry_price + (direction * tp_distance)
@@ -174,7 +169,7 @@ class FixedATRStop(RiskManagement):
     def _calculate_trailing_stop(self, position: Dict, current_price: float, 
                                 profit_r: float, ts_data: Dict) -> Optional[float]:
         """
-        ATR-specific implementation for calculating trailing stops.
+        Percentage-based implementation for calculating trailing stops.
         
         Args:
             position: Current position information
@@ -188,7 +183,7 @@ class FixedATRStop(RiskManagement):
         from ..config.columns import TradeColumns
         
         direction = ts_data['direction']
-        atr = ts_data.get('atr', 1.0)
+        volatility = ts_data.get('volatility', 1.0)  # Default to 1% if not provided
         trail_distance = None
         
         # Check if we're using dynamic mode or static levels
@@ -206,66 +201,29 @@ class FixedATRStop(RiskManagement):
                 else:
                     break
             
-            # Convert R-multiple to ATR units
+            # Convert R-multiple to percentage of price
             initial_risk = abs(ts_data['entry_price'] - ts_data['initial_stop'])
-            trail_distance = trail_r * (initial_risk / atr) if atr != 0 else 0
+            risk_percent = (initial_risk / ts_data['entry_price']) * 100
+            trail_percent = trail_r * risk_percent
+            
+            # Calculate trail distance as percentage of current price
+            trail_distance = current_price * (trail_percent / 100)
         else:
             # Traditional approach with discrete levels
-            # Convert profit_r to profit_atr for compatibility with levels
-            profit_atr = profit_r * (atr / initial_risk) if initial_risk != 0 else 0
-            ts_data['highest_profit_atr'] = profit_atr  # Update for historical tracking
-            
             levels = sorted(ts_data.get('levels', {}).items(), reverse=True)
-            for threshold, level_trail_distance in levels:
-                if profit_atr >= threshold:
-                    trail_distance = level_trail_distance
+            for threshold, level_trail_percent in levels:
+                if profit_r >= threshold:
+                    # Use volatility as the unit (similar to how ATR is used)
+                    trail_distance = current_price * (level_trail_percent * volatility / 100)
                     break
         
         # Calculate new stop price if a trail distance was determined
         if trail_distance is not None and trail_distance > 0:
             if direction == 1:  # Long position
-                new_stop = current_price - (trail_distance * atr)
+                new_stop = current_price - trail_distance
                 return new_stop
             else:  # Short position
-                new_stop = current_price + (trail_distance * atr)
+                new_stop = current_price + trail_distance
                 return new_stop
                 
         return None
-        
-    def calculate_position_size(self, account_balance: float, entry_price: float, stop_loss: float) -> float:
-        """
-        Calculate position size based on risk percentage and stop distance.
-        Args:
-            account_balance (float): Account balance.
-            entry_price (float): Entry price.
-            stop_loss (float): Stop loss price.
-        Returns:
-            float: Position size.
-        """
-        risk_pct = self.config.risk_per_trade
-        risk_amount = account_balance * risk_pct
-        risk_per_unit = abs(entry_price - stop_loss)
-        if risk_per_unit == 0:
-            raise ValueError("Stop loss must not be equal to entry price.")
-        position_size = risk_amount / risk_per_unit
-        return position_size
-    
-    def validate_trade(self, signal: pd.Series, account_balance: float) -> bool:
-        """
-        Validate that the trade does not exceed max risk and position size is positive.
-        Args:
-            signal (pd.Series): Trade signal (must contain 'entry_price', 'stop_loss', 'position_size').
-            account_balance (float): Account balance.
-        Returns:
-            bool: True if trade is valid, False otherwise.
-        """
-        max_risk_pct = getattr(self.config, 'max_risk_pct', 0.02)  # Default 2%
-        entry_price = signal.get('entry_price')
-        stop_loss = signal.get('stop_loss')
-        position_size = signal.get('position_size')
-        if None in (entry_price, stop_loss, position_size):
-            raise ValueError("Signal must contain entry_price, stop_loss, and position_size.")
-        risk_per_unit = abs(entry_price - stop_loss)
-        total_risk = risk_per_unit * position_size
-        max_risk = account_balance * max_risk_pct
-        return position_size > 0 and total_risk <= max_risk
