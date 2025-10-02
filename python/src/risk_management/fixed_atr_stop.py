@@ -27,8 +27,11 @@ class FixedATRStop(RiskManagement):
     def apply(self, signal: pd.Series, data: pd.DataFrame) -> Dict[str, float]:
         """
         Apply ATR-based stop loss and take profit to a trade signal.
+        Respects strategy-provided initial stops when they are stricter.
+        
         Args:
             signal (pd.Series): Trade signal (must contain 'signal', 'entry_price', and 'index').
+                               May contain 'initial_stop' from strategy.
             data (pd.DataFrame): Market data with ATR column.
         Returns:
             dict: {'entry': entry_price, 'stop_loss': stop, 'take_profit': tp}
@@ -36,17 +39,36 @@ class FixedATRStop(RiskManagement):
         entry_price = signal['entry_price']
         idx = int(signal['index'])
         direction = signal['signal']
+        strategy_stop = signal.get('initial_stop')
+        
+        # Calculate ATR-based stop and take profit
         atr = data.iloc[idx][self.atr_col]
         stop_multiple = self.config.stop_loss_value
         tp_multiple = self.config.take_profit_value
-        if direction == 1:
-            stop = entry_price - atr * stop_multiple
+        
+        if direction == 1:  # Long position
+            atr_stop = entry_price - atr * stop_multiple
             tp = entry_price + atr * tp_multiple
-        elif direction == -1:
-            stop = entry_price + atr * stop_multiple
+            
+            # Use the stricter (higher) stop between strategy stop and ATR stop
+            if strategy_stop is not None:
+                stop = max(strategy_stop, atr_stop)
+            else:
+                stop = atr_stop
+                
+        elif direction == -1:  # Short position
+            atr_stop = entry_price + atr * stop_multiple
             tp = entry_price - atr * tp_multiple
+            
+            # Use the stricter (lower) stop between strategy stop and ATR stop
+            if strategy_stop is not None:
+                stop = min(strategy_stop, atr_stop)
+            else:
+                stop = atr_stop
+                
         else:
             raise ValueError("Signal direction must be 1 (long) or -1 (short).")
+            
         return {"entry": entry_price, "stop_loss": stop, "take_profit": tp}
 
     def calculate_position_size(self, account_balance: float, entry_price: float, stop_loss: float) -> float:

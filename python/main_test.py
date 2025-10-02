@@ -27,9 +27,14 @@ signals = strategy.generate_signals(df)
 
 # 3. Backtest
 backtester = BacktestEngine(initial_capital=10000)
-result = backtester.run(df, signals)
+backtester.run(df, signals)  # Run the backtest
+
+# Get results using the specific methods
+result = backtester.get_result_dataframe()  # Get result dataframe with equity column
+trades = backtester.get_trades()  # Get list of trades
 
 print("Equity curve: ", result["equity"].tail())
+print("Number of trades: ", len(trades))
 
 # 4. Visualize equity curve vs. price
 buy_markers = df["low"].where(signals == 1) - 0.2  # place arrow at close price

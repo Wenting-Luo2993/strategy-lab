@@ -27,17 +27,19 @@ class BacktestEngine:
         self.initial_capital = initial_capital
         self.equity = [initial_capital]
         self.current_balance = initial_capital
+        self.result_df = None  # Will store the result dataframe after running
 
-    def run(self, df=None, signals=None) -> dict:
+    def run(self, df=None, signals=None) -> None:
         """
-        Runs the backtest loop over the data.
+        Runs the backtest loop over the data and stores results internally.
+        Use get_trades() or get_result_dataframe() to retrieve results.
 
         Args:
             df (pd.DataFrame, optional): DataFrame to use instead of self.data
             signals (pd.Series, optional): Pre-generated signals to use
 
         Returns:
-            dict: Dictionary with trade list and equity curve
+            None
         """
         # Use provided data or fall back to instance data
         data_to_use = df if df is not None else self.data
@@ -60,19 +62,27 @@ class BacktestEngine:
 
             # Entry
             if signal == 1 and position is None:
+                # Get the initial stop from strategy if available
+                initial_stop = None
+                if self.strategy:
+                    is_long = True  # For long signal
+                    initial_stop = self.strategy.initial_stop_value(price, is_long, data_to_use.iloc[i])
+                
                 # Create a signal Series with the required structure for risk_manager.apply()
                 signal_series = pd.Series({
                     'entry_price': price,
                     'signal': signal,
-                    'index': i
+                    'index': i,
+                    'initial_stop': initial_stop  # Include initial stop from strategy
                 })
+                
                 # Apply risk management if available, otherwise use default stop/take profit
                 if self.risk_manager:
                     risk_result = self.risk_manager.apply(signal_series, data_to_use)
                 else:
                     # Default risk management (10% below/above entry)
                     risk_result = {
-                        'stop_loss': price * 0.9,
+                        'stop_loss': initial_stop if initial_stop is not None else price * 0.9,
                         'take_profit': price * 1.1
                     }
                 
@@ -90,13 +100,19 @@ class BacktestEngine:
                     TradeColumns.SIZE.value: position_size,
                     TradeColumns.STOP_LOSS.value: risk_result.get('stop_loss'),
                     TradeColumns.TAKE_PROFIT.value: risk_result.get('take_profit'),
-                    'account_balance': self.current_balance
+                    'account_balance': self.current_balance,
+                    'direction': signal  # Store position direction (1 for long, -1 for short)
                 }
 
             # Exit
             elif signal == -1 and position is not None:
                 exit_price = price
-                pnl = (exit_price - position[TradeColumns.ENTRY_PRICE.value]) * position[TradeColumns.SIZE.value]
+                direction = position.get('direction', 1)  # Default to long if not specified
+                entry_price = position[TradeColumns.ENTRY_PRICE.value]
+                position_size = position[TradeColumns.SIZE.value]
+                
+                # Calculate PnL based on position direction
+                pnl = direction * (exit_price - entry_price) * position_size
                 
                 # Update account balance with trade profit/loss
                 self.current_balance += pnl
@@ -116,20 +132,39 @@ class BacktestEngine:
             elif position is not None:
                 stop_loss = position.get(TradeColumns.STOP_LOSS.value)
                 take_profit = position.get(TradeColumns.TAKE_PROFIT.value)
+                direction = position.get('direction', 1)  # Default to long if direction not specified
                 low = data_to_use["low"].iloc[i]
                 high = data_to_use["high"].iloc[i]
                 exit_reason = None
                 exit_price = None
 
-                if stop_loss is not None and low <= stop_loss:
-                    exit_price = stop_loss
-                    exit_reason = "stop_loss"
-                elif take_profit is not None and high >= take_profit:
-                    exit_price = take_profit
-                    exit_reason = "take_profit"
+                # Unified stop loss/take profit logic using direction
+                # For stop loss: Check if price moved against position direction
+                # For take profit: Check if price moved in position direction
+                if stop_loss is not None:
+                    # For long positions (direction=1): Check if price went below stop
+                    # For short positions (direction=-1): Check if price went above stop
+                    if (direction == 1 and low <= stop_loss) or (direction == -1 and high >= stop_loss):
+                        exit_price = stop_loss
+                        exit_reason = "stop_loss"
+                
+                # Only check take profit if stop loss wasn't triggered
+                if exit_price is None and take_profit is not None:
+                    # For long positions (direction=1): Check if price went above target
+                    # For short positions (direction=-1): Check if price went below target
+                    if (direction == 1 and high >= take_profit) or (direction == -1 and low <= take_profit):
+                        exit_price = take_profit
+                        exit_reason = "take_profit"
 
                 if exit_price is not None:
-                    pnl = (exit_price - position[TradeColumns.ENTRY_PRICE.value]) * position[TradeColumns.SIZE.value]
+                    direction = position.get('direction', 1)  # Default to long if not specified
+                    entry_price = position[TradeColumns.ENTRY_PRICE.value]
+                    position_size = position[TradeColumns.SIZE.value]
+                    
+                    # Calculate PnL based on position direction
+                    # For long (1): (exit - entry) * size
+                    # For short (-1): (entry - exit) * size = direction * (exit - entry) * size
+                    pnl = direction * (exit_price - entry_price) * position_size
                     
                     # Update account balance with trade profit/loss
                     self.current_balance += pnl
@@ -148,7 +183,12 @@ class BacktestEngine:
         # If still in position at end, close at last price
         if position is not None:
             exit_price = data_to_use["close"].iloc[-1]
-            pnl = (exit_price - position[TradeColumns.ENTRY_PRICE.value]) * position[TradeColumns.SIZE.value]
+            direction = position.get('direction', 1)  # Default to long if not specified
+            entry_price = position[TradeColumns.ENTRY_PRICE.value]
+            position_size = position[TradeColumns.SIZE.value]
+            
+            # Calculate PnL based on position direction
+            pnl = direction * (exit_price - entry_price) * position_size
             
             # Update account balance with trade profit/loss
             self.current_balance += pnl
@@ -163,18 +203,31 @@ class BacktestEngine:
             }
             self.trades.append(trade)
         
-        # Create result dictionary with equity curve
+        # Create result dataframe with equity curve
         # Handle case where equity array is longer than data index (common at end of backtest)
         equity_len = min(len(self.equity), len(data_to_use))
         equity_series = pd.Series(self.equity[:equity_len], index=data_to_use.index[:equity_len])
         
-        # For main_test.py compatibility, return DataFrame with equity column
-        result_df = data_to_use.copy()
-        result_df['equity'] = equity_series
+        # Store DataFrame with equity column
+        self.result_df = data_to_use.copy()
+        self.result_df['equity'] = equity_series
         
-        # For backtest_orchestrator.py compatibility
-        if len(self.trades) > 0 and self.config is not None:
-            return self.trades
+        # No return value - results are stored in self.trades and self.result_df
         
-        # Default return format for direct API usage
-        return result_df
+    def get_trades(self):
+        """
+        Get the list of trades from the last backtest run.
+        
+        Returns:
+            list: List of trade dictionaries with entry/exit information
+        """
+        return self.trades
+    
+    def get_result_dataframe(self):
+        """
+        Get the result dataframe with market data and equity curve from the last backtest run.
+        
+        Returns:
+            pd.DataFrame: DataFrame with market data and equity column
+        """
+        return self.result_df

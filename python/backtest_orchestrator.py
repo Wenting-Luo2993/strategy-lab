@@ -199,10 +199,13 @@ def BackTestOrchestrator(dry_run: bool = False):
                 # Run backtest
                 engine = BacktestEngine(strategy, risk_manager, updated_data, config)
                 engine_tracking = track("engine_run", {"ticker": ticker, "config_id": idx})
-                trades = engine.run()
+                engine.run()
                 engine_time = end_track(engine_tracking)
                 log_info(f"  Ran backtest engine in {engine_time:.2f}s")
-
+                
+                # Get trades from the engine
+                trades = engine.get_trades()
+                
                 # Compute metrics
                 metrics_tracking = track("compute_metrics", {"num_trades": len(trades)})
                 metrics = summarize_metrics(trades)

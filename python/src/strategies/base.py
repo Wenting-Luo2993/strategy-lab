@@ -14,6 +14,21 @@ class StrategyBase:
         self.strategy_config = strategy_config
         self.profit_target_func = profit_target_func
 
+    def initial_stop_value(self, entry_price, is_long, row=None):
+        """
+        Calculate the initial stop loss value based on entry price, position direction, and row data.
+        This method can be overridden by subclasses to provide strategy-specific initial stops.
+        
+        Args:
+            entry_price (float): The price at which the position was entered.
+            is_long (bool): True if the position is long, False if short.
+            row (pd.Series, optional): The row of the DataFrame (e.g., df.iloc[i]) for additional context.
+        Returns:
+            float or None: The initial stop loss price. Return None to defer to risk management.
+        """
+        # Base implementation defers to risk management by returning None
+        return None
+    
     def take_profit_value(self, entry_price, is_long, row=None):
         """
         Calculate the take profit value based on entry price, position direction, and row data.
@@ -54,7 +69,7 @@ class StrategyBase:
         else:
             raise NotImplementedError(f"Unknown take profit type: {tp_type}")
 
-    def check_exit(self, position_type, close, take_profit, i, df):
+    def check_exit(self, position_type, close, take_profit, i, df, initial_stop=None):
         """
         Determines if an exit condition is met for the current position.
         Args:
@@ -63,6 +78,7 @@ class StrategyBase:
             take_profit (float): Take profit price.
             i (int): Current index in the DataFrame.
             df (pd.DataFrame): The full DataFrame (for EOD logic).
+            initial_stop (float, optional): Initial stop loss price.
         Returns:
             bool: True if exit condition is met, False otherwise.
         """
@@ -71,6 +87,12 @@ class StrategyBase:
             return True
         if position_type == -1 and close <= take_profit:
             return True
+        # Initial stop loss exit (if provided)
+        if initial_stop is not None:
+            if position_type == 1 and close <= initial_stop:
+                return True
+            if position_type == -1 and close >= initial_stop:
+                return True
         # End of day exit
         if i == len(df) - 1:
             return True

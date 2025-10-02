@@ -29,7 +29,7 @@ class RiskManagement(ABC):
         Must be implemented by subclasses.
         
         Args:
-            signal (dict): Trade signal to modify.
+            signal (dict): Trade signal to modify. May contain 'initial_stop' from the strategy.
             data (pd.DataFrame): Market data relevant to the trade.
         Returns:
             dict: Modified trade signal with risk management applied.
