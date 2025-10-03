@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 
 # Import RiskConfig from parameters.py
-from ..backtester.parameters import RiskConfig, TrailingStopConfig
+from ..config.parameters import RiskConfig
 
 class RiskManagement(ABC):
     """

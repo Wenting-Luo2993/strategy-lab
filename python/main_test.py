@@ -3,7 +3,7 @@
 from matplotlib import pyplot as plt
 from src.backtester.data_fetcher import fetch_backtest_data
 from src.backtester.engine import BacktestEngine
-from src.backtester.parameters import load_strategy_parameters
+from src.config.parameters import load_strategy_parameters
 from src.data.base import DataLoaderFactory, DataSource, Timeframe
 from src.data.cache import CacheDataLoader
 from src.indicators import add_basic_indicators, calculate_orb_levels
@@ -60,9 +60,9 @@ from src.data.base import DataLoaderFactory, DataSource, Timeframe
 from src.data.cache import CacheDataLoader
 loader = DataLoaderFactory.create(DataSource.YAHOO, interval=Timeframe.MIN_5.value)
 cachedLoader = CacheDataLoader(loader)  # Wrap with cache
-end_date = datetime(2025, 9, 29).date()
+end_date = datetime(2025, 10, 3).date()
 start_date = end_date - timedelta(days=55)
-df = cachedLoader.fetch("SQ", timeframe=Timeframe.MIN_5.value, start=start_date, end=end_date)
+df = cachedLoader.fetch("AAPL", timeframe=Timeframe.MIN_5.value, start=start_date, end=end_date)
 
 print(df.tail())
 print(df.describe())

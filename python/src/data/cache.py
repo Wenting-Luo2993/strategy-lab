@@ -34,7 +34,7 @@ class CacheDataLoader(DataLoader):
 
         # 2. Fetch via wrapped loader
         logger.debug(f"Miss → fetching {symbol} {timeframe} from API")
-        df = self.wrapped_loader.fetch(symbol, timeframe, start, end)  # Fixed parameter order
+        df = self.wrapped_loader.fetch(symbol, start, end)  # Fixed parameter order
 
         # 3. Store in cache
         df.to_parquet(cache_file)

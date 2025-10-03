@@ -1,7 +1,6 @@
 import pandas as pd
 
 from ..risk_management.base import RiskManagement
-from .parameters import StrategyConfig
 from ..strategies.base import StrategyBase
 from ..config.columns import TradeColumns
 
@@ -18,7 +17,7 @@ class BacktestEngine:
         initial_capital (float): Starting capital amount
     """
 
-    def __init__(self, strategy=None, risk_manager=None, data=None, config=None, initial_capital: float = 10000):
+    def __init__(self, strategy: StrategyBase =None, risk_manager: RiskManagement =None, data=None, config=None, initial_capital: float = 10000):
         self.strategy = strategy
         self.risk_manager = risk_manager
         self.data = data

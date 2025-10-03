@@ -4,7 +4,7 @@ FixedATRStop: Risk management strategy using fixed and trailing ATR-based stops 
 import pandas as pd
 from typing import Dict, Optional
 from .base import RiskManagement
-from ..backtester.parameters import RiskConfig, TrailingStopConfig
+from ..config.parameters import RiskConfig, TrailingStopConfig
 
 class FixedATRStop(RiskManagement):
     """

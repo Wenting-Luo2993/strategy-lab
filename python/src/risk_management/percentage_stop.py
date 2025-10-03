@@ -4,7 +4,7 @@ PercentageStop: Risk management strategy using percentage-based stops and target
 import pandas as pd
 from typing import Dict, Optional
 from .base import RiskManagement
-from ..backtester.parameters import RiskConfig, TrailingStopConfig
+from ..config.parameters import RiskConfig, TrailingStopConfig
 
 class PercentageStop(RiskManagement):
     """

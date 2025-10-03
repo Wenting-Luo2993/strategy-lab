@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.backtester.parameters import StrategyConfig
+from src.config import StrategyConfig
 from src.indicators import IndicatorFactory
 
 class StrategyBase:
