@@ -1,4 +1,3 @@
-
 import numpy as np
 from typing import List, Dict, Any
 
@@ -24,8 +23,8 @@ def win_rate(trades: List[Dict[str, Any]]) -> float:
 def expectancy(trades: List[Dict[str, Any]]) -> float:
     if not trades:
         return 0.0
-    win_trades = [t[TradeColumns.PNL.value] for t in trades if t[TradeColumns.PNL.value] > 0]
-    loss_trades = [t[TradeColumns.PNL.value] for t in trades if t[TradeColumns.PNL.value] < 0]
+    win_trades = [t[TradeColumns.PNL.value] / abs(t[TradeColumns.ENTRY_PRICE.value] - t[TradeColumns.STOP_LOSS.value]) for t in trades if t[TradeColumns.PNL.value] > 0]
+    loss_trades = [t[TradeColumns.PNL.value] / abs(t[TradeColumns.ENTRY_PRICE.value] - t[TradeColumns.STOP_LOSS.value]) for t in trades if t[TradeColumns.PNL.value] < 0]
     win_rate_val = win_rate(trades)
     avg_win = np.mean(win_trades) if win_trades else 0.0
     avg_loss = np.mean(loss_trades) if loss_trades else 0.0
@@ -34,19 +33,21 @@ def expectancy(trades: List[Dict[str, Any]]) -> float:
 def max_drawdown(trades: List[Dict[str, Any]]) -> float:
     if not trades:
         return 0.0
-    equity_curve = np.cumsum([t[TradeColumns.PNL.value] for t in trades])
-    peak = np.maximum.accumulate(equity_curve)
-    drawdown = equity_curve - peak
+    equity_curve = [t[TradeColumns.ACCOUNT_BALANCE.value] for t in trades]
+    running_max = np.maximum.accumulate(equity_curve)
+    drawdown = (equity_curve - running_max) / running_max
     return float(np.min(drawdown))
 
-def sharpe_ratio(trades: List[Dict[str, Any]], risk_free_rate: float = 0.0) -> float:
-    if not trades:
+def sharpe_ratio(trades: List[Dict[str, Any]], risk_free_rate: float = 0.0412) -> float:
+    if not trades or len(trades) < 10:
         return 0.0
-    returns = [t[TradeColumns.PNL.value] for t in trades]
-    if len(returns) < 2:
-        return 0.0
-    excess_returns = np.array(returns) - risk_free_rate
-    return float(np.mean(excess_returns) / np.std(excess_returns)) if np.std(excess_returns) != 0 else 0.0
+    # Calculate percentage changes in ACCOUNT_BALANCE for returns
+    balances = [t[TradeColumns.ACCOUNT_BALANCE.value] for t in trades]
+    returns = np.diff(balances) / balances[:-1] * 100  # Percentage changes
+    overall_return = (balances[-1] - balances[0]) / balances[0]
+    std_returns = np.std(returns) if len(returns) > 1 else 0.0
+    print("overall_return:", overall_return, "std_returns:", std_returns)
+    return (overall_return - risk_free_rate) * 100 / std_returns if std_returns != 0 else 0.0
 
 def profit_factor(trades: List[Dict[str, Any]]) -> float:
     gross_profit = sum(t[TradeColumns.PNL.value] for t in trades if t[TradeColumns.PNL.value] > 0)
@@ -56,7 +57,7 @@ def profit_factor(trades: List[Dict[str, Any]]) -> float:
 def average_trade_return(trades: List[Dict[str, Any]]) -> float:
     if not trades:
         return 0.0
-    returns = [t[TradeColumns.PNL.value] / t[TradeColumns.ENTRY_PRICE.value] for t in trades if t[TradeColumns.ENTRY_PRICE.value] != 0]
+    returns = [t[TradeColumns.PNL.value] / t[TradeColumns.ACCOUNT_BALANCE.value] for t in trades if t[TradeColumns.ACCOUNT_BALANCE.value] != 0]
     return float(np.mean(returns)) if returns else 0.0
 
 def average_holding_time(trades: List[Dict[str, Any]]) -> float:
