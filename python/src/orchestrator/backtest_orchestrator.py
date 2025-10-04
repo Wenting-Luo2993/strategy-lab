@@ -1,4 +1,3 @@
-# %%
 from typing import List
 import sys
 from pathlib import Path
@@ -81,11 +80,13 @@ def BackTestOrchestrator(dry_run: bool = False):
         log_info("RUNNING IN DRY RUN MODE - Testing with one config on one ticker only", console=True)
     
     # Paths
-    results_dir = Path(__file__).parent / 'results'
+    results_dir = Path(__file__).parent.parent.parent / 'results'
     
     # Add [DryRun] prefix to file name if in dry run mode
     file_prefix = "[DryRun]_" if dry_run else ""
-    results_file = results_dir / f'{file_prefix}{strategy_name}_backtest_results.csv'
+    config_file = results_dir / f'{file_prefix}{strategy_name}_configs.csv'
+    regime_results_file = results_dir / f'{file_prefix}{strategy_name}_config_metrics.csv'
+    trades_file = results_dir / f'{file_prefix}{strategy_name}_trades.csv'
 
     # Ensure results directory exists
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -243,13 +244,6 @@ def BackTestOrchestrator(dry_run: bool = False):
     # Log overall completion
     log_info("All tickers and configs processed successfully")
 
-    # Convert collected config results to DataFrame for return value
-    df_results = pd.DataFrame(all_results)
-
-    # Persist config metadata mapping for later reference
-    df_results.to_csv(results_file, index=False)
-    log_info(f"Saved configuration map to {results_file}", console=True)
-
     # Process all trades after all tickers and configs are processed
     if all_trades:
         log_info("Computing metrics across all trades", console=True)
@@ -261,19 +255,24 @@ def BackTestOrchestrator(dry_run: bool = False):
             group_by=[TradeColumns.TICKER_REGIME.value, "configID"]
         )
 
-        metrics_time = end_track(metrics_tracking)
-        log_info(f"Computed and saved all metrics in {metrics_time:.2f}s", console=True)
+        _ = end_track(metrics_tracking)
 
+        # Saving all results
         save_tracking = track("save_all_results")
+
         df_regime_metrics = pd.DataFrame(regime_metrics)
-        regime_results_file = results_dir / f'{file_prefix}{strategy_name}_regime_metrics.csv'
         df_regime_metrics.to_csv(regime_results_file, index=False)
         log_info(f"Saved regime metrics to {regime_results_file}", console=True)
 
         # Persist raw trades for reference
-        trades_file = results_dir / f'{file_prefix}{strategy_name}_trades.csv'
         pd.DataFrame(all_trades).to_csv(trades_file, index=False)
         log_info(f"Saved {len(all_trades)} trades to {trades_file}", console=True)
+
+        # Persist config metadata mapping for later reference
+        df_results = pd.DataFrame(all_results)
+        df_results.to_csv(config_file, index=False)
+        log_info(f"Saved configuration map to {config_file}", console=True)
+
         _ = end_track(save_tracking)
 
     # End tracking for the main orchestrator function
@@ -293,7 +292,3 @@ def BackTestOrchestrator(dry_run: bool = False):
     tracker.log_slow_operations(threshold_seconds=0.5)
     
     return df_results
-
-# Run the orchestrator
-results_df = BackTestOrchestrator(dry_run=dry_run_mode)
-# %%
