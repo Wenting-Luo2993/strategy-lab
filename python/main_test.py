@@ -1,6 +1,7 @@
 
 # %%
 from matplotlib import pyplot as plt
+from src.risk_management.fixed_atr_stop import FixedATRStop
 from src.backtester.data_fetcher import fetch_backtest_data
 from src.backtester.engine import BacktestEngine
 from src.config.parameters import load_strategy_parameters
@@ -19,14 +20,15 @@ df = add_basic_indicators(df)
 
 df = calculate_orb_levels(df)  # First 5 minutes
 
-# 2. Strategy
+# 2. Strategy & risk management
 configs = load_strategy_parameters()
 print(f"Loaded {len(configs)} strategy configurations.")
 strategy = ORBStrategy(strategy_config=configs[0])
 signals = strategy.generate_signals(df)
+risk_manager = FixedATRStop(configs[0].risk)
 
 # 3. Backtest
-backtester = BacktestEngine(initial_capital=10000)
+backtester = BacktestEngine(strategy=strategy, risk_manager=risk_manager, initial_capital=10000)
 backtester.run(df, signals)  # Run the backtest
 
 # Get results using the specific methods

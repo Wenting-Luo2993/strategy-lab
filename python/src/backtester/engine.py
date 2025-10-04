@@ -3,6 +3,7 @@ import pandas as pd
 from ..risk_management.base import RiskManagement
 from ..strategies.base import StrategyBase
 from ..config.columns import TradeColumns
+from ..config.Enums import Regime
 
 
 class BacktestEngine:
@@ -27,6 +28,36 @@ class BacktestEngine:
         self.equity = [initial_capital]
         self.current_balance = initial_capital
         self.result_df = None  # Will store the result dataframe after running
+        
+    def _determine_ticker_regime(self, df, index) -> str:
+        """
+        Determine ticker regime based on RSI value.
+        
+        Args:
+            df: DataFrame with market data
+            index: Current row index
+            
+        Returns:
+            str: Ticker regime ('bull', 'bear', or 'sideways')
+        """
+        # Find any column that starts with 'RSI'
+        rsi_cols = [col for col in df.columns if col.startswith('RSI')]
+        
+        # If no RSI column found, return 'sideways' as default
+        if not rsi_cols:
+            return Regime.SIDEWAYS.value
+            
+        # Use the first RSI column found
+        rsi_col = rsi_cols[0]
+        rsi_value = df[rsi_col].iloc[index]
+        
+        # Check RSI thresholds
+        if rsi_value >= 60:
+            return Regime.BULL.value
+        elif rsi_value <= 40:
+            return Regime.BEAR.value
+        else:
+            return Regime.SIDEWAYS.value
 
     def run(self, df=None, signals=None) -> None:
         """
@@ -41,7 +72,7 @@ class BacktestEngine:
             None
         """
         # Use provided data or fall back to instance data
-        data_to_use = df if df is not None else self.data
+        data_to_use: pd.DataFrame = df if df is not None else self.data
         
         position = None  # None or dict with entry info
         # Reset equity tracking and trades list
@@ -91,6 +122,9 @@ class BacktestEngine:
                     risk_per_trade = self.config.risk.risk_per_trade
                 position_size = risk_per_trade * self.current_balance
                 
+                # Determine ticker regime at entry
+                ticker_regime = self._determine_ticker_regime(data_to_use, i)
+                
                 # Create position dictionary with trade information
                 position = {
                     TradeColumns.ENTRY_IDX.value: i,
@@ -101,6 +135,8 @@ class BacktestEngine:
                     TradeColumns.TAKE_PROFIT.value: risk_result.get('take_profit'),
                     TradeColumns.ACCOUNT_BALANCE.value: self.current_balance,
                     TradeColumns.DIRECTION.value: signal,  # Store position direction (1 for long, -1 for short)
+                    # Store ticker regime information
+                    TradeColumns.TICKER_REGIME.value: ticker_regime,
                     # Store trailing stop data if provided
                     TradeColumns.TRAILING_STOP_DATA.value: risk_result.get('trailing_stop_data', None)
                 }

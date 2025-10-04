@@ -1,14 +1,15 @@
 # %%
-import logging
 from typing import List
-import pandas as pd
+import sys
 from pathlib import Path
+import pandas as pd
 
 from src.utils.logger import setup_root_logger, get_logger
 from src.utils.performance import track, end_track, PerformanceTracker
 from src.backtester.engine import BacktestEngine
 from src.backtester.metrics import summarize_metrics
-from python.src.config.parameters import load_strategy_parameters, StrategyConfig
+from src.config.parameters import load_strategy_parameters, StrategyConfig
+from src.config.columns import TradeColumns
 from src.backtester.data_fetcher import fetch_backtest_data
 from src.strategies.orb import ORBStrategy
 from src.risk_management.fixed_atr_stop import FixedATRStop
@@ -110,13 +111,15 @@ def BackTestOrchestrator(dry_run: bool = False):
         log_info(f"Filtered ticker data: {len(data)} tickers with sufficient data in {filter_time:.2f}s")
         
         # Ensure required indicators exist based on config
-        required_indicators = []
-        # Check if ATR is needed for stop loss or take profit
-        required_indicators.append({
+        required_indicators = [{
             'name': 'atr',
-            'params': {'length': 14},
+            'params': {'length': 14, "use_days": True},
             'column': 'ATRr_14'
-        }) 
+        }, {
+            'name': 'rsi',
+            'params': {'length': 14, "use_days": True},
+            'column': 'RSI_14'
+        }]
         
         # Ensure all required indicators exist for each ticker
         indicators_tracking = track("add_base_indicators")
@@ -129,7 +132,7 @@ def BackTestOrchestrator(dry_run: bool = False):
 
     clean_data_tracking = track("clean_and_add_indicators")
     ticker_data = clean_data_add_indicators(ticker_data)
-    clean_data_time = end_track(clean_data_tracking)
+    _ = end_track(clean_data_tracking)
     
     # If in dry run mode, only use the first ticker and first config
     if dry_run:
@@ -149,7 +152,9 @@ def BackTestOrchestrator(dry_run: bool = False):
     log_info(f"Grouped configs in {group_time:.2f}s")
     
     # Process each ticker with all configs grouped by ORB parameters
-    all_results = []
+    # Collect per-config results and all trades for metrics at the end
+    all_results: List[dict] = []
+    all_trades: List[dict] = []
     for ticker, data in ticker_data.items():
         ticker_tracking = track("process_ticker", {"ticker": ticker})
         log_info(f"Processing ticker: {ticker}", console=True)
@@ -205,25 +210,24 @@ def BackTestOrchestrator(dry_run: bool = False):
                 
                 # Get trades from the engine
                 trades = engine.get_trades()
-                
-                # Compute metrics
-                metrics_tracking = track("compute_metrics", {"num_trades": len(trades)})
-                metrics = summarize_metrics(trades)
-                metrics_time = end_track(metrics_tracking)
-                log_info(f"  Computed metrics in {metrics_time:.2f}s")
 
-                # Create base result with ticker and config ID
-                result = {"ticker": ticker, "configID": idx}
-                # Add non-nested config properties
-                result["entry_volume_filter"] = config.entry_volume_filter
-                result["eod_exit"] = config.eod_exit
-                
-                # Combine all dictionaries
+                # Collect run summary for later export
+                result = {
+                    "ticker": ticker,
+                    "configID": idx,
+                    "entry_volume_filter": config.entry_volume_filter,
+                    "eod_exit": config.eod_exit,
+                }
                 result.update(orb_dict)
                 result.update(risk_dict)
-                result.update(metrics)
-                
                 all_results.append(result)
+
+                # Store trades with minimal metadata for metrics aggregation
+                trades_with_context = [{**trade, "ticker": ticker, "configID": idx} for trade in trades]
+                all_trades.extend(trades_with_context)
+
+                # Log the number of trades found
+                log_info(f"  Found {len(trades)} trades for ticker {ticker}, config {idx}")
                 
                 # End tracking for this config
                 config_time = end_track(config_tracking)
@@ -239,12 +243,38 @@ def BackTestOrchestrator(dry_run: bool = False):
     # Log overall completion
     log_info("All tickers and configs processed successfully")
 
-    # Save all results to CSV
-    save_tracking = track("save_results")
+    # Convert collected config results to DataFrame for return value
     df_results = pd.DataFrame(all_results)
+
+    # Persist config metadata mapping for later reference
     df_results.to_csv(results_file, index=False)
-    save_time = end_track(save_tracking)
-    log_info(f"All backtest results saved to {results_file} in {save_time:.2f}s")
+    log_info(f"Saved configuration map to {results_file}", console=True)
+
+    # Process all trades after all tickers and configs are processed
+    if all_trades:
+        log_info("Computing metrics across all trades", console=True)
+        metrics_tracking = track("compute_all_metrics")
+
+        # Calculate metrics grouped by ticker regime and configuration
+        regime_metrics = summarize_metrics(
+            all_trades,
+            group_by=[TradeColumns.TICKER_REGIME.value, "configID"]
+        )
+
+        metrics_time = end_track(metrics_tracking)
+        log_info(f"Computed and saved all metrics in {metrics_time:.2f}s", console=True)
+
+        save_tracking = track("save_all_results")
+        df_regime_metrics = pd.DataFrame(regime_metrics)
+        regime_results_file = results_dir / f'{file_prefix}{strategy_name}_regime_metrics.csv'
+        df_regime_metrics.to_csv(regime_results_file, index=False)
+        log_info(f"Saved regime metrics to {regime_results_file}", console=True)
+
+        # Persist raw trades for reference
+        trades_file = results_dir / f'{file_prefix}{strategy_name}_trades.csv'
+        pd.DataFrame(all_trades).to_csv(trades_file, index=False)
+        log_info(f"Saved {len(all_trades)} trades to {trades_file}", console=True)
+        _ = end_track(save_tracking)
 
     # End tracking for the main orchestrator function
     total_time = end_track(main_tracking)

@@ -14,6 +14,7 @@ class MetricsColumns(Enum):
     AVERAGE_TRADE_RETURN = "average_trade_return"
     AVERAGE_HOLDING_TIME = "average_holding_time"
     NUM_TRADES = "num_trades"
+    TICKER_REGIME = "ticker_regime"
 
 def win_rate(trades: List[Dict[str, Any]]) -> float:
     wins = [t for t in trades if t[TradeColumns.PNL.value] > 0]
@@ -67,7 +68,22 @@ def average_holding_time(trades: List[Dict[str, Any]]) -> float:
     ]
     return float(np.mean(holding_times)) if holding_times else 0.0
 
-def summarize_metrics(trades: List[Dict[str, Any]]) -> Dict[str, float]:
+def calculate_trade_metrics(trades: List[Dict[str, Any]]) -> Dict[str, float]:
+    """
+    Calculate standard metrics for a set of trades.
+    """
+    if not trades:
+        return {
+            MetricsColumns.WIN_RATE.value: 0.0,
+            MetricsColumns.EXPECTANCY.value: 0.0,
+            MetricsColumns.MAX_DRAWDOWN.value: 0.0,
+            MetricsColumns.SHARPE_RATIO.value: 0.0,
+            MetricsColumns.PROFIT_FACTOR.value: 0.0,
+            MetricsColumns.AVERAGE_TRADE_RETURN.value: 0.0,
+            MetricsColumns.AVERAGE_HOLDING_TIME.value: 0.0,
+            MetricsColumns.NUM_TRADES.value: 0
+        }
+        
     return {
         MetricsColumns.WIN_RATE.value: win_rate(trades),
         MetricsColumns.EXPECTANCY.value: expectancy(trades),
@@ -78,3 +94,49 @@ def summarize_metrics(trades: List[Dict[str, Any]]) -> Dict[str, float]:
         MetricsColumns.AVERAGE_HOLDING_TIME.value: average_holding_time(trades),
         MetricsColumns.NUM_TRADES.value: len(trades)
     }
+
+def summarize_metrics(trades: List[Dict[str, Any]], group_by: List[str] = None) -> List[Dict[str, Any]]:
+    """
+    Summarize metrics for all trades, optionally grouped by specified fields.
+    
+    Args:
+        trades: List of trade dictionaries
+        group_by: List of fields to group by (e.g., ['ticker_regime', 'configID'])
+                 If None, metrics will be calculated for all trades together
+    
+    Returns:
+        List of dictionaries, each containing group keys and metrics
+    """
+    if not trades:
+        return [calculate_trade_metrics([])]
+        
+    # If no grouping specified, calculate metrics for all trades
+    if not group_by:
+        return [calculate_trade_metrics(trades)]
+        
+    # Group trades by the specified fields
+    groups = {}
+    for trade in trades:
+        # Create a key tuple from the values of the specified fields
+        key = tuple(trade.get(field, 'unknown') for field in group_by)
+        
+        if key not in groups:
+            groups[key] = []
+            
+        groups[key].append(trade)
+    
+    # Calculate metrics for each group
+    results = []
+    for key, group_trades in groups.items():
+        # Create a dictionary with group keys
+        result = {field: value for field, value in zip(group_by, key)}
+        
+        # Calculate metrics for this group
+        metrics = calculate_trade_metrics(group_trades)
+        
+        # Add metrics to the result
+        result.update(metrics)
+        
+        results.append(result)
+        
+    return results

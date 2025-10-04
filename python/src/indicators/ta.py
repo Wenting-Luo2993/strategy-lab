@@ -98,7 +98,7 @@ class IndicatorFactory:
                 )
                 
                 # Forward fill daily values to ensure each bar in a day has the same value
-                filled = reindexed.fillna(method='ffill')
+                filled = reindexed.ffill()
                 
                 # Map to original DataFrame's index
                 result_df[col] = filled.reindex(original_df.index, method='ffill')

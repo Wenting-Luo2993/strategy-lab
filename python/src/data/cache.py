@@ -33,7 +33,7 @@ class CacheDataLoader(DataLoader):
             return pd.read_parquet(cache_file)
 
         # 2. Fetch via wrapped loader
-        logger.debug(f"Miss → fetching {symbol} {timeframe} from API")
+        logger.debug(f"Cache miss -> fetching {symbol} {timeframe} from API")
         df = self.wrapped_loader.fetch(symbol, start, end)  # Fixed parameter order
 
         # 3. Store in cache

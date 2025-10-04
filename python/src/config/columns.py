@@ -28,6 +28,9 @@ class TradeColumns(Enum):
     ACCOUNT_BALANCE = "account_balance"
     DIRECTION = "direction"  # 1 for long, -1 for short
     
+    # Market condition information
+    TICKER_REGIME = "ticker_regime"
+    
     # Trailing stop information
     TRAILING_STOP_DATA = "trailing_stop_data"
     TRAILING_ACTIVE = "trailing_active"
