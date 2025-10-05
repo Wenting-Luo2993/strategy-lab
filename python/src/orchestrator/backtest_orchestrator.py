@@ -59,12 +59,14 @@ def group_configs_by_orb_params(configs: List[StrategyConfig]):
 
     return grouped_configs
 
-def BackTestOrchestrator(dry_run: bool = False):
+def BackTestOrchestrator(dry_run: bool = False, single_config_index: int = None, hard_rewrite: bool = False):
     """
     Orchestrate the backtesting process across multiple tickers and configurations.
     
     Args:
         dry_run: If True, only run one config on one ticker as a quick test
+        single_config_index: If provided, runs the specified config index on all tickers
+        hard_rewrite: If True, overwrites result CSVs even when not in dry run mode. Defaults to False
     """
     # Initialize and reset performance tracker
     tracker = PerformanceTracker.get_instance()
@@ -79,8 +81,11 @@ def BackTestOrchestrator(dry_run: bool = False):
     if dry_run:
         log_info("RUNNING IN DRY RUN MODE - Testing with one config on one ticker only", console=True)
     
+    if single_config_index is not None:
+        log_info(f"RUNNING IN SINGLE CONFIG MODE - Using config index {single_config_index} on all tickers", console=True)
+    
     # Paths
-    results_dir = Path(__file__).parent.parent.parent / 'results'
+    results_dir = Path(__file__).parent.parent.parent / 'results' / 'backtest'
     
     # Add [DryRun] prefix to file name if in dry run mode
     file_prefix = "[DryRun]_" if dry_run else ""
@@ -96,6 +101,13 @@ def BackTestOrchestrator(dry_run: bool = False):
     configs: List[StrategyConfig] = load_strategy_parameters()
     load_time = end_track(load_params_tracking)
     log_info(f"Loaded {len(configs)} strategy configurations in {load_time:.2f}s", console=True)
+
+    # If single_config_index is specified, filter configs to only that index
+    if single_config_index is not None:
+        if single_config_index < 0 or single_config_index >= len(configs):
+            raise ValueError(f"Invalid config index: {single_config_index}. Must be between 0 and {len(configs) - 1}.")
+        configs = [configs[single_config_index]]
+        log_info(f"Using only config index {single_config_index}", console=True)
 
     # Fetch all ticker data
     fetch_data_tracking = track("fetch_data")
@@ -158,7 +170,7 @@ def BackTestOrchestrator(dry_run: bool = False):
     all_trades: List[dict] = []
     for ticker, data in ticker_data.items():
         ticker_tracking = track("process_ticker", {"ticker": ticker})
-        log_info(f"Processing ticker: {ticker}", console=True)
+        log_info(f"Processing ticker: {ticker}")
         
         # Process each group of configs with the same ORB parameters
         for orb_params, config_group in grouped_configs.items():
@@ -166,8 +178,8 @@ def BackTestOrchestrator(dry_run: bool = False):
             
             param_group_tracking = track("process_orb_param_group", 
                                         {"timeframe": timeframe, "start_time": start_time, "body_pct": body_pct})
-            log_info(f" Processing ORB parameter group: {timeframe}m from {start_time} with {body_pct} body percent", console=True)
-            log_info(f" This group contains {len(config_group)} different configs", console=True)
+            log_info(f" Processing ORB parameter group: {timeframe}m from {start_time} with {body_pct} body percent")
+            log_info(f" This group contains {len(config_group)} different configs")
             
             # Calculate ORB levels once for this parameter group
             required_indicators = [{
@@ -235,14 +247,14 @@ def BackTestOrchestrator(dry_run: bool = False):
                 
             # End tracking for this parameter group
             param_group_time = end_track(param_group_tracking)
-            log_info(f"    Completed processing config group {orb_params} for ticker: {ticker} in {param_group_time:.2}s", console=True)
+            log_info(f"    Completed processing config group {orb_params} for ticker: {ticker} in {param_group_time:.2}s")
                 
         # End tracking for this ticker
         ticker_time = end_track(ticker_tracking)
         log_info(f"Completed processing ticker {ticker} with all configs in {ticker_time:.2f}s")
 
     # Log overall completion
-    log_info("All tickers and configs processed successfully")
+    log_info("All tickers and configs processed successfully", console=True)
 
     # Process all trades after all tickers and configs are processed
     if all_trades:
@@ -260,17 +272,18 @@ def BackTestOrchestrator(dry_run: bool = False):
         # Saving all results
         save_tracking = track("save_all_results")
 
+        write_mode = 'w' if dry_run or hard_rewrite else 'a'
         df_regime_metrics = pd.DataFrame(regime_metrics)
-        df_regime_metrics.to_csv(regime_results_file, index=False)
+        df_regime_metrics.to_csv(regime_results_file, index=False, mode=write_mode, header=not regime_results_file.exists())
         log_info(f"Saved regime metrics to {regime_results_file}", console=True)
 
         # Persist raw trades for reference
-        pd.DataFrame(all_trades).to_csv(trades_file, index=False)
+        pd.DataFrame(all_trades).to_csv(trades_file, index=False, mode=write_mode, header=not trades_file.exists())
         log_info(f"Saved {len(all_trades)} trades to {trades_file}", console=True)
 
         # Persist config metadata mapping for later reference
         df_results = pd.DataFrame(all_results)
-        df_results.to_csv(config_file, index=False)
+        df_results.to_csv(config_file, index=False, mode=write_mode, header=not config_file.exists())
         log_info(f"Saved configuration map to {config_file}", console=True)
 
         _ = end_track(save_tracking)

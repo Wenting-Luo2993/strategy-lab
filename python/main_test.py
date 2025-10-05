@@ -73,6 +73,6 @@ print(df.describe())
 from src.orchestrator.backtest_orchestrator import BackTestOrchestrator
 
 # Run the orchestrator
-results_df = BackTestOrchestrator(dry_run=True)
+results_df = BackTestOrchestrator(dry_run=False, single_config_index=0)
 
 # %%

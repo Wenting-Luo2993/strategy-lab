@@ -1,16 +1,16 @@
 orb:
-  timeframe: ["5m", "15m", "30m"]
+  timeframe: ["5"]
   start_time: ["09:30"]
-  body_breakout_percentage: [0.1, 0.2, 0.5, 0.6, 0.8, 1] # percentage of candle size
+  body_breakout_percentage: [0.1, 0.2, 0.5, 0.6, 0.8] # percentage of candle size
 
 entry:
   volume_filter: [1.0, 1.2, 1.5] # relative volume threshold
-  trend_filter: [true, false]
+  trend_filter: [true]
 
 risk:
   stop_loss:
-    - type: "percent"
-      values: [0.5, 1.0, 2.0]
+    # - type: "percent"
+    #   values: [0.5, 1.0, 2.0]
     - type: "atr"
       values: [1.0, 1.5, 2.0]
   risk_per_trade: [0.005, 0.01, 0.02] # 0.5%, 1%, 2%
@@ -36,10 +36,10 @@ exit:
   take_profit:
     - type: "atr"
       values: [1.0, 2.0, 3.0]
-    - type: "percent"
-      values: [1.0, 2.0]
+    # - type: "percent"
+    #   values: [1.0, 2.0]
   eod_exit: [true]
 
 trade_management:
-  max_trades_per_day: [1, 2, 3]
+  # max_trades_per_day: [1, 2, 3]
   position_sizing: ["fixed", "risk_percent"]
