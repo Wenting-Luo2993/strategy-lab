@@ -46,7 +46,6 @@ def sharpe_ratio(trades: List[Dict[str, Any]], risk_free_rate: float = 0.0412) -
     returns = np.diff(balances) / balances[:-1] * 100  # Percentage changes
     overall_return = (balances[-1] - balances[0]) / balances[0]
     std_returns = np.std(returns) if len(returns) > 1 else 0.0
-    print("overall_return:", overall_return, "std_returns:", std_returns)
     return (overall_return - risk_free_rate) * 100 / std_returns if std_returns != 0 else 0.0
 
 def profit_factor(trades: List[Dict[str, Any]]) -> float:

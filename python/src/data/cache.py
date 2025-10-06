@@ -34,7 +34,10 @@ class CacheDataLoader(DataLoader):
 
         # 2. Fetch via wrapped loader
         logger.debug(f"Cache miss -> fetching {symbol} {timeframe} from API")
-        df = self.wrapped_loader.fetch(symbol, start, end)  # Fixed parameter order
+        df: pd.DataFrame = self.wrapped_loader.fetch(symbol, start, end)
+        if df.empty:
+            logger.error(f"Failed to fetch data for {symbol}. DataFrame is empty.")
+            return df
 
         # 3. Store in cache
         df.to_parquet(cache_file)

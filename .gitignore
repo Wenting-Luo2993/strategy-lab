@@ -10,7 +10,7 @@ ENV/
 **/.venv312/
 
 # IDEs
-.vscode/
+.vscode/settings.json
 .idea/
 
 # Jupyter

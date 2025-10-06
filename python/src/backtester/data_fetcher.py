@@ -45,6 +45,8 @@ def fetch_ticker_data(tickers, interval, start_date, end_date, batch_size=5, max
                         start=str(start_date),
                         end=str(end_date)
                     )
+                    if df.empty:
+                        break
                     results[ticker] = df
                     break
                 except Exception as e:
@@ -64,7 +66,7 @@ def fetch_backtest_data():
         config = yaml.safe_load(f)
     tickers = [t for _, tickers in config.items() for t in tickers]
     logger.info("Fetching data for tickers: %s", tickers)
-    end_date = datetime(2025, 9, 29).date()
+    end_date = datetime(2025, 10, 5).date()
     start_date = end_date - timedelta(days=55)
     data = fetch_ticker_data(tickers, interval=Timeframe.MIN_5.value, start_date=start_date, end_date=end_date, batch_size=5)
     logger.info("Fetched data for %d tickers.", len(data))

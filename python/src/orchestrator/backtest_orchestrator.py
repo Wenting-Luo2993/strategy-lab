@@ -264,7 +264,7 @@ def BackTestOrchestrator(dry_run: bool = False, single_config_index: int = None,
         # Calculate metrics grouped by ticker regime and configuration
         regime_metrics = summarize_metrics(
             all_trades,
-            group_by=[TradeColumns.TICKER_REGIME.value, "configID"]
+            group_by=[TradeColumns.TICKER_REGIME.value, "configID", "ticker"]
         )
 
         _ = end_track(metrics_tracking)

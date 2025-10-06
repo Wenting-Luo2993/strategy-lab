@@ -52,7 +52,7 @@ plot_candlestick(result, indicators=["SMA_20", "ORB_High", "ORB_Low", "equity"],
 
 print("Main function executed successfully.")
 
-# %%
+# %% Test fetch data for backtester
 from src.backtester.data_fetcher import fetch_backtest_data
 fetch_backtest_data()
 
@@ -69,7 +69,7 @@ df = cachedLoader.fetch("AAPL", timeframe=Timeframe.MIN_5.value, start=start_dat
 print(df.tail())
 print(df.describe())
 
-# %%
+# %% Backtest
 from src.orchestrator.backtest_orchestrator import BackTestOrchestrator
 
 # Run the orchestrator

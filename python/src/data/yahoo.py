@@ -9,8 +9,10 @@ class YahooDataLoader(DataLoader):
         self.timezone = timezone
 
     def fetch(self, symbol: str, start: str, end: str):
-        df = yf.download(symbol, start=start, end=end, interval=self.interval)
+        df = yf.download(symbol, start=start, end=end, interval=self.interval, auto_adjust=True)
         # df.reset_index(inplace=True)
+        if df.empty:
+            return df
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
         df.columns = [c.lower() for c in df.columns]
         # Convert index to specified timezone if possible
