@@ -6,12 +6,15 @@ stored in CSV files, allowing users to group, filter, and visualize
 trading strategy performance across different dimensions.
 """
 
-from typing import Union, List, Optional, Dict, Any
+from typing import Union, List, Optional, Any
 from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
 
+from src.utils.logger import get_logger
+
+logger = get_logger("BacktestAnalyzer")
+analysis_result_file_path = 'ORB_config_analysis_summary.csv'
 
 class Analyzer:
     """
@@ -39,89 +42,80 @@ class Analyzer:
             raise TypeError("Results data must be a pandas DataFrame or a path to a CSV file")
     
     def analyze(self, 
-               group_by: str, 
-               metrics: List[str], 
-               bins: Optional[List[float]] = None, 
-               labels: Optional[List[str]] = None) -> pd.DataFrame:
+               group_by: Union[str, List[str]], 
+               metrics: List[str]) -> pd.DataFrame:
         """
-        Analyze backtest results by grouping by a specific column and calculating
+        Analyze backtest results by grouping by one or more columns and calculating
         summary statistics for specified metrics.
         
         Args:
-            group_by: Column name to group results by (e.g., "ticker", "price").
+            group_by: Column name or list of column names to group results by 
+                     (e.g., "ticker" or ["configID", "regime"]).
             metrics: List of metric column names to summarize (e.g., ["expectancy", "sharpe_ratio"]).
-            bins: Optional list of bin edges to categorize the group_by column.
-                  If provided, the group_by column will be binned using pandas.cut.
-            labels: Optional list of labels for the bins. Required if bins are provided.
         
         Returns:
-            DataFrame containing summary statistics (mean, min, max, count) for each metric,
-            grouped by the specified column or binned categories.
+            DataFrame containing summary statistics (median, std, sum of trades, count) for each metric,
+            grouped by the specified column(s). Only includes groups with >= 20 trades.
         
         Raises:
-            ValueError: If bins are provided but labels are not, or if labels length
-                      doesn't match bins length - 1.
+            ValueError: If metrics are missing or group_by columns are not found.
         """
+        logger.info(f"Starting analysis with group_by={group_by} and metrics={metrics}")
+
         # Validate input
         if not metrics:
+            logger.error("No metrics provided for analysis")
             raise ValueError("At least one metric must be provided")
         
-        if group_by not in self.data.columns:
-            raise ValueError(f"Column '{group_by}' not found in data")
+        # Convert single column to list for consistent handling
+        if isinstance(group_by, str):
+            group_by = [group_by]
+            
+        # Validate all group_by columns exist
+        for col in group_by:
+            if col not in self.data.columns:
+                logger.error(f"Group by column '{col}' not found in data")
+                raise ValueError(f"Column '{col}' not found in data")
         
+        # Validate all metric columns exist
         for metric in metrics:
             if metric not in self.data.columns:
+                logger.error(f"Metric column '{metric}' not found in data")
                 raise ValueError(f"Metric column '{metric}' not found in data")
         
-        # Create a copy of the data to avoid modifying the original
+        # Filter metrics with insufficient trades
+        if "num_trades" in self.data.columns:
+            original_length = len(self.data)
+            self.data = self.data[self.data["num_trades"] >= 50]
+            filtered_length = len(self.data)
+            logger.info(f"Filtered out {original_length - filtered_length} rows with less than 20 trades")
+
+        logger.info(f"Calculating statistics for metrics: {metrics}")
         analysis_data = self.data.copy()
+        grouped = analysis_data.groupby(group_by)
         
-        # Apply binning if bins are provided
-        if bins is not None:
-            if labels is None:
-                raise ValueError("Labels must be provided when using bins")
-            
-            if len(labels) != len(bins) - 1:
-                raise ValueError("Number of labels must be one less than number of bins")
-            
-            analysis_data[f"{group_by}_binned"] = pd.cut(
-                analysis_data[group_by],
-                bins=bins,
-                labels=labels,
-                include_lowest=True,
-                right=True
-            )
-            group_column = f"{group_by}_binned"
+        # Calculate median and standard deviation for each metric
+        median_df = grouped[metrics].median()
+        median_df.columns = [f"{col}_median" for col in median_df.columns]
+        
+        std_df = grouped[metrics].std()
+        std_df.columns = [f"{col}_std" for col in std_df.columns]
+        
+        # Calculate sum of trades for each group
+        if "num_trades" in analysis_data.columns:
+            trades_sum_df = grouped["num_trades"].sum().to_frame("total_trades")
+            logger.info("Calculated sum of trades for each group")
         else:
-            group_column = group_by
-        
-        # Prepare result dataframes for each statistical measure
-        results = []
-        
-        # Group by the specified column and calculate statistics for each metric
-        grouped = analysis_data.groupby(group_column)
-        
-        # Calculate mean, min, max for each metric
-        for stat_name, stat_func in [
-            ("mean", np.mean),
-            ("min", np.min),
-            ("max", np.max)
-        ]:
-            stat_df = grouped[metrics].agg(stat_func)
-            stat_df.columns = [f"{col}_{stat_name}" for col in stat_df.columns]
-            results.append(stat_df)
-        
-        # Add count
-        count_df = grouped[metrics[0]].count().to_frame('count')
-        results.append(count_df)
+            logger.warning("'num_trades' column not found, using group size as trade count")
+            trades_sum_df = grouped.size().to_frame("total_trades")
         
         # Combine all statistics into one DataFrame
-        summary = pd.concat(results, axis=1)
+        summary = pd.concat([median_df, std_df, trades_sum_df], axis=1)
         summary.reset_index(inplace=True)
         
         return summary
     
-    def visualize(self, x: str, y: str, color: Optional[str] = None) -> None:
+    def viewScatterPlot(self, x: str, y: str, color: Optional[str] = None) -> None:
         """
         Create a scatter plot visualization of backtest results.
         
@@ -175,38 +169,39 @@ class Analyzer:
 
 # Example usage
 if __name__ == "__main__":
-    results_path = Path(__file__).parent.parent.parent / 'results' / 'ORB_backtest_results.csv'
+    results_path = Path(__file__).parent.parent.parent / 'results' / 'backtest' / 'ORB_config_metrics.csv'
+    logger.info(f"Loading backtest results from {results_path}")
     
     analyzer = Analyzer(results_path)
     
-    # Example 1: Group by ticker and analyze performance metrics
+    # Example 1: Group by single column
+    logger.info("Analyzing performance metrics grouped by ticker")
     summary = analyzer.analyze(
         group_by="ticker", 
-        metrics=["expectancy", "sharpe_ratio", "win_rate", "max_drawdown"]
+        metrics=["expectancy", "sharpe_ratio", "win_rate", "max_drawdown", "profit_factor", "average_trade_return", "num_trades"]
     )
-    print("Summary by ticker:")
-    print(summary)
+    logger.info(f"Analysis complete. Found {len(summary)} tickers with sufficient trades")
     
-    # Example 2: Group by price ranges and analyze performance
+    # Example 2: Group by multiple columns
     try:
-        summary_by_price = analyzer.analyze(
-            group_by="risk_risk_per_trade", 
-            metrics=["expectancy", "sharpe_ratio"], 
-            bins=[0, 0.01, 0.02, 0.03, 0.05], 
-            labels=["0-1%", "1-2%", "2-3%", "3-5%"]
+        logger.info("Analyzing performance metrics grouped by configID and regime")
+        summary_by_config = analyzer.analyze(
+            group_by=["configID", "ticker_regime"], 
+            metrics=["expectancy", "sharpe_ratio", "win_rate", "max_drawdown"]
         )
-        print("\nSummary by risk per trade:")
-        print(summary_by_price)
+        logger.info(f"Analysis complete. Found {len(summary_by_config)} config-regime combinations with sufficient trades")
+        summary_by_config.to_csv(Path(__file__).parent.parent.parent / 'results' / 'backtest' / analysis_result_file_path, index=False)
     except Exception as e:
-        print(f"Could not create price summary: {e}")
+        logger.error(f"Could not create config summary: {e}")
     
     # Example 3: Visualize relationships
     try:
-        print("\nCreating visualization...")
-        analyzer.visualize(
+        logger.info("Creating visualization of expectancy vs max_drawdown")
+        analyzer.viewScatterPlot(
             x="max_drawdown", 
             y="expectancy", 
             color="sharpe_ratio"
         )
+        logger.info("Visualization complete")
     except Exception as e:
-        print(f"Could not create visualization: {e}")
+        logger.error(f"Could not create visualization: {e}")
