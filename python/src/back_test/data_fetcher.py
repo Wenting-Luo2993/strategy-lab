@@ -5,6 +5,23 @@ from datetime import datetime, timedelta
 from src.utils.logger import get_logger
 from src.data import DataLoaderFactory, DataSource, Timeframe, CacheDataLoader
 
+
+def get_last_business_day() -> datetime.date:
+    """
+    Get the last business day (excluding weekends) from yesterday.
+    
+    Returns:
+        date: The last business day
+    """
+    current = datetime.now().date()
+    last_day = current - timedelta(days=1)
+    
+    # If it's a weekend, move to Friday
+    while last_day.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+        last_day -= timedelta(days=1)
+        
+    return last_day
+
 logger = get_logger("DataLoader")
 
 def batch_list(lst, batch_size):
@@ -42,8 +59,8 @@ def fetch_ticker_data(tickers, interval, start_date, end_date, batch_size=5, max
                     df = cached_loader.fetch(
                         ticker,
                         timeframe=interval,
-                        start=str(start_date),
-                        end=str(end_date)
+                        start=start_date,
+                        end=end_date
                     )
                     if df.empty:
                         break
@@ -66,9 +83,11 @@ def fetch_backtest_data():
         config = yaml.safe_load(f)
     tickers = [t for _, tickers in config.items() for t in tickers]
     logger.info("Fetching data for tickers: %s", tickers)
-    end_date = datetime.now().date()
-    start_date = end_date - timedelta(days=55)
-    data = fetch_ticker_data(tickers, interval=Timeframe.MIN_5.value, start_date=start_date, end_date=end_date, batch_size=5)
+    
+    end_date = get_last_business_day()
+    logger.info(f"Using end date: {end_date} (last business day)")
+    
+    data = fetch_ticker_data(tickers, interval=Timeframe.MIN_5.value, start_date=None, end_date=end_date, batch_size=5)
     logger.info("Fetched data for %d tickers.", len(data))
     return data
 

@@ -72,7 +72,7 @@ energy_high:
 
 energy_mid:
   - DVN
-  - MRO
+  # - MRO
   - APA
   - FCX
   - NEM
@@ -121,7 +121,7 @@ momentum:
   # - BBBYQ    # (bankruptcy meme, can skip if no data)
   - LCID
   - RIVN
-  - NKLA
+  # - NKLA
   - CLOV
   - TLRY
 

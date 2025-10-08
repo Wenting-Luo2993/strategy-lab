@@ -10,7 +10,7 @@ Strategy Lab is a toolkit for developing, backtesting, and executing trading str
 
 - `python/` — Python package for data loading, indicator calculation, strategy logic, backtesting engine, and visualization.
 
-  - `src/backtester/` — Backtest engine, parameter management, and data fetching.
+  - `src/back_test/` — Backtest engine, parameter management, and data fetching.
   - `src/data/` — Data loaders for Yahoo, Polygon, IB, and caching.
   - `src/indicators/` — Technical indicators and ORB (Opening Range Breakout) logic.
   - `src/strategies/` — Strategy base classes and ORB strategy implementation.
@@ -51,7 +51,7 @@ Strategy Lab is a toolkit for developing, backtesting, and executing trading str
 ```python
 from src.data import DataLoaderFactory, DataSource, Timeframe
 from src.strategies.orb import ORBStrategy
-from src.backtester.engine import Backtester
+from src.back_test.engine import Backtester
 
 loader = DataLoaderFactory.create(DataSource.YAHOO, interval=Timeframe.MIN_5.value)
 df = loader.fetch("AAPL", timeframe=Timeframe.MIN_5.value, start="2025-08-01", end="2025-08-05")

@@ -2,8 +2,8 @@
 # %%
 from matplotlib import pyplot as plt
 from src.risk_management.fixed_atr_stop import FixedATRStop
-from src.backtester.data_fetcher import fetch_backtest_data
-from src.backtester.engine import BacktestEngine
+from src.back_test.data_fetcher import fetch_backtest_data
+from src.back_test.engine import BacktestEngine
 from src.config.parameters import load_strategy_parameters
 from src.data.base import DataLoaderFactory, DataSource, Timeframe
 from src.data.cache import CacheDataLoader
@@ -53,7 +53,7 @@ plot_candlestick(result, indicators=["SMA_20", "ORB_High", "ORB_Low", "equity"],
 print("Main function executed successfully.")
 
 # %% Test fetch data for backtester
-from src.backtester.data_fetcher import fetch_backtest_data
+from src.back_test.data_fetcher import fetch_backtest_data
 fetch_backtest_data()
 
 # %%

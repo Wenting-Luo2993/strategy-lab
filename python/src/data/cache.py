@@ -104,13 +104,24 @@ class CacheDataLoader(DataLoader):
         """
         # Normalize dates
         end_dt = self._parse_date(end) if end else datetime.utcnow().date()
-        start_dt = self._parse_date(start) if start else end_dt - timedelta(days=min(30, self.max_lookback_days))
+        
+        # Read cache to check earliest available date if start is None
+        rolling_path = self._rolling_cache_path(symbol, timeframe)
+        df_cache = self._read_cache(rolling_path)
+        
+        if start is None and not df_cache.empty:
+            # Use earliest date from cache if available
+            start_dt = df_cache.index.min().date()
+            logger.info(f"No start date provided. Using earliest cache date: {start_dt}")
+        else:
+            # Use provided start date or default to max lookback from end
+            start_dt = self._parse_date(start) if start else end_dt - timedelta(days=self.max_lookback_days)
 
         # Migrate any legacy files on first use
         self._migrate_legacy(symbol, timeframe)
-
-        rolling_path = self._rolling_cache_path(symbol, timeframe)
-        df_cache = self._read_cache(rolling_path)
+        
+        # Cache was already read above for start date determination
+        # No need to read it again
 
         # Determine clamp boundary for new fetches
         clamp_start_dt = end_dt - timedelta(days=self.max_lookback_days)

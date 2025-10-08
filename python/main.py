@@ -2,7 +2,7 @@ from src.data import DataLoaderFactory, DataSource, Timeframe, CacheDataLoader
 from src.indicators import add_basic_indicators, calculate_orb_levels
 from src.visualization import plot_candlestick
 from src.strategies.orb import ORBStrategy
-from src.backtester.engine import Backtester
+from src.back_test.engine import Backtester
 
 def main():
     loader = DataLoaderFactory.create(DataSource.YAHOO, interval=Timeframe.MIN_5.value)
