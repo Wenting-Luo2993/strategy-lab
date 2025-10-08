@@ -15,6 +15,7 @@ from src.utils.logger import get_logger
 
 logger = get_logger("BacktestAnalyzer")
 analysis_result_file_path = 'ORB_config_analysis_summary.csv'
+filtered_result_file_path = 'ORB_config_analysis_filtered.csv'
 
 class Analyzer:
     """
@@ -40,6 +41,8 @@ class Analyzer:
             self.data = pd.read_csv(results_data)
         else:
             raise TypeError("Results data must be a pandas DataFrame or a path to a CSV file")
+        
+        self.summary = None  # Will store the results of analyze()
     
     def analyze(self, 
                group_by: Union[str, List[str]], 
@@ -113,8 +116,68 @@ class Analyzer:
         summary = pd.concat([median_df, std_df, trades_sum_df], axis=1)
         summary.reset_index(inplace=True)
         
+        # Store the summary as class property
+        self.summary = summary
+        
         return summary
     
+    def filter_and_rank_strategies(self) -> pd.DataFrame:
+        """
+        Filter strategies based on performance criteria and rank them by expectancy.
+        
+        Decision rules:
+        - Profit factor >= 2
+        - Average trade return >= 1%
+        - Sharpe ratio >= 5
+        - Expectancy >= 5
+        - Standard deviation < 20% of median for all metrics
+        
+        Returns:
+            DataFrame containing filtered and ranked strategies that meet all criteria.
+            
+        Raises:
+            ValueError: If analyze() hasn't been called yet or required metrics are missing.
+        """
+        if self.summary is None:
+            logger.error("No summary data available. Call analyze() first.")
+            raise ValueError("No summary data available. Call analyze() first.")
+            
+        logger.info("Applying decision rules to filter strategies...")
+        
+        # Apply main metric filters
+        filtered = self.summary[
+            (self.summary["profit_factor_median"] >= 2) &
+            (self.summary["average_trade_return_median"] >= 0.01) &  # 1%
+            (self.summary["sharpe_ratio_median"] >= 5) &
+            (self.summary["expectancy_median"] >= 5)
+        ]
+        
+        # Apply standard deviation constraints (std < 20% of median)
+        std_constraints = (
+            (filtered["profit_factor_std"] < 0.2 * filtered["profit_factor_median"]) &
+            (filtered["average_trade_return_std"] < 0.2 * filtered["average_trade_return_median"]) &
+            (filtered["sharpe_ratio_std"] < 0.2 * filtered["sharpe_ratio_median"]) &
+            (filtered["expectancy_std"] < 0.2 * filtered["expectancy_median"])
+        )
+        
+        filtered = filtered[std_constraints]
+        
+        if len(filtered) == 0:
+            logger.warning("No strategies met all criteria")
+            return pd.DataFrame()
+            
+        # Sort by expectancy in descending order
+        filtered = filtered.sort_values("expectancy_median", ascending=False)
+        
+        logger.info(f"Found {len(filtered)} strategies meeting all criteria")
+        
+        # Save to CSV
+        output_path = Path(__file__).parent.parent.parent / 'results' / 'backtest' / filtered_result_file_path
+        filtered.to_csv(output_path, index=False)
+        logger.info(f"Saved filtered results to {output_path}")
+        
+        return filtered
+
     def viewScatterPlot(self, x: str, y: str, color: Optional[str] = None) -> None:
         """
         Create a scatter plot visualization of backtest results.
@@ -187,12 +250,14 @@ if __name__ == "__main__":
         logger.info("Analyzing performance metrics grouped by configID and regime")
         summary_by_config = analyzer.analyze(
             group_by=["configID", "ticker_regime"], 
-            metrics=["expectancy", "sharpe_ratio", "win_rate", "max_drawdown"]
+            metrics=["expectancy", "sharpe_ratio", "win_rate", "max_drawdown", "profit_factor", "average_trade_return"]
         )
         logger.info(f"Analysis complete. Found {len(summary_by_config)} config-regime combinations with sufficient trades")
         summary_by_config.to_csv(Path(__file__).parent.parent.parent / 'results' / 'backtest' / analysis_result_file_path, index=False)
     except Exception as e:
         logger.error(f"Could not create config summary: {e}")
+
+    filtered_strategies = analyzer.filter_and_rank_strategies()
     
     # Example 3: Visualize relationships
     try:
