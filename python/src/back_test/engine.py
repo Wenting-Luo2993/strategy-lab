@@ -4,6 +4,7 @@ from ..risk_management.base import RiskManagement
 from ..strategies.base import StrategyBase
 from ..config.columns import TradeColumns
 from ..config.Enums import Regime
+from ..trade_management.trade_manager import TradeManager
 
 
 class BacktestEngine:
@@ -26,8 +27,10 @@ class BacktestEngine:
         self.trades = []
         self.initial_capital = initial_capital
         self.equity = [initial_capital]
-        self.current_balance = initial_capital
         self.result_df = None  # Will store the result dataframe after running
+        
+        # Initialize trade manager
+        self.trade_manager = TradeManager(risk_manager, initial_capital)
         
     def _determine_ticker_regime(self, df, index) -> str:
         """
@@ -78,6 +81,7 @@ class BacktestEngine:
         # Reset equity tracking and trades list
         self.equity = [self.initial_capital]
         self.current_balance = self.initial_capital
+        self.trade_manager.reset()
         self.trades = []
         
         # Generate signals or use provided signals
@@ -87,270 +91,60 @@ class BacktestEngine:
             signal = signals_to_use.iloc[i]  # Get signal for current bar
             price = data_to_use["close"].iloc[i]
             
-            # Update equity at each step with current balance
-            self.equity.append(self.current_balance)
+            # Update equity at each step with trade manager's current balance
+            self.equity.append(self.trade_manager.get_current_balance())
 
             # Entry
-            if signal == 1 and position is None:
+            if position is None and signal != 0:
                 # Get the initial stop from strategy if available
                 initial_stop = None
                 if self.strategy:
-                    is_long = True  # For long signal
+                    is_long = signal == 1  # True for long signal, False for short or no signal
                     initial_stop = self.strategy.initial_stop_value(price, is_long, data_to_use.iloc[i])
                 
-                # Create a signal Series with the required structure for risk_manager.apply()
-                signal_series = pd.Series({
-                    'entry_price': price,
-                    'signal': signal,
-                    'index': i,
-                    'initial_stop': initial_stop  # Include initial stop from strategy
-                })
-                
-                # Apply risk management if available, otherwise use default stop/take profit
-                if self.risk_manager:
-                    risk_result = self.risk_manager.apply(signal_series, data_to_use)
-                else:
-                    # Default risk management (10% below/above entry)
-                    risk_result = {
-                        'stop_loss': initial_stop if initial_stop is not None else price * 0.9,
-                        'take_profit': price * 1.1
-                    }
-                
-                # Calculate position size based on current balance
-                risk_per_trade = 0.01  # Default 1% risk
-                if self.config and hasattr(self.config, 'risk') and hasattr(self.config.risk, 'risk_per_trade'):
-                    risk_per_trade = self.config.risk.risk_per_trade
-                position_size = risk_per_trade * self.current_balance
-                
-                # Determine ticker regime at entry
-                ticker_regime = self._determine_ticker_regime(data_to_use, i)
-                
-                # Create position dictionary with trade information
-                position = {
-                    TradeColumns.ENTRY_IDX.value: i,
-                    TradeColumns.ENTRY_TIME.value: data_to_use.index[i],
-                    TradeColumns.ENTRY_PRICE.value: price,
-                    TradeColumns.SIZE.value: position_size,
-                    TradeColumns.STOP_LOSS.value: risk_result.get('stop_loss'),
-                    TradeColumns.TAKE_PROFIT.value: risk_result.get('take_profit'),
-                    TradeColumns.ACCOUNT_BALANCE.value: self.current_balance,
-                    TradeColumns.DIRECTION.value: signal,  # Store position direction (1 for long, -1 for short)
-                    # Store ticker regime information
-                    TradeColumns.TICKER_REGIME.value: ticker_regime,
-                    # Store trailing stop data if provided
-                    TradeColumns.TRAILING_STOP_DATA.value: risk_result.get('trailing_stop_data', None)
-                }
+                # Create position using trade manager
+                position = self.trade_manager.create_entry_position(
+                    price=price,
+                    signal=signal,
+                    time=data_to_use.index[i],
+                    market_data=data_to_use,
+                    current_idx=i,
+                    initial_stop=initial_stop
+                )
 
-            # Entry for short signal
-            elif signal == -1 and position is None:
-                # Get the initial stop from strategy if available
-                initial_stop = None
-                if self.strategy:
-                    is_long = False  # For short signal
-                    initial_stop = self.strategy.initial_stop_value(price, is_long, data_to_use.iloc[i])
-
-                # Create a signal Series with the required structure for risk_manager.apply()
-                signal_series = pd.Series({
-                    'entry_price': price,
-                    'signal': signal,
-                    'index': i,
-                    'initial_stop': initial_stop  # Include initial stop from strategy
-                })
-
-                # Apply risk management if available, otherwise use default stop/take profit
-                if self.risk_manager:
-                    risk_result = self.risk_manager.apply(signal_series, data_to_use)
-                else:
-                    # Default risk management (10% above/below entry for short)
-                    risk_result = {
-                        'stop_loss': initial_stop if initial_stop is not None else price * 1.1,
-                        'take_profit': price * 0.9
-                    }
-
-                # Calculate position size based on current balance
-                risk_per_trade = 0.01  # Default 1% risk
-                if self.config and hasattr(self.config, 'risk') and hasattr(self.config.risk, 'risk_per_trade'):
-                    risk_per_trade = self.config.risk.risk_per_trade
-                position_size = risk_per_trade * self.current_balance
-
-                # Determine ticker regime at entry
-                ticker_regime = self._determine_ticker_regime(data_to_use, i)
-
-                # Create position dictionary with trade information
-                position = {
-                    TradeColumns.ENTRY_IDX.value: i,
-                    TradeColumns.ENTRY_TIME.value: data_to_use.index[i],
-                    TradeColumns.ENTRY_PRICE.value: price,
-                    TradeColumns.SIZE.value: position_size,
-                    TradeColumns.STOP_LOSS.value: risk_result.get('stop_loss'),
-                    TradeColumns.TAKE_PROFIT.value: risk_result.get('take_profit'),
-                    TradeColumns.ACCOUNT_BALANCE.value: self.current_balance,
-                    TradeColumns.DIRECTION.value: signal,  # Store position direction (-1 for short)
-                    # Store ticker regime information
-                    TradeColumns.TICKER_REGIME.value: ticker_regime,
-                    # Store trailing stop data if provided
-                    TradeColumns.TRAILING_STOP_DATA.value: risk_result.get('trailing_stop_data', None)
-                }
-
-            # Exit
-            elif signal == -1 and position is not None:
-                exit_price = price
-                direction = position.get(TradeColumns.DIRECTION.value, 1)  # Default to long if not specified
-                entry_price = position[TradeColumns.ENTRY_PRICE.value]
-                position_size = position[TradeColumns.SIZE.value]
-                
-                # Calculate PnL based on position direction
-                pnl = direction * (exit_price - entry_price) * position_size
-                
-                # Update account balance with trade profit/loss
-                self.current_balance += pnl
-                
-                # Get trailing stop info if available
-                trailing_info = {}
-                ts_data = position.get(TradeColumns.TRAILING_STOP_DATA.value, None)
-                if ts_data and ts_data.get('trailing_active', False):
-                    trailing_info = {
-                        TradeColumns.TRAILING_ACTIVE.value: True,
-                        TradeColumns.HIGHEST_PROFIT_ATR.value: ts_data.get('highest_profit_atr', 0.0),
-                        TradeColumns.INITIAL_STOP.value: ts_data.get('initial_stop', None)
-                    }
-                
-                trade = {
-                    **position,
-                    TradeColumns.EXIT_IDX.value: i,
-                    TradeColumns.EXIT_TIME.value: data_to_use.index[i],
-                    TradeColumns.EXIT_PRICE.value: exit_price,
-                    TradeColumns.PNL.value: pnl,
-                    TradeColumns.EXIT_REASON.value: "signal",
-                    **trailing_info
-                }
-                self.trades.append(trade)
-                position = None
+            # Exit on signal
+            elif position is not None and signal != 0:
+                if (position.get(TradeColumns.DIRECTION.value) == 1 and signal == -1) or \
+                   (position.get(TradeColumns.DIRECTION.value) == -1 and signal == 1):
+                    trade = self.trade_manager.close_position(
+                        exit_price=price,
+                        time=data_to_use.index[i],
+                        current_idx=i,
+                        exit_reason="signal"
+                    )
+                    if trade:
+                        self.trades.append(trade)
+                        position = None
 
             # Check stop loss/take profit if in position
             elif position is not None:
-                # Update trailing stop if applicable
-                if self.risk_manager and hasattr(self.risk_manager, 'update_trailing_stop'):
-                    close_price = data_to_use["close"].iloc[i]
-                    position = self.risk_manager.update_trailing_stop(position, close_price)
+                # Update trailing stop
+                self.trade_manager.update_trailing_stop(data_to_use, i)
                 
-                stop_loss = position.get(TradeColumns.STOP_LOSS.value)
-                take_profit = position.get(TradeColumns.TAKE_PROFIT.value)
-                direction = position.get(TradeColumns.DIRECTION.value, 1)  # Default to long if direction not specified
+                # Check exit conditions
                 low = data_to_use["low"].iloc[i]
                 high = data_to_use["high"].iloc[i]
-                exit_reason = None
-                exit_price = None
-
-                # Unified stop loss/take profit logic using direction
-                # For stop loss: Check if price moved against position direction
-                # For take profit: Check if price moved in position direction
-                if stop_loss is not None:
-                    # For long positions (direction=1): Check if price went below stop
-                    # For short positions (direction=-1): Check if price went above stop
-                    if (direction == 1 and low <= stop_loss) or (direction == -1 and high >= stop_loss):
-                        exit_price = stop_loss
-                        exit_reason = "stop_loss"
+                price = data_to_use["close"].iloc[i]
                 
-                # Only check take profit if stop loss wasn't triggered
-                if exit_price is None and take_profit is not None:
-                    # For long positions (direction=1): Check if price went above target
-                    # For short positions (direction=-1): Check if price went below target
-                    if (direction == 1 and high >= take_profit) or (direction == -1 and low <= take_profit):
-                        exit_price = take_profit
-                        exit_reason = "take_profit"
-
-                if exit_price is not None:
-                    direction = position.get(TradeColumns.DIRECTION.value, 1)  # Default to long if not specified
-                    entry_price = position[TradeColumns.ENTRY_PRICE.value]
-                    position_size = position[TradeColumns.SIZE.value]
-                    
-                    # Calculate PnL based on position direction
-                    # For long (1): (exit - entry) * size
-                    # For short (-1): (entry - exit) * size = direction * (exit - entry) * size
-                    pnl = direction * (exit_price - entry_price) * position_size
-                    
-                    # Update account balance with trade profit/loss
-                    self.current_balance += pnl
-                    
-                    # Get trailing stop info if available
-                    trailing_info = {}
-                    ts_data = position.get(TradeColumns.TRAILING_STOP_DATA.value, None)
-                    if ts_data and ts_data.get('trailing_active', False):
-                        trailing_info = {
-                            TradeColumns.TRAILING_ACTIVE.value: True,
-                            TradeColumns.HIGHEST_PROFIT_ATR.value: ts_data.get('highest_profit_atr', 0.0),
-                            TradeColumns.INITIAL_STOP.value: ts_data.get('initial_stop', None)
-                        }
-                    
-                    trade = {
-                        **position,
-                        TradeColumns.EXIT_IDX.value: i,
-                        TradeColumns.EXIT_TIME.value: data_to_use.index[i],
-                        TradeColumns.EXIT_PRICE.value: exit_price,
-                        TradeColumns.EXIT_REASON.value: exit_reason,
-                        TradeColumns.PNL.value: pnl,
-                        **trailing_info
-                    }
-                    self.trades.append(trade)
-                    position = None
-
-            # Check stop loss/take profit for short positions
-            elif position is not None and position.get(TradeColumns.DIRECTION.value) == -1:
-                stop_loss = position.get(TradeColumns.STOP_LOSS.value)
-                take_profit = position.get(TradeColumns.TAKE_PROFIT.value)
-                direction = position.get(TradeColumns.DIRECTION.value, -1)  # Default to short if direction not specified
-                low = data_to_use["low"].iloc[i]
-                high = data_to_use["high"].iloc[i]
-                exit_reason = None
-                exit_price = None
-
-                # Unified stop loss/take profit logic for short positions
-                # For stop loss: Check if price moved against position direction
-                # For take profit: Check if price moved in position direction
-                if stop_loss is not None:
-                    # For short positions (direction=-1): Check if price went above stop
-                    if high >= stop_loss:
-                        exit_price = stop_loss
-                        exit_reason = "stop_loss"
-
-                # Only check take profit if stop loss wasn't triggered
-                if exit_price is None and take_profit is not None:
-                    # For short positions (direction=-1): Check if price went below target
-                    if low <= take_profit:
-                        exit_price = take_profit
-                        exit_reason = "take_profit"
-
-                if exit_price is not None:
-                    entry_price = position[TradeColumns.ENTRY_PRICE.value]
-                    position_size = position[TradeColumns.SIZE.value]
-
-                    # Calculate PnL based on position direction
-                    # For short (-1): (entry - exit) * size = direction * (exit - entry) * size
-                    pnl = direction * (exit_price - entry_price) * position_size
-
-                    # Update account balance with trade profit/loss
-                    self.current_balance += pnl
-
-                    # Get trailing stop info if available
-                    trailing_info = {}
-                    ts_data = position.get(TradeColumns.TRAILING_STOP_DATA.value, None)
-                    if ts_data and ts_data.get('trailing_active', False):
-                        trailing_info = {
-                            TradeColumns.TRAILING_ACTIVE.value: True,
-                            TradeColumns.HIGHEST_PROFIT_ATR.value: ts_data.get('highest_profit_atr', 0.0),
-                            TradeColumns.INITIAL_STOP.value: ts_data.get('initial_stop', None)
-                        }
-
-                    trade = {
-                        **position,
-                        TradeColumns.EXIT_IDX.value: i,
-                        TradeColumns.EXIT_TIME.value: data_to_use.index[i],
-                        TradeColumns.EXIT_PRICE.value: exit_price,
-                        TradeColumns.EXIT_REASON.value: exit_reason,
-                        TradeColumns.PNL.value: pnl,
-                        **trailing_info
-                    }
+                exited, trade = self.trade_manager.check_exit_conditions(
+                    current_price=price,
+                    high=high,
+                    low=low,
+                    time=data_to_use.index[i],
+                    current_idx=i
+                )
+                
+                if exited and trade:
                     self.trades.append(trade)
                     position = None
 

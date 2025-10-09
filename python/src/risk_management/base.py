@@ -119,14 +119,17 @@ class RiskManagement(ABC):
         Returns:
             float: Position size (number of units/contracts).
         """
-        # Example: risk_per_trade could be added to RiskConfig if needed
         risk_per_trade = getattr(self.config, 'risk_per_trade', 0.01)  # Default 1%
         risk_amount = account_balance * risk_per_trade
         risk_per_unit = abs(entry_price - stop_loss)
         if risk_per_unit == 0:
             raise ValueError("Stop loss must not be equal to entry price.")
         position_size = risk_amount / risk_per_unit
-        return position_size
+
+        maximum_percent_of_account = getattr(self.config, 'max_position_size_percent', 1.0)  # Default 100%
+        max_position_size = account_balance * maximum_percent_of_account / entry_price
+
+        return min(position_size, max_position_size)
 
     def validate_trade(self, signal: pd.Series, account_balance: float) -> bool:
         """
