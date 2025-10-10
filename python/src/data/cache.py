@@ -8,6 +8,7 @@ import pandas as pd
 
 from src.data.base import DataLoader
 from src.utils.logger import get_logger
+from src.utils.google_drive_sync import DriveSync
 
 # Get a configured logger for this module
 logger = get_logger("Cache")
@@ -31,6 +32,10 @@ class CacheDataLoader(DataLoader):
         cache_dir: str = "data_cache",
         max_lookback_days: int = 59,
         timeframe_minutes_map: Optional[dict] = None,
+        cloud_sync: bool = False,
+        drive_root: str = "strategy-lab",
+        use_service_account: bool = True,
+        service_account_env: str = "GOOGLE_SERVICE_ACCOUNT_KEY",
     ):
         self.wrapped_loader = wrapped_loader
         self.cache_dir = Path(cache_dir)
@@ -44,6 +49,13 @@ class CacheDataLoader(DataLoader):
             "1h": 60,
             "1d": 60 * 24,
         }
+        # Cloud sync utility (lazy enable)
+        self._drive_sync = DriveSync(
+            enable=cloud_sync,
+            root_folder=drive_root,
+            service_account_env=service_account_env,
+            use_service_account=use_service_account,
+        )
 
     # ---------------------- Path & Migration Helpers ---------------------- #
     def _rolling_cache_path(self, symbol: str, timeframe: str) -> Path:
@@ -107,6 +119,13 @@ class CacheDataLoader(DataLoader):
         
         # Read cache to check earliest available date if start is None
         rolling_path = self._rolling_cache_path(symbol, timeframe)
+        # Cloud pre-sync (download newer remote copy if exists)
+        if self._drive_sync and self._drive_sync.enable:
+            remote_rel = f"data_cache/{rolling_path.name}"
+            try:
+                self._drive_sync.sync_down(rolling_path, remote_rel)
+            except Exception as e:  # pragma: no cover
+                logger.warning(f"Drive sync_down failed for {rolling_path.name}: {e}")
         df_cache = self._read_cache(rolling_path)
         
         if start is None and not df_cache.empty:
@@ -191,6 +210,13 @@ class CacheDataLoader(DataLoader):
 
         # Slice to requested user window (even if earlier portion was clamped we don't attempt to fabricate)
         requested_slice = df_cache[(df_cache.index.date >= start_dt) & (df_cache.index.date <= end_dt)]
+        # Cloud post-sync (upload if changed)
+        if self._drive_sync and self._drive_sync.enable and rolling_path.exists():
+            try:
+                remote_rel = f"data_cache/{rolling_path.name}"
+                self._drive_sync.sync_up(rolling_path, remote_rel)
+            except Exception as e:  # pragma: no cover
+                logger.warning(f"Drive sync_up failed for {rolling_path.name}: {e}")
         return requested_slice
 
     # ---------------------- Internal Helpers ---------------------- #

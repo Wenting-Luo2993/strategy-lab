@@ -1,4 +1,3 @@
-
 # %%
 from matplotlib import pyplot as plt
 from src.risk_management.fixed_atr_stop import FixedATRStop
@@ -75,4 +74,32 @@ from src.orchestrator.backtest_orchestrator import BackTestOrchestrator
 # Run the orchestrator
 results_df = BackTestOrchestrator(dry_run=False, single_config_index=0)
 
-# %%
+# %% Upload existing results to Google Drive (skip files with '[DryRun]' in name)
+from pathlib import Path
+from src.utils.google_drive_sync import DriveSync
+
+results_root_candidates = [Path("python") / "results", Path("results")]  # support both locations
+existing_dirs = [p for p in results_root_candidates if p.exists()]
+if not existing_dirs:
+    print("No results directory found; skipping upload.")
+else:
+    sync = DriveSync(enable=True)
+    uploaded = 0
+    skipped = 0
+    for base in existing_dirs:
+        for file in base.rglob("*"):
+            if file.is_dir():
+                continue
+            name = file.name
+            if "[DryRun]" in name:
+                skipped += 1
+                continue
+            # Relative path under Drive 'results/' preserving subfolders after base
+            rel_sub = file.relative_to(base)
+            remote_rel = f"results/{rel_sub.as_posix()}"
+            try:
+                sync.sync_up(file, remote_rel)
+                uploaded += 1
+            except Exception as e:
+                print(f"Failed to upload {file}: {e}")
+    print(f"Drive upload complete. Uploaded={uploaded}, Skipped DryRun={skipped}")

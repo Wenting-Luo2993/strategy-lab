@@ -20,6 +20,13 @@ ENV/
 data_cache/
 python/results
 
+# Google API credentials (service account & OAuth tokens)
+*.service-account.json
+gdrive-key.json
+gdrive_service_account.json
+.strategy_lab/gdrive_token.json
+token.json
+
 # Logs
 *.log
 
