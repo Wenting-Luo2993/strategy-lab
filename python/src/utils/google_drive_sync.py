@@ -101,60 +101,87 @@ class DriveSync:
         service_account_env: str = "GOOGLE_SERVICE_ACCOUNT_KEY",
         use_service_account: bool = True,
         oauth_token_path: Optional[Path] = None,
+        oauth_client_secret_path: Optional[Path] = None,
         root_folder_id: Optional[str] = None,
     ):
+        """Initialize DriveSync.
+
+        Args:
+            enable: If False, all sync operations are skipped.
+            root_folder: Top-level folder name on Drive used as namespace.
+            service_account_env: Env var name or direct path for service account JSON.
+            use_service_account: Whether to attempt service account auth first.
+            oauth_token_path: Path to OAuth token (created after consent). Defaults to ~/.strategy_lab/gdrive_token.json.
+            oauth_client_secret_path: Path to client secret JSON for interactive flow fallback.
+            root_folder_id: (Optional) pre-known folder id for root (skips lookup).
+        """
         self.enable = enable
         self.root_folder = root_folder
         self.service_account_env = service_account_env
         self.use_service_account = use_service_account
-        self.oauth_token_path = oauth_token_path or Path.home() / ".strategy_lab" / "gdrive_token.json"
+        self.oauth_token_path = oauth_token_path or (Path("token.json") if Path("token.json").exists() else (Path.home() / ".strategy_lab" / "gdrive_token.json"))
+        self.oauth_client_secret_path = oauth_client_secret_path
+        logger.info(f"OAuth token path: {self.oauth_token_path}")
+        logger.info(f"OAuth client secret path: {self.oauth_client_secret_path}")
         self.root_folder_id = root_folder_id
-        # sanitize root_folder_id in case .env contains inline comments
         if isinstance(self.root_folder_id, str):
             self.root_folder_id = self.root_folder_id.split('#', 1)[0].strip() or None
         self._service = self._init_service() if enable else None
         self._folder_cache: dict[Tuple[str, ...], str] = {}
         if root_folder_id:
-            # cache the root folder id under the tuple (root_folder,)
             self._folder_cache[(self.root_folder,)] = root_folder_id
         logger.debug(f"DriveSync initialized. root_folder={self.root_folder}, root_folder_id={self.root_folder_id}")
 
     # ---------------------- Auth ---------------------- #
     def _init_service(self):
         creds = None
+        # 1. Service account path or env var
         if self.use_service_account:
             key_path = self.service_account_env
-            logger.info(f"Using service account env var: {self.service_account_env}")
-            # if a direct path wasn't provided, treat this as an env var name
             if not Path(str(key_path)).is_absolute():
                 key_path = os.getenv(self.service_account_env)
-            # sanitize in case of inline comments in .env
             if isinstance(key_path, str):
                 key_path = key_path.split('#', 1)[0].strip()
-            logger.debug(f"Looking for service account key at: {key_path}")
-            logger.debug(f"Sanitized service account key path: {key_path}")
             if key_path and Path(key_path).exists():
-                logger.info(f"Using service account credentials from: {key_path}")
-                creds = service_account.Credentials.from_service_account_file(key_path, scopes=SCOPES)
+                try:
+                    logger.info(f"Using service account credentials from: {key_path}")
+                    creds = service_account.Credentials.from_service_account_file(key_path, scopes=SCOPES)
+                except Exception as e:
+                    logger.warning(f"Failed loading service account credentials: {e}")
             else:
-                logger.info("Service account key missing; falling back to OAuth token if present.")
+                logger.info("Service account key not found; will try OAuth.")
+        # 2. Existing OAuth token
         if creds is None and self.oauth_token_path.exists():
-            logger.info(f"Attempting to use OAuth token from: {self.oauth_token_path}")
-            creds = Credentials.from_authorized_user_file(str(self.oauth_token_path), SCOPES)
-            if creds and creds.expired and creds.refresh_token:
-                logger.info("OAuth token expired, attempting to refresh")
-                creds.refresh(Request())
-                logger.info("OAuth token successfully refreshed")
+            try:
+                logger.info(f"Loading OAuth token: {self.oauth_token_path}")
+                creds = Credentials.from_authorized_user_file(str(self.oauth_token_path), SCOPES)
+                if creds and creds.expired and creds.refresh_token:
+                    logger.info("Refreshing expired OAuth token")
+                    creds.refresh(Request())
+            except Exception as e:
+                logger.warning(f"Failed reading OAuth token file: {e}")
+        # 3. Interactive OAuth if client secret available and still no creds
+        if creds is None and self.oauth_client_secret_path and self.oauth_client_secret_path.exists():
+            try:
+                from google_auth_oauthlib.flow import InstalledAppFlow
+                logger.info("Starting interactive OAuth flow (browser) to obtain new token...")
+                flow = InstalledAppFlow.from_client_secrets_file(str(self.oauth_client_secret_path), SCOPES)
+                creds = flow.run_local_server(port=0)
+                self.oauth_token_path.parent.mkdir(parents=True, exist_ok=True)
+                self.oauth_token_path.write_text(creds.to_json())
+                logger.info(f"Saved new OAuth token at {self.oauth_token_path}")
+            except Exception as e:
+                logger.error(f"Interactive OAuth flow failed: {e}")
         if creds is None:
-            logger.error("No valid credentials for DriveSync; operations will be skipped.")
+            logger.error("No credentials resolved (service account or OAuth). DriveSync disabled.")
             return None
         try:
-            logger.info("Initializing Google Drive API service")
+            logger.info("Initializing Google Drive service client...")
             service = build("drive", "v3", credentials=creds, cache_discovery=False)
-            logger.info("Google Drive API service successfully initialized")
+            logger.info("Drive service initialized successfully.")
             return service
-        except Exception as e:  # pragma: no cover
-            logger.error(f"Failed to initialize Drive API: {e}")
+        except Exception as e:
+            logger.error(f"Drive API initialization failed: {e}")
             return None
 
     # ---------------------- Public API ---------------------- #
@@ -353,7 +380,7 @@ class DriveSync:
         import io
         tmp = io.BytesIO(json.dumps(meta_payload.to_dict(), indent=2).encode())
         # Simpler to write temp file for MediaFileUpload
-        temp_path = Path.cwd() / f".{meta_name}.tmp"
+        temp_path = Path.cwd() / f"results/.{meta_name}.tmp"
         temp_path.write_bytes(tmp.getvalue())
         media = MediaFileUpload(str(temp_path), mimetype="application/json", resumable=False)
         if meta_file:

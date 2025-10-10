@@ -88,8 +88,12 @@ else:
     root_folder_id = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER_ID")
     sync = DriveSync(
         enable=True,
-        service_account_env=credentials_path,
-        root_folder_id=root_folder_id
+        root_folder_id=root_folder_id,
+        use_service_account=False,
+        oauth_client_secret_path=Path(
+            os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+        ).absolute(),
+        oauth_token_path=Path(os.getenv("GOOGLE_OAUTH_CLIENT_TOKEN")).absolute()
     )
     uploaded = 0
     skipped = 0
