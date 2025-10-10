@@ -41,25 +41,27 @@ from __future__ import annotations
 import os
 import json
 import hashlib
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, List
 
-try:
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
-    from google.auth.transport.requests import Request
-    from google.oauth2 import service_account
-    from google.oauth2.credentials import Credentials
-except ImportError:  # pragma: no cover
-    build = None  # type: ignore
 
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from google.auth.transport.requests import Request
+from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.utils.logger import get_logger
 
-logger = get_logger("DriveSync")
+# Initialize logger with console output enabled
+logger = get_logger("DriveSync", log_to_console=True)
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive.metadata.readonly"]
 DEFAULT_ROOT = "strategy-lab"
@@ -99,36 +101,58 @@ class DriveSync:
         service_account_env: str = "GOOGLE_SERVICE_ACCOUNT_KEY",
         use_service_account: bool = True,
         oauth_token_path: Optional[Path] = None,
+        root_folder_id: Optional[str] = None,
     ):
         self.enable = enable
         self.root_folder = root_folder
         self.service_account_env = service_account_env
         self.use_service_account = use_service_account
         self.oauth_token_path = oauth_token_path or Path.home() / ".strategy_lab" / "gdrive_token.json"
+        self.root_folder_id = root_folder_id
+        # sanitize root_folder_id in case .env contains inline comments
+        if isinstance(self.root_folder_id, str):
+            self.root_folder_id = self.root_folder_id.split('#', 1)[0].strip() or None
         self._service = self._init_service() if enable else None
         self._folder_cache: dict[Tuple[str, ...], str] = {}
+        if root_folder_id:
+            # cache the root folder id under the tuple (root_folder,)
+            self._folder_cache[(self.root_folder,)] = root_folder_id
+        logger.debug(f"DriveSync initialized. root_folder={self.root_folder}, root_folder_id={self.root_folder_id}")
 
     # ---------------------- Auth ---------------------- #
     def _init_service(self):
-        if build is None:
-            logger.warning("googleapiclient not installed; Drive sync disabled.")
-            return None
         creds = None
         if self.use_service_account:
-            key_path = os.getenv(self.service_account_env)
+            key_path = self.service_account_env
+            logger.info(f"Using service account env var: {self.service_account_env}")
+            # if a direct path wasn't provided, treat this as an env var name
+            if not Path(str(key_path)).is_absolute():
+                key_path = os.getenv(self.service_account_env)
+            # sanitize in case of inline comments in .env
+            if isinstance(key_path, str):
+                key_path = key_path.split('#', 1)[0].strip()
+            logger.debug(f"Looking for service account key at: {key_path}")
+            logger.debug(f"Sanitized service account key path: {key_path}")
             if key_path and Path(key_path).exists():
+                logger.info(f"Using service account credentials from: {key_path}")
                 creds = service_account.Credentials.from_service_account_file(key_path, scopes=SCOPES)
             else:
                 logger.info("Service account key missing; falling back to OAuth token if present.")
         if creds is None and self.oauth_token_path.exists():
+            logger.info(f"Attempting to use OAuth token from: {self.oauth_token_path}")
             creds = Credentials.from_authorized_user_file(str(self.oauth_token_path), SCOPES)
             if creds and creds.expired and creds.refresh_token:
+                logger.info("OAuth token expired, attempting to refresh")
                 creds.refresh(Request())
+                logger.info("OAuth token successfully refreshed")
         if creds is None:
             logger.error("No valid credentials for DriveSync; operations will be skipped.")
             return None
         try:
-            return build("drive", "v3", credentials=creds, cache_discovery=False)
+            logger.info("Initializing Google Drive API service")
+            service = build("drive", "v3", credentials=creds, cache_discovery=False)
+            logger.info("Google Drive API service successfully initialized")
+            return service
         except Exception as e:  # pragma: no cover
             logger.error(f"Failed to initialize Drive API: {e}")
             return None
@@ -137,21 +161,32 @@ class DriveSync:
     def sync_down(self, local_path: Path, remote_rel_path: str):
         """Ensure local file matches remote version if remote exists and differs."""
         if not self.enable or self._service is None:
+            logger.debug(f"Sync down skipped - service disabled or not initialized")
             return
+        logger.info(f"Starting sync down for {remote_rel_path}")
         folder_id, data_name, meta_name = self._resolve_remote_names(remote_rel_path)
         if not folder_id:
+            logger.warning(f"Could not resolve remote folder for {remote_rel_path}")
             return
+        logger.debug(f"Looking for {data_name} in folder {folder_id}")
         data_file, meta_file = self._find_remote_pair(folder_id, data_name, meta_name)
         if not data_file:
+            logger.info(f"No remote file found for {remote_rel_path}")
             return  # nothing remote yet
         remote_meta = self._fetch_remote_meta(meta_file)
         need = False
         if not local_path.exists():
+            logger.info(f"Local file {local_path} does not exist, will download")
             need = True
         elif remote_meta:
             local_sha = self._compute_sha256(local_path)
+            logger.debug(f"Local SHA: {local_sha}")
+            logger.debug(f"Remote SHA: {remote_meta.sha256}")
             if local_sha != remote_meta.sha256:
+                logger.info(f"Local and remote files differ, will download {data_name}")
                 need = True
+            else:
+                logger.info(f"Local and remote files match for {data_name}")
         if need:
             self._download_file(data_file["id"], local_path)
             # Re-write local meta
@@ -165,15 +200,20 @@ class DriveSync:
                 meta_id=meta_file["id"] if meta_file else None,
             )
             self._write_local_meta(local_path, meta_obj)
+            logger.info(f"Updated local metadata for {data_name}")
 
     def sync_up(self, local_path: Path, remote_rel_path: str):
         """Upload or update remote file if changed locally."""
         if not self.enable or self._service is None:
+            logger.debug(f"Sync up skipped - service disabled or not initialized")
             return
         if not local_path.exists():
+            logger.warning(f"Local file {local_path} does not exist, skipping upload")
             return
+        logger.info(f"Starting sync up for {local_path} to {remote_rel_path}")
         folder_id, data_name, meta_name = self._resolve_remote_names(remote_rel_path)
         if not folder_id:
+            logger.warning(f"Could not resolve remote folder for {remote_rel_path}")
             return
         data_file, meta_file = self._find_remote_pair(folder_id, data_name, meta_name)
         local_sha = self._compute_sha256(local_path)
@@ -186,12 +226,21 @@ class DriveSync:
             return  # no change
         media = MediaFileUpload(str(local_path), mimetype="application/octet-stream", resumable=True)
         if data_file:
-            self._service.files().update(fileId=data_file["id"], media_body=media).execute()
+            self._service.files().update(
+                fileId=data_file["id"],
+                media_body=media,
+                supportsAllDrives=True
+            ).execute()
             file_id = data_file["id"]
             logger.info(f"Updated remote file {data_name}")
         else:
             metadata = {"name": data_name, "parents": [folder_id]}
-            created = self._service.files().create(body=metadata, media_body=media, fields="id").execute()
+            created = self._service.files().create(
+                body=metadata,
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True
+            ).execute()
             file_id = created["id"]
             logger.info(f"Uploaded new remote file {data_name}")
         # Upload meta JSON
@@ -223,9 +272,12 @@ class DriveSync:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), reraise=True)
     def _ensure_folder(self, parts: Tuple[str, ...]) -> Optional[str]:
         if self._service is None:
+            logger.debug("Service not initialized, can't ensure folder")
             return None
         if parts in self._folder_cache:
+            logger.debug(f"Found folder in cache: {'/'.join(parts)}")
             return self._folder_cache[parts]
+        logger.debug(f"Creating/finding folder path: {'/'.join(parts)}")
         parent_id = None
         path_accum: List[str] = []
         for name in parts:
@@ -237,6 +289,7 @@ class DriveSync:
             q = f"name = '{name}' and mimeType = 'application/vnd.google-apps.folder'"
             if parent_id:
                 q += f" and '{parent_id}' in parents"
+            # Regular Drive folder search/create (no shared drive parameters)
             res = self._service.files().list(q=q, fields="files(id,name)").execute()
             files = res.get("files", [])
             if files:
@@ -256,7 +309,10 @@ class DriveSync:
         parts = tuple([self.root_folder] + remote_rel_path.strip("/").split("/")[:-1])
         data_name = remote_rel_path.split("/")[-1]
         meta_name = data_name + ".meta.json"
+        logger.debug(f"Resolving remote path: {'/'.join(parts)}/{data_name}")
         folder_id = self._ensure_folder(parts)
+        if folder_id:
+            logger.debug(f"Resolved folder ID: {folder_id}")
         return folder_id, data_name, meta_name
 
     def _find_remote_pair(self, folder_id: str, data_name: str, meta_name: str) -> Tuple[Optional[dict], Optional[dict]]:

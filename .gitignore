@@ -27,6 +27,7 @@ gdrive_service_account.json
 .strategy_lab/gdrive_token.json
 token.json
 **/credentials/
+.env
 
 # Logs
 *.log

@@ -75,6 +75,7 @@ from src.orchestrator.backtest_orchestrator import BackTestOrchestrator
 results_df = BackTestOrchestrator(dry_run=False, single_config_index=0)
 
 # %% Upload existing results to Google Drive (skip files with '[DryRun]' in name)
+import os
 from pathlib import Path
 from src.utils.google_drive_sync import DriveSync
 
@@ -83,7 +84,13 @@ existing_dirs = [p for p in results_root_candidates if p.exists()]
 if not existing_dirs:
     print("No results directory found; skipping upload.")
 else:
-    sync = DriveSync(enable=True)
+    credentials_path = str(Path(os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY")).absolute())
+    root_folder_id = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER_ID")
+    sync = DriveSync(
+        enable=True,
+        service_account_env=credentials_path,
+        root_folder_id=root_folder_id
+    )
     uploaded = 0
     skipped = 0
     for base in existing_dirs:
