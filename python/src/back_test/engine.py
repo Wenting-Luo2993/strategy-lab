@@ -4,7 +4,7 @@ from ..risk_management.base import RiskManagement
 from ..strategies.base import StrategyBase
 from ..config.columns import TradeColumns
 from ..config.Enums import Regime
-from ..trade_management.trade_manager import TradeManager
+from ..core import TradeManager
 
 
 class BacktestEngine:
