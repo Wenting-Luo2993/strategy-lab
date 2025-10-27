@@ -28,19 +28,6 @@ class TradeManager:
         self.current_balance = initial_capital
         self.current_position = None
 
-    def calculate_position_size(self, price: float, risk_per_trade: float) -> float:
-        """
-        Calculate position size based on risk parameters.
-        
-        Args:
-            price: Current price for the asset
-            risk_per_trade: Percentage of account to risk per trade
-            
-        Returns:
-            float: Position size in base currency
-        """
-        return (risk_per_trade * self.current_balance)
-
     def create_entry_position(self, 
                             price: float, 
                             signal: int, 

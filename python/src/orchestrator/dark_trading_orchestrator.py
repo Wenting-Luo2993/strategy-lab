@@ -11,7 +11,7 @@ import uuid
 import pandas as pd
 import csv
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union, Callable, Type
+from typing import Dict, List, Optional, Any
 from datetime import datetime, time as dt_time
 import threading
 import pytz
@@ -155,6 +155,7 @@ class DarkTradingOrchestrator:
         for ticker in self.tickers:
             try:
                 # Fetch latest minute bar using CacheDataLoader
+                # TODO: fetch only new data since last fetch to optimize
                 df = self.data_fetcher.fetch(
                     ticker,
                     timeframe="5m",
@@ -407,7 +408,19 @@ class DarkTradingOrchestrator:
                     break
                 
                 # Run a single cycle
+                # TODO: update to include a parameter to toggle data replay mode
+                # TODO: update "backtest" to "data_replay"
                 self.run_once_for_backtest_mode()
+
+                # TODO: implement intrade day dark trading orchestrator
+                #       - pre-market/before first 5min: initial fetch of data for past 2 months
+                #       - after first 5min: 
+                #           - fetch per minute data
+                #           - evaluate for entry/exit signals
+                #           - execute entry/exit signals via exchange + save/cache open postions
+                #           - last 5min of market close: 
+                #               - close all open positions
+                #               - save results
                 
                 # Calculate time to sleep
                 elapsed = time.time() - cycle_start
