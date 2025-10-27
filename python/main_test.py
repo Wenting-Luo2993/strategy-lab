@@ -61,10 +61,11 @@ from src.data.base import DataLoaderFactory, DataSource, Timeframe
 from src.data.cache import CacheDataLoader
 loader = DataLoaderFactory.create(DataSource.YAHOO, interval=Timeframe.MIN_5.value)
 cachedLoader = CacheDataLoader(loader)  # Wrap with cache
-end_date = datetime(2025, 10, 3).date()
+end_date = datetime(2025, 10, 26).date()
 start_date = end_date - timedelta(days=55)
 df = cachedLoader.fetch("AAPL", timeframe=Timeframe.MIN_5.value, start=start_date, end=end_date)
 
+print(df.head())
 print(df.tail())
 print(df.describe())
 

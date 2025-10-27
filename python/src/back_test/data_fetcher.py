@@ -29,7 +29,7 @@ def batch_list(lst, batch_size):
         yield lst[i:i+batch_size]
 
 
-def fetch_ticker_data(tickers, interval, start_date, end_date, batch_size=5, max_retries=3, sleep_seconds=60):
+def fetch_ticker_data(tickers, interval, start_date, end_date, batch_size=5, max_retries=3, sleep_seconds=10):
     """
     Fetches data for a list of tickers between start_date and end_date.
     Args:

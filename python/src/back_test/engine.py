@@ -148,39 +148,17 @@ class BacktestEngine:
                     self.trades.append(trade)
                     position = None
 
-        # If still in position at end, close at last price
+        # If still in position at end, close via trade manager
         if position is not None:
             exit_price = data_to_use["close"].iloc[-1]
-            direction = position.get(TradeColumns.DIRECTION.value, 1)  # Default to long if not specified
-            entry_price = position[TradeColumns.ENTRY_PRICE.value]
-            position_size = position[TradeColumns.SIZE.value]
-            
-            # Calculate PnL based on position direction
-            pnl = direction * (exit_price - entry_price) * position_size
-            
-            # Update account balance with trade profit/loss
-            self.current_balance += pnl
-            
-            # Get trailing stop info if available
-            trailing_info = {}
-            ts_data = position.get(TradeColumns.TRAILING_STOP_DATA.value, None)
-            if ts_data and ts_data.get('trailing_active', False):
-                trailing_info = {
-                    TradeColumns.TRAILING_ACTIVE.value: True,
-                    TradeColumns.HIGHEST_PROFIT_ATR.value: ts_data.get('highest_profit_atr', 0.0),
-                    TradeColumns.INITIAL_STOP.value: ts_data.get('initial_stop', None)
-                }
-            
-            trade = {
-                **position,
-                TradeColumns.EXIT_IDX.value: len(data_to_use) - 1,
-                TradeColumns.EXIT_TIME.value: data_to_use.index[-1],
-                TradeColumns.EXIT_PRICE.value: exit_price,
-                TradeColumns.EXIT_REASON.value: "end_of_data",
-                TradeColumns.PNL.value: pnl,
-                **trailing_info
-            }
-            self.trades.append(trade)
+            trade = self.trade_manager.close_position(
+                exit_price=exit_price,
+                time=data_to_use.index[-1],
+                current_idx=len(data_to_use) - 1,
+                exit_reason="end_of_data"
+            )
+            if trade:
+                self.trades.append(trade)
         
         # Create result dataframe with equity curve
         # Handle case where equity array is longer than data index (common at end of backtest)

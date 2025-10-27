@@ -114,8 +114,11 @@ class CacheDataLoader(DataLoader):
         Returns:
             DataFrame indexed by datetime containing at least requested slice (clamped when beyond lookback).
         """
+        # Migrate any legacy files on first use
+        self._migrate_legacy(symbol, timeframe)
+
         # Normalize dates
-        end_dt = self._parse_date(end) if end else datetime.utcnow().date()
+        end_dt = self._parse_date(end) if end else datetime.now(datetime.timezone.utc)
         
         # Read cache to check earliest available date if start is None
         rolling_path = self._rolling_cache_path(symbol, timeframe)
@@ -135,9 +138,6 @@ class CacheDataLoader(DataLoader):
         else:
             # Use provided start date or default to max lookback from end
             start_dt = self._parse_date(start) if start else end_dt - timedelta(days=self.max_lookback_days)
-
-        # Migrate any legacy files on first use
-        self._migrate_legacy(symbol, timeframe)
         
         # Cache was already read above for start date determination
         # No need to read it again
@@ -175,6 +175,7 @@ class CacheDataLoader(DataLoader):
 
         # Coalesce overlapping/adjacent missing segments (simple since day granularity)
         missing_segments = self._coalesce_segments(missing_segments)
+        logger.info(f"Fetching data for {symbol} {timeframe} from {start_dt} to {end_dt}. Missing segments: {missing_segments}")
 
         # Fetch missing segments
         new_frames = []
@@ -186,6 +187,7 @@ class CacheDataLoader(DataLoader):
                     logger.debug(
                         f"Fetched segment {symbol} {timeframe} {seg_start} -> {seg_end} rows={len(seg_df)}"
                     )
+                    logger.info("Succesfully fetched segment")
             except Exception as e:  # pragma: no cover - defend
                 logger.error(
                     f"Error fetching segment for {symbol} {timeframe} {seg_start} -> {seg_end}: {e}"

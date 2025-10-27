@@ -12,7 +12,8 @@ from __future__ import annotations
 from typing import Dict, Optional, Union, List
 import pandas as pd
 
-from python.src.data.cache import CacheDataLoader
+from src.data.cache import CacheDataLoader
+from src.data.yahoo import YahooDataLoader
 
 DateLike = Union[str, pd.Timestamp]
 
@@ -130,7 +131,7 @@ def generate_multi_ticker_benchmarks(
 
 def fetch_and_generate_benchmarks(
     tickers: List[str],
-    cache_loader = CacheDataLoader(),
+    cache_loader = CacheDataLoader(YahooDataLoader()),
     timeframe: str = "5m",
     initial_capital: float = 10000.0,
     start: Optional[DateLike] = None,

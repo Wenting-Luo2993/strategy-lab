@@ -30,6 +30,7 @@ class TradeColumns(Enum):
     
     # Market condition information
     TICKER_REGIME = "ticker_regime"
+    TICKER = "ticker"
     
     # Trailing stop information
     TRAILING_STOP_DATA = "trailing_stop_data"

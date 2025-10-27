@@ -33,6 +33,7 @@ def expectancy(trades: List[Dict[str, Any]]) -> float:
 def max_drawdown(trades: List[Dict[str, Any]]) -> float:
     if not trades:
         return 0.0
+    # TODO: get the first account balance as initial balance and use PNL to calculate equity curve
     equity_curve = [t[TradeColumns.ACCOUNT_BALANCE.value] for t in trades]
     running_max = np.maximum.accumulate(equity_curve)
     drawdown = (equity_curve - running_max) / running_max
@@ -43,6 +44,7 @@ def sharpe_ratio(trades: List[Dict[str, Any]], risk_free_rate: float = 0.0412) -
         return 0.0
     # Calculate percentage changes in ACCOUNT_BALANCE for returns
     balances = [t[TradeColumns.ACCOUNT_BALANCE.value] for t in trades]
+    # TODO: correct this logic. Cannot use subsequent balances for return calcualtions as the data is sliced based on groups.
     returns = np.diff(balances) / balances[:-1] * 100  # Percentage changes
     overall_return = (balances[-1] - balances[0]) / balances[0]
     std_returns = np.std(returns) if len(returns) > 1 else 0.0
