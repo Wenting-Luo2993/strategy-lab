@@ -34,3 +34,6 @@ token.json
 
 # MacOS
 .DS_Store
+
+# Test coverage
+.coverage
