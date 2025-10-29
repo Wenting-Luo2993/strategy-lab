@@ -67,3 +67,56 @@ Use `pine/strategies/orb-strategy.pine` in TradingView for rapid prototyping, sc
 ## License
 
 MIT License
+
+## Testing & Quality Assurance
+
+This project uses `pytest` for unit testing and `pre-commit` to enforce that tests pass before commits.
+
+### Running Tests Locally
+
+From the repository root (ensure dependencies are installed from `python/requirements.txt`):
+
+```bash
+cd python
+pytest
+```
+
+To see coverage details:
+
+```bash
+pytest --cov=python/src --cov-report=term-missing
+```
+
+### Test Layout
+
+- Tests live in `python/tests/`.
+- A sample test for the ORB indicator is in `python/tests/test_orb_indicator.py`.
+- `pytest.ini` configures discovery and coverage.
+
+### Pre-Commit Hook
+
+Install and activate pre-commit hooks to automatically run tests before each commit:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+If a test fails, the commit is blocked. Fix tests and retry.
+
+### Continuous Integration
+
+GitHub Actions workflow at `.github/workflows/tests.yml` runs the test suite on every push and pull request to `main`.
+
+### Adding New Tests
+
+1. Create a new file in `python/tests/` named `test_<component>.py`.
+2. Import the module(s) you want to test from `src`. Use fixtures or helper builders for complex objects.
+3. Keep tests deterministic (no live API calls); mock external services.
+4. Run `pytest` and ensure all tests pass before committing.
+
+### Recommended Practices
+
+- Use descriptive test names (e.g., `test_orb_long_breakout_detected`).
+- Group related assertions logically; prefer multiple focused tests over one large test.
+- When adding new modules, include at least one happy path and one edge case test.
