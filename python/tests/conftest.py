@@ -1,19 +1,28 @@
 import sys
 from pathlib import Path
+import pytest
 
-"""Pytest configuration utilities.
+"""Pytest configuration utilities and shared fixtures."""
 
-Ensures the project root (python/) is on sys.path so that the package
-`src` can be imported as a top-level module (i.e. `from src...`).
-We purposefully add the parent directory of `src`, not `src` itself.
-
-If we add the `src` directory directly, Python would then look for a
-subdirectory `src/src`, causing `ModuleNotFoundError: src`.
-"""
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]  # .../strategy-lab/python
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Optionally expose the absolute path to tests needing filesystem fixtures
-TESTS_DIR = Path(__file__).parent
+from tests.utils import MockRiskManager, build_three_market_data  # noqa: E402
+from src.core.trade_manager import TradeManager  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def market_data_sets():
+    """Provide pre-generated market data slices for bull, bear, and sideways regimes."""
+    return build_three_market_data()
+
+
+@pytest.fixture()
+def risk_manager():
+    return MockRiskManager()
+
+
+@pytest.fixture()
+def trade_manager(risk_manager):
+    return TradeManager(risk_manager=risk_manager, initial_capital=10000)

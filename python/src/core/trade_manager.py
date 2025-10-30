@@ -23,7 +23,7 @@ class TradeManager:
     def __init__(self, risk_manager: RiskManagement, initial_capital: float):
         """
         Initialize TradeManager with risk management and initial capital.
-        
+
         Args:
             risk_manager: Risk management instance for stop loss/take profit
             initial_capital: Starting capital amount
@@ -38,17 +38,17 @@ class TradeManager:
         # Cache of closed positions (trade records)
         self.closed_positions = []
 
-    def create_entry_position(self, 
-                            price: float, 
-                            signal: int, 
-                            time: pd.Timestamp, 
+    def create_entry_position(self,
+                            price: float,
+                            signal: int,
+                            time: pd.Timestamp,
                             market_data: pd.DataFrame,
                             current_idx: int,
                             initial_stop: float,
                             ticker: str = None) -> dict:
         """
         Create a new position with consistent risk parameters.
-        
+
         Args:
             price: Entry price
             signal: Direction (1 for long, -1 for short)
@@ -57,7 +57,7 @@ class TradeManager:
             market_data: DataFrame with market data
             current_idx: Current index in the market data
             initial_stop: Optional initial stop loss price
-            
+
         Returns:
             dict: Position information dictionary
         """
@@ -72,7 +72,7 @@ class TradeManager:
 
             # Get risk management parameters
             risk_result = self.risk_manager.apply(signal_series, market_data)
-            
+
             is_long = signal == 1  # True for long signal, False for short or no signal
             risk_initial_stop = risk_result.get('stop_loss')
             initial_stop = max(initial_stop, risk_initial_stop) if is_long else min(initial_stop, risk_initial_stop)
@@ -80,7 +80,7 @@ class TradeManager:
 
             # Determine regime
             regime = self.determine_ticker_regime(market_data, current_idx)
-            
+
             position = {
                 TradeColumns.ENTRY_IDX.value: current_idx,
                 TradeColumns.ENTRY_TIME.value: time,
@@ -110,23 +110,23 @@ class TradeManager:
             logger.error(f"Error creating entry position at {current_idx} for {ticker}")
 
 
-    def check_exit_conditions(self, 
+    def check_exit_conditions(self,
                             current_price: float,
-                            high: float, 
+                            high: float,
                             low: float,
                             time: pd.Timestamp,
                             current_idx: int,
                             ticker: Optional[str] = None) -> Tuple[bool, Optional[Dict]]:
         """
         Check if position should be exited based on price action.
-        
+
         Args:
             current_price: Current price
             high: High price of current period
             low: Low price of current period
             time: Current timestamp
             current_idx: Current index in the data
-            
+
         Returns:
             tuple: (exit_triggered, trade_details)
         """
@@ -182,26 +182,29 @@ class TradeManager:
                     exit_reason = "take_profit"
 
             if exit_price:
+                # TODO: The position needs to be sent to the exchange and close after it is filled.
+                # For backtesting, we assume immediate fill at stop or take profit price.
+                # Need to remove close_position from inside this loop to delegate exchange interaction to caller.
                 trade = self.close_position(exit_price, time, current_idx, exit_reason, ticker=pos_ticker)
                 return True, trade
 
         return False, None
 
-    def close_position(self, 
-                      exit_price: float, 
+    def close_position(self,
+                      exit_price: float,
                       time: pd.Timestamp,
                       current_idx: int,
                       exit_reason: str,
                       ticker: Optional[str] = None) -> dict:
         """
         Close current position and calculate PnL.
-        
+
         Args:
             exit_price: Price at exit
             time: Exit timestamp
             current_idx: Current index in the data
             exit_reason: Reason for exit
-            
+
         Returns:
             dict: Completed trade information
         """
@@ -260,7 +263,7 @@ class TradeManager:
     def update_trailing_stop(self, market_data: pd.DataFrame, current_idx: int, ticker: Optional[str] = None) -> None:
         """
         Update trailing stop if applicable.
-        
+
         Args:
             market_data: DataFrame with market data
             current_idx: Current index in the data
@@ -301,22 +304,22 @@ class TradeManager:
     def determine_ticker_regime(df: pd.DataFrame, index: int) -> str:
         """
         Determine market regime based on RSI.
-        
+
         Args:
             df: DataFrame with market data
             index: Current index in the data
-            
+
         Returns:
             str: Market regime (BULL, BEAR, or SIDEWAYS)
         """
         rsi_cols = [col for col in df.columns if col.startswith('RSI')]
-        
+
         if not rsi_cols:
             return Regime.SIDEWAYS.value
-            
+
         rsi_col = rsi_cols[0]
         rsi_value = df[rsi_col].iloc[index]
-        
+
         if rsi_value >= 60:
             return Regime.BULL.value
         elif rsi_value <= 40:
@@ -327,7 +330,7 @@ class TradeManager:
     def get_current_position(self) -> Optional[Dict]:
         """
         Get the current position information.
-        
+
         Returns:
             dict or None: Current position information if exists
         """
@@ -342,12 +345,12 @@ class TradeManager:
     def get_current_balance(self) -> float:
         """
         Get the current account balance.
-        
+
         Returns:
             float: Current balance
         """
         return self.current_balance
-    
+
     def reset(self) -> None:
         """
         Reset the trade manager state.
