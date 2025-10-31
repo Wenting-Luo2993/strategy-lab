@@ -37,6 +37,13 @@ class TradeManager:
         self.current_position = None
         # Cache of closed positions (trade records)
         self.closed_positions = []
+        # Track reserved funds for active positions (simulated capital usage)
+        self.reserved_funds = 0.0
+        # Position lifecycle statuses
+        self.STATUS_PENDING_ENTRY = "pending_entry"
+        self.STATUS_OPEN = "open"
+        self.STATUS_PENDING_EXIT = "pending_exit"
+        self.STATUS_CLOSED = "closed"
 
     def create_entry_position(self,
                             price: float,
@@ -76,11 +83,25 @@ class TradeManager:
             is_long = signal == 1  # True for long signal, False for short or no signal
             risk_initial_stop = risk_result.get('stop_loss')
             initial_stop = max(initial_stop, risk_initial_stop) if is_long else min(initial_stop, risk_initial_stop)
-            position_size = self.risk_manager.calculate_position_size(self.current_balance, price, initial_stop)
+            # Base raw position size from risk rules
+            raw_position_size = self.risk_manager.calculate_position_size(self.current_balance, price, initial_stop)
+
+            # Enforce allocation cap (max percent of current balance) & available funds
+            alloc_cap_pct = getattr(self.risk_manager.config, 'position_allocation_cap_percent', 1.0)
+            max_notional_by_cap = self.current_balance * alloc_cap_pct
+            available_funds = self.get_available_funds()
+            max_notional = min(max_notional_by_cap, available_funds)
+            if max_notional <= 0:
+                logger.warning("Insufficient available funds to create position.")
+                return None
+            # Convert to size limited by notional
+            position_size_cap = max_notional / price
+            position_size = min(raw_position_size, position_size_cap)
 
             # Determine regime
             regime = self.determine_ticker_regime(market_data, current_idx)
 
+            notional_value = position_size * price
             position = {
                 TradeColumns.ENTRY_IDX.value: current_idx,
                 TradeColumns.ENTRY_TIME.value: time,
@@ -91,7 +112,10 @@ class TradeManager:
                 TradeColumns.ACCOUNT_BALANCE.value: self.current_balance,
                 TradeColumns.DIRECTION.value: signal,
                 TradeColumns.TICKER_REGIME.value: regime,
-                TradeColumns.TRAILING_STOP_DATA.value: risk_result.get('trailing_stop_data')
+                TradeColumns.TRAILING_STOP_DATA.value: risk_result.get('trailing_stop_data'),
+                'status': self.STATUS_OPEN,
+                'notional': notional_value,
+                'reserved_funds': 0.0
             }
             # Attach ticker info if available. Preference order:
             # 1) explicit ticker arg, 2) DataFrame attrs 'ticker', 3) fallback generated id
@@ -105,6 +129,8 @@ class TradeManager:
             # Store in mapping and preserve current_position pointer for compatibility
             self.current_positions[ticker] = position
             self.current_position = position
+            # Reduce available funds by reserving the notional (simulate capital being used)
+            self.reserved_funds += notional_value
             return position
         except Exception as e:
             logger.error(f"Error creating entry position at {current_idx} for {ticker}")
@@ -232,6 +258,9 @@ class TradeManager:
         # Calculate PnL
         pnl = direction * (exit_price - entry_price) * position_size
         self.current_balance += pnl
+        # Release reserved funds for this position
+        position_notional = pos.get('notional', 0.0)
+        self.reserved_funds -= position_notional
 
         # Get trailing stop info if available
         trailing_info = {}
@@ -265,6 +294,10 @@ class TradeManager:
             self.current_position = None
 
         return trade
+
+    def get_available_funds(self) -> float:
+        """Return funds available for new positions (current_balance minus reserved funds)."""
+        return max(self.current_balance - self.reserved_funds, 0.0)
 
     def update_trailing_stop(self, market_data: pd.DataFrame, current_idx: int, ticker: Optional[str] = None) -> None:
         """
@@ -365,3 +398,4 @@ class TradeManager:
         self.current_position = None
         self.current_positions = {}
         self.closed_positions = []
+        self.reserved_funds = 0.0

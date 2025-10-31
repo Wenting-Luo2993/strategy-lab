@@ -37,6 +37,7 @@ class RiskConfig:
     take_profit_type: str
     take_profit_value: float
     risk_per_trade: float = 0.01  # Default to 1% if not specified
+    position_allocation_cap_percent: float = 0.25  # Max % of current balance allocatable to a single position
     trailing_stop: TrailingStopConfig = None  # Trailing stop configuration
 
 @dataclass
@@ -87,7 +88,7 @@ def load_strategy_parameters() -> list[StrategyConfig]:
         params = dict(zip(param_grid.keys(), combo))
         strategy_config = StrategyConfig(
             orb_config=OrbConfig(
-                timeframe=params["timeframe"], 
+                timeframe=params["timeframe"],
                 start_time=params["start_time"],
                 body_breakout_percentage=params["body_breakout_percentage"]
             ),

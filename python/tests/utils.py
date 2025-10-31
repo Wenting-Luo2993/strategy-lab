@@ -14,10 +14,11 @@ from src.config.columns import TradeColumns
 
 
 class DummyRiskConfig(SimpleNamespace):
-    def __init__(self, risk_per_trade=0.01, max_position_size_percent=1.0):
+    def __init__(self, risk_per_trade=0.01, max_position_size_percent=1.0, position_allocation_cap_percent=0.25):
         super().__init__(
             risk_per_trade=risk_per_trade,
             max_position_size_percent=max_position_size_percent,
+            position_allocation_cap_percent=position_allocation_cap_percent,
             trailing_stop=None,
             stop_loss_type="pct",
             take_profit_type="pct",

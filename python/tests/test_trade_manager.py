@@ -188,3 +188,38 @@ def test_multi_ticker_position_management(market_data_sets, risk_manager):
     assert side_trade[TradeColumns.PNL.value] != 0
     assert tm.current_positions == {}
     assert len(tm.get_closed_positions()) == 3
+
+
+def test_available_funds_and_allocation_cap():
+    rm = MockRiskManager()
+    # Set allocation cap percent low to force size reduction
+    rm.config.position_allocation_cap_percent = 0.10  # 10%
+    tm = TradeManager(risk_manager=rm, initial_capital=10000)
+    df = make_market_data_one_day().iloc[:10]
+    price = df['open'].iloc[0]
+    pos = tm.create_entry_position(price=price, signal=1, time=df.index[0], market_data=df, current_idx=0, initial_stop=price-1)
+    assert pos is not None
+    # Notional should be <= 10% of initial capital
+    assert pos['notional'] <= 10000 * 0.10 + 1e-6
+    # Available funds should reflect reserved funds
+    assert tm.get_available_funds() == pytest.approx(10000 - pos['notional'])
+
+    # Attempt second position exceeding remaining allocation cap
+    pos2 = tm.create_entry_position(price=price, signal=1, time=df.index[1], market_data=df, current_idx=1, initial_stop=price-1)
+    # Depending on cap availability may create smaller position or None if funds insufficient
+    if pos2:
+        assert tm.get_available_funds() == pytest.approx(10000 - pos['notional'] - pos2['notional'])
+    else:
+        # If not created, funds remain same
+        assert tm.get_available_funds() == pytest.approx(10000 - pos['notional'])
+
+    # Close first position releases funds
+    exit_data = {
+        'ticker': pos[TradeColumns.TICKER.value],
+        'exit_price': price + 2,
+        'exit_time': df.index[2],
+        'exit_idx': 2,
+        'exit_reason': 'manual'
+    }
+    trade = tm.close_position(exit_price=exit_data['exit_price'], time=exit_data['exit_time'], current_idx=exit_data['exit_idx'], exit_reason=exit_data['exit_reason'], ticker=exit_data['ticker'])
+    assert tm.get_available_funds() == pytest.approx(tm.get_current_balance() - (pos2['notional'] if pos2 else 0.0))
