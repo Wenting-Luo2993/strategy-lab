@@ -28,32 +28,32 @@ class BacktestEngine:
         self.initial_capital = initial_capital
         self.equity = [initial_capital]
         self.result_df = None  # Will store the result dataframe after running
-        
+
         # Initialize trade manager
         self.trade_manager = TradeManager(risk_manager, initial_capital)
-        
+
     def _determine_ticker_regime(self, df, index) -> str:
         """
         Determine ticker regime based on RSI value.
-        
+
         Args:
             df: DataFrame with market data
             index: Current row index
-            
+
         Returns:
             str: Ticker regime ('bull', 'bear', or 'sideways')
         """
         # Find any column that starts with 'RSI'
         rsi_cols = [col for col in df.columns if col.startswith('RSI')]
-        
+
         # If no RSI column found, return 'sideways' as default
         if not rsi_cols:
             return Regime.SIDEWAYS.value
-            
+
         # Use the first RSI column found
         rsi_col = rsi_cols[0]
         rsi_value = df[rsi_col].iloc[index]
-        
+
         # Check RSI thresholds
         if rsi_value >= 60:
             return Regime.BULL.value
@@ -76,21 +76,21 @@ class BacktestEngine:
         """
         # Use provided data or fall back to instance data
         data_to_use: pd.DataFrame = df if df is not None else self.data
-        
+
         position = None  # None or dict with entry info
         # Reset equity tracking and trades list
         self.equity = [self.initial_capital]
         self.current_balance = self.initial_capital
         self.trade_manager.reset()
         self.trades = []
-        
+
         # Generate signals or use provided signals
         signals_to_use = signals if signals is not None else self.strategy.generate_signals(data_to_use)
-        
+
         for i in range(len(data_to_use)):
             signal = signals_to_use.iloc[i]  # Get signal for current bar
             price = data_to_use["close"].iloc[i]
-            
+
             # Update equity at each step with trade manager's current balance
             self.equity.append(self.trade_manager.get_current_balance())
 
@@ -101,7 +101,7 @@ class BacktestEngine:
                 if self.strategy:
                     is_long = signal == 1  # True for long signal, False for short or no signal
                     initial_stop = self.strategy.initial_stop_value(price, is_long, data_to_use.iloc[i])
-                
+
                 # Create position using trade manager
                 position = self.trade_manager.create_entry_position(
                     price=price,
@@ -130,23 +130,30 @@ class BacktestEngine:
             elif position is not None:
                 # Update trailing stop
                 self.trade_manager.update_trailing_stop(data_to_use, i)
-                
+
                 # Check exit conditions
                 low = data_to_use["low"].iloc[i]
                 high = data_to_use["high"].iloc[i]
                 price = data_to_use["close"].iloc[i]
-                
-                exited, trade = self.trade_manager.check_exit_conditions(
+
+                exited, exit_data = self.trade_manager.check_exit_conditions(
                     current_price=price,
                     high=high,
                     low=low,
                     time=data_to_use.index[i],
                     current_idx=i
                 )
-                
-                if exited and trade:
-                    self.trades.append(trade)
-                    position = None
+                if exited and exit_data:
+                    trade = self.trade_manager.close_position(
+                        exit_price=exit_data['exit_price'],
+                        time=exit_data['exit_time'],
+                        current_idx=exit_data['exit_idx'],
+                        exit_reason=exit_data['exit_reason'],
+                        ticker=exit_data['ticker']
+                    )
+                    if trade:
+                        self.trades.append(trade)
+                        position = None
 
         # If still in position at end, close via trade manager
         if position is not None:
@@ -159,31 +166,31 @@ class BacktestEngine:
             )
             if trade:
                 self.trades.append(trade)
-        
+
         # Create result dataframe with equity curve
         # Handle case where equity array is longer than data index (common at end of backtest)
         equity_len = min(len(self.equity), len(data_to_use))
         equity_series = pd.Series(self.equity[:equity_len], index=data_to_use.index[:equity_len])
-        
+
         # Store DataFrame with equity column
         self.result_df = data_to_use.copy()
         self.result_df['equity'] = equity_series
-        
+
         # No return value - results are stored in self.trades and self.result_df
-        
+
     def get_trades(self):
         """
         Get the list of trades from the last backtest run.
-        
+
         Returns:
             list: List of trade dictionaries with entry/exit information
         """
         return self.trades
-    
+
     def get_result_dataframe(self):
         """
         Get the result dataframe with market data and equity curve from the last backtest run.
-        
+
         Returns:
             pd.DataFrame: DataFrame with market data and equity column
         """

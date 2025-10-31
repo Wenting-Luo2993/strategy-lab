@@ -68,15 +68,18 @@ def test_check_exit_conditions_long_stop_and_take_profit():
     pos = tm.create_entry_position(price=101.0, signal=1, time=df.index[0], market_data=df, current_idx=0, initial_stop=100.5)
 
     # Simulate a bar hitting stop loss first
-    exit_triggered, trade = tm.check_exit_conditions(current_price=100.0, high=100.2, low=99.8, time=df.index[1], current_idx=1)
+    exit_triggered, exit_data = tm.check_exit_conditions(current_price=100.0, high=100.2, low=99.8, time=df.index[1], current_idx=1)
     assert exit_triggered is True
+    assert exit_data['exit_reason'] == 'stop_loss'
+    trade = tm.close_position(exit_price=exit_data['exit_price'], time=exit_data['exit_time'], current_idx=exit_data['exit_idx'], exit_reason=exit_data['exit_reason'], ticker=exit_data['ticker'])
     assert trade[TradeColumns.EXIT_REASON.value] == 'stop_loss'
     assert tm.get_current_position() is None
 
     # New long position for take profit test
     pos2 = tm.create_entry_position(price=102.0, signal=1, time=df.index[2], market_data=df, current_idx=2, initial_stop=101.0)
-    exit_triggered, trade = tm.check_exit_conditions(current_price=104.0, high=104.2, low=103.5, time=df.index[3], current_idx=3)
+    exit_triggered, exit_data = tm.check_exit_conditions(current_price=104.0, high=104.2, low=103.5, time=df.index[3], current_idx=3)
     assert exit_triggered is True
+    trade = tm.close_position(exit_price=exit_data['exit_price'], time=exit_data['exit_time'], current_idx=exit_data['exit_idx'], exit_reason=exit_data['exit_reason'], ticker=exit_data['ticker'])
     assert trade[TradeColumns.EXIT_REASON.value] == 'take_profit'
 
 
@@ -87,14 +90,16 @@ def test_check_exit_conditions_short_stop_and_take_profit():
     pos = tm.create_entry_position(price=101.0, signal=-1, time=df.index[0], market_data=df, current_idx=0, initial_stop=101.5)
 
     # Simulate stop loss hit (price goes above stop)
-    exit_triggered, trade = tm.check_exit_conditions(current_price=102.5, high=102.6, low=101.9, time=df.index[1], current_idx=1)
+    exit_triggered, exit_data = tm.check_exit_conditions(current_price=102.5, high=102.6, low=101.9, time=df.index[1], current_idx=1)
     assert exit_triggered is True
+    trade = tm.close_position(exit_price=exit_data['exit_price'], time=exit_data['exit_time'], current_idx=exit_data['exit_idx'], exit_reason=exit_data['exit_reason'], ticker=exit_data['ticker'])
     assert trade[TradeColumns.EXIT_REASON.value] == 'stop_loss'
 
     # New short position for take profit
     pos2 = tm.create_entry_position(price=100.0, signal=-1, time=df.index[2], market_data=df, current_idx=2, initial_stop=100.5)
-    exit_triggered, trade = tm.check_exit_conditions(current_price=97.5, high=98.0, low=97.4, time=df.index[3], current_idx=3)
+    exit_triggered, exit_data = tm.check_exit_conditions(current_price=97.5, high=98.0, low=97.4, time=df.index[3], current_idx=3)
     assert exit_triggered is True
+    trade = tm.close_position(exit_price=exit_data['exit_price'], time=exit_data['exit_time'], current_idx=exit_data['exit_idx'], exit_reason=exit_data['exit_reason'], ticker=exit_data['ticker'])
     assert trade[TradeColumns.EXIT_REASON.value] == 'take_profit'
 
 
@@ -161,8 +166,9 @@ def test_multi_ticker_position_management(market_data_sets, risk_manager):
 
     # Trigger exit for one ticker (simulate take profit on BULL)
     bull_tp = bull_pos[TradeColumns.TAKE_PROFIT.value]
-    triggered, trade = tm.check_exit_conditions(current_price=bull_tp + 0.1, high=bull_tp + 0.1, low=bull_tp - 0.2, time=bull_df.index[1], current_idx=1, ticker='BULL')
+    triggered, exit_data = tm.check_exit_conditions(current_price=bull_tp + 0.1, high=bull_tp + 0.1, low=bull_tp - 0.2, time=bull_df.index[1], current_idx=1, ticker='BULL')
     assert triggered is True
+    trade = tm.close_position(exit_price=exit_data['exit_price'], time=exit_data['exit_time'], current_idx=exit_data['exit_idx'], exit_reason=exit_data['exit_reason'], ticker=exit_data['ticker'])
     assert trade[TradeColumns.EXIT_REASON.value] == 'take_profit'
     assert 'BULL' not in tm.current_positions
 
@@ -171,8 +177,9 @@ def test_multi_ticker_position_management(market_data_sets, risk_manager):
 
     # Trigger stop loss for BEAR (short position stop above)
     bear_stop = bear_pos[TradeColumns.STOP_LOSS.value]
-    triggered2, trade2 = tm.check_exit_conditions(current_price=bear_stop + 0.1, high=bear_stop + 0.1, low=bear_stop - 0.2, time=bear_df.index[1], current_idx=1, ticker='BEAR')
+    triggered2, exit_data2 = tm.check_exit_conditions(current_price=bear_stop + 0.1, high=bear_stop + 0.1, low=bear_stop - 0.2, time=bear_df.index[1], current_idx=1, ticker='BEAR')
     assert triggered2 is True
+    trade2 = tm.close_position(exit_price=exit_data2['exit_price'], time=exit_data2['exit_time'], current_idx=exit_data2['exit_idx'], exit_reason=exit_data2['exit_reason'], ticker=exit_data2['ticker'])
     assert trade2[TradeColumns.EXIT_REASON.value] == 'stop_loss'
     assert 'BEAR' not in tm.current_positions
 

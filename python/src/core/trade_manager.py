@@ -182,11 +182,17 @@ class TradeManager:
                     exit_reason = "take_profit"
 
             if exit_price:
-                # TODO: The position needs to be sent to the exchange and close after it is filled.
-                # For backtesting, we assume immediate fill at stop or take profit price.
-                # Need to remove close_position from inside this loop to delegate exchange interaction to caller.
-                trade = self.close_position(exit_price, time, current_idx, exit_reason, ticker=pos_ticker)
-                return True, trade
+                # Return metadata describing the desired exit;
+                # caller must invoke close_position after executing the order
+                exit_data = {
+                    'ticker': pos_ticker,
+                    'exit_price': exit_price,
+                    'exit_time': time,
+                    'exit_idx': current_idx,
+                    'exit_reason': exit_reason,
+                    'position': pos
+                }
+                return True, exit_data
 
         return False, None
 
