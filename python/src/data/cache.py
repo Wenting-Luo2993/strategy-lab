@@ -1,6 +1,6 @@
 # src/data/cache.py
 import os
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -28,7 +28,7 @@ class CacheDataLoader(DataLoader):
 
     def __init__(
         self,
-        wrapped_loader: DataLoader,
+        wrapped_loader: Optional[DataLoader] = None,
         cache_dir: str = "data_cache",
         max_lookback_days: int = 59,
         timeframe_minutes_map: Optional[dict] = None,
@@ -37,6 +37,7 @@ class CacheDataLoader(DataLoader):
         use_service_account: bool = True,
         service_account_env: str = "GOOGLE_SERVICE_ACCOUNT_KEY",
     ):
+        # Underlying loader is optional; if None we operate in cache-only mode
         self.wrapped_loader = wrapped_loader
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -118,8 +119,9 @@ class CacheDataLoader(DataLoader):
         self._migrate_legacy(symbol, timeframe)
 
         # Normalize dates
-        end_dt = self._parse_date(end) if end else datetime.now(datetime.timezone.utc)
-        
+        # Use UTC now when end not specified
+        end_dt = self._parse_date(end) if end else datetime.now(timezone.utc)
+
         # Read cache to check earliest available date if start is None
         rolling_path = self._rolling_cache_path(symbol, timeframe)
         # Cloud pre-sync (download newer remote copy if exists)
@@ -130,7 +132,7 @@ class CacheDataLoader(DataLoader):
             except Exception as e:  # pragma: no cover
                 logger.warning(f"Drive sync_down failed for {rolling_path.name}: {e}")
         df_cache = self._read_cache(rolling_path)
-        
+
         if start is None and not df_cache.empty:
             # Use earliest date from cache if available
             start_dt = df_cache.index.min().date()
@@ -138,12 +140,17 @@ class CacheDataLoader(DataLoader):
         else:
             # Use provided start date or default to max lookback from end
             start_dt = self._parse_date(start) if start else end_dt - timedelta(days=self.max_lookback_days)
-        
+
         # Cache was already read above for start date determination
         # No need to read it again
 
         # Determine clamp boundary for new fetches
-        clamp_start_dt = end_dt - timedelta(days=self.max_lookback_days)
+        # Ensure we compare date objects (end_dt may be datetime if provided that way)
+        if isinstance(end_dt, datetime):
+            end_date_only = end_dt.date()
+        else:
+            end_date_only = end_dt
+        clamp_start_dt = end_date_only - timedelta(days=self.max_lookback_days)
         fetchable_start_dt = max(start_dt, clamp_start_dt)
 
         # Compute missing segments relative to cache
@@ -152,23 +159,23 @@ class CacheDataLoader(DataLoader):
 
         if df_cache.empty:
             # Entire requested window considered missing but we only fetch from fetchable_start_dt
-            if fetchable_start_dt <= end_dt:
-                missing_segments.append((fetchable_start_dt, end_dt))
+            if fetchable_start_dt <= end_date_only:
+                missing_segments.append((fetchable_start_dt, end_date_only))
         else:
             cache_start = df_cache.index.min().date()
             cache_end = df_cache.index.max().date()
 
             # Left side missing (only fetch if after clamp boundary)
             if fetchable_start_dt < cache_start:
-                left_end = min(cache_start - timedelta(days=1), end_dt)
+                left_end = min(cache_start - timedelta(days=1), end_date_only)
                 if fetchable_start_dt <= left_end:
                     missing_segments.append((fetchable_start_dt, left_end))
 
             # Right side missing
-            if end_dt > cache_end:
+            if end_date_only > cache_end:
                 right_start = max(fetchable_start_dt, cache_end + timedelta(days=1))
-                if right_start <= end_dt:
-                    missing_segments.append((right_start, end_dt))
+                if right_start <= end_date_only:
+                    missing_segments.append((right_start, end_date_only))
 
             # Middle gaps (daily-level detection). For intraday, we rely on continuity later.
             # If timeframe_minutes available, we could refine; skipping for now to limit complexity.
@@ -179,19 +186,24 @@ class CacheDataLoader(DataLoader):
 
         # Fetch missing segments
         new_frames = []
-        for seg_start, seg_end in missing_segments:
-            try:
-                seg_df = self._fetch_segment(symbol, seg_start, seg_end)
-                if not seg_df.empty:
-                    new_frames.append(seg_df)
-                    logger.debug(
-                        f"Fetched segment {symbol} {timeframe} {seg_start} -> {seg_end} rows={len(seg_df)}"
+        if self.wrapped_loader is None and missing_segments:
+            logger.warning(
+                f"Cache-only mode: missing segments for {symbol} {timeframe} not fetched because wrapped_loader is None. Returning cached subset."
+            )
+        else:
+            for seg_start, seg_end in missing_segments:
+                try:
+                    seg_df = self._fetch_segment(symbol, seg_start, seg_end)
+                    if not seg_df.empty:
+                        new_frames.append(seg_df)
+                        logger.debug(
+                            f"Fetched segment {symbol} {timeframe} {seg_start} -> {seg_end} rows={len(seg_df)}"
+                        )
+                        logger.info("Succesfully fetched segment")
+                except Exception as e:  # pragma: no cover - defend
+                    logger.error(
+                        f"Error fetching segment for {symbol} {timeframe} {seg_start} -> {seg_end}: {e}"
                     )
-                    logger.info("Succesfully fetched segment")
-            except Exception as e:  # pragma: no cover - defend
-                logger.error(
-                    f"Error fetching segment for {symbol} {timeframe} {seg_start} -> {seg_end}: {e}"
-                )
 
         # Merge and persist if we have new data
         if new_frames:
@@ -211,7 +223,7 @@ class CacheDataLoader(DataLoader):
                 )
 
         # Slice to requested user window (even if earlier portion was clamped we don't attempt to fabricate)
-        requested_slice = df_cache[(df_cache.index.date >= start_dt) & (df_cache.index.date <= end_dt)]
+        requested_slice = df_cache[(df_cache.index.date >= start_dt) & (df_cache.index.date <= end_date_only)]
         # Cloud post-sync (upload if changed)
         if self._drive_sync and self._drive_sync.enable and rolling_path.exists():
             try:
@@ -249,7 +261,10 @@ class CacheDataLoader(DataLoader):
         return pd.DataFrame()
 
     def _fetch_segment(self, symbol: str, start: datetime.date, end: datetime.date) -> pd.DataFrame:
-        # Underlying loader expects strings
+        if self.wrapped_loader is None:
+            # Cache-only mode: no fetch possible
+            logger.debug(f"_fetch_segment skipped (cache-only mode) for {symbol} {start}->{end}")
+            return pd.DataFrame()
         df: pd.DataFrame = self.wrapped_loader.fetch(symbol, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
         return self._standardize_df(df)
 
