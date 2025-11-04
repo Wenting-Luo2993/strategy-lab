@@ -49,6 +49,27 @@ print("Sell signals:", sell_markers.dropna().head())
 
 plot_candlestick(result, indicators=["SMA_20", "ORB_High", "ORB_Low", "equity"], moreplots=apds, title="AAPL ORB Backtest")
 
+# %% Cached last day visualization
+# Imports specific to this visualization example moved into their own cell
+from datetime import datetime
+from src.visualization.charts import plot_cache_time_range
+
+try:
+    last_day = datetime(2025, 10, 30)
+    start_date = datetime(2025, 10, 29)
+    plot_cache_time_range(
+        "NVDA",
+        timeframe="5m",
+        start=start_date,
+        end=last_day,
+        indicators=["ORB_High", "ORB_Low"],
+        title=f"AAPL Last Day {last_day} (Cached)",
+        max_rows=600,
+        cache_dir="data_cache",
+    )
+except Exception as e:
+    print(f"Failed to plot last day range: {e}")
+
 print("Main function executed successfully.")
 
 # %% Test fetch data for backtester
