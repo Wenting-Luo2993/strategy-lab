@@ -78,6 +78,8 @@ class DarkTradingOrchestrator:
         self.last_run_time: Optional[datetime] = None
         self.tick_count: int = 0
         self.orders_executed_this_cycle: int = 0
+        # Track most recent data timestamp (for replay to record simulated time instead of wall-clock)
+        self.last_data_timestamp: Optional[pd.Timestamp] = None
         self.auto_stop_at: Optional[datetime] = None
 
         # Results tracking
@@ -185,6 +187,12 @@ class DarkTradingOrchestrator:
                 "duration_ms": int((time.time() - fetch_start) * 1000)
             }
         )
+        # Update last_data_timestamp for replay / simulated timekeeping
+        if latest_data:
+            try:
+                self.last_data_timestamp = max(df.index.max() for df in latest_data.values() if not df.empty)
+            except Exception:
+                pass
         return latest_data
 
     def _update_exchange_prices(self, latest_data: Dict[str, pd.DataFrame]) -> None:
@@ -436,11 +444,17 @@ class DarkTradingOrchestrator:
                     break
 
             # Write to CSV
+            # Choose timestamp: in replay prefer original order (bar) timestamp
+            ts = None
+            if self.replay_cfg.enabled:
+                ts = order.get("timestamp") or response.get("timestamp")
+            else:
+                ts = response.get("timestamp") or order.get("timestamp")
             with open(self.trades_file, 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([
                     self.run_id,
-                    response["timestamp"],
+                    str(ts),
                     order["ticker"],
                     order["side"],
                     response["filled_qty"],
@@ -453,11 +467,16 @@ class DarkTradingOrchestrator:
     def _record_account_state(self) -> None:
         """Record current account state to the equity CSV file."""
         account = self.exchange.get_account()
-
+        # Use simulated data timestamp in replay mode if available; else use market timezone now
+        if self.replay_cfg.enabled and self.last_data_timestamp is not None:
+            ts = self.last_data_timestamp
+        else:
+            tz = pytz.timezone(self.market_hours.timezone) if self.market_hours else pytz.UTC
+            ts = pd.Timestamp.now(tz=tz)
         with open(self.equity_file, 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([
-                pd.Timestamp.now(),
+                ts.isoformat(),
                 account["cash"],
                 account["positions_value"],
                 account["equity"]

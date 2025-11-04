@@ -154,9 +154,14 @@ class MockExchange(Exchange):
                 message=f"No price data available for {order_obj.ticker}"
             ).to_dict()
 
+        # Allow upstream (orchestrator) to pass a simulation timestamp
+        sim_ts = None
+        if isinstance(order, dict):
+            sim_ts = order.get("timestamp")
+
         # Process order based on type
         if self.force_fill:
-            return self._process_force_fill(order_obj, current_price).to_dict()
+            return self._process_force_fill(order_obj, current_price, sim_ts=sim_ts).to_dict()
         if order_obj.order_type == "market":
             return self._process_market_order(order_obj, current_price).to_dict()
         elif order_obj.order_type == "limit":
@@ -173,20 +178,24 @@ class MockExchange(Exchange):
         """Enable or disable force fill mode (replay)."""
         self.force_fill = enabled
 
-    def _process_force_fill(self, order: Order, current_price: float) -> OrderResponse:
-        """Fill any order immediately at current price (no slippage, funds/share checks)."""
+    def _process_force_fill(self, order: Order, current_price: float, sim_ts=None) -> OrderResponse:
+        """Fill any order immediately at current price (no slippage, funds/share checks).
+
+        If sim_ts provided, use it for trade + response timestamp (replay mode) instead of wall-clock.
+        """
         execution_price = current_price
         commission = max(self.min_commission, order.qty * self.commission_per_share)
         # Update position (treat all quantity as filled)
         self._update_position(order.ticker, order.qty if order.side == "buy" else -order.qty, execution_price)
         self.cash -= commission
+        ts = sim_ts if sim_ts is not None else pd.Timestamp.now()
         trade = Trade(
             order_id=order.order_id,
             ticker=order.ticker,
             side=order.side,
             qty=order.qty,
             price=execution_price,
-            timestamp=pd.Timestamp.now(),
+            timestamp=ts,
             commission=commission
         )
         self.trade_log.append(trade)
@@ -199,7 +208,7 @@ class MockExchange(Exchange):
             filled_qty=order.qty,
             avg_fill_price=execution_price,
             commission=commission,
-            timestamp=pd.Timestamp.now()
+            timestamp=ts
         )
 
     def _process_market_order(self, order: Order, current_price: float) -> OrderResponse:

@@ -51,7 +51,7 @@ def build_strategy_config() -> StrategyConfig:
 
 def main():
     logging.basicConfig(level=logging.INFO)
-    symbols = ["NVDA"]
+    symbols = ["NVDA", "AAPL", "AMZN"]
 
     # Replay loader (cache-only)
     _ = CacheDataLoader(wrapped_loader=None)  # not strictly needed but shows pattern
