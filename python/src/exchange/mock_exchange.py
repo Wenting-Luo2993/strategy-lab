@@ -16,7 +16,7 @@ from collections import defaultdict
 import os
 
 from .base import Exchange
-from .models import Order, OrderResponse, Position, Trade, AccountState
+from .models import Order, OrderResponse, Position, Trade, AccountState, OrderStatus
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -81,13 +81,12 @@ class MockExchange(Exchange):
             path = Path(self.trade_log_path)
             # Create directory if it doesn't exist
             path.parent.mkdir(parents=True, exist_ok=True)
-
             # Create file with headers if it doesn't exist
             if not path.exists():
                 with open(path, 'w', newline='') as f:
                     writer = csv.DictWriter(f, fieldnames=[
                         'timestamp', 'ticker', 'side', 'qty',
-                        'price', 'commission', 'order_id'
+                        'price', 'commission', 'order_id', 'order_status'
                     ])
                     writer.writeheader()
 
@@ -126,7 +125,7 @@ class MockExchange(Exchange):
         if not self.connected:
             return OrderResponse(
                 order_id=order.get("order_id", str(uuid.uuid4())),
-                status="cancelled",
+                status=OrderStatus.CANCELLED,
                 filled_qty=0,
                 message="Exchange not connected"
             ).to_dict()
@@ -149,7 +148,7 @@ class MockExchange(Exchange):
         if current_price is None:
             return OrderResponse(
                 order_id=order_obj.order_id,
-                status="cancelled",
+                status=OrderStatus.CANCELLED,
                 filled_qty=0,
                 message=f"No price data available for {order_obj.ticker}"
             ).to_dict()
@@ -169,7 +168,7 @@ class MockExchange(Exchange):
         else:
             return OrderResponse(
                 order_id=order_obj.order_id,
-                status="cancelled",
+                status=OrderStatus.CANCELLED,
                 filled_qty=0,
                 message=f"Unsupported order type: {order_obj.order_type}"
             ).to_dict()
@@ -196,7 +195,8 @@ class MockExchange(Exchange):
             qty=order.qty,
             price=execution_price,
             timestamp=ts,
-            commission=commission
+            commission=commission,
+            order_status=OrderStatus.FILLED
         )
         self.trade_log.append(trade)
         self._log_trade_to_csv(trade)
@@ -204,7 +204,7 @@ class MockExchange(Exchange):
         del self.open_orders[order.order_id]
         return OrderResponse(
             order_id=order.order_id,
-            status="filled",
+            status=OrderStatus.FILLED,
             filled_qty=order.qty,
             avg_fill_price=execution_price,
             commission=commission,
@@ -241,13 +241,13 @@ class MockExchange(Exchange):
                 if max_qty <= 0:
                     return OrderResponse(
                         order_id=order.order_id,
-                        status="cancelled",
+                        status=OrderStatus.CANCELLED,
                         filled_qty=0,
                         message="Insufficient funds"
                     )
                 # Partial fill
                 filled_qty = max_qty
-                status = "partial"
+                status = OrderStatus.PARTIAL
                 # Recalculate commission based on actual fill
                 commission = max(
                     self.min_commission,
@@ -255,7 +255,7 @@ class MockExchange(Exchange):
                 )
             else:
                 filled_qty = order.qty
-                status = "filled"
+                status = OrderStatus.FILLED
         else:  # sell order
             # Check if we have enough shares
             position = self.positions.get(order.ticker)
@@ -267,7 +267,7 @@ class MockExchange(Exchange):
                     if position.qty < 0:
                         # Already short, can sell more (increase short position)
                         filled_qty = order.qty
-                        status = "filled"
+                        status = OrderStatus.FILLED
                     else:
                         # Long position, but not enough shares
                         available_qty = position.qty
@@ -280,7 +280,7 @@ class MockExchange(Exchange):
                             )
                         # Partial fill based on available shares
                         filled_qty = available_qty
-                        status = "partial"
+                        status = OrderStatus.PARTIAL
                         # Recalculate commission
                         commission = max(
                             self.min_commission,
@@ -288,7 +288,7 @@ class MockExchange(Exchange):
                         )
             else:
                 filled_qty = order.qty
-                status = "filled"
+                status = OrderStatus.FILLED
 
         # Update positions and cash
         self._update_position(order.ticker, filled_qty if order.side == "buy" else -filled_qty, execution_price)
@@ -304,13 +304,14 @@ class MockExchange(Exchange):
             qty=filled_qty,
             price=execution_price,
             timestamp=pd.Timestamp.now(),
-            commission=commission
+            commission=commission,
+            order_status=status
         )
         self.trade_log.append(trade)
         self._log_trade_to_csv(trade)
 
         # Remove the order if filled completely
-        if status == "filled":
+        if status == OrderStatus.FILLED:
             del self.open_orders[order.order_id]
 
         # Return response
@@ -348,7 +349,7 @@ class MockExchange(Exchange):
             # Order remains open
             return OrderResponse(
                 order_id=order.order_id,
-                status="open",
+                status=OrderStatus.OPEN,
                 filled_qty=0,
                 timestamp=pd.Timestamp.now(),
                 message="Limit order queued"
@@ -378,7 +379,7 @@ class MockExchange(Exchange):
             if total_cost > self.cash:
                 return OrderResponse(
                     order_id=order.order_id,
-                    status="open",  # Keep the order open
+                    status=OrderStatus.OPEN,  # Keep the order open
                     filled_qty=0,
                     message="Insufficient funds"
                 )
@@ -397,16 +398,17 @@ class MockExchange(Exchange):
             qty=filled_qty,
             price=execution_price,
             timestamp=pd.Timestamp.now(),
-            commission=commission
+            commission=commission,
+            order_status=OrderStatus.PARTIAL if partial_fill else OrderStatus.FILLED
         )
         self.trade_log.append(trade)
         self._log_trade_to_csv(trade)
 
         # Update order status
-        status = "filled" if filled_qty == order.qty else "partial"
+        status = OrderStatus.FILLED if filled_qty == order.qty else OrderStatus.PARTIAL
 
         # Remove the order if filled completely
-        if status == "filled":
+        if status == OrderStatus.FILLED:
             del self.open_orders[order.order_id]
 
         # Return response
@@ -545,12 +547,12 @@ class MockExchange(Exchange):
         }
 
     def _log_trade_to_csv(self, trade: Trade) -> None:
-        """Log a trade to the CSV file if a path is provided."""
+        """Log a trade to the CSV file if a path is provided including status."""
         if self.trade_log_path:
             with open(self.trade_log_path, 'a', newline='') as f:
                 writer = csv.DictWriter(f, fieldnames=[
                     'timestamp', 'ticker', 'side', 'qty',
-                    'price', 'commission', 'order_id'
+                    'price', 'commission', 'order_id', 'order_status'
                 ])
                 writer.writerow(trade.to_dict())
 
@@ -571,7 +573,7 @@ class MockExchange(Exchange):
         with open(output_path, 'w', newline='') as f:
             writer = csv.DictWriter(f, fieldnames=[
                 'timestamp', 'ticker', 'side', 'qty',
-                'price', 'commission', 'order_id'
+                'price', 'commission', 'order_id', 'order_status'
             ])
             writer.writeheader()
             for trade in self.trade_log:

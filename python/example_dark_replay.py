@@ -58,7 +58,7 @@ def main():
     replay_loader = DataReplayCacheDataLoader(
         market_open=MarketHoursConfig().open_time,
         timezone=MarketHoursConfig().timezone,
-        start_offset_minutes=15,
+        start_offset_minutes=0,
         reveal_increment=1,
         cache_dir="data_cache",
     )

@@ -98,7 +98,7 @@ class DarkTradingOrchestrator:
             writer = csv.writer(f)
             writer.writerow([
                 'run_id', 'timestamp', 'ticker', 'side', 'qty',
-                'price', 'commission', 'pnl', 'order_id'
+                'price', 'commission', 'pnl', 'order_id', 'order_status'
             ])
 
         # Equity CSV
@@ -167,24 +167,26 @@ class DarkTradingOrchestrator:
                     # Update data cache
                     if ticker not in self.data_cache:
                         self.data_cache[ticker] = df
-                        logger.debug("data.cache.init", extra={"ticker": ticker, "rows": len(df)})
+                        logger.debug("data.cache.init", extra={"meta": {"ticker": ticker, "rows": len(df)}})
                     else:
                         # Append new data if not already present
                         last_cached_time = self.data_cache[ticker].index[-1]
                         new_data = df[df.index > last_cached_time]
                         if not new_data.empty:
                             self.data_cache[ticker] = pd.concat([self.data_cache[ticker], new_data])
-                            logger.debug("data.cache.extend", extra={"ticker": ticker, "new_rows": len(new_data)})
+                            logger.debug("data.cache.extend", extra={"meta": {"ticker": ticker, "new_rows": len(new_data)}})
 
             except Exception as e:
-                logger.error("data.fetch.error", extra={"ticker": ticker, "error": str(e)})
+                logger.error("data.fetch.error", extra={"meta": {"ticker": ticker, "error": str(e)}})
 
         logger.info(
             "data.fetch.summary",
             extra={
-                "tickers": fetched_tickers,
-                "count": len(fetched_tickers),
-                "duration_ms": int((time.time() - fetch_start) * 1000)
+                "meta": {
+                    "tickers": fetched_tickers,
+                    "count": len(fetched_tickers),
+                    "duration_ms": int((time.time() - fetch_start) * 1000)
+                }
             }
         )
         # Update last_data_timestamp for replay / simulated timekeeping
@@ -224,6 +226,7 @@ class DarkTradingOrchestrator:
 
             try:
                 # Add necessary indicators for the strategy
+                # TODO: we need a per tick calculation of indicators
                 if hasattr(IndicatorFactory, 'apply'):
                     # Apply indicators based on strategy configuration
                     if hasattr(self.strategy, 'strategy_config') and self.strategy.strategy_config:
@@ -248,7 +251,7 @@ class DarkTradingOrchestrator:
                             })
 
                         df = IndicatorFactory.apply(df, indicators)
-                        logger.debug("indicators.applied", extra={"ticker": ticker, "indicators": [i['name'] for i in indicators]})
+                        logger.debug("indicators.applied", extra={"meta": {"ticker": ticker, "indicators": [i['name'] for i in indicators]}})
 
                 # Generate signals using the existing strategy's generate_signals method
                 signals = self.strategy.generate_signals(df)
@@ -263,6 +266,7 @@ class DarkTradingOrchestrator:
 
                     # Create order from signal
                     # Position sizing via TradeManager (create a hypothetical position to get size)
+                    # TODO: remove redundant if-else. Signal should already be 1 or -1
                     signal_val = 1 if latest_signal > 0 else -1
                     # Use trade_manager to compute size & risk vars
                     position_proto = self.trade_manager.create_entry_position(
@@ -304,11 +308,13 @@ class DarkTradingOrchestrator:
                     logger.info(
                         "signal.detected",
                         extra={
-                            "ticker": ticker,
-                            "signal": int(latest_signal),
-                            "price": float(latest_bar['close']),
-                            "stop": float(stop_loss) if stop_loss is not None else None,
-                            "bar_time": str(latest_bar.name)
+                            "meta": {
+                                "ticker": ticker,
+                                "signal": int(latest_signal),
+                                "price": float(latest_bar['close']),
+                                "stop": float(stop_loss) if stop_loss is not None else None,
+                                "bar_time": str(latest_bar.name)
+                            }
                         }
                     )
 
@@ -316,12 +322,9 @@ class DarkTradingOrchestrator:
                     self._execute_signal(order, market_data=df, current_idx=len(df)-1)
 
             except Exception as e:
-                logger.error("signal.processing.error", extra={"ticker": ticker, "error": str(e)})
-        # Summary of signal evaluation
-        logger.info(
-            "signals.summary",
-            extra=signal_cycle_meta
-        )
+                logger.error("signal.processing.error", extra={"meta": {"ticker": ticker, "error": str(e)}})
+        # Summary of signal evaluation (structured via meta dict so formatter can include raw dict)
+        logger.info("signals.summary", extra={"meta": signal_cycle_meta})
 
     def _execute_signal(self, order: Dict[str, Any], market_data: Optional[pd.DataFrame] = None, current_idx: Optional[int] = None) -> None:
         """
@@ -334,7 +337,7 @@ class DarkTradingOrchestrator:
         if "timestamp" not in order:
             order["timestamp"] = pd.Timestamp.now()
 
-        logger.info("order.submit", extra={"ticker": order.get("ticker"), "side": order.get("side"), "qty": order.get("qty"), "ts": str(order.get("timestamp"))})
+        logger.info("order.submit", extra={"meta": {"ticker": order.get("ticker"), "side": order.get("side"), "qty": order.get("qty"), "ts": str(order.get("timestamp"))}})
 
         # Submit order if not in dry run mode
         if not self.cfg.dry_run:
@@ -342,14 +345,16 @@ class DarkTradingOrchestrator:
             logger.info(
                 "order.executed",
                 extra={
-                    "ticker": order.get("ticker"),
-                    "side": order.get("side"),
-                    "qty": order.get("qty"),
-                    "status": response.get("status"),
-                    "fill_price": response.get("avg_fill_price"),
-                    "filled_qty": response.get("filled_qty"),
-                    "commission": response.get("commission"),
-                    "order_id": response.get("order_id")
+                    "meta": {
+                        "ticker": order.get("ticker"),
+                        "side": order.get("side"),
+                        "qty": order.get("qty"),
+                        "status": response.get("status"),
+                        "fill_price": response.get("avg_fill_price"),
+                        "filled_qty": response.get("filled_qty"),
+                        "commission": response.get("commission"),
+                        "order_id": response.get("order_id")
+                    }
                 }
             )
             # Record trade details (exchange trade log)
@@ -385,7 +390,7 @@ class DarkTradingOrchestrator:
                         }
                         self.trade_manager.current_positions[ticker] = pos
                         self.trade_manager.current_position = pos
-                        logger.debug("position.opened", extra={"ticker": ticker, "size": filled_qty, "entry_price": fill_price})
+                        logger.debug("position.opened", extra={"meta": {"ticker": ticker, "size": filled_qty, "entry_price": fill_price}})
                     else:
                         # Adjust weighted average entry and size
                         total_size = existing[TradeColumns.SIZE.value] + filled_qty
@@ -393,7 +398,7 @@ class DarkTradingOrchestrator:
                             existing_price = existing[TradeColumns.ENTRY_PRICE.value]
                             existing[TradeColumns.ENTRY_PRICE.value] = (existing_price * existing[TradeColumns.SIZE.value] + fill_price * filled_qty) / total_size
                             existing[TradeColumns.SIZE.value] = total_size
-                            logger.debug("position.adjusted", extra={"ticker": ticker, "new_size": total_size, "avg_entry": existing[TradeColumns.ENTRY_PRICE.value]})
+                            logger.debug("position.adjusted", extra={"meta": {"ticker": ticker, "new_size": total_size, "avg_entry": existing[TradeColumns.ENTRY_PRICE.value]}})
                     # Apply/update risk parameters if available
                     if hasattr(self.risk_manager, 'apply') and current_idx is not None:
                         signal_series = pd.Series({
@@ -412,11 +417,11 @@ class DarkTradingOrchestrator:
                                     pos_ref[TradeColumns.STOP_LOSS.value] = risk_result['stop_loss']
                                 if 'take_profit' in risk_result:
                                     pos_ref[TradeColumns.TAKE_PROFIT.value] = risk_result['take_profit']
-                                logger.debug("position.risk.updated", extra={"ticker": ticker, "stop_loss": pos_ref.get(TradeColumns.STOP_LOSS.value), "take_profit": pos_ref.get(TradeColumns.TAKE_PROFIT.value)})
+                                logger.debug("position.risk.updated", extra={"meta": {"ticker": ticker, "stop_loss": pos_ref.get(TradeColumns.STOP_LOSS.value), "take_profit": pos_ref.get(TradeColumns.TAKE_PROFIT.value)}})
                         except Exception as e:
                             logger.warning(f"Risk reconciliation failed for {ticker}: {e}")
             except Exception as e:
-                logger.warning("fill.reconcile.error", extra={"error": str(e)})
+                logger.warning("fill.reconcile.error", extra={"meta": {"error": str(e)}})
             cb = self.callbacks.get("on_trade")
             if cb:
                 try:
@@ -424,7 +429,7 @@ class DarkTradingOrchestrator:
                 except Exception as e:
                     logger.warning(f"on_trade callback error: {e}")
         else:
-            logger.info("order.dry_run", extra={"ticker": order.get("ticker"), "side": order.get("side"), "qty": order.get("qty")})
+            logger.info("order.dry_run", extra={"meta": {"ticker": order.get("ticker"), "side": order.get("side"), "qty": order.get("qty")}})
 
     def _record_trade(self, order: Dict[str, Any], response: Dict[str, Any]) -> None:
         """
@@ -434,7 +439,8 @@ class DarkTradingOrchestrator:
             order: Order dictionary
             response: Exchange response dictionary
         """
-        if response["status"] in ["filled", "partial"] and response["filled_qty"] > 0:
+        # Always record, including open orders (filled_qty may be 0)
+        if response.get("status"):
             # Calculate rough PnL (for reporting only)
             positions = self.exchange.get_positions()
             pnl = 0.0
@@ -443,9 +449,7 @@ class DarkTradingOrchestrator:
                     pnl = pos["unrealized_pnl"]
                     break
 
-            # Write to CSV
             # Choose timestamp: in replay prefer original order (bar) timestamp
-            ts = None
             if self.replay_cfg.enabled:
                 ts = order.get("timestamp") or response.get("timestamp")
             else:
@@ -457,11 +461,12 @@ class DarkTradingOrchestrator:
                     str(ts),
                     order["ticker"],
                     order["side"],
-                    response["filled_qty"],
-                    response["avg_fill_price"],
-                    response["commission"],
+                    response.get("filled_qty", 0),
+                    response.get("avg_fill_price"),
+                    response.get("commission", 0.0),
                     pnl,
-                    response["order_id"]
+                    response.get("order_id"),
+                    response.get("status")
                 ])
 
     def _record_account_state(self) -> None:
@@ -501,7 +506,7 @@ class DarkTradingOrchestrator:
             size_col = TradeColumns.SIZE.value
             if hasattr(exch_pos, 'qty') and tm_pos.get(size_col) != abs(exch_pos.qty):
                 tm_pos[size_col] = abs(exch_pos.qty)
-                logger.debug("position.size.sync", extra={"ticker": ticker, "size": tm_pos[size_col]})
+                logger.debug("position.size.sync", extra={"meta": {"ticker": ticker, "size": tm_pos[size_col]}})
             # Could compute unrealized pnl if exchange exposes it; skipped for brevity
         # Add any new exchange-only positions (unlikely in replay, but defensive)
         for ticker, exch_pos in exch_positions.items():
@@ -513,26 +518,33 @@ class DarkTradingOrchestrator:
                     TradeColumns.DIRECTION.value: 1 if getattr(exch_pos, 'qty', 0) >= 0 else -1,
                     TradeColumns.ENTRY_TIME.value: getattr(exch_pos, 'entry_time', None),
                 }
-                logger.debug("position.adopted", extra={"ticker": ticker})
+                logger.debug("position.adopted", extra={"meta": {"ticker": ticker}})
 
     def _run_cycle(self) -> Dict[str, Any]:
         """Run a single orchestrator cycle (live or replay)."""
         self.tick_count += 1
         self.orders_executed_this_cycle = 0
-        logger.info("cycle.start", extra={"cycle": self.tick_count, "mode": "replay" if self.replay_cfg.enabled else "live"})
+        logger.info("cycle.start", extra={"meta": {"cycle": self.tick_count, "mode": "replay" if self.replay_cfg.enabled else "live"}})
+
         if self.replay_cfg.enabled and isinstance(self.data_fetcher, DataReplayCacheDataLoader):
             self.data_fetcher.advance(n=1)
+
         if not self.is_market_open():
             logger.info("Market is closed, skipping cycle")
             return self.exchange.get_account()
+
         latest_data = self._fetch_latest_data()
+
         if self.replay_cfg.enabled and isinstance(self.data_fetcher, DataReplayCacheDataLoader):
             for t in self.tickers:
                 progress = self.data_fetcher.replay_progress(t, self.replay_cfg.timeframe)
-                logger.debug("replay.progress", extra={"ticker": t, "progress_pct": round(progress*100,2)})
+                logger.debug("replay.progress", extra={"meta": {"ticker": t, "progress_pct": round(progress*100,2)}})
+
         if not latest_data:
-            logger.warning("cycle.no_data", extra={"cycle": self.tick_count})
+            logger.warning("cycle.no_data", extra={"meta": {"cycle": self.tick_count}})
             return self.exchange.get_account()
+
+        # TODO: update exchange prices is only needed for mock exchange
         self._update_exchange_prices(latest_data)
         self._process_signals(latest_data)
         # Position/account sync
@@ -542,11 +554,13 @@ class DarkTradingOrchestrator:
             logger.info(
                 "cycle.summary",
                 extra={
-                    "cycle": self.tick_count,
-                    "orders": self.orders_executed_this_cycle,
-                    "cash": round(acct.get('cash', 0), 2),
-                    "equity": round(acct.get('equity', 0), 2),
-                    "positions": len(self.trade_manager.current_positions)
+                    "meta": {
+                        "cycle": self.tick_count,
+                        "orders": self.orders_executed_this_cycle,
+                        "cash": round(acct.get('cash', 0), 2),
+                        "equity": round(acct.get('equity', 0), 2),
+                        "positions": len(self.trade_manager.current_positions)
+                    }
                 },
             )
         except Exception:
@@ -580,7 +594,7 @@ class DarkTradingOrchestrator:
 
         self.running = True
         start_time = time.time()
-        logger.info("loop.start", extra={"poll_seconds": self.cfg.polling_seconds, "speedup": self.cfg.speedup, "tickers": self.tickers})
+        logger.info("loop.start", extra={"meta": {"poll_seconds": self.cfg.polling_seconds, "speedup": self.cfg.speedup, "tickers": self.tickers}})
 
         try:
             while self.running:
@@ -588,7 +602,7 @@ class DarkTradingOrchestrator:
 
                 # Check if run duration exceeded
                 if run_duration and (time.time() - start_time) > run_duration:
-                    logger.info("loop.duration.exceeded", extra={"run_duration": run_duration})
+                    logger.info("loop.duration.exceeded", extra={"meta": {"run_duration": run_duration}})
                     self.stop()
                     break
 
@@ -599,7 +613,7 @@ class DarkTradingOrchestrator:
                 elapsed = time.time() - cycle_start
                 # Auto-stop check
                 if self.auto_stop_at and datetime.now(pytz.timezone(self.market_hours.timezone)) >= self.auto_stop_at:
-                    logger.info("loop.auto_stop", extra={"auto_stop_at": str(self.auto_stop_at)})
+                    logger.info("loop.auto_stop", extra={"meta": {"auto_stop_at": str(self.auto_stop_at)}})
                     self.stop()
                     break
 
@@ -613,7 +627,7 @@ class DarkTradingOrchestrator:
                     time.sleep(sleep_time)
 
         except KeyboardInterrupt:
-            logger.info("loop.interrupted", extra={"cycle": self.tick_count})
+            logger.info("loop.interrupted", extra={"meta": {"cycle": self.tick_count}})
         finally:
             # Ensure we disconnect from exchange
             self.exchange.disconnect()
@@ -622,7 +636,7 @@ class DarkTradingOrchestrator:
     def stop(self) -> None:
         """Stop the trading loop."""
         if self.running:
-            logger.info("loop.stop", extra={"cycle": self.tick_count})
+            logger.info("loop.stop", extra={"meta": {"cycle": self.tick_count}})
             self.running = False
 
     def save_state(self, csv_folder: Optional[str] = None) -> None:
@@ -641,7 +655,7 @@ class DarkTradingOrchestrator:
             writer = csv.writer(f)
             writer.writerow([
                 'run_id', 'timestamp', 'ticker', 'side', 'qty',
-                'price', 'commission', 'pnl', 'order_id'
+                'price', 'commission', 'pnl', 'order_id', 'order_status'
             ])
             for trade in self.exchange.trade_log:
                 trade_dict = trade.to_dict()
@@ -654,7 +668,8 @@ class DarkTradingOrchestrator:
                     trade_dict["price"],
                     trade_dict["commission"],
                     0,  # PnL not tracked in trade object
-                    trade_dict["order_id"]
+                    trade_dict["order_id"],
+                    trade_dict.get("order_status")
                 ])
 
         # Save equity curve

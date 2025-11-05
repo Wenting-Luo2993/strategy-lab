@@ -54,16 +54,17 @@ plot_candlestick(result, indicators=["SMA_20", "ORB_High", "ORB_Low", "equity"],
 from datetime import datetime
 from src.visualization.charts import plot_cache_time_range
 
+ticker = "AMZN"
 try:
     last_day = datetime(2025, 10, 30)
     start_date = datetime(2025, 10, 29)
     plot_cache_time_range(
-        "NVDA",
+        ticker,
         timeframe="5m",
         start=start_date,
         end=last_day,
         indicators=["ORB_High", "ORB_Low"],
-        title=f"AAPL Last Day {last_day} (Cached)",
+        title=f"{ticker} Last Day {last_day} (Cached)",
         max_rows=600,
         cache_dir="data_cache",
     )

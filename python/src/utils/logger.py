@@ -69,30 +69,45 @@ logging.setLoggerClass(StrategyLabLogger)
 logs_dir = Path(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs"))
 logs_dir.mkdir(exist_ok=True)
 
-def get_logger(name, level=logging.DEBUG, log_to_console=False, log_to_file=True):
+class SafeFormatter(logging.Formatter):
+    """Formatter that safely injects optional 'meta' field if absent.
+
+    Allows including %(meta)s in format strings without requiring every log record
+    to provide it. When absent, renders as empty string.
+    """
+    def format(self, record):  # type: ignore[override]
+        if not hasattr(record, 'meta'):
+            record.meta = ''  # type: ignore[attr-defined]
+        return super().format(record)
+
+def get_logger(name, level=logging.DEBUG, log_to_console=False, log_to_file=True, include_meta=True):
     """
     Returns a configured logger instance
-    
+
     Args:
         name: Name of the logger (typically module name)
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_to_console: Whether to output logs to console
         log_to_file: Whether to save logs to file
-        
+
     Returns:
         Logger instance
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)
-    
+
     # Clear existing handlers to avoid duplicates when this function is called multiple times
     if logger.hasHandlers():
         logger.handlers.clear()
-    
-    # Create formatters
-    file_formatter = logging.Formatter('%(asctime)s [%(name)s] [%(levelname)s] %(message)s')
-    console_formatter = logging.Formatter('[%(name)s] %(message)s')
-    
+
+    # Create formatters (optionally include meta dict)
+    if include_meta:
+        file_formatter = SafeFormatter('%(asctime)s [%(name)s] [%(levelname)s] %(message)s %(meta)s')
+        console_formatter = SafeFormatter('[%(name)s] %(message)s %(meta)s')
+    else:
+        file_formatter = logging.Formatter('%(asctime)s [%(name)s] [%(levelname)s] %(message)s')
+        console_formatter = logging.Formatter('[%(name)s] %(message)s')
+
     # Add file handler if requested
     if log_to_file:
         log_file = logs_dir / f"{name}.log"
@@ -118,33 +133,37 @@ def get_logger(name, level=logging.DEBUG, log_to_console=False, log_to_file=True
         default_console.setFormatter(console_formatter)
         default_console.setLevel(level)
         logger.addHandler(default_console)
-    
+
     return logger
 
 # Configure root logger for general application logging
-def setup_root_logger(level=logging.INFO, log_to_console=False, log_to_file=True):
+def setup_root_logger(level=logging.INFO, log_to_console=False, log_to_file=True, include_meta=True):
     """
     Configure the root logger
-    
+
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_to_console: Whether to output logs to console
         log_to_file: Whether to save logs to file
-    
+
     Returns:
         Root logger instance
     """
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
-    
+
     # Clear existing handlers to avoid duplicates
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
-    
-    # Create formatters
-    file_formatter = logging.Formatter('%(asctime)s [%(name)s] [%(levelname)s] %(message)s')
-    console_formatter = logging.Formatter('[%(levelname)s] %(message)s')
-    
+
+    # Create formatters (optionally include meta)
+    if include_meta:
+        file_formatter = SafeFormatter('%(asctime)s [%(name)s] [%(levelname)s] %(message)s %(meta)s')
+        console_formatter = SafeFormatter('[%(levelname)s] %(message)s %(meta)s')
+    else:
+        file_formatter = logging.Formatter('%(asctime)s [%(name)s] [%(levelname)s] %(message)s')
+        console_formatter = logging.Formatter('[%(levelname)s] %(message)s')
+
     # Add file handler if requested
     if log_to_file:
         all_logs_file = logs_dir / "application.log"
@@ -166,5 +185,5 @@ def setup_root_logger(level=logging.INFO, log_to_console=False, log_to_file=True
         default_console.setFormatter(console_formatter)
         default_console.setLevel(level)
         root_logger.addHandler(default_console)
-    
+
     return root_logger
