@@ -1,6 +1,7 @@
 import pandas as pd
 from datetime import datetime, timedelta, time
 import pytz
+import pytest
 
 from src.data.replay_cache import DataReplayCacheDataLoader
 
@@ -20,37 +21,46 @@ def make_two_day_intraday(rows_per_day=10):
     return df
 
 
-def test_replay_initial_excludes_last_day(monkeypatch, tmp_path):
-    df = make_two_day_intraday(rows_per_day=8)
-    # Write to parquet to simulate cache file naming SYMBOL_5m.parquet
+def test_replay_initial_includes_opening_bar(tmp_path):
+    """Initial fetch should now include ONLY the opening bar of the replay (final) day.
+
+    Previously the loader returned only history. New semantics always reveal the opening bar.
+    """
+    rows_per_day = 8
+    df = make_two_day_intraday(rows_per_day=rows_per_day)
     cache_dir = tmp_path
-    path = cache_dir / "TEST_5m.parquet"
-    df.to_parquet(path)
+    (cache_dir / "TEST_5m.parquet").write_bytes(b"")  # ensure dir exists
+    df.to_parquet(cache_dir / "TEST_5m.parquet")
     loader = DataReplayCacheDataLoader(market_open=time(9,30), cache_dir=str(cache_dir))
     out = loader.fetch("TEST", "5m")
-    # Should contain all of day1 only (no rows from last day revealed yet)
-    assert out.index.date.max() == datetime(2024,10,1).date()
+    # Last date should now be the final day, but only one bar from it revealed
+    assert out.index.date.max() == datetime(2024,10,2).date()
+    # Progress should be exactly 1 / rows_in_replay_day
+    assert loader.replay_progress("TEST","5m") == pytest.approx(1/rows_per_day)
 
 
 def test_replay_progressive_advance(tmp_path):
-    df = make_two_day_intraday(rows_per_day=6)
+    rows_per_day = 6
+    df = make_two_day_intraday(rows_per_day=rows_per_day)
     cache_dir = tmp_path
     df.to_parquet(cache_dir/"TEST_5m.parquet")
     loader = DataReplayCacheDataLoader(market_open=time(9,30), cache_dir=str(cache_dir), reveal_increment=2)
     _ = loader.fetch("TEST","5m")  # init state
-    assert loader.replay_progress("TEST","5m") == 0.0  # initial
-    loader.advance(n=1)  # reveal 2 rows
+    # Initial progress should reflect the single opening bar
+    assert loader.replay_progress("TEST","5m") == pytest.approx(1/rows_per_day)
+    loader.advance(n=1)  # reveal 2 additional rows (total 3 of 6)
     prog1 = loader.replay_progress("TEST","5m")
-    assert 0 < prog1 < 1
+    assert prog1 == pytest.approx(3/rows_per_day)
     loader.advance(n=10)  # overshoot to full
     assert loader.replay_progress("TEST","5m") == 1.0
 
 
-def test_start_offset_reveals_premarket(tmp_path):
-    df = make_two_day_intraday(rows_per_day=12)
+def test_start_offset_reveals_open_when_no_premarket(tmp_path):
+    """If offset requests premarket but dataset begins at market open, we still reveal the opening bar only."""
+    rows_per_day = 12
+    df = make_two_day_intraday(rows_per_day=rows_per_day)
     cache_dir = tmp_path
     df.to_parquet(cache_dir/"TEST_5m.parquet")
     loader = DataReplayCacheDataLoader(market_open=time(9,30), cache_dir=str(cache_dir), start_offset_minutes=10)
     _ = loader.fetch("TEST","5m")
-    # Dataset begins exactly at open; earlier offset gives zero initial reveal
-    assert loader.replay_progress("TEST","5m") == 0.0
+    assert loader.replay_progress("TEST","5m") == pytest.approx(1/rows_per_day)

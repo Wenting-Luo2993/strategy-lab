@@ -56,7 +56,7 @@ class CacheDataLoader(DataLoader):
             root_folder=drive_root,
             service_account_env=service_account_env,
             use_service_account=use_service_account,
-        )
+        ) if cloud_sync else None
 
     # ---------------------- Path & Migration Helpers ---------------------- #
     def _rolling_cache_path(self, symbol: str, timeframe: str) -> Path:

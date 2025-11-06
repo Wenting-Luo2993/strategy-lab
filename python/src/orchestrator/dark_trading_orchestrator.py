@@ -152,7 +152,8 @@ class DarkTradingOrchestrator:
         for ticker in self.tickers:
             try:
                 timeframe = self.replay_cfg.timeframe if self.replay_cfg.enabled else "5m"
-                # For replay mode we rely on custom loader behavior (will be added later)
+                # For replay mode we rely on custom loader behavior
+                # TODO: probably need to specify start and end during paper trading
                 df = self.data_fetcher.fetch(
                     ticker,
                     timeframe=timeframe,
@@ -167,14 +168,14 @@ class DarkTradingOrchestrator:
                     # Update data cache
                     if ticker not in self.data_cache:
                         self.data_cache[ticker] = df
-                        logger.debug("data.cache.init", extra={"meta": {"ticker": ticker, "rows": len(df)}})
+                        logger.debug("data.cache.init", extra={"meta": {"ticker": ticker, "rows": len(df), "lastTimestamp": str(df.index[-1])}})
                     else:
                         # Append new data if not already present
                         last_cached_time = self.data_cache[ticker].index[-1]
                         new_data = df[df.index > last_cached_time]
                         if not new_data.empty:
                             self.data_cache[ticker] = pd.concat([self.data_cache[ticker], new_data])
-                            logger.debug("data.cache.extend", extra={"meta": {"ticker": ticker, "new_rows": len(new_data)}})
+                            logger.debug("data.cache.extend", extra={"meta": {"ticker": ticker, "new_rows": len(new_data), "lastTimestamp": str(new_data.index[-1])}})
 
             except Exception as e:
                 logger.error("data.fetch.error", extra={"meta": {"ticker": ticker, "error": str(e)}})
@@ -611,9 +612,19 @@ class DarkTradingOrchestrator:
 
                 # Calculate time to sleep
                 elapsed = time.time() - cycle_start
-                # Auto-stop check
-                if self.auto_stop_at and datetime.now(pytz.timezone(self.market_hours.timezone)) >= self.auto_stop_at:
-                    logger.info("loop.auto_stop", extra={"meta": {"auto_stop_at": str(self.auto_stop_at)}})
+                # Auto-stop check (use simulated replay time if in replay mode)
+                market_tz = pytz.timezone(self.market_hours.timezone)
+                if self.replay_cfg.enabled and self.last_data_timestamp is not None:
+                    current_market_time = self.last_data_timestamp
+                    if isinstance(current_market_time, pd.Timestamp):
+                        if current_market_time.tzinfo is None:
+                            current_market_time = current_market_time.tz_localize(market_tz)
+                        else:
+                            current_market_time = current_market_time.tz_convert(market_tz)
+                else:
+                    current_market_time = datetime.now(market_tz)
+                if self.auto_stop_at and current_market_time >= self.auto_stop_at:
+                    logger.info("loop.auto_stop", extra={"meta": {"auto_stop_at": str(self.auto_stop_at), "current_market_time": str(current_market_time)}})
                     self.stop()
                     break
 

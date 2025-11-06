@@ -88,24 +88,34 @@ class DataReplayCacheDataLoader(CacheDataLoader):
         replay_day_df = full_df[full_df.index.date == last_date]
         history_df = full_df[full_df.index.date < last_date]
 
-        # Determine initial revealed rows based on start offset logic
+        # Determine initial revealed rows.
+        # Previous implementation assumed UTC-indexed data and added the offset AFTER market open,
+        # which caused zero rows to be revealed when data is already localized (e.g. America/New_York).
+        # New logic: always interpret the index's timezone (or configured market timezone if naive)
+        # and reveal up to (market_open) inclusive. If start_offset_minutes > 0 we ALSO include the
+        # preceding offset minutes of pre-market bars (i.e. market_open - offset). This means the
+        # first fetch will have at least the opening bar.
         revealed_rows = 0
+        tz_index = replay_day_df.index.tz
+        if tz_index is None:
+            tz_index = pytz.timezone(self.timezone)
+        open_dt = tz_index.localize(datetime.combine(last_date, self.market_open)) if datetime.combine(last_date, self.market_open).tzinfo is None else datetime.combine(last_date, self.market_open).astimezone(tz_index)
         if self.start_offset_minutes > 0:
-            # Heuristic: if the first bar of replay day already matches market_open hh:mm
-            # in UTC, we assume data timestamps are 'local' but stored as UTC (typical in tests),
-            # so we apply the offset directly in UTC. Otherwise, we convert from the provided
-            # market timezone to UTC.
-            first_bar = replay_day_df.index.min()
-            if first_bar.hour == self.market_open.hour and first_bar.minute == self.market_open.minute:
-                open_dt_utc = pytz.UTC.localize(datetime.combine(last_date, self.market_open))
-                threshold_utc = open_dt_utc - timedelta(minutes=self.start_offset_minutes)
-            else:
-                tz = pytz.timezone(self.timezone)
-                open_dt_local = tz.localize(datetime.combine(last_date, self.market_open))
-                threshold_local = open_dt_local - timedelta(minutes=self.start_offset_minutes)
-                threshold_utc = threshold_local.astimezone(pytz.UTC)
-            pre_rows = replay_day_df[replay_day_df.index <= threshold_utc]
-            revealed_rows = len(pre_rows)
+            threshold_dt = open_dt - timedelta(minutes=self.start_offset_minutes)
+        else:
+            threshold_dt = open_dt
+        # Always include the opening bar even if threshold_dt falls before it
+        pre_rows = replay_day_df[replay_day_df.index <= open_dt]
+        # If offset requested add earlier bars up to threshold_dt
+        if self.start_offset_minutes > 0:
+            pre_market_rows = replay_day_df[(replay_day_df.index >= threshold_dt) & (replay_day_df.index < open_dt)]
+            # Concatenate ensuring order
+            initial_slice = pd.concat([pre_market_rows, replay_day_df[replay_day_df.index == open_dt]])
+            revealed_rows = len(initial_slice)
+        else:
+            revealed_rows = len(pre_rows[pre_rows.index <= open_dt])
+        # Cap at total rows
+        revealed_rows = min(revealed_rows, len(replay_day_df))
 
         state = ReplayState(
             history=history_df,
