@@ -84,7 +84,7 @@ def main():
         run_id="example01",
     )
 
-    orchestrator.start(run_duration=8)  # run a few cycles for demonstration
+    orchestrator.start()
     orchestrator.stop()
 
 

@@ -265,6 +265,20 @@ class DarkTradingOrchestrator:
                     latest_bar = df.iloc[-1]
                     signal_cycle_meta["with_signal"] += 1
 
+                    # Log raw reception of a tradable signal on latest bar (pre-sizing)
+                    logger.info(
+                        "signal.received",
+                        extra={
+                            "meta": {
+                                "ticker": ticker,
+                                "signal": int(latest_signal),
+                                "direction": "long" if latest_signal > 0 else "short",
+                                "price": float(latest_bar['close']),
+                                "bar_time": str(latest_bar.name)
+                            }
+                        }
+                    )
+
                     # Create order from signal
                     # Position sizing via TradeManager (create a hypothetical position to get size)
                     # TODO: remove redundant if-else. Signal should already be 1 or -1
@@ -280,11 +294,32 @@ class DarkTradingOrchestrator:
                         ticker=ticker,
                     )
                     if position_proto is None:
-                        logger.info(f"Skipped signal for {ticker}; insufficient funds or sizing error.")
+                        logger.info(
+                            "signal.skipped",
+                            extra={
+                                "meta": {
+                                    "ticker": ticker,
+                                    "signal": int(latest_signal),
+                                    "direction": "long" if latest_signal > 0 else "short",
+                                    "reason": "sizing_failed"
+                                }
+                            }
+                        )
                         continue
                     qty = int(position_proto.get('size', position_proto.get('SIZE', 0)) or position_proto.get('SIZE', 0) or position_proto.get('size', 0))
                     if qty <= 0:
-                        logger.info(f"Computed non-positive size for {ticker}, skipping order.")
+                        logger.info(
+                            "signal.skipped",
+                            extra={
+                                "meta": {
+                                    "ticker": ticker,
+                                    "signal": int(latest_signal),
+                                    "direction": "long" if latest_signal > 0 else "short",
+                                    "reason": "non_positive_size",
+                                    "computed_qty": int(qty)
+                                }
+                            }
+                        )
                         continue
                     order = {
                         "ticker": ticker,
@@ -312,6 +347,7 @@ class DarkTradingOrchestrator:
                             "meta": {
                                 "ticker": ticker,
                                 "signal": int(latest_signal),
+                                "direction": "long" if latest_signal > 0 else "short",
                                 "price": float(latest_bar['close']),
                                 "stop": float(stop_loss) if stop_loss is not None else None,
                                 "bar_time": str(latest_bar.name)
@@ -537,9 +573,23 @@ class DarkTradingOrchestrator:
         latest_data = self._fetch_latest_data()
 
         if self.replay_cfg.enabled and isinstance(self.data_fetcher, DataReplayCacheDataLoader):
+            all_complete = True
+            progress_map = {}
             for t in self.tickers:
                 progress = self.data_fetcher.replay_progress(t, self.replay_cfg.timeframe)
-                logger.debug("replay.progress", extra={"meta": {"ticker": t, "progress_pct": round(progress*100,2)}})
+                pct = round(progress * 100, 2)
+                progress_map[t] = pct
+                logger.debug("replay.progress", extra={"meta": {"ticker": t, "progress_pct": pct}})
+                if progress < 1.0:
+                    all_complete = False
+            if all_complete:
+                # Final summary before stopping; record equity and halt loop
+                logger.info("replay.completed", extra={"meta": {"cycle": self.tick_count, "progress_pct_map": progress_map}})
+                account = self.exchange.get_account()
+                self._record_account_state()
+                self.last_run_time = datetime.now()
+                self.running = False
+                return account
 
         if not latest_data:
             logger.warning("cycle.no_data", extra={"meta": {"cycle": self.tick_count}})
