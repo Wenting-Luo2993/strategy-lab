@@ -80,7 +80,7 @@ def main():
         market_hours=MarketHoursConfig(),
         orchestrator_cfg=OrchestratorConfig(polling_seconds=1, speedup=15, initial_capital=10_000, dry_run=False),
         replay_cfg=DataReplayConfig(enabled=True, timeframe="5m", start_offset_minutes=15, reveal_increment=1, ignore_market_hours=True, replay_sleep_seconds=0.05),
-        results_dir="results",
+        results_dir="python/results",
         run_id="example01",
     )
 

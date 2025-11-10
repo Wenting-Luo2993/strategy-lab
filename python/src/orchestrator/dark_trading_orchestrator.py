@@ -51,7 +51,7 @@ class DarkTradingOrchestrator:
         market_hours: Optional[MarketHoursConfig] = None,
         orchestrator_cfg: Optional[OrchestratorConfig] = None,
         replay_cfg: Optional[DataReplayConfig] = None,
-        results_dir: str = "results",
+        results_dir: str = "python/results",
         run_id: Optional[str] = None,
         callbacks: Optional[Dict[str, Callable]] = None,
     ) -> None:
@@ -300,54 +300,32 @@ class DarkTradingOrchestrator:
                             ticker=ticker,
                         )
                         if position_proto is None:
-                            logger.info(
-                                "signal.skipped",
-                                extra={
-                                    "meta": {
-                                        "ticker": ticker,
-                                        "signal": int(entry_signal),
-                                        "direction": "long" if entry_signal > 0 else "short",
-                                        "reason": "sizing_failed"
-                                    }
-                                }
-                            )
-                            self._record_signal_diagnostic(
+                            self._log_and_record_signal(
                                 latest_bar=latest_bar,
                                 ticker=ticker,
                                 signal=int(entry_signal),
-                                direction="long" if entry_signal > 0 else "short",
                                 size_float=None,
                                 size_int=None,
                                 skip_reason="sizing_failed",
                                 stop_loss=None,
-                                exit_flag=False
+                                exit_flag=exit_flag,
+                                event='signal.skipped'
                             )
                         else:
                             qty = int(position_proto.get('size', position_proto.get('SIZE', 0)) or position_proto.get('SIZE', 0) or position_proto.get('size', 0))
                             if qty <= 0:
-                                logger.info(
-                                    "signal.skipped",
-                                    extra={
-                                        "meta": {
-                                            "ticker": ticker,
-                                            "signal": int(entry_signal),
-                                            "direction": "long" if entry_signal > 0 else "short",
-                                            "reason": "non_positive_size",
-                                            "computed_qty": int(qty)
-                                        }
-                                    }
-                                )
                                 size_float = position_proto.get('size') or position_proto.get('SIZE')
-                                self._record_signal_diagnostic(
+                                self._log_and_record_signal(
                                     latest_bar=latest_bar,
                                     ticker=ticker,
                                     signal=int(entry_signal),
-                                    direction="long" if entry_signal > 0 else "short",
                                     size_float=size_float,
                                     size_int=int(qty),
                                     skip_reason="non_positive_size",
                                     stop_loss=position_proto.get('stop_loss'),
-                                    exit_flag=False
+                                    exit_flag=exit_flag,
+                                    event='signal.skipped',
+                                    extra_meta={'computed_qty': int(qty)}
                                 )
                             else:
                                 is_long = entry_signal > 0
@@ -359,18 +337,16 @@ class DarkTradingOrchestrator:
                                         df=df,
                                         row=latest_bar,
                                     )
-                                logger.info(
-                                    "signal.detected",
-                                    extra={
-                                        "meta": {
-                                            "ticker": ticker,
-                                            "signal": int(entry_signal),
-                                            "direction": "long" if entry_signal > 0 else "short",
-                                            "price": float(latest_bar['close']),
-                                            "stop": float(stop_loss) if stop_loss is not None else None,
-                                            "bar_time": str(latest_bar.name)
-                                        }
-                                    }
+                                self._log_and_record_signal(
+                                    latest_bar=latest_bar,
+                                    ticker=ticker,
+                                    signal=int(entry_signal),
+                                    size_float=position_proto.get('size') or position_proto.get('SIZE'),
+                                    size_int=qty,
+                                    skip_reason=None,
+                                    stop_loss=stop_loss,
+                                    exit_flag=exit_flag,
+                                    event='signal.detected'
                                 )
                                 order = {
                                     "ticker": ticker,
@@ -380,18 +356,7 @@ class DarkTradingOrchestrator:
                                     "timestamp": latest_bar.name,
                                 }
                                 self._execute_signal(order, market_data=df, current_idx=len(df)-1)
-                                size_float = position_proto.get('size') or position_proto.get('SIZE')
-                                self._record_signal_diagnostic(
-                                    latest_bar=latest_bar,
-                                    ticker=ticker,
-                                    signal=int(entry_signal),
-                                    direction="long" if entry_signal > 0 else "short",
-                                    size_float=size_float,
-                                    size_int=qty,
-                                    skip_reason=None,
-                                    stop_loss=stop_loss,
-                                    exit_flag=False
-                                )
+                                # order execution already done; diagnostics captured via helper above
                 else:
                     # Record a holding/no-signal bar for visibility
                     self._record_signal_diagnostic(
@@ -403,7 +368,7 @@ class DarkTradingOrchestrator:
                         size_int=None,
                         skip_reason="no_signal",
                         stop_loss=None,
-                        exit_flag=False
+                        exit_flag=exit_flag
                     )
                 # Separate exit signaling (Fix D): log exit flag distinctly, not as opposite trade signal
                 if exit_flag:
@@ -568,6 +533,69 @@ class DarkTradingOrchestrator:
                 writer.writerow(row)
         except Exception as e:
             logger.warning("signal.diagnostic.write.error", extra={"meta": {"error": str(e)}})
+
+    def _log_and_record_signal(
+        self,
+        *,
+        latest_bar: pd.Series,
+        ticker: str,
+        signal: int,
+        size_float: Optional[float],
+        size_int: Optional[int],
+        skip_reason: Optional[str],
+        stop_loss: Optional[float],
+        exit_flag: bool,
+        event: str,
+        extra_meta: Optional[dict] = None,
+    ) -> None:
+        """Unified helper to log a signal-related event and record diagnostics.
+
+        Minimizes duplicated boilerplate for skipped / detected signals.
+
+        Args:
+            latest_bar: The most recent price bar (Series).
+            ticker: Symbol string.
+            signal: Entry signal integer (1, -1, 0).
+            size_float: Float size before int casting (may be None).
+            size_int: Final integer size (may be None).
+            skip_reason: Reason for skipping (None if not skipped).
+            stop_loss: Associated stop loss value if available.
+            exit_flag: Whether strategy requested an exit this bar.
+            event: Log event name (e.g. 'signal.skipped', 'signal.detected').
+            extra_meta: Additional metadata to merge into log meta.
+        """
+        try:
+            direction = None
+            if signal != 0:
+                direction = 'long' if signal > 0 else 'short'
+            meta = {
+                'ticker': ticker,
+                'signal': int(signal),
+                'direction': direction,
+                'price': float(latest_bar.get('close')),
+                'bar_time': str(latest_bar.name),
+            }
+            if stop_loss is not None:
+                meta['stop'] = float(stop_loss)
+            if skip_reason:
+                meta['reason'] = skip_reason
+            if extra_meta:
+                meta.update(extra_meta)
+            logger.info(event, extra={'meta': meta})
+        except Exception as e:
+            logger.warning('signal.log.error', extra={'meta': {'ticker': ticker, 'error': str(e), 'event': event}})
+        # Always record diagnostics row
+        self._record_signal_diagnostic(
+            latest_bar=latest_bar,
+            ticker=ticker,
+            signal=int(signal),
+            direction=direction,
+            size_float=size_float,
+            size_int=size_int,
+            skip_reason=skip_reason,
+            stop_loss=stop_loss,
+            exit_flag=exit_flag,
+        )
 
     def _execute_signal(self, order: Dict[str, Any], market_data: Optional[pd.DataFrame] = None, current_idx: Optional[int] = None) -> None:
         """

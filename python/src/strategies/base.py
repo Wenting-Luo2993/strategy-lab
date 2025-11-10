@@ -108,8 +108,15 @@ class StrategyBase:
             current_ts = df.index[i]
             # If next bar is a different date OR current time has passed the configured close time
             next_is_new_day = (i < len(df) - 1) and (df.index[i].date() != df.index[i+1].date())
-            session_closed = current_ts.time() >= getattr(self.market_hours, 'close_time', current_ts.time())
-            if next_is_new_day or session_closed:
+            close_time = getattr(self.market_hours, 'close_time', current_ts.time())
+            session_closed = current_ts.time() >= close_time
+            # Pre-close window: exit if within last 6 minutes of session
+            try:
+                minutes_to_close = (pd.Timestamp.combine(current_ts.date(), close_time) - current_ts).total_seconds() / 60.0
+            except Exception:
+                minutes_to_close = None
+            within_pre_close_window = minutes_to_close is not None and 0 <= minutes_to_close <= 11
+            if next_is_new_day or session_closed or within_pre_close_window:
                 return True
         return False
 
