@@ -6,7 +6,6 @@ for quick manual paper tests.
 """
 
 import time
-import logging
 import uuid
 import pandas as pd
 import csv
@@ -71,6 +70,12 @@ class DarkTradingOrchestrator:
         self.replay_cfg = replay_cfg or DataReplayConfig(enabled=False)
         self.run_id = run_id or str(uuid.uuid4())[:8]
         self.callbacks = callbacks or {}
+        # Inject market hours into strategy for EOD-aware exit logic (Fix A)
+        try:
+            if hasattr(self.strategy, 'market_hours'):
+                self.strategy.market_hours = self.market_hours
+        except Exception:
+            pass
 
         # Internal state
         self.data_cache: Dict[str, pd.DataFrame] = {}
@@ -106,6 +111,16 @@ class DarkTradingOrchestrator:
             writer = csv.writer(f)
             writer.writerow([
                 'timestamp', 'cash', 'positions_value', 'total_equity'
+            ])
+
+        # Signal diagnostics CSV (for troubleshooting sizing / skipped signals)
+        self.signal_diag_file = self.results_dir / f"signal_diagnostics_{self.run_id}.csv"
+        with open(self.signal_diag_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'run_id', 'bar_time', 'ticker', 'open', 'high', 'low', 'close', 'volume',
+                'signal', 'direction', 'size_float', 'size_int', 'skip_reason', 'stop_loss', 'exit_flag',
+                'available_funds', 'account_cash', 'account_equity'
             ])
 
     def is_market_open(self) -> bool:
@@ -254,114 +269,305 @@ class DarkTradingOrchestrator:
                         df = IndicatorFactory.apply(df, indicators)
                         logger.debug("indicators.applied", extra={"meta": {"ticker": ticker, "indicators": [i['name'] for i in indicators]}})
 
-                # Generate signals using the existing strategy's generate_signals method
-                signals = self.strategy.generate_signals(df)
-                signal_cycle_meta["evaluated"] += 1
-
-                # Check if we have a signal in the latest bar
-                if len(signals) > 0 and signals.iloc[-1] != 0:
-                    # We have a signal
-                    latest_signal = signals.iloc[-1]
-                    latest_bar = df.iloc[-1]
-                    signal_cycle_meta["with_signal"] += 1
-
-                    # Log raw reception of a tradable signal on latest bar (pre-sizing)
-                    logger.info(
-                        "signal.received",
-                        extra={
-                            "meta": {
-                                "ticker": ticker,
-                                "signal": int(latest_signal),
-                                "direction": "long" if latest_signal > 0 else "short",
-                                "price": float(latest_bar['close']),
-                                "bar_time": str(latest_bar.name)
+                # Incremental signal generation (always use incremental path)
+                latest_bar = df.iloc[-1]
+                if not hasattr(self.strategy, 'generate_signal_incremental'):
+                    raise AttributeError("Strategy must implement generate_signal_incremental for orchestrator incremental mode.")
+                entry_signal, exit_flag = self.strategy.generate_signal_incremental(df)
+                # Record diagnostics even when no entry (signal may be 0)
+                if entry_signal != 0:
+                        signal_cycle_meta["with_signal"] += 1
+                        logger.info(
+                            "signal.received",
+                            extra={
+                                "meta": {
+                                    "ticker": ticker,
+                                    "signal": int(entry_signal),
+                                    "direction": "long" if entry_signal > 0 else "short",
+                                    "price": float(latest_bar['close']),
+                                    "bar_time": str(latest_bar.name)
+                                }
                             }
-                        }
-                    )
-
-                    # Create order from signal
-                    # Position sizing via TradeManager (create a hypothetical position to get size)
-                    # TODO: remove redundant if-else. Signal should already be 1 or -1
-                    signal_val = 1 if latest_signal > 0 else -1
-                    # Use trade_manager to compute size & risk vars
-                    position_proto = self.trade_manager.create_entry_position(
-                        price=float(latest_bar['close']),
-                        signal=signal_val,
-                        time=latest_bar.name,
-                        market_data=df,
-                        current_idx=len(df) - 1,
-                        initial_stop=self.strategy.initial_stop_value(latest_bar['close'], signal_val == 1, latest_bar),
+                        )
+                        # Position sizing for entry signal
+                        position_proto = self.trade_manager.create_entry_position(
+                            price=float(latest_bar['close']),
+                            signal=int(entry_signal),
+                            time=latest_bar.name,
+                            market_data=df,
+                            current_idx=len(df) - 1,
+                            initial_stop=self.strategy.initial_stop_value(latest_bar['close'], entry_signal == 1, latest_bar),
+                            ticker=ticker,
+                        )
+                        if position_proto is None:
+                            logger.info(
+                                "signal.skipped",
+                                extra={
+                                    "meta": {
+                                        "ticker": ticker,
+                                        "signal": int(entry_signal),
+                                        "direction": "long" if entry_signal > 0 else "short",
+                                        "reason": "sizing_failed"
+                                    }
+                                }
+                            )
+                            self._record_signal_diagnostic(
+                                latest_bar=latest_bar,
+                                ticker=ticker,
+                                signal=int(entry_signal),
+                                direction="long" if entry_signal > 0 else "short",
+                                size_float=None,
+                                size_int=None,
+                                skip_reason="sizing_failed",
+                                stop_loss=None,
+                                exit_flag=False
+                            )
+                        else:
+                            qty = int(position_proto.get('size', position_proto.get('SIZE', 0)) or position_proto.get('SIZE', 0) or position_proto.get('size', 0))
+                            if qty <= 0:
+                                logger.info(
+                                    "signal.skipped",
+                                    extra={
+                                        "meta": {
+                                            "ticker": ticker,
+                                            "signal": int(entry_signal),
+                                            "direction": "long" if entry_signal > 0 else "short",
+                                            "reason": "non_positive_size",
+                                            "computed_qty": int(qty)
+                                        }
+                                    }
+                                )
+                                size_float = position_proto.get('size') or position_proto.get('SIZE')
+                                self._record_signal_diagnostic(
+                                    latest_bar=latest_bar,
+                                    ticker=ticker,
+                                    signal=int(entry_signal),
+                                    direction="long" if entry_signal > 0 else "short",
+                                    size_float=size_float,
+                                    size_int=int(qty),
+                                    skip_reason="non_positive_size",
+                                    stop_loss=position_proto.get('stop_loss'),
+                                    exit_flag=False
+                                )
+                            else:
+                                is_long = entry_signal > 0
+                                stop_loss = position_proto.get('stop_loss')
+                                if stop_loss is None and hasattr(self.risk_manager, 'calculate_stop_loss'):
+                                    stop_loss = self.risk_manager.calculate_stop_loss(
+                                        entry_price=latest_bar['close'],
+                                        is_long=is_long,
+                                        df=df,
+                                        row=latest_bar,
+                                    )
+                                logger.info(
+                                    "signal.detected",
+                                    extra={
+                                        "meta": {
+                                            "ticker": ticker,
+                                            "signal": int(entry_signal),
+                                            "direction": "long" if entry_signal > 0 else "short",
+                                            "price": float(latest_bar['close']),
+                                            "stop": float(stop_loss) if stop_loss is not None else None,
+                                            "bar_time": str(latest_bar.name)
+                                        }
+                                    }
+                                )
+                                order = {
+                                    "ticker": ticker,
+                                    "side": "buy" if entry_signal > 0 else "sell",
+                                    "qty": qty,
+                                    "order_type": "market",
+                                    "timestamp": latest_bar.name,
+                                }
+                                self._execute_signal(order, market_data=df, current_idx=len(df)-1)
+                                size_float = position_proto.get('size') or position_proto.get('SIZE')
+                                self._record_signal_diagnostic(
+                                    latest_bar=latest_bar,
+                                    ticker=ticker,
+                                    signal=int(entry_signal),
+                                    direction="long" if entry_signal > 0 else "short",
+                                    size_float=size_float,
+                                    size_int=qty,
+                                    skip_reason=None,
+                                    stop_loss=stop_loss,
+                                    exit_flag=False
+                                )
+                else:
+                    # Record a holding/no-signal bar for visibility
+                    self._record_signal_diagnostic(
+                        latest_bar=latest_bar,
                         ticker=ticker,
+                        signal=0,
+                        direction=None,
+                        size_float=None,
+                        size_int=None,
+                        skip_reason="no_signal",
+                        stop_loss=None,
+                        exit_flag=False
                     )
-                    if position_proto is None:
-                        logger.info(
-                            "signal.skipped",
-                            extra={
-                                "meta": {
-                                    "ticker": ticker,
-                                    "signal": int(latest_signal),
-                                    "direction": "long" if latest_signal > 0 else "short",
-                                    "reason": "sizing_failed"
-                                }
-                            }
-                        )
-                        continue
-                    qty = int(position_proto.get('size', position_proto.get('SIZE', 0)) or position_proto.get('SIZE', 0) or position_proto.get('size', 0))
-                    if qty <= 0:
-                        logger.info(
-                            "signal.skipped",
-                            extra={
-                                "meta": {
-                                    "ticker": ticker,
-                                    "signal": int(latest_signal),
-                                    "direction": "long" if latest_signal > 0 else "short",
-                                    "reason": "non_positive_size",
-                                    "computed_qty": int(qty)
-                                }
-                            }
-                        )
-                        continue
-                    order = {
-                        "ticker": ticker,
-                        "side": "buy" if latest_signal > 0 else "sell",
-                        "qty": qty,
-                        "order_type": "market",
-                        "timestamp": latest_bar.name,
-                    }
-
-                    # Get risk management settings (stop loss/take profit)
-                    is_long = (latest_signal > 0)
-                    stop_loss = position_proto.get('stop_loss')
-                    if stop_loss is None and hasattr(self.risk_manager, 'calculate_stop_loss'):
-                        stop_loss = self.risk_manager.calculate_stop_loss(
-                            entry_price=latest_bar['close'],
-                            is_long=is_long,
-                            df=df,
-                            row=latest_bar,
-                        )
-
-                    # Log the signal
+                # Separate exit signaling (Fix D): log exit flag distinctly, not as opposite trade signal
+                if exit_flag:
                     logger.info(
-                        "signal.detected",
-                        extra={
-                            "meta": {
-                                "ticker": ticker,
-                                "signal": int(latest_signal),
-                                "direction": "long" if latest_signal > 0 else "short",
-                                "price": float(latest_bar['close']),
-                                "stop": float(stop_loss) if stop_loss is not None else None,
-                                "bar_time": str(latest_bar.name)
-                            }
-                        }
+                        "signal.exit",
+                        extra={"meta": {"ticker": ticker, "bar_time": str(latest_bar.name), "price": float(latest_bar['close'])}}
                     )
-
-                    # Execute the order
-                    self._execute_signal(order, market_data=df, current_idx=len(df)-1)
 
             except Exception as e:
                 logger.error("signal.processing.error", extra={"meta": {"ticker": ticker, "error": str(e)}})
         # Summary of signal evaluation (structured via meta dict so formatter can include raw dict)
         logger.info("signals.summary", extra={"meta": signal_cycle_meta})
+
+    def _process_exits(self) -> None:
+        """Evaluate exit conditions for all open positions and execute exits.
+
+        Uses TradeManager.check_exit_conditions to determine if a stop loss or take profit
+        should trigger an exit. Submits a market order to flatten the position and then
+        closes it in the TradeManager, logging lifecycle events.
+        """
+        from src.config.columns import TradeColumns
+        positions_snapshot = list(self.trade_manager.current_positions.items())
+        if not positions_snapshot:
+            return
+        for ticker, pos in positions_snapshot:
+            try:
+                df = self.data_cache.get(ticker)
+                if df is None or df.empty:
+                    continue
+                latest_bar = df.iloc[-1]
+                current_idx = len(df) - 1
+                current_price = float(latest_bar.get('close'))
+                high = float(latest_bar.get('high', current_price))
+                low = float(latest_bar.get('low', current_price))
+                # Evaluate exit conditions
+                should_exit, exit_data = self.trade_manager.check_exit_conditions(
+                    current_price=current_price,
+                    high=high,
+                    low=low,
+                    time=latest_bar.name,
+                    current_idx=current_idx,
+                    ticker=ticker
+                )
+                if not should_exit or not exit_data:
+                    continue
+                exit_price = exit_data['exit_price']
+                exit_reason = exit_data['exit_reason']
+                direction = pos.get(TradeColumns.DIRECTION.value)
+                size = pos.get(TradeColumns.SIZE.value)
+                side = 'sell' if direction == 1 else 'buy'  # flatten position
+                logger.info(
+                    'exit.signal',
+                    extra={'meta': {
+                        'ticker': ticker,
+                        'reason': exit_reason,
+                        'exit_price': exit_price,
+                        'size': size,
+                        'bar_time': str(latest_bar.name)
+                    }}
+                )
+                # Construct and execute exit order
+                exit_order = {
+                    'ticker': ticker,
+                    'side': side,
+                    'qty': int(size),
+                    'order_type': 'market',
+                    'timestamp': latest_bar.name,
+                    'exit_reason': exit_reason
+                }
+                # Reuse execution flow; mark as exit via meta logs
+                logger.info('exit.order.submit', extra={'meta': {'ticker': ticker, 'side': side, 'qty': int(size), 'reason': exit_reason}})
+                if not self.cfg.dry_run:
+                    response = self.exchange.submit_order(exit_order)
+                    logger.info('exit.order.executed', extra={'meta': {
+                        'ticker': ticker,
+                        'side': side,
+                        'qty': int(size),
+                        'status': response.get('status'),
+                        'fill_price': response.get('avg_fill_price'),
+                        'filled_qty': response.get('filled_qty'),
+                        'order_id': response.get('order_id'),
+                        'reason': exit_reason
+                    }})
+                    # Record trade (closing leg)
+                    self._record_trade(exit_order, response)
+                    self.orders_executed_this_cycle += 1
+                    # Close position in TradeManager with executed fill price (fallback to planned exit_price)
+                    realized_price = response.get('avg_fill_price') or exit_price
+                    closed = self.trade_manager.close_position(
+                        exit_price=realized_price,
+                        time=latest_bar.name,
+                        current_idx=current_idx,
+                        exit_reason=exit_reason,
+                        ticker=ticker
+                    )
+                    if closed:
+                        logger.info('position.closed', extra={'meta': {
+                            'ticker': ticker,
+                            'exit_price': realized_price,
+                            'pnl': closed.get(TradeColumns.PNL.value),
+                            'reason': exit_reason
+                        }})
+                else:
+                    logger.info('exit.order.dry_run', extra={'meta': {'ticker': ticker, 'side': side, 'qty': int(size), 'reason': exit_reason}})
+                    # Simulate close in dry run mode
+                    closed = self.trade_manager.close_position(
+                        exit_price=exit_price,
+                        time=latest_bar.name,
+                        current_idx=current_idx,
+                        exit_reason=exit_reason,
+                        ticker=ticker
+                    )
+                    if closed:
+                        logger.info('position.closed', extra={'meta': {
+                            'ticker': ticker,
+                            'exit_price': exit_price,
+                            'pnl': closed.get(TradeColumns.PNL.value),
+                            'reason': exit_reason,
+                            'dry_run': True
+                        }})
+            except Exception as e:
+                logger.warning('exit.processing.error', extra={'meta': {'ticker': ticker, 'error': str(e)}})
+
+    def _record_signal_diagnostic(
+        self,
+        latest_bar: pd.Series,
+        ticker: str,
+        signal: int,
+        direction: Optional[str],
+        size_float: Optional[float],
+        size_int: Optional[int],
+        skip_reason: Optional[str],
+        stop_loss: Optional[float],
+        exit_flag: bool = False
+    ) -> None:
+        """Append a single diagnostic row for the latest bar to the diagnostics CSV."""
+        try:
+            account = self.exchange.get_account()
+            available_funds = getattr(self.trade_manager, 'get_available_funds', lambda: None)()
+            row = [
+                self.run_id,
+                str(latest_bar.name),
+                ticker,
+                float(latest_bar.get('open', float('nan'))),
+                float(latest_bar.get('high', float('nan'))),
+                float(latest_bar.get('low', float('nan'))),
+                float(latest_bar.get('close', float('nan'))),
+                float(latest_bar.get('volume', float('nan'))),
+                signal,
+                direction,
+                size_float if size_float is not None else '',
+                size_int if size_int is not None else '',
+                skip_reason or '',
+                stop_loss if stop_loss is not None else '',
+                int(exit_flag),
+                available_funds if available_funds is not None else '',
+                account.get('cash'),
+                account.get('equity')
+            ]
+            with open(self.signal_diag_file, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(row)
+        except Exception as e:
+            logger.warning("signal.diagnostic.write.error", extra={"meta": {"error": str(e)}})
 
     def _execute_signal(self, order: Dict[str, Any], market_data: Optional[pd.DataFrame] = None, current_idx: Optional[int] = None) -> None:
         """
@@ -598,6 +804,8 @@ class DarkTradingOrchestrator:
         # TODO: update exchange prices is only needed for mock exchange
         self._update_exchange_prices(latest_data)
         self._process_signals(latest_data)
+        # New: evaluate exits for existing positions after processing new signals
+        self._process_exits()
         # Position/account sync
         self._sync_positions_with_exchange()
         try:

@@ -84,63 +84,130 @@ class BacktestEngine:
         self.trade_manager.reset()
         self.trades = []
 
-        # Generate signals or use provided signals
-        signals_to_use = signals if signals is not None else self.strategy.generate_signals(data_to_use)
+        # Prepare containers for incremental signals & exits
+        incremental_signals = []  # entry signals only (1, -1, 0)
+        exit_flags = []          # 1 when strategy requested exit on that bar else 0
+
+        use_incremental = hasattr(self.strategy, 'generate_signal_incremental') and signals is None
+        if not use_incremental:
+            # Fallback: use provided signals or batch generation (legacy path)
+            signals_to_use = signals if signals is not None else self.strategy.generate_signals(data_to_use)
 
         for i in range(len(data_to_use)):
-            signal = signals_to_use.iloc[i]  # Get signal for current bar
+            row_time = data_to_use.index[i]
             price = data_to_use["close"].iloc[i]
 
-            # Update equity at each step with trade manager's current balance
+            # Obtain per-bar entry signal & exit flag
+            if use_incremental:
+                latest_slice = data_to_use.iloc[:i+1]
+                entry_signal, exit_flag = self.strategy.generate_signal_incremental(latest_slice)
+                signal = entry_signal  # for backwards-compatible variable name usage below
+                incremental_signals.append(signal)
+                exit_flags.append(1 if exit_flag else 0)
+            else:
+                signal = signals_to_use.iloc[i]
+                incremental_signals.append(signal)
+                exit_flags.append(0)  # no explicit exit flag info in legacy path
+
+            # Update equity curve tracking
             self.equity.append(self.trade_manager.get_current_balance())
 
-            # Entry
+            # ENTRY LOGIC
             if position is None and signal != 0:
-                # Get the initial stop from strategy if available
                 initial_stop = None
                 if self.strategy:
-                    is_long = signal == 1  # True for long signal, False for short or no signal
-                    initial_stop = self.strategy.initial_stop_value(price, is_long, data_to_use.iloc[i])
-
-                # Create position using trade manager
+                    is_long = signal == 1
+                    try:
+                        initial_stop = self.strategy.initial_stop_value(price, is_long, data_to_use.iloc[i])
+                    except Exception:
+                        initial_stop = None
                 position = self.trade_manager.create_entry_position(
                     price=price,
                     signal=signal,
-                    time=data_to_use.index[i],
+                    time=row_time,
                     market_data=data_to_use,
                     current_idx=i,
                     initial_stop=initial_stop
                 )
+                continue  # move to next bar
 
-            # Exit on signal
-            elif position is not None and signal != 0:
-                if (position.get(TradeColumns.DIRECTION.value) == 1 and signal == -1) or \
-                   (position.get(TradeColumns.DIRECTION.value) == -1 and signal == 1):
+            # EXIT due to explicit strategy exit flag (incremental path only)
+            if position is not None and use_incremental and exit_flags[-1] == 1:
+                trade = self.trade_manager.close_position(
+                    exit_price=price,
+                    time=row_time,
+                    current_idx=i,
+                    exit_reason="strategy_exit"
+                )
+                if trade:
+                    self.trades.append(trade)
+                    position = None
+                # Ensure strategy internal state reset mirrors trade closure (if risk manager closed earlier)
+                if hasattr(self.strategy, '_in_position'):
+                    self.strategy._in_position = 0
+                    self.strategy._entry_price = None
+                    self.strategy._take_profit = None
+                    self.strategy._initial_stop = None
+                continue
+
+            # REVERSAL: opposite entry signal while in position
+            if position is not None and signal != 0:
+                current_dir = position.get(TradeColumns.DIRECTION.value)
+                if (current_dir == 1 and signal == -1) or (current_dir == -1 and signal == 1):
+                    # Close existing
                     trade = self.trade_manager.close_position(
                         exit_price=price,
-                        time=data_to_use.index[i],
+                        time=row_time,
                         current_idx=i,
-                        exit_reason="signal"
+                        exit_reason="reversal_signal"
                     )
                     if trade:
                         self.trades.append(trade)
-                        position = None
+                    position = None
+                    # Reset strategy state if incremental path
+                    if use_incremental and hasattr(self.strategy, '_in_position'):
+                        self.strategy._in_position = 0
+                        self.strategy._entry_price = None
+                        self.strategy._take_profit = None
+                        self.strategy._initial_stop = None
+                    # Open new position for reversal
+                    initial_stop = None
+                    if self.strategy:
+                        is_long = signal == 1
+                        try:
+                            initial_stop = self.strategy.initial_stop_value(price, is_long, data_to_use.iloc[i])
+                        except Exception:
+                            initial_stop = None
+                    position = self.trade_manager.create_entry_position(
+                        price=price,
+                        signal=signal,
+                        time=row_time,
+                        market_data=data_to_use,
+                        current_idx=i,
+                        initial_stop=initial_stop
+                    )
+                    # Sync strategy internal state for reversal entry (strategy did not set it itself)
+                    if use_incremental and hasattr(self.strategy, '_in_position') and position is not None:
+                        self.strategy._in_position = signal
+                        self.strategy._entry_price = price
+                        is_long = signal == 1
+                        try:
+                            self.strategy._take_profit = self.strategy.take_profit_value(price, is_long=is_long, row=data_to_use.iloc[i])
+                        except Exception:
+                            self.strategy._take_profit = None
+                        self.strategy._initial_stop = initial_stop
+                continue
 
-            # Check stop loss/take profit if in position
-            elif position is not None:
-                # Update trailing stop
+            # RISK MANAGEMENT EXITS (stop loss / take profit / trailing)
+            if position is not None:
                 self.trade_manager.update_trailing_stop(data_to_use, i)
-
-                # Check exit conditions
                 low = data_to_use["low"].iloc[i]
                 high = data_to_use["high"].iloc[i]
-                price = data_to_use["close"].iloc[i]
-
                 exited, exit_data = self.trade_manager.check_exit_conditions(
                     current_price=price,
                     high=high,
                     low=low,
-                    time=data_to_use.index[i],
+                    time=row_time,
                     current_idx=i
                 )
                 if exited and exit_data:
@@ -154,6 +221,12 @@ class BacktestEngine:
                     if trade:
                         self.trades.append(trade)
                         position = None
+                    # Keep strategy state consistent if incremental
+                    if use_incremental and hasattr(self.strategy, '_in_position'):
+                        self.strategy._in_position = 0
+                        self.strategy._entry_price = None
+                        self.strategy._take_profit = None
+                        self.strategy._initial_stop = None
 
         # If still in position at end, close via trade manager
         if position is not None:
@@ -167,14 +240,14 @@ class BacktestEngine:
             if trade:
                 self.trades.append(trade)
 
-        # Create result dataframe with equity curve
-        # Handle case where equity array is longer than data index (common at end of backtest)
+        # Create result dataframe with equity curve and signal metadata
         equity_len = min(len(self.equity), len(data_to_use))
         equity_series = pd.Series(self.equity[:equity_len], index=data_to_use.index[:equity_len])
-
-        # Store DataFrame with equity column
         self.result_df = data_to_use.copy()
         self.result_df['equity'] = equity_series
+        # Attach incremental signals & exit flags
+        self.result_df['signal'] = pd.Series(incremental_signals, index=data_to_use.index)
+        self.result_df['exit_flag'] = pd.Series(exit_flags, index=data_to_use.index)
 
         # No return value - results are stored in self.trades and self.result_df
 
