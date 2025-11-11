@@ -7,7 +7,7 @@ from src.config import StrategyConfig
 from src.indicators import IndicatorFactory
 from src.utils.logger import get_logger
 
-_strategy_logger = get_logger("StrategyEOD")
+_strategy_logger = get_logger("StrategyBase")
 
 class StrategyBase:
     """Base strategy interface.

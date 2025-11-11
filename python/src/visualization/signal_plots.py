@@ -88,7 +88,7 @@ def _plot_single_ticker(
 
     # Include run_id to prevent overwriting across multi-day verification runs
     if run_id:
-        img_path = output_dir / f"{ticker}_{run_id}_signals.png"
+        img_path = output_dir / f"{run_id}_{ticker}_signals.png"
     else:
         img_path = output_dir / f"{ticker}_signals.png"
 
@@ -229,7 +229,7 @@ def plot_signals_for_run(
     Returns:
         dict: ticker -> saved image path.
     """
-    diag_path = Path(results_dir) / f"signal_diagnostics_{run_id}.csv"
+    diag_path = Path(results_dir) / f"{run_id}_signal_diagnostics.csv"
     if not diag_path.exists():
         raise FileNotFoundError(f"Diagnostics file not found: {diag_path}")
 

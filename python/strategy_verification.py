@@ -102,6 +102,7 @@ def incremental_apply(strategy: ORBStrategy, df: pd.DataFrame) -> pd.DataFrame:
         # We record only the entry signal (not opposite exit) per design
         sig_col.append(entry_signal)
         exit_col.append(1 if exit_flag else 0)
+
     df_out = df.copy()
     df_out["strategy_signal"] = sig_col
     df_out["strategy_exit_flag"] = exit_col
@@ -244,7 +245,7 @@ def main():
     )
     # Build a default ORB + ATR strategy configuration (centralized factory)
     strategy_config = build_orb_atr_strategy_config_with_or_stop(initial_stop_orb_pct=args.initial_stop_pct)
-    logger.info("strategy.config", extra={"meta": {"run_id": args.run_id, "orb_timeframe": strategy_config.orb_config.timeframe, "orb_start": strategy_config.orb_config.start_time, "body_breakout_pct": strategy_config.orb_config.body_breakout_percentage, "stop_loss_type": strategy_config.risk.stop_loss_type, "stop_loss_value": strategy_config.risk.stop_loss_value, "take_profit_type": strategy_config.risk.take_profit_type, "take_profit_value": strategy_config.risk.take_profit_value, "initial_stop_orb_pct": strategy_config.risk.initial_stop_orb_pct}})
+    logger.info("strategy.config", extra={"meta": {"run_id": args.run_id, "orb_timeframe": strategy_config.orb_config.timeframe, "orb_start": strategy_config.orb_config.start_time, "body_breakout_pct": strategy_config.orb_config.body_breakout_percentage, "stop_loss_type": strategy_config.risk.stop_loss_type, "stop_loss_value": strategy_config.risk.stop_loss_value, "take_profit_type": strategy_config.risk.take_profit_type, "take_profit_value": strategy_config.risk.take_profit_value, "initial_stop_orb_pct": strategy_config.orb_config.initial_stop_orb_pct}})
     # Diagnostics CSV deprecated; plotting uses in-memory frames now.
 
     # Multi-day processing
@@ -293,14 +294,56 @@ def main():
             if df_day.empty:
                 logger.info("day.no.data", extra={"meta": {"ticker": t, "day": str(day)}})
                 continue
-            # New strategy instance to reset internal position state per day & ticker
+            # ---------------------------------------------------------------------------------
+            # Enhancement: Simulate orchestrator-style state by letting the strategy see
+            # all historical data up to (and including) the current day when generating signals.
+            # We still instantiate a fresh strategy per day (to avoid prior-day state bleed),
+            # but the signal calculation window includes cumulative history for realism.
+            # For export & plotting we keep only (previous trading day + current day) bars.
+            # ---------------------------------------------------------------------------------
+            # Build cumulative history up to end of current day
+            if df_full.index.tz is not None:
+                day_start_ts = pd.Timestamp(day.year, day.month, day.day, tz=df_full.index.tz)
+                day_end_ts = day_start_ts + pd.Timedelta(days=1)
+            else:
+                day_start_ts = pd.Timestamp(day.year, day.month, day.day)
+                day_end_ts = day_start_ts + pd.Timedelta(days=1)
+            cumulative_mask = (df_full.index < day_end_ts)
+            cumulative_df = df_full.loc[cumulative_mask].copy()
+            logger.info("day.cumulative.built", extra={"meta": {"ticker": t, "day": str(day), "cumulative_rows": len(cumulative_df)}})
+
+            # New strategy instance (fresh daily state) but fed cumulative history
             strat = ORBStrategy(breakout_window=args.orb_window, strategy_config=strategy_config)
-            # Provide market hours for EOD exit logic (close at 16:00 ET)
-            strat.market_hours = SimpleNamespace(close_time=dt_time(16, 0))
-            enriched_df = incremental_apply(strat, df_day)
-            save_dataframe(enriched_df, t, daily_run_id)
-            # Store for direct plotting
-            day_data_map[t] = enriched_df
+            logger.info("day.strategy.instantiated", extra={"meta": {"ticker": t, "day": str(day), "cumulative_rows": len(cumulative_df)}})
+
+            enriched_cumulative = incremental_apply(strat, cumulative_df)
+            logger.info("day.incremental.applied", extra={"meta": {"ticker": t, "day": str(day), "enriched_rows": len(enriched_cumulative)}})
+
+            # Determine previous trading day (from unique_days list)
+            try:
+                current_day_idx = unique_days.index(day)
+                prev_day = unique_days[current_day_idx - 1] if current_day_idx > 0 else None
+            except ValueError:
+                prev_day = None
+            # Filter enriched cumulative to only previous day + current day for export/plot
+            export_days = {day}
+            if prev_day:
+                export_days.add(prev_day)
+            export_mask = [ts.date() in export_days for ts in enriched_cumulative.index]
+            export_df = enriched_cumulative.loc[export_mask].copy()
+            # Save CSV (includes previous day if available)
+            save_dataframe(export_df, t, daily_run_id)
+            # For plotting use the same export subset
+            day_data_map[t] = export_df
+            logger.info(
+                "day.enriched",
+                extra={"meta": {
+                    "ticker": t,
+                    "cumulative_rows": len(enriched_cumulative),
+                    "export_rows": len(export_df),
+                    "has_prev_day": bool(prev_day)
+                }}
+            )
         # Plot once per day (aggregated tickers via shared run id)
         try:
             plot_paths = plot_signals_for_tickers(

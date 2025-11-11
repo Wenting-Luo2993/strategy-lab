@@ -23,6 +23,7 @@ from src.indicators import IndicatorFactory
 from src.core.trade_manager import TradeManager
 from src.config.orchestrator_config import MarketHoursConfig, OrchestratorConfig, DataReplayConfig
 from src.utils.logger import get_logger
+from src.config.columns import TradeColumns
 
 # Configure module-specific logger using project pattern
 logger = get_logger("DarkTradingOrchestrator")
@@ -51,7 +52,7 @@ class DarkTradingOrchestrator:
         market_hours: Optional[MarketHoursConfig] = None,
         orchestrator_cfg: Optional[OrchestratorConfig] = None,
         replay_cfg: Optional[DataReplayConfig] = None,
-        results_dir: str = "python/results",
+        results_dir: str = "results",
         run_id: Optional[str] = None,
         callbacks: Optional[Dict[str, Callable]] = None,
     ) -> None:
@@ -90,8 +91,8 @@ class DarkTradingOrchestrator:
         # Results tracking
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
-        self.trades_file = self.results_dir / f"trades_{self.run_id}.csv"
-        self.equity_file = self.results_dir / f"equity_{self.run_id}.csv"
+        self.trades_file = self.results_dir / f"{self.run_id}_trades.csv"
+        self.equity_file = self.results_dir / f"{self.run_id}_equity.csv"
 
         self._init_results_files()
         self._configure_auto_stop()
@@ -114,7 +115,7 @@ class DarkTradingOrchestrator:
             ])
 
         # Signal diagnostics CSV (for troubleshooting sizing / skipped signals)
-        self.signal_diag_file = self.results_dir / f"signal_diagnostics_{self.run_id}.csv"
+        self.signal_diag_file = self.results_dir / f"{self.run_id}_signal_diagnostics.csv"
         with open(self.signal_diag_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -231,9 +232,6 @@ class DarkTradingOrchestrator:
     def _process_signals(self) -> None:
         """
         Generate and process trading signals for each ticker.
-
-        Args:
-            latest_data: Dictionary of ticker -> DataFrame with latest prices
         """
         signal_cycle_meta = {"evaluated": 0, "with_signal": 0}
         for ticker, df in self.data_cache.items():
@@ -243,31 +241,31 @@ class DarkTradingOrchestrator:
             try:
                 # Add necessary indicators for the strategy
                 # TODO: we need a per tick calculation of indicators
-                if hasattr(IndicatorFactory, 'apply'):
-                    # Apply indicators based on strategy configuration
-                    if hasattr(self.strategy, 'strategy_config') and self.strategy.strategy_config:
-                        indicators = []
-                        # Add ATR for risk management
-                        indicators.append({'name': 'atr', 'params': {'length': 14}})
+                # if hasattr(IndicatorFactory, 'apply'):
+                #     # Apply indicators based on strategy configuration
+                #     if hasattr(self.strategy, 'strategy_config') and self.strategy.strategy_config:
+                        # indicators = []
+                        # # Add ATR for risk management
+                        # indicators.append({'name': 'atr', 'params': {'length': 14}})
 
-                        # Add ORB levels if using ORB strategy
-                        if hasattr(self.strategy, 'breakout_window'):
-                            # This is likely an ORB strategy
-                            start_time = getattr(self.strategy.strategy_config.orb_config, 'start_time', "09:30")
-                            duration = getattr(self.strategy.strategy_config.orb_config, 'timeframe', 5)
-                            body_pct = getattr(self.strategy.strategy_config.orb_config, 'body_breakout_percentage', 0.5)
+                        # # Add ORB levels if using ORB strategy
+                        # if hasattr(self.strategy, 'breakout_window'):
+                        #     # This is likely an ORB strategy
+                        #     start_time = getattr(self.strategy.strategy_config.orb_config, 'start_time', "09:30")
+                        #     duration = getattr(self.strategy.strategy_config.orb_config, 'timeframe', 5)
+                        #     body_pct = getattr(self.strategy.strategy_config.orb_config, 'body_breakout_percentage', 0.5)
 
-                            indicators.append({
-                                'name': 'orb_levels',
-                                'params': {
-                                    'start_time': start_time,
-                                    'duration_minutes': int(duration),
-                                    'body_pct': float(body_pct)
-                                }
-                            })
+                        #     indicators.append({
+                        #         'name': 'orb_levels',
+                        #         'params': {
+                        #             'start_time': start_time,
+                        #             'duration_minutes': int(duration),
+                        #             'body_pct': float(body_pct)
+                        #         }
+                        #     })
 
-                        df = IndicatorFactory.apply(df, indicators)
-                        logger.debug("indicators.applied", extra={"meta": {"ticker": ticker, "indicators": [i['name'] for i in indicators]}})
+                        # df = IndicatorFactory.apply(df, indicators)
+                        # logger.debug("indicators.applied", extra={"meta": {"ticker": ticker, "indicators": [i['name'] for i in indicators]}})
 
                 # Incremental signal generation
                 latest_bar = df.iloc[-1]
@@ -377,7 +375,6 @@ class DarkTradingOrchestrator:
         should trigger an exit. Submits a market order to flatten the position and then
         closes it in the TradeManager, logging lifecycle events.
         """
-        from src.config.columns import TradeColumns
         positions_snapshot = list(self.trade_manager.current_positions.items())
         if not positions_snapshot:
             return
@@ -963,7 +960,7 @@ class DarkTradingOrchestrator:
         folder.mkdir(parents=True, exist_ok=True)
 
         # Save trades
-        trades_path = folder / f"trades_{self.run_id}.csv"
+        trades_path = folder / f"{self.run_id}_trades.csv"
         with open(trades_path, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -987,7 +984,7 @@ class DarkTradingOrchestrator:
 
         # Save equity curve
         account = self.exchange.get_account()
-        equity_path = folder / f"equity_{self.run_id}.csv"
+        equity_path = folder / f"{self.run_id}_equity.csv"
         with open(equity_path, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([

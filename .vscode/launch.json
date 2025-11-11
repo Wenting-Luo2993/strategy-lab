@@ -3,9 +3,22 @@
   "configurations": [
     {
       "name": "Python: ORB Strategy Verification",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}\\python\\src\\strategies\\strategy_verification.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}\\python",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}\\python\\src;${env:PYTHONPATH}"
+      },
+      "justMyCode": true,
+      "redirectOutput": true
+    },
+    {
+      "name": "Python: Data Replay Orchestrator Verification",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}\\python\\example_dark_replay.py",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}\\python",
       "env": {
