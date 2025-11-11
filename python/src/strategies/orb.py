@@ -15,7 +15,7 @@ class ORBStrategy(StrategyBase):
         Calculate the initial stop loss value based on ORB range.
 
         Configurable behavior:
-        If strategy_config.risk.initial_stop_orb_pct is provided (pct within 0-1),
+    If strategy_config.orb_config.initial_stop_orb_pct is provided (pct within 0-1),
         compute a blended stop relative to the Opening Range (OR):
             OR = OR_High - OR_Low
             Long  stop = OR_Low + pct * OR
@@ -37,8 +37,8 @@ class ORBStrategy(StrategyBase):
             return None
         rng = orb_high - orb_low
         pct = None
-        if self.strategy_config and self.strategy_config.risk:
-            pct = getattr(self.strategy_config.risk, "initial_stop_orb_pct", None)
+        if self.strategy_config and self.strategy_config.orb_config:
+            pct = getattr(self.strategy_config.orb_config, "initial_stop_orb_pct", None)
         if pct is not None and 0 <= pct <= 1 and rng is not None:
             if is_long:
                 return orb_low + pct * rng
@@ -65,18 +65,22 @@ class ORBStrategy(StrategyBase):
 
         signals = pd.Series(0, index=df.index)
         in_position = 0  # 1 for long, -1 for short, 0 for flat
+        entry_day = None  # Track the calendar date of first entry; block re-entry same day
         entry_price = None
         take_profit = None
         initial_stop = None
         for i in range(len(df)):
             breakout = df.iloc[i]["ORB_Breakout"]
             close = df.iloc[i]["close"]
-            # Entry logic
+            current_day = df.index[i].date()
+            # Reset entry_day when new trading day starts and we're flat
+            if entry_day is not None and current_day != entry_day and in_position == 0:
+                entry_day = None
             if in_position == 0:
-                if breakout == 1 or breakout == -1:
+                if entry_day is None and breakout in (1, -1):
                     in_position = breakout
                     entry_price = close
-                    is_long = (breakout == 1)
+                    is_long = breakout == 1
                     take_profit = self.take_profit_value(entry_price, is_long=is_long, row=df.iloc[i])
                     if take_profit is None:
                         raise ValueError("take_profit should never be None after entry; check configuration or indicators.")
@@ -84,6 +88,7 @@ class ORBStrategy(StrategyBase):
                     if initial_stop is None:
                         raise ValueError("initial_stop should never be None after entry; ensure OR levels are present.")
                     signals.iloc[i] = breakout
+                    entry_day = current_day
             else:
                 if self.check_exit(in_position, close, take_profit, i, df, initial_stop=initial_stop):
                     signals.iloc[i] = -in_position
@@ -91,6 +96,7 @@ class ORBStrategy(StrategyBase):
                     entry_price = None
                     take_profit = None
                     initial_stop = None
+                    # Do NOT clear entry_day to enforce single entry per day
         return signals
 
     # Incremental generation: returns (entry_signal, exit_signal) for the latest bar only.
@@ -134,20 +140,29 @@ class ORBStrategy(StrategyBase):
             self._entry_price = None
             self._take_profit = None
             self._initial_stop = None
+        # Track single-entry-per-day state
+        if not hasattr(self, '_entry_day'):
+            self._entry_day = None
         entry_signal = 0
         exit_flag = False
+        current_day = df.index[last_idx].date()
+        # Allow a new entry only if day advanced since last entry (and we are flat)
+        if self._entry_day is not None and current_day != self._entry_day and self._in_position == 0:
+            self._entry_day = None
         if self._in_position == 0 and breakout in (1, -1):
-            # New entry
-            self._in_position = breakout
-            self._entry_price = close
-            is_long = breakout == 1
-            self._take_profit = self.take_profit_value(self._entry_price, is_long=is_long, row=row)
-            if self._take_profit is None:
-                raise ValueError("take_profit should never be None for incremental entry; check indicators/config.")
-            self._initial_stop = self.initial_stop_value(self._entry_price, is_long=is_long, row=row)
-            if self._initial_stop is None:
-                raise ValueError("initial_stop should never be None for incremental entry; OR levels missing.")
-            entry_signal = breakout
+            # Enforce single entry per trading day
+            if self._entry_day is None:
+                self._in_position = breakout
+                self._entry_price = close
+                is_long = breakout == 1
+                self._take_profit = self.take_profit_value(self._entry_price, is_long=is_long, row=row)
+                if self._take_profit is None:
+                    raise ValueError("take_profit should never be None for incremental entry; check indicators/config.")
+                self._initial_stop = self.initial_stop_value(self._entry_price, is_long=is_long, row=row)
+                if self._initial_stop is None:
+                    raise ValueError("initial_stop should never be None for incremental entry; OR levels missing.")
+                entry_signal = breakout
+                self._entry_day = current_day
         elif self._in_position != 0:
             # Evaluate exit only on latest bar
             if self.check_exit(self._in_position, close, self._take_profit, last_idx, df, initial_stop=self._initial_stop):
@@ -157,4 +172,5 @@ class ORBStrategy(StrategyBase):
                 self._entry_price = None
                 self._take_profit = None
                 self._initial_stop = None
+                # Do NOT clear _entry_day to block further entries same day
         return entry_signal, exit_flag

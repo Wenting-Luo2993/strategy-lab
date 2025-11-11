@@ -11,6 +11,13 @@ class OrbConfig:
     timeframe: str
     start_time: str
     body_breakout_percentage: float
+    # Opening Range (OR) based initial stop percentage (0-1). When provided, overrides
+    # ORBStrategy.initial_stop_value basic logic. For a long position the initial stop is:
+    #   OR_Low + initial_stop_orb_pct * (OR_High - OR_Low)
+    # For a short position:
+    #   OR_High - initial_stop_orb_pct * (OR_High - OR_Low)
+    # If None, strategy falls back to using OR_Low for long / OR_High for short.
+    initial_stop_orb_pct: float | None = None
 
 @dataclass
 class TrailingStopConfig:
@@ -39,13 +46,6 @@ class RiskConfig:
     risk_per_trade: float = 0.01  # Default to 1% if not specified
     position_allocation_cap_percent: float = 0.25  # Max % of current balance allocatable to a single position
     trailing_stop: TrailingStopConfig = None  # Trailing stop configuration
-    # Opening Range (OR) based initial stop percentage (0-1). When provided, overrides
-    # basic ORBStrategy.initial_stop_value logic. For a long position the initial stop is:
-    #   OR_Low + initial_stop_orb_pct * (OR_High - OR_Low)
-    # For a short position:
-    #   OR_High - initial_stop_orb_pct * (OR_High - OR_Low)
-    # If None, strategy falls back to using OR_Low for long / OR_High for short.
-    initial_stop_orb_pct: float | None = None
 
 @dataclass
 class StrategyConfig:

@@ -67,6 +67,7 @@ def build_orb_atr_strategy_config(
         timeframe=timeframe,
         start_time=start_time,
         body_breakout_percentage=body_breakout_percentage,
+        initial_stop_orb_pct=initial_stop_orb_pct,
     )
 
     trailing_cfg = TrailingStopConfig(
@@ -85,7 +86,6 @@ def build_orb_atr_strategy_config(
         risk_per_trade=risk_per_trade,
         position_allocation_cap_percent=position_cap_percent,
         trailing_stop=trailing_cfg,
-        initial_stop_orb_pct=initial_stop_orb_pct,
     )
 
     return StrategyConfig(

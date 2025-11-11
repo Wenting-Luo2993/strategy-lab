@@ -2,6 +2,7 @@ import pandas as pd
 from datetime import datetime
 import pytz
 
+from src.config.orchestrator_config import MarketHoursConfig
 from src.config import StrategyConfig
 from src.indicators import IndicatorFactory
 from src.utils.logger import get_logger
@@ -25,8 +26,8 @@ class StrategyBase:
         """
         self.strategy_config = strategy_config
         self.profit_target_func = profit_target_func
-        # Will be injected by orchestrator (MarketHoursConfig); kept optional for backtests
-        self.market_hours = None
+        # default to 4pm market close if not set externally
+        self.market_hours: MarketHoursConfig = MarketHoursConfig()
 
     def initial_stop_value(self, entry_price, is_long, row=None):
         """

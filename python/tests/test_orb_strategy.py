@@ -21,11 +21,11 @@ def _load_cached_df(ticker: str, timeframe: str = "5m") -> pd.DataFrame:
     Returns empty DataFrame if not found.
     """
     for root in CACHE_ROOTS:
-        ticker_dir = root / ticker
+        ticker_dir = root
         if not ticker_dir.exists() or not ticker_dir.is_dir():
             continue
         # Prefer parquet then csv
-        candidates = list(ticker_dir.glob(f"*{timeframe}*.parquet")) + list(ticker_dir.glob(f"*{timeframe}*.csv"))
+        candidates = list(ticker_dir.glob(f"{ticker}*{timeframe}*.parquet")) + list(ticker_dir.glob(f"{ticker}*{timeframe}*.csv"))
         if not candidates:
             continue
         path = candidates[0]
@@ -48,8 +48,17 @@ def _first_trading_day(df: pd.DataFrame) -> pd.DataFrame:
         idx = df.index
     dates = [ts.date() for ts in idx]
     first_day = min(dates)
-    start = pd.Timestamp.combine(pd.Timestamp(first_day).date(), pd.Timestamp.min.time())
+    # Build start/end in a tz-aware way if index carries timezone information.
+    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+        start = pd.Timestamp(first_day, tz=idx.tz)
+    else:
+        start = pd.Timestamp.combine(pd.Timestamp(first_day).date(), pd.Timestamp.min.time())
     end = start + pd.Timedelta(days=1)
+    # Pandas disallows direct comparison of tz-aware index vs naive timestamp; safeguard here.
+    if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None and start.tz is None:
+        # Localize naive start/end to index tz for comparison if somehow still naive
+        start = start.tz_localize(idx.tz)
+        end = end.tz_localize(idx.tz)
     return df[(idx >= start) & (idx < end)].copy()
 
 
