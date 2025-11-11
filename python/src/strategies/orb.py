@@ -13,8 +13,14 @@ class ORBStrategy(StrategyBase):
     def initial_stop_value(self, entry_price, is_long, row=None):
         """
         Calculate the initial stop loss value based on ORB range.
-        For long positions: Use ORB low as the stop
-        For short positions: Use ORB high as the stop
+
+        Configurable behavior:
+        If strategy_config.risk.initial_stop_orb_pct is provided (pct within 0-1),
+        compute a blended stop relative to the Opening Range (OR):
+            OR = OR_High - OR_Low
+            Long  stop = OR_Low + pct * OR
+            Short stop = OR_High - pct * OR
+        Else fallback to classic behavior (OR_Low for long, OR_High for short).
 
         Args:
             entry_price (float): The price at which the position was entered.
@@ -25,17 +31,21 @@ class ORBStrategy(StrategyBase):
         """
         if row is None:
             return None
-
-        if is_long:
-            # For long positions, use the ORB low as stop
-            if "ORB_Low" in row:
-                return row["ORB_Low"]
-        else:
-            # For short positions, use the ORB high as stop
-            if "ORB_High" in row:
-                return row["ORB_High"]
-
-        return None
+        orb_low = row.get("ORB_Low")
+        orb_high = row.get("ORB_High")
+        if orb_low is None or orb_high is None:
+            return None
+        rng = orb_high - orb_low
+        pct = None
+        if self.strategy_config and self.strategy_config.risk:
+            pct = getattr(self.strategy_config.risk, "initial_stop_orb_pct", None)
+        if pct is not None and 0 <= pct <= 1 and rng is not None:
+            if is_long:
+                return orb_low + pct * rng
+            else:
+                return orb_high - pct * rng
+        # Fallback legacy behavior
+        return orb_low if is_long else orb_high
 
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
         # Check if ORB_Breakout column exists, if not calculate it
@@ -68,7 +78,11 @@ class ORBStrategy(StrategyBase):
                     entry_price = close
                     is_long = (breakout == 1)
                     take_profit = self.take_profit_value(entry_price, is_long=is_long, row=df.iloc[i])
+                    if take_profit is None:
+                        raise ValueError("take_profit should never be None after entry; check configuration or indicators.")
                     initial_stop = self.initial_stop_value(entry_price, is_long=is_long, row=df.iloc[i])
+                    if initial_stop is None:
+                        raise ValueError("initial_stop should never be None after entry; ensure OR levels are present.")
                     signals.iloc[i] = breakout
             else:
                 if self.check_exit(in_position, close, take_profit, i, df, initial_stop=initial_stop):
@@ -97,6 +111,19 @@ class ORBStrategy(StrategyBase):
                     'body_pct': body_pct
                 }}
             ])
+        else:
+            # Ensure ORB_Low/High present when Breakout column already exists (subset slice edge case)
+            if "ORB_Low" not in df.columns or "ORB_High" not in df.columns:
+                start_time = self.strategy_config.orb_config.start_time if self.strategy_config else "09:30"
+                duration_minutes = int(self.strategy_config.orb_config.timeframe) if self.strategy_config else 5
+                body_pct = self.strategy_config.orb_config.body_breakout_percentage if self.strategy_config else 0.5
+                df = IndicatorFactory.apply(df, [
+                    {'name': 'orb_levels', 'params': {
+                        'start_time': start_time,
+                        'duration_minutes': duration_minutes,
+                        'body_pct': body_pct
+                    }}
+                ])
         last_idx = len(df) - 1
         row = df.iloc[last_idx]
         breakout = row.get("ORB_Breakout", 0)
@@ -114,11 +141,12 @@ class ORBStrategy(StrategyBase):
             self._in_position = breakout
             self._entry_price = close
             is_long = breakout == 1
-            try:
-                self._take_profit = self.take_profit_value(self._entry_price, is_long=is_long, row=row)
-            except Exception:
-                self._take_profit = None
+            self._take_profit = self.take_profit_value(self._entry_price, is_long=is_long, row=row)
+            if self._take_profit is None:
+                raise ValueError("take_profit should never be None for incremental entry; check indicators/config.")
             self._initial_stop = self.initial_stop_value(self._entry_price, is_long=is_long, row=row)
+            if self._initial_stop is None:
+                raise ValueError("initial_stop should never be None for incremental entry; OR levels missing.")
             entry_signal = breakout
         elif self._in_position != 0:
             # Evaluate exit only on latest bar

@@ -1,7 +1,12 @@
 import pandas as pd
+from datetime import datetime
+import pytz
 
 from src.config import StrategyConfig
 from src.indicators import IndicatorFactory
+from src.utils.logger import get_logger
+
+_strategy_logger = get_logger("StrategyEOD")
 
 class StrategyBase:
     """Base strategy interface.
@@ -91,11 +96,12 @@ class StrategyBase:
         Returns:
             bool: True if exit condition is met, False otherwise.
         """
-        # Take profit exit
-        if position_type == 1 and close >= take_profit:
-            return True
-        if position_type == -1 and close <= take_profit:
-            return True
+        # Take profit exit (guard None)
+        if take_profit is not None:
+            if position_type == 1 and close >= take_profit:
+                return True
+            if position_type == -1 and close <= take_profit:
+                return True
         # Initial stop loss exit (if provided)
         if initial_stop is not None:
             if position_type == 1 and close <= initial_stop:
@@ -104,19 +110,56 @@ class StrategyBase:
                 return True
         # End-of-day session exit based on configured market hours (if enabled in strategy config)
         # We avoid using the synthetic "last row" heuristic which caused premature exits.
-        if self.strategy_config and getattr(self.strategy_config, 'eod_exit', False) and self.market_hours:
+        if self.strategy_config and getattr(self.strategy_config, 'eod_exit', False) and self.market_hours and position_type != 0:
             current_ts = df.index[i]
-            # If next bar is a different date OR current time has passed the configured close time
+            close_time = getattr(self.market_hours, 'close_time', None)
+            if close_time is None:
+                from datetime import time as _t
+                close_time = _t(16, 0)
+
+            # Normalize current timestamp to New York timezone for session boundary math
+            ny_tz = pytz.timezone('America/New_York')
+            if current_ts.tzinfo is not None:
+                current_ny = current_ts.astimezone(ny_tz)
+            else:
+                # Assume data already in session timezone if naive
+                current_ny = ny_tz.localize(datetime.combine(current_ts.date(), current_ts.time()))
+
+            session_end_ny = ny_tz.localize(datetime.combine(current_ny.date(), close_time))
+            minutes_to_close = (session_end_ny - current_ny).total_seconds() / 60.0
+            if minutes_to_close < 0:
+                minutes_to_close = 0  # already past close
+
             next_is_new_day = (i < len(df) - 1) and (df.index[i].date() != df.index[i+1].date())
-            close_time = getattr(self.market_hours, 'close_time', current_ts.time())
-            session_closed = current_ts.time() >= close_time
-            # Pre-close window: exit if within last 6 minutes of session
-            try:
-                minutes_to_close = (pd.Timestamp.combine(current_ts.date(), close_time) - current_ts).total_seconds() / 60.0
-            except Exception:
-                minutes_to_close = None
-            within_pre_close_window = minutes_to_close is not None and 0 <= minutes_to_close <= 11
-            if next_is_new_day or session_closed or within_pre_close_window:
+            session_closed = current_ny.time() >= close_time
+            within_pre_close_window = 0 <= minutes_to_close <= 11
+            last_bar_of_day = (i == len(df) - 1)
+            # Infer bar interval
+            bar_interval_min = None
+            if len(df) >= 2:
+                try:
+                    delta = (df.index[i] - df.index[i-1]).total_seconds() / 60.0
+                    if 0 < delta <= 120:
+                        bar_interval_min = delta
+                except Exception:
+                    bar_interval_min = None
+            near_close_fallback = last_bar_of_day and bar_interval_min is not None and 0 <= minutes_to_close <= bar_interval_min
+
+            _strategy_logger.debug(
+                "eod.check",
+                extra={"meta": {
+                    "ts": str(current_ts),
+                    "position_type": position_type,
+                    "minutes_to_close": minutes_to_close,
+                    "session_closed": session_closed,
+                    "within_pre_close_window": within_pre_close_window,
+                    "next_is_new_day": next_is_new_day,
+                    "last_bar_of_day": last_bar_of_day,
+                    "near_close_fallback": near_close_fallback
+                }}
+            )
+            if next_is_new_day or session_closed or within_pre_close_window or near_close_fallback:
+                _strategy_logger.info("eod.exit.trigger", extra={"meta": {"ts": str(current_ts), "minutes_to_close": minutes_to_close}})
                 return True
         return False
 
@@ -138,3 +181,17 @@ class StrategyBase:
             and must contain only integer values (1, -1, 0).
         """
         raise NotImplementedError
+
+    def generate_signal_incremental(self, df: pd.DataFrame) -> tuple[int, bool]:
+        """
+        Generate incremental trading signals based on the latest data point.
+
+        Args:
+            df (pd.DataFrame): DataFrame with OHLCV + indicators.
+
+        Returns:
+            tuple[int, bool]: A tuple containing:
+                              - An integer signal (+1 for long entry, -1 for short entry/exit, 0 for hold)
+                              - A boolean exit_flag indicating if an explicit exit is requested
+        """
+        raise NotImplementedError("Incremental signal generation not implemented for this strategy.")

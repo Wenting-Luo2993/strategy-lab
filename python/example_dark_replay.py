@@ -17,6 +17,7 @@ from src.core.trade_manager import TradeManager
 from src.strategies.orb import ORBStrategy
 from src.risk_management.fixed_atr_stop import FixedATRStop
 from src.config.parameters import StrategyConfig, OrbConfig, RiskConfig, TrailingStopConfig
+from src.visualization.signal_plots import plot_signals_for_run
 
 
 def build_strategy_config() -> StrategyConfig:
@@ -87,6 +88,14 @@ def main():
     orchestrator.start()
     orchestrator.stop()
 
+    paths = plot_signals_for_run(
+        run_id="example01",
+        results_dir="python/results",
+        output_dir="python/results/images",
+        style="candlestick",  # or 'line' if mplfinance missing
+        show=False
+    )
+    print(paths)
 
 if __name__ == "__main__":
     main()

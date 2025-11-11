@@ -74,7 +74,8 @@ def _plot_single_ticker(
     style: str = "candlestick",
     show: bool = False,
     dpi: int = 110,
-    exit_flags: Optional[pd.Series] = None
+    exit_flags: Optional[pd.Series] = None,
+    run_id: Optional[str] = None,
 ) -> Path:
     """Plot OHLCV with signals for a single ticker and save image.
 
@@ -85,7 +86,11 @@ def _plot_single_ticker(
     if not {"open", "high", "low", "close"}.issubset(df.columns):
         raise ValueError(f"DataFrame for {ticker} missing OHLC columns.")
 
-    img_path = output_dir / f"{ticker}_signals.png"
+    # Include run_id to prevent overwriting across multi-day verification runs
+    if run_id:
+        img_path = output_dir / f"{ticker}_{run_id}_signals.png"
+    else:
+        img_path = output_dir / f"{ticker}_signals.png"
 
     # Candlestick style via mplfinance if available
     if style == "candlestick" and _HAS_MPLFIN:
@@ -128,17 +133,20 @@ def _plot_single_ticker(
                     color='orange'
                 )
             )
-        mpf.plot(
-            df,
+        plot_kwargs = dict(
+            data=df,
             type='candle',
             style='yahoo',
-            addplot=apds if apds else None,
             volume=True,
             figratio=(12, 6),
             figscale=1.0,
             title=f"{ticker} OHLCV + Signals + Exits",
             savefig=dict(fname=str(img_path), dpi=dpi, bbox_inches='tight')
         )
+        if apds:
+            plot_kwargs['addplot'] = apds
+        # mplfinance expects 'data' positional or keyword; using keyword for clarity
+        mpf.plot(**plot_kwargs)
         if show:
             plt.show()
         plt.close('all')
@@ -266,7 +274,8 @@ def plot_signals_for_run(
                 style=style,
                 show=show,
                 dpi=dpi,
-                exit_flags=base.get('exit_flag')
+                exit_flags=base.get('exit_flag'),
+                run_id=run_id,
             )
         except Exception as e:
             print(f"[signal_plots] Failed to plot {ticker}: {e}")
@@ -275,3 +284,60 @@ def plot_signals_for_run(
 
 
 __all__ = ["plot_signals_for_run"]
+
+
+def plot_signals_for_tickers(
+    data_map: Dict[str, pd.DataFrame],
+    output_dir: str | Path = "results/images",
+    style: str = "candlestick",
+    show: bool = False,
+    dpi: int = 110,
+    run_id: Optional[str] = None,
+) -> Dict[str, Path]:
+    """Plot signals for an in-memory mapping of ticker -> DataFrame.
+
+    Each DataFrame should contain OHLC columns plus either:
+      - 'signal' column, or
+      - 'strategy_signal' (will be aliased to 'signal')
+    Optional exit flag column names:
+      - 'exit_flag' or 'strategy_exit_flag'
+
+    Args:
+        data_map: Mapping of ticker to enriched OHLCV+signal DataFrame.
+        output_dir: Directory where images will be saved.
+        style: Plot style; 'candlestick' uses mplfinance if available.
+        show: If True, display the figures interactively.
+        dpi: Resolution for saved images.
+        run_id: Optional run identifier appended to image filenames to avoid overwrites.
+
+    Returns:
+        dict: ticker -> saved image path.
+    """
+    out_path = _ensure_output_dir(output_dir)
+    saved: Dict[str, Path] = {}
+    for ticker, df in data_map.items():
+        if df is None or df.empty:
+            continue
+        df_local = df.copy()
+        # Normalize column names
+        if 'signal' not in df_local.columns and 'strategy_signal' in df_local.columns:
+            df_local['signal'] = df_local['strategy_signal']
+        if 'exit_flag' not in df_local.columns and 'strategy_exit_flag' in df_local.columns:
+            df_local['exit_flag'] = df_local['strategy_exit_flag']
+        try:
+            saved[ticker] = _plot_single_ticker(
+                ticker=ticker,
+                df=df_local,
+                signals=df_local['signal'].astype(int),
+                output_dir=out_path,
+                style=style,
+                show=show,
+                dpi=dpi,
+                exit_flags=df_local.get('exit_flag'),
+                run_id=run_id,
+            )
+        except Exception as e:
+            print(f"[plot_signals_for_tickers] Failed plotting {ticker}: {e}")
+    return saved
+
+__all__.append("plot_signals_for_tickers")

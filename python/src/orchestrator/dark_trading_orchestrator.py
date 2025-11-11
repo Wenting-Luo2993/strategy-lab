@@ -228,7 +228,7 @@ class DarkTradingOrchestrator:
             # Log that the exchange doesn't support updating market data
             logger.warning("Exchange implementation does not support updating market data")
 
-    def _process_signals(self, latest_data: Dict[str, pd.DataFrame]) -> None:
+    def _process_signals(self) -> None:
         """
         Generate and process trading signals for each ticker.
 
@@ -269,10 +269,8 @@ class DarkTradingOrchestrator:
                         df = IndicatorFactory.apply(df, indicators)
                         logger.debug("indicators.applied", extra={"meta": {"ticker": ticker, "indicators": [i['name'] for i in indicators]}})
 
-                # Incremental signal generation (always use incremental path)
+                # Incremental signal generation
                 latest_bar = df.iloc[-1]
-                if not hasattr(self.strategy, 'generate_signal_incremental'):
-                    raise AttributeError("Strategy must implement generate_signal_incremental for orchestrator incremental mode.")
                 entry_signal, exit_flag = self.strategy.generate_signal_incremental(df)
                 # Record diagnostics even when no entry (signal may be 0)
                 if entry_signal != 0:
@@ -314,12 +312,11 @@ class DarkTradingOrchestrator:
                         else:
                             qty = int(position_proto.get('size', position_proto.get('SIZE', 0)) or position_proto.get('SIZE', 0) or position_proto.get('size', 0))
                             if qty <= 0:
-                                size_float = position_proto.get('size') or position_proto.get('SIZE')
                                 self._log_and_record_signal(
                                     latest_bar=latest_bar,
                                     ticker=ticker,
                                     signal=int(entry_signal),
-                                    size_float=size_float,
+                                    size_float=position_proto.get('size') or position_proto.get('SIZE'),
                                     size_int=int(qty),
                                     skip_reason="non_positive_size",
                                     stop_loss=position_proto.get('stop_loss'),
@@ -328,15 +325,6 @@ class DarkTradingOrchestrator:
                                     extra_meta={'computed_qty': int(qty)}
                                 )
                             else:
-                                is_long = entry_signal > 0
-                                stop_loss = position_proto.get('stop_loss')
-                                if stop_loss is None and hasattr(self.risk_manager, 'calculate_stop_loss'):
-                                    stop_loss = self.risk_manager.calculate_stop_loss(
-                                        entry_price=latest_bar['close'],
-                                        is_long=is_long,
-                                        df=df,
-                                        row=latest_bar,
-                                    )
                                 self._log_and_record_signal(
                                     latest_bar=latest_bar,
                                     ticker=ticker,
@@ -344,7 +332,7 @@ class DarkTradingOrchestrator:
                                     size_float=position_proto.get('size') or position_proto.get('SIZE'),
                                     size_int=qty,
                                     skip_reason=None,
-                                    stop_loss=stop_loss,
+                                    stop_loss=position_proto.get('stop_loss'),
                                     exit_flag=exit_flag,
                                     event='signal.detected'
                                 )
@@ -370,7 +358,7 @@ class DarkTradingOrchestrator:
                         stop_loss=None,
                         exit_flag=exit_flag
                     )
-                # Separate exit signaling (Fix D): log exit flag distinctly, not as opposite trade signal
+                # Separate exit signaling: log exit flag distinctly, not as opposite trade signal
                 if exit_flag:
                     logger.info(
                         "signal.exit",
@@ -791,51 +779,12 @@ class DarkTradingOrchestrator:
                 }
                 logger.debug("position.adopted", extra={"meta": {"ticker": ticker}})
 
-    def _run_cycle(self) -> Dict[str, Any]:
-        """Run a single orchestrator cycle (live or replay)."""
-        self.tick_count += 1
-        self.orders_executed_this_cycle = 0
-        logger.info("cycle.start", extra={"meta": {"cycle": self.tick_count, "mode": "replay" if self.replay_cfg.enabled else "live"}})
+    def _finalize_cycle(self) -> Dict[str, Any]:
+        """Finalize a cycle: log summary, record equity/account state, update timestamps.
 
-        if self.replay_cfg.enabled and isinstance(self.data_fetcher, DataReplayCacheDataLoader):
-            self.data_fetcher.advance(n=1)
-
-        if not self.is_market_open():
-            logger.info("Market is closed, skipping cycle")
-            return self.exchange.get_account()
-
-        latest_data = self._fetch_latest_data()
-
-        if self.replay_cfg.enabled and isinstance(self.data_fetcher, DataReplayCacheDataLoader):
-            all_complete = True
-            progress_map = {}
-            for t in self.tickers:
-                progress = self.data_fetcher.replay_progress(t, self.replay_cfg.timeframe)
-                pct = round(progress * 100, 2)
-                progress_map[t] = pct
-                logger.debug("replay.progress", extra={"meta": {"ticker": t, "progress_pct": pct}})
-                if progress < 1.0:
-                    all_complete = False
-            if all_complete:
-                # Final summary before stopping; record equity and halt loop
-                logger.info("replay.completed", extra={"meta": {"cycle": self.tick_count, "progress_pct_map": progress_map}})
-                account = self.exchange.get_account()
-                self._record_account_state()
-                self.last_run_time = datetime.now()
-                self.running = False
-                return account
-
-        if not latest_data:
-            logger.warning("cycle.no_data", extra={"meta": {"cycle": self.tick_count}})
-            return self.exchange.get_account()
-
-        # TODO: update exchange prices is only needed for mock exchange
-        self._update_exchange_prices(latest_data)
-        self._process_signals(latest_data)
-        # New: evaluate exits for existing positions after processing new signals
-        self._process_exits()
-        # Position/account sync
-        self._sync_positions_with_exchange()
+        Returns:
+            Latest account dict from exchange.
+        """
         try:
             acct = self.exchange.get_account()
             logger.info(
@@ -856,6 +805,73 @@ class DarkTradingOrchestrator:
         self._record_account_state()
         self.last_run_time = datetime.now()
         return account
+
+    def _handle_replay_progress(self, latest_data: Dict[str, pd.DataFrame]) -> Optional[Dict[str, Any]]:
+        """Handle replay progress tracking and completion logic.
+
+        Logs per-ticker progress, determines if replay is complete, records final equity, and halts loop.
+        Also updates exchange prices for replay cycles that are still in progress.
+
+        Args:
+            latest_data: Most recently fetched market data map.
+
+        Returns:
+            Account dict if replay completed this cycle; otherwise None.
+        """
+        if self.replay_cfg.enabled and isinstance(self.data_fetcher, DataReplayCacheDataLoader):
+            all_complete = True
+            progress_map = {}
+            for t in self.tickers:
+                progress = self.data_fetcher.replay_progress(t, self.replay_cfg.timeframe)
+                pct = round(progress * 100, 2)
+                progress_map[t] = pct
+                logger.debug("replay.progress", extra={"meta": {"ticker": t, "progress_pct": pct}})
+                if progress < 1.0:
+                    all_complete = False
+            if all_complete:
+                # Final summary before stopping; record equity and halt loop
+                logger.info("replay.completed", extra={"meta": {"cycle": self.tick_count, "progress_pct_map": progress_map}})
+                account = self.exchange.get_account()
+                self._record_account_state()
+                self.last_run_time = datetime.now()
+                self.running = False
+                return account
+            # Replay still in progress: update exchange prices using latest data snapshot
+            self._update_exchange_prices(latest_data)
+        return None
+
+    def _run_cycle(self) -> Dict[str, Any]:
+        """Run a single orchestrator cycle (live or replay)."""
+        self.tick_count += 1
+        self.orders_executed_this_cycle = 0
+        logger.info("cycle.start", extra={"meta": {"cycle": self.tick_count, "mode": "replay" if self.replay_cfg.enabled else "live"}})
+
+        if self.replay_cfg.enabled and isinstance(self.data_fetcher, DataReplayCacheDataLoader):
+            self.data_fetcher.advance(n=1)
+
+        if not self.is_market_open():
+            logger.info("Market is closed, skipping cycle")
+            return self.exchange.get_account()
+
+        latest_data = self._fetch_latest_data()
+
+        # Check for no data scenario
+        if not latest_data:
+            logger.warning("cycle.no_data", extra={"meta": {"cycle": self.tick_count}})
+            return self.exchange.get_account()
+
+        # Handle replay progress & potential completion (includes exchange price updates for replay)
+        replay_completion = self._handle_replay_progress(latest_data)
+        if replay_completion is not None:
+            return replay_completion
+
+        # Process new signals
+        self._process_signals()
+        # Evaluate exits for existing positions after processing new signals
+        self._process_exits()
+        # Position/account sync
+        self._sync_positions_with_exchange()
+        return self._finalize_cycle()
 
     def start(self, run_duration: Optional[int] = None) -> None:
         """
