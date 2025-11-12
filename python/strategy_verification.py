@@ -20,6 +20,7 @@ from typing import List, Dict, Tuple, Optional
 import pandas as pd
 
 # Local imports (assumes running inside python/ working directory or added to PYTHONPATH)
+from src.utils.workspace import resolve_workspace_path
 from src.data.replay_cache import DataReplayCacheDataLoader
 from src.strategies.orb import ORBStrategy
 from src.visualization.signal_plots import plot_signals_for_tickers
@@ -31,7 +32,7 @@ from types import SimpleNamespace
 
 logger = get_logger("StrategyVerification")
 
-RESULTS_SUBDIR = Path("python/results/strategy-verification")
+RESULTS_SUBDIR = resolve_workspace_path("results/strategy-verification")
 RESULTS_SUBDIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -111,7 +112,7 @@ def incremental_apply(strategy: ORBStrategy, df: pd.DataFrame) -> pd.DataFrame:
 
 def save_dataframe(df: pd.DataFrame, ticker: str, run_id: str) -> Path:
     """Persist enriched per-day ticker DataFrame (optional)."""
-    out_path = RESULTS_SUBDIR / f"{ticker}_{run_id}.csv"
+    out_path = RESULTS_SUBDIR / f"{run_id}_{ticker}.csv"
     df.to_csv(out_path, index=True)
     logger.info("saved.csv", extra={"meta": {"ticker": ticker, "rows": len(df), "path": str(out_path)}})
     return out_path

@@ -34,6 +34,10 @@ import pytz
 import pandas as pd
 
 from .cache import CacheDataLoader
+from src.utils.logger import get_logger
+
+# Module-level logger
+logger = get_logger("ReplayCache")
 
 
 @dataclass
@@ -76,10 +80,12 @@ class DataReplayCacheDataLoader(CacheDataLoader):
     def _initialize_state(self, symbol: str, timeframe: str) -> None:
         key = self._state_key(symbol, timeframe)
         if key in self._state:
+            logger.debug(f"Replay state already initialized for {key}")
             return
         # Fetch full data from cache only (start/end None -> parent clamps)
         full_df = super().fetch(symbol, timeframe, start=None, end=None)
         if full_df is None or full_df.empty:
+            logger.warning(f"Replay initialization found no data for {symbol} {timeframe}; creating empty state")
             self._state[key] = ReplayState(pd.DataFrame(), pd.DataFrame(), 0, 0)
             return
 
@@ -91,6 +97,9 @@ class DataReplayCacheDataLoader(CacheDataLoader):
         mask_history = [d < last_date for d in all_dates]
         replay_day_df = full_df[mask_replay]
         history_df = full_df[mask_history]
+        logger.info(
+            f"Initialized replay state for {symbol} {timeframe}: history_rows={len(history_df)} replay_day_rows={len(replay_day_df)} last_date={last_date}"
+        )
         # Preserve original timezone (e.g., US/Eastern) so ORB start_time comparisons align
         # Avoid converting to UTC here; indicator logic expects session-local times.
 
@@ -114,6 +123,9 @@ class DataReplayCacheDataLoader(CacheDataLoader):
 
         if self.start_offset_minutes > 0:
             threshold_dt = open_dt - timedelta(minutes=self.start_offset_minutes)
+            logger.debug(
+                f"Replay threshold adjusted by offset {self.start_offset_minutes}m: threshold={threshold_dt} open={open_dt}"
+            )
         else:
             threshold_dt = open_dt
 
@@ -125,6 +137,9 @@ class DataReplayCacheDataLoader(CacheDataLoader):
             opening_bar = replay_day_df[replay_day_df.index == open_dt]
             initial_slice = opening_bar
         revealed_rows = len(initial_slice)
+        logger.info(
+            f"Initial replay reveal for {symbol} {timeframe}: revealed_rows={revealed_rows} of replay_day_rows={len(replay_day_df)}"
+        )
         # Cap at total rows
         revealed_rows = min(revealed_rows, len(replay_day_df))
 
@@ -146,12 +161,17 @@ class DataReplayCacheDataLoader(CacheDataLoader):
             targets.append(self._state_key(symbol, timeframe))
         else:
             targets = list(self._state.keys())
+        logger.debug(f"Advance called: n={n} increment={self.reveal_increment} targets={targets}")
         for key in targets:
             state = self._state.get(key)
             if not state:
+                logger.debug(f"Advance skipped; no state for {key}")
                 continue
             add_rows = n * self.reveal_increment
             state.revealed_rows = min(state.revealed_rows + add_rows, state.total_rows)
+            logger.info(
+                f"Replay advanced for {key}: +{add_rows} rows (requested), now revealed={state.revealed_rows}/{state.total_rows}"
+            )
 
     def fetch(self, symbol: str, timeframe: str, start=None, end=None) -> pd.DataFrame:  # type: ignore[override]
         """Return combined history plus currently revealed replay rows.
@@ -163,9 +183,13 @@ class DataReplayCacheDataLoader(CacheDataLoader):
         key = self._state_key(symbol, timeframe)
         state = self._state[key]
         if state.total_rows == 0:
+            logger.debug(f"Fetch returning empty replay day for {key}")
             return state.history  # empty
         revealed_slice = state.replay_day.iloc[: state.revealed_rows]
         combined = pd.concat([state.history, revealed_slice], axis=0)
+        logger.debug(
+            f"Fetch for {key}: history_rows={len(state.history)} revealed_rows={state.revealed_rows} total_replay_rows={state.total_rows} combined_rows={len(combined)}"
+        )
         return combined.sort_index()
 
     def replay_progress(self, symbol: str, timeframe: str) -> float:
@@ -173,5 +197,8 @@ class DataReplayCacheDataLoader(CacheDataLoader):
         key = self._state_key(symbol, timeframe)
         state = self._state.get(key)
         if not state or state.total_rows == 0:
+            logger.debug(f"Replay progress requested for {key} but no state or empty replay day")
             return 0.0
-        return state.revealed_rows / state.total_rows
+        progress = state.revealed_rows / state.total_rows
+        logger.debug(f"Replay progress for {key}: {progress:.4f}")
+        return progress

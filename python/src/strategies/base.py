@@ -7,7 +7,10 @@ from src.config import StrategyConfig
 from src.indicators import IndicatorFactory
 from src.utils.logger import get_logger
 
-_strategy_logger = get_logger("StrategyBase")
+# NOTE: We keep a module-level default logger for fallback, but instance methods
+# will prefer `self.logger` which child strategies can override so that base
+# class logs land in the SAME file as the concrete strategy (e.g. ORBStrategy).
+_default_strategy_logger = get_logger("StrategyBase")
 
 class StrategyBase:
     """Base strategy interface.
@@ -17,7 +20,7 @@ class StrategyBase:
       * Optional incremental signal generation via ``generate_signal_incremental`` (implemented in subclasses).
     """
 
-    def __init__(self, strategy_config:StrategyConfig = None, profit_target_func=None):
+    def __init__(self, strategy_config:StrategyConfig = None, profit_target_func=None, logger=None, logger_name: str | None = None):
         """Initialize a strategy base instance.
 
         Args:
@@ -28,6 +31,15 @@ class StrategyBase:
         self.profit_target_func = profit_target_func
         # default to 4pm market close if not set externally
         self.market_hours: MarketHoursConfig = MarketHoursConfig()
+        # Logging: allow passing a logger instance or a logger name so that
+        # child strategies can unify all logging output into a single file.
+        if logger is not None:
+            self.logger = logger
+        else:
+            if logger_name:
+                self.logger = get_logger(logger_name)
+            else:
+                self.logger = _default_strategy_logger
 
     def initial_stop_value(self, entry_price, is_long, row=None):
         """
@@ -87,6 +99,7 @@ class StrategyBase:
     def check_exit(self, position_type, close, take_profit, i, df, initial_stop=None):
         """
         Determines if an exit condition is met for the current position.
+
         Args:
             position_type (int): 1 for long, -1 for short.
             close (float): Current close price.
@@ -95,47 +108,67 @@ class StrategyBase:
             df (pd.DataFrame): The full DataFrame (for EOD logic).
             initial_stop (float, optional): Initial stop loss price.
         Returns:
-            bool: True if exit condition is met, False otherwise.
+            tuple[bool, str | None]: (exit_flag, reason_string)
         """
+        reason = None
+        current_ts = df.index[i]
         # Take profit exit (guard None)
         if take_profit is not None:
             if position_type == 1 and close >= take_profit:
-                return True
-            if position_type == -1 and close <= take_profit:
-                return True
+                reason = "take_profit.long"
+            elif position_type == -1 and close <= take_profit:
+                reason = "take_profit.short"
+            if reason:
+                self.logger.info(
+                    f"[{str(current_ts)}] exit.flag",
+                    extra={"meta": {
+                        "ts": str(current_ts),
+                        "reason": reason,
+                        "close": close,
+                        "take_profit": take_profit,
+                        "initial_stop": initial_stop,
+                        "position_type": position_type
+                    }}
+                )
+                return True, reason
         # Initial stop loss exit (if provided)
         if initial_stop is not None:
             if position_type == 1 and close <= initial_stop:
-                return True
-            if position_type == -1 and close >= initial_stop:
-                return True
+                reason = "stop_loss.long"
+            elif position_type == -1 and close >= initial_stop:
+                reason = "stop_loss.short"
+            if reason:
+                self.logger.info(
+                    f"[{str(current_ts)}] exit.flag",
+                    extra={"meta": {
+                        "ts": str(current_ts),
+                        "reason": reason,
+                        "close": close,
+                        "take_profit": take_profit,
+                        "initial_stop": initial_stop,
+                        "position_type": position_type
+                    }}
+                )
+                return True, reason
         # End-of-day session exit based on configured market hours (if enabled in strategy config)
-        # We avoid using the synthetic "last row" heuristic which caused premature exits.
         if self.strategy_config and getattr(self.strategy_config, 'eod_exit', False) and self.market_hours and position_type != 0:
-            current_ts = df.index[i]
             close_time = getattr(self.market_hours, 'close_time', None)
             if close_time is None:
                 from datetime import time as _t
                 close_time = _t(16, 0)
-
-            # Normalize current timestamp to New York timezone for session boundary math
             ny_tz = pytz.timezone('America/New_York')
             if current_ts.tzinfo is not None:
                 current_ny = current_ts.astimezone(ny_tz)
             else:
-                # Assume data already in session timezone if naive
                 current_ny = ny_tz.localize(datetime.combine(current_ts.date(), current_ts.time()))
-
             session_end_ny = ny_tz.localize(datetime.combine(current_ny.date(), close_time))
             minutes_to_close = (session_end_ny - current_ny).total_seconds() / 60.0
             if minutes_to_close < 0:
-                minutes_to_close = 0  # already past close
-
+                minutes_to_close = 0
             next_is_new_day = (i < len(df) - 1) and (df.index[i].date() != df.index[i+1].date())
             session_closed = current_ny.time() >= close_time
             within_pre_close_window = 0 <= minutes_to_close <= 11
             last_bar_of_day = (i == len(df) - 1)
-            # Infer bar interval
             bar_interval_min = None
             if len(df) >= 2:
                 try:
@@ -145,9 +178,8 @@ class StrategyBase:
                 except Exception:
                     bar_interval_min = None
             near_close_fallback = last_bar_of_day and bar_interval_min is not None and 0 <= minutes_to_close <= bar_interval_min
-
-            _strategy_logger.debug(
-                "eod.check",
+            self.logger.debug(
+                f"[{str(current_ts)}] eod.check",
                 extra={"meta": {
                     "ts": str(current_ts),
                     "position_type": position_type,
@@ -160,9 +192,26 @@ class StrategyBase:
                 }}
             )
             if next_is_new_day or session_closed or within_pre_close_window or near_close_fallback:
-                _strategy_logger.info("eod.exit.trigger", extra={"meta": {"ts": str(current_ts), "minutes_to_close": minutes_to_close}})
-                return True
-        return False
+                reason_flags = []
+                if next_is_new_day: reason_flags.append("next_day")
+                if session_closed: reason_flags.append("session_closed")
+                if within_pre_close_window: reason_flags.append("pre_close_window")
+                if near_close_fallback: reason_flags.append("near_close_fallback")
+                reason = "eod_exit:" + ",".join(reason_flags)
+                self.logger.info(
+                    f"[{str(current_ts)}] exit.flag",
+                    extra={"meta": {
+                        "ts": str(current_ts),
+                        "reason": reason,
+                        "close": close,
+                        "take_profit": take_profit,
+                        "initial_stop": initial_stop,
+                        "position_type": position_type,
+                        "minutes_to_close": minutes_to_close
+                    }}
+                )
+                return True, reason
+        return False, None
 
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
         """

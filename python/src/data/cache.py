@@ -9,6 +9,7 @@ import pandas as pd
 from src.data.base import DataLoader
 from src.utils.logger import get_logger
 from src.utils.google_drive_sync import DriveSync
+from src.utils.workspace import resolve_workspace_path
 
 # Get a configured logger for this module
 logger = get_logger("Cache")
@@ -17,19 +18,25 @@ logger = get_logger("Cache")
 class CacheDataLoader(DataLoader):
     """A data loader wrapper adding intelligent rolling caching with partial fetch.
 
-    Features:
+        Features:
       * Maintains a single rolling parquet file per (symbol,timeframe) accumulating history.
       * If requested range partially overlaps cache, fetches only missing segments.
       * Enforces a maximum lookback window (default 59 days) for NEW fetches while still serving
         any older data already cached.
       * Migrates legacy date-ranged cache files (old format with start/end in filename) into the
         new rolling file automatically on first use.
+            * Preserves any pre-computed indicator columns (e.g. EMA_*, RSI_*, ATR*, ORB_*) that were
+                added offline (via apply_indicator_data_cache.py) when reading and merging cache content.
+                New fetched segments that lack those columns will simply have NaN values for them; the
+                loader does NOT drop or recalculate indicator fields.
+            * Uses centralized workspace path anchoring (src.utils.workspace) so that relative cache_dir
+                values are always resolved against the project python/ root regardless of the caller's CWD.
     """
 
     def __init__(
         self,
         wrapped_loader: Optional[DataLoader] = None,
-        cache_dir: str = "data_cache",
+        cache_dir: Union[str, Path] = "data_cache",
         max_lookback_days: int = 59,
         timeframe_minutes_map: Optional[dict] = None,
         cloud_sync: bool = False,
@@ -39,7 +46,9 @@ class CacheDataLoader(DataLoader):
     ):
         # Underlying loader is optional; if None we operate in cache-only mode
         self.wrapped_loader = wrapped_loader
-        self.cache_dir = Path(cache_dir)
+        # Anchor relative cache_dir paths using shared workspace utility
+        cd = resolve_workspace_path(cache_dir, start=__file__)
+        self.cache_dir = cd
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.max_lookback_days = max_lookback_days
         # Map timeframe string to minutes (used for gap detection). Extend as needed.
@@ -115,6 +124,8 @@ class CacheDataLoader(DataLoader):
         Returns:
             DataFrame indexed by datetime containing at least requested slice (clamped when beyond lookback).
         """
+        logger.info(f"Fetch called for {symbol} {timeframe} start={start} end={end}")
+
         # Migrate any legacy files on first use
         self._migrate_legacy(symbol, timeframe)
 
@@ -131,12 +142,19 @@ class CacheDataLoader(DataLoader):
                 self._drive_sync.sync_down(rolling_path, remote_rel)
             except Exception as e:  # pragma: no cover
                 logger.warning(f"Drive sync_down failed for {rolling_path.name}: {e}")
+
         df_cache = self._read_cache(rolling_path)
+        logger.debug(f"Cache read for {symbol} {timeframe} from {rolling_path}: rows={len(df_cache)}")
 
         if start is None and not df_cache.empty:
-            # Use earliest date from cache if available
-            start_dt = df_cache.index.min().date()
-            logger.info(f"No start date provided. Using earliest cache date: {start_dt}")
+            # Derive earliest date only if we truly have a DatetimeIndex
+            if isinstance(df_cache.index, pd.DatetimeIndex):
+                start_dt = df_cache.index.min().date()
+                logger.info(
+                    f"No start date provided. Using earliest cache date (datetime index detected): {start_dt}"
+                )
+            else:
+                raise ValueError("Start date is None but cache index is not DatetimeIndex; cannot derive start date.")
         else:
             # Use provided start date or default to max lookback from end
             start_dt = self._parse_date(start) if start else end_dt - timedelta(days=self.max_lookback_days)
@@ -151,19 +169,30 @@ class CacheDataLoader(DataLoader):
         else:
             end_date_only = end_dt
         clamp_start_dt = end_date_only - timedelta(days=self.max_lookback_days)
-        fetchable_start_dt = max(start_dt, clamp_start_dt)
+        # Normalize start_dt to a date object if it's a datetime to avoid TypeError comparing
+        # datetime.datetime to datetime.date (observed in production).
+        if isinstance(start_dt, datetime):
+            logger.debug(f"start_dt is datetime; converting to date component for comparison: {start_dt}")
+            start_dt_date = start_dt.date()
+        else:
+            start_dt_date = start_dt
+        fetchable_start_dt = max(start_dt_date, clamp_start_dt)
+        logger.debug(
+            f"Fetchable start date after applying lookback clamp (clamp_start={clamp_start_dt}, raw_start={start_dt_date}): {fetchable_start_dt}"
+        )
 
         # Compute missing segments relative to cache
         missing_segments: List[Tuple[datetime, datetime]] = []
-        timeframe_minutes = self.timeframe_minutes_map.get(timeframe)
 
         if df_cache.empty:
             # Entire requested window considered missing but we only fetch from fetchable_start_dt
             if fetchable_start_dt <= end_date_only:
                 missing_segments.append((fetchable_start_dt, end_date_only))
+                logger.debug("Cache empty; entire fetchable range is missing")
         else:
             cache_start = df_cache.index.min().date()
             cache_end = df_cache.index.max().date()
+            logger.debug(f"Cache received. Cache range: {cache_start} to {cache_end}")
 
             # Left side missing (only fetch if after clamp boundary)
             if fetchable_start_dt < cache_start:
@@ -223,7 +252,13 @@ class CacheDataLoader(DataLoader):
                 )
 
         # Slice to requested user window (even if earlier portion was clamped we don't attempt to fabricate)
-        requested_slice = df_cache[(df_cache.index.date >= start_dt) & (df_cache.index.date <= end_date_only)]
+        if isinstance(df_cache.index, pd.DatetimeIndex):
+            requested_slice = df_cache[(df_cache.index.date >= start_dt_date) & (df_cache.index.date <= end_date_only)]
+        else:
+            logger.warning(
+                "CacheDataLoader.fetch: cache index is not DatetimeIndex; returning full cache without date slice"
+            )
+            requested_slice = df_cache
         # Cloud post-sync (upload if changed)
         if self._drive_sync and self._drive_sync.enable and rolling_path.exists():
             try:
@@ -254,7 +289,12 @@ class CacheDataLoader(DataLoader):
     def _read_cache(self, path: Path) -> pd.DataFrame:
         if path.exists():
             try:
+                logger.debug(
+                    f"_read_cache: reading {path.name} size={path.stat().st_size} bytes"
+                )
                 df = pd.read_parquet(path)
+                # NOTE: We return all columns as-is (including any indicator / feature columns
+                # previously enriched and persisted). _standardize_df only adjusts index & order.
                 return self._standardize_df(df)
             except Exception as e:  # pragma: no cover
                 logger.error(f"Failed reading cache {path}: {e}")

@@ -96,7 +96,7 @@ class TradeManager:
                 return None
             # Convert to size limited by notional
             position_size_cap = max_notional / price
-            position_size = min(raw_position_size, position_size_cap)
+            position_size = int(min(raw_position_size, position_size_cap))
 
             # Determine regime
             regime = self.determine_ticker_regime(market_data, current_idx)
@@ -105,14 +105,16 @@ class TradeManager:
             position = {
                 TradeColumns.ENTRY_IDX.value: current_idx,
                 TradeColumns.ENTRY_TIME.value: time,
-                TradeColumns.ENTRY_PRICE.value: price,
-                TradeColumns.SIZE.value: position_size,
+                TradeColumns.ENTRY_PRICE.value: price,  # will become VWAP of fills as they arrive
+                TradeColumns.SIZE.value: position_size,  # targeted total size
+                TradeColumns.FILLED_QTY.value: 0,  # cumulative executed quantity
                 TradeColumns.STOP_LOSS.value: risk_result.get('stop_loss'),
                 TradeColumns.TAKE_PROFIT.value: risk_result.get('take_profit'),
                 TradeColumns.ACCOUNT_BALANCE.value: self.current_balance,
                 TradeColumns.DIRECTION.value: signal,
                 TradeColumns.TICKER_REGIME.value: regime,
                 TradeColumns.TRAILING_STOP_DATA.value: risk_result.get('trailing_stop_data'),
+                TradeColumns.FILLS.value: [],  # ledger of individual fills
                 'status': self.STATUS_OPEN,
                 'notional': notional_value,
                 'reserved_funds': 0.0
@@ -253,10 +255,9 @@ class TradeManager:
 
         direction = pos[TradeColumns.DIRECTION.value]
         entry_price = pos[TradeColumns.ENTRY_PRICE.value]
-        position_size = pos[TradeColumns.SIZE.value]
-
-        # Calculate PnL
-        pnl = direction * (exit_price - entry_price) * position_size
+        filled_qty = pos.get(TradeColumns.FILLED_QTY.value, pos.get(TradeColumns.SIZE.value, 0))
+        # Calculate PnL based on executed quantity only
+        pnl = direction * (exit_price - entry_price) * filled_qty
         self.current_balance += pnl
         # Release reserved funds for this position
         position_notional = pos.get('notional', 0.0)
@@ -294,6 +295,55 @@ class TradeManager:
             self.current_position = None
 
         return trade
+
+    def record_fill(self, ticker: str, qty: int, price: float, ts: pd.Timestamp) -> Optional[dict]:
+        """Record an execution fill for a position, updating VWAP entry price and filled quantity.
+
+        Args:
+            ticker: Symbol of the position
+            qty: Executed quantity for this fill (positive integer)
+            price: Fill price
+            ts: Timestamp of the fill
+
+        Returns:
+            Updated position dict or None if ticker not found.
+        """
+        pos = self.current_positions.get(ticker)
+        if not pos or qty <= 0:
+            return None
+        fills = pos.get(TradeColumns.FILLS.value)
+        if fills is None:
+            fills = []
+            pos[TradeColumns.FILLS.value] = fills
+        prev_filled = pos.get(TradeColumns.FILLED_QTY.value, 0)
+        new_filled = prev_filled + qty
+        # Append fill record
+        fills.append({'qty': qty, 'price': price, 'ts': ts})
+        pos[TradeColumns.FILLED_QTY.value] = new_filled
+        # Recalculate VWAP entry price from fills (avoid floating drift by recomputing)
+        try:
+            total_notional = sum(f['qty'] * f['price'] for f in fills)
+            vwap = total_notional / new_filled if new_filled > 0 else pos[TradeColumns.ENTRY_PRICE.value]
+            pos[TradeColumns.ENTRY_PRICE.value] = vwap
+        except Exception:
+            logger.warning("fill.vwap.calc.error", extra={"meta": {"ticker": ticker}})
+        # Log adjustment
+        logger.debug(
+            "position.fill.recorded",
+            extra={"meta": {
+                "ticker": ticker,
+                "fill_qty": qty,
+                "fill_price": price,
+                "filled_total": new_filled,
+                "target_size": pos.get(TradeColumns.SIZE.value),
+                "vwap_entry": pos.get(TradeColumns.ENTRY_PRICE.value)
+            }}
+        )
+        # If filled >= target size, we could mark fully filled status (optional)
+        target = pos.get(TradeColumns.SIZE.value, 0)
+        if new_filled >= target > 0:
+            pos['status'] = self.STATUS_OPEN  # remains open; could set 'fully_filled'
+        return pos
 
     def get_available_funds(self) -> float:
         """Return funds available for new positions (current_balance minus reserved funds)."""

@@ -21,7 +21,9 @@ def test_create_entry_position_basic():
     assert pos[TradeColumns.DIRECTION.value] == 1
     assert pos[TradeColumns.STOP_LOSS.value] == 100.0  # entry - offset
     assert pos[TradeColumns.TAKE_PROFIT.value] == 103.0
-    assert pos[TradeColumns.SIZE.value] == 10
+    assert pos[TradeColumns.SIZE.value] == 10  # targeted size
+    assert pos[TradeColumns.FILLED_QTY.value] == 0  # no fills yet under new ledger model
+    assert pos[TradeColumns.FILLS.value] == []
     assert pos[TradeColumns.TICKER_REGIME.value] == Regime.BULL.value
     assert tm.get_current_position() is pos
     assert pos[TradeColumns.TICKER.value] in tm.current_positions
@@ -66,6 +68,7 @@ def test_check_exit_conditions_long_stop_and_take_profit():
     tm = TradeManager(risk_manager=rm, initial_capital=10000)
     df = make_market_data_one_day().iloc[:10]
     pos = tm.create_entry_position(price=101.0, signal=1, time=df.index[0], market_data=df, current_idx=0, initial_stop=100.5)
+    tm.record_fill(pos[TradeColumns.TICKER.value], pos[TradeColumns.SIZE.value], pos[TradeColumns.ENTRY_PRICE.value], df.index[0])
 
     # Simulate a bar hitting stop loss first
     exit_triggered, exit_data = tm.check_exit_conditions(current_price=100.0, high=100.2, low=99.8, time=df.index[1], current_idx=1)
@@ -77,6 +80,7 @@ def test_check_exit_conditions_long_stop_and_take_profit():
 
     # New long position for take profit test
     pos2 = tm.create_entry_position(price=102.0, signal=1, time=df.index[2], market_data=df, current_idx=2, initial_stop=101.0)
+    tm.record_fill(pos2[TradeColumns.TICKER.value], pos2[TradeColumns.SIZE.value], pos2[TradeColumns.ENTRY_PRICE.value], df.index[2])
     exit_triggered, exit_data = tm.check_exit_conditions(current_price=104.0, high=104.2, low=103.5, time=df.index[3], current_idx=3)
     assert exit_triggered is True
     trade = tm.close_position(exit_price=exit_data['exit_price'], time=exit_data['exit_time'], current_idx=exit_data['exit_idx'], exit_reason=exit_data['exit_reason'], ticker=exit_data['ticker'])
@@ -88,6 +92,7 @@ def test_check_exit_conditions_short_stop_and_take_profit():
     tm = TradeManager(risk_manager=rm, initial_capital=10000)
     df = make_market_data_one_day().iloc[:10]
     pos = tm.create_entry_position(price=101.0, signal=-1, time=df.index[0], market_data=df, current_idx=0, initial_stop=101.5)
+    tm.record_fill(pos[TradeColumns.TICKER.value], pos[TradeColumns.SIZE.value], pos[TradeColumns.ENTRY_PRICE.value], df.index[0])
 
     # Simulate stop loss hit (price goes above stop)
     exit_triggered, exit_data = tm.check_exit_conditions(current_price=102.5, high=102.6, low=101.9, time=df.index[1], current_idx=1)
@@ -97,6 +102,7 @@ def test_check_exit_conditions_short_stop_and_take_profit():
 
     # New short position for take profit
     pos2 = tm.create_entry_position(price=100.0, signal=-1, time=df.index[2], market_data=df, current_idx=2, initial_stop=100.5)
+    tm.record_fill(pos2[TradeColumns.TICKER.value], pos2[TradeColumns.SIZE.value], pos2[TradeColumns.ENTRY_PRICE.value], df.index[2])
     exit_triggered, exit_data = tm.check_exit_conditions(current_price=97.5, high=98.0, low=97.4, time=df.index[3], current_idx=3)
     assert exit_triggered is True
     trade = tm.close_position(exit_price=exit_data['exit_price'], time=exit_data['exit_time'], current_idx=exit_data['exit_idx'], exit_reason=exit_data['exit_reason'], ticker=exit_data['ticker'])
@@ -109,6 +115,10 @@ def test_close_position_updates_balance_and_storage():
     df = make_market_data_one_day().iloc[:10]
     pos = tm.create_entry_position(price=101.0, signal=1, time=df.index[0], market_data=df, current_idx=0, initial_stop=100.5)
     balance_before = tm.get_current_balance()
+    # Simulate full fill before closing (ledger based)
+    tm.record_fill(pos[TradeColumns.TICKER.value], pos[TradeColumns.SIZE.value]//2, pos[TradeColumns.ENTRY_PRICE.value], df.index[0])
+    # Partial fill second chunk
+    tm.record_fill(pos[TradeColumns.TICKER.value], pos[TradeColumns.SIZE.value]-pos[TradeColumns.SIZE.value]//2, pos[TradeColumns.ENTRY_PRICE.value], df.index[0])
     trade = tm.close_position(exit_price=103.0, time=df.index[1], current_idx=1, exit_reason='manual')
     assert trade[TradeColumns.PNL.value] > 0
     assert tm.get_current_balance() > balance_before
@@ -138,6 +148,7 @@ def test_reset_clears_state():
     tm = TradeManager(risk_manager=rm, initial_capital=5000)
     df = make_market_data_one_day(base_price=50.0).iloc[:10]
     pos = tm.create_entry_position(price=50.0, signal=1, time=df.index[0], market_data=df, current_idx=0, initial_stop=49.0)
+    tm.record_fill(pos[TradeColumns.TICKER.value], pos[TradeColumns.SIZE.value], pos[TradeColumns.ENTRY_PRICE.value], df.index[0])
     tm.close_position(exit_price=52.0, time=df.index[1], current_idx=1, exit_reason='manual')
     tm.reset()
     assert tm.get_current_balance() == 5000
@@ -156,8 +167,11 @@ def test_multi_ticker_position_management(market_data_sets, risk_manager):
 
     # Create three positions with explicit tickers
     bull_pos = tm.create_entry_position(price=bull_df['open'].iloc[0], signal=1, time=bull_df.index[0], market_data=bull_df, current_idx=0, initial_stop=bull_df['open'].iloc[0]-0.5, ticker='BULL')
+    tm.record_fill('BULL', bull_pos[TradeColumns.SIZE.value], bull_pos[TradeColumns.ENTRY_PRICE.value], bull_df.index[0])
     bear_pos = tm.create_entry_position(price=bear_df['open'].iloc[0], signal=-1, time=bear_df.index[0], market_data=bear_df, current_idx=0, initial_stop=bear_df['open'].iloc[0]+0.5, ticker='BEAR')
+    tm.record_fill('BEAR', bear_pos[TradeColumns.SIZE.value], bear_pos[TradeColumns.ENTRY_PRICE.value], bear_df.index[0])
     side_pos = tm.create_entry_position(price=side_df['open'].iloc[0], signal=1, time=side_df.index[0], market_data=side_df, current_idx=0, initial_stop=side_df['open'].iloc[0]-0.5, ticker='SIDE')
+    tm.record_fill('SIDE', side_pos[TradeColumns.SIZE.value], side_pos[TradeColumns.ENTRY_PRICE.value], side_df.index[0])
 
     assert set(tm.current_positions.keys()) == {'BULL', 'BEAR', 'SIDE'}
     assert bull_pos[TradeColumns.TICKER_REGIME.value] == 'bull'
@@ -221,5 +235,9 @@ def test_available_funds_and_allocation_cap():
         'exit_idx': 2,
         'exit_reason': 'manual'
     }
+    # Fill before closing for ledger accuracy
+    tm.record_fill(pos[TradeColumns.TICKER.value], pos[TradeColumns.SIZE.value], pos[TradeColumns.ENTRY_PRICE.value], df.index[0])
     trade = tm.close_position(exit_price=exit_data['exit_price'], time=exit_data['exit_time'], current_idx=exit_data['exit_idx'], exit_reason=exit_data['exit_reason'], ticker=exit_data['ticker'])
+    if pos2:
+        tm.record_fill(pos2[TradeColumns.TICKER.value], pos2[TradeColumns.SIZE.value], pos2[TradeColumns.ENTRY_PRICE.value], df.index[1])
     assert tm.get_available_funds() == pytest.approx(tm.get_current_balance() - (pos2['notional'] if pos2 else 0.0))

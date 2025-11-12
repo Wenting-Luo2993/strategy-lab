@@ -195,6 +195,7 @@ class DarkTradingOrchestrator:
 
             except Exception as e:
                 logger.error("data.fetch.error", extra={"meta": {"ticker": ticker, "error": str(e)}})
+                raise e
 
         logger.info(
             "data.fetch.summary",
@@ -356,12 +357,65 @@ class DarkTradingOrchestrator:
                         stop_loss=None,
                         exit_flag=exit_flag
                     )
-                # Separate exit signaling: log exit flag distinctly, not as opposite trade signal
+                # Respect exit_flag: log and execute exit immediately for existing position
                 if exit_flag:
+                    exit_reason = getattr(self.strategy, '_last_exit_reason', 'strategy_exit_flag')
                     logger.info(
                         "signal.exit",
-                        extra={"meta": {"ticker": ticker, "bar_time": str(latest_bar.name), "price": float(latest_bar['close'])}}
+                        extra={"meta": {"ticker": ticker, "bar_time": str(latest_bar.name), "price": float(latest_bar['close']), "reason": exit_reason}}
                     )
+                    # Check for open position to close
+                    pos = self.trade_manager.current_positions.get(ticker)
+                    if pos:
+                        direction = pos.get(TradeColumns.DIRECTION.value)
+                        size = int(pos.get(TradeColumns.FILLED_QTY.value, pos.get(TradeColumns.SIZE.value, 0)))
+                        if size > 0 and direction in (1, -1):
+                            side = 'sell' if direction == 1 else 'buy'
+                            exit_order = {
+                                'ticker': ticker,
+                                'side': side,
+                                'qty': size,
+                                'order_type': 'market',
+                                'timestamp': latest_bar.name,
+                            }
+                            logger.info('exit.flag.execute', extra={'meta': {'ticker': ticker, 'side': side, 'qty': size, 'reason': exit_reason, 'bar_time': str(latest_bar.name)}})
+                            if not self.cfg.dry_run:
+                                try:
+                                    response = self.exchange.submit_order(exit_order)
+                                    logger.info('exit.flag.executed', extra={'meta': {
+                                        'ticker': ticker,
+                                        'status': response.get('status'),
+                                        'fill_price': response.get('avg_fill_price'),
+                                        'filled_qty': response.get('filled_qty'),
+                                        'order_id': response.get('order_id'),
+                                        'reason': exit_reason
+                                    }})
+                                    self._record_trade(exit_order, response)
+                                    self.orders_executed_this_cycle += 1
+                                    realized_price = response.get('avg_fill_price') or float(latest_bar['close'])
+                                    closed = self.trade_manager.close_position(
+                                        exit_price=realized_price,
+                                        time=latest_bar.name,
+                                        current_idx=len(df) - 1,
+                                        exit_reason=exit_reason,
+                                        ticker=ticker
+                                    )
+                                    if closed:
+                                        logger.info('position.closed', extra={'meta': {'ticker': ticker, 'exit_price': realized_price, 'pnl': closed.get(TradeColumns.PNL.value), 'reason': exit_reason}})
+                                except Exception as e:
+                                    logger.warning('exit.flag.error', extra={'meta': {'ticker': ticker, 'error': str(e), 'reason': exit_reason}})
+                            else:
+                                # Dry run mode: simulate close
+                                logger.info('exit.flag.dry_run', extra={'meta': {'ticker': ticker, 'side': side, 'qty': size, 'reason': exit_reason}})
+                                closed = self.trade_manager.close_position(
+                                    exit_price=float(latest_bar['close']),
+                                    time=latest_bar.name,
+                                    current_idx=len(df) - 1,
+                                    exit_reason=exit_reason,
+                                    ticker=ticker
+                                )
+                                if closed:
+                                    logger.info('position.closed', extra={'meta': {'ticker': ticker, 'exit_price': float(latest_bar['close']), 'pnl': closed.get(TradeColumns.PNL.value), 'reason': exit_reason, 'dry_run': True}})
 
             except Exception as e:
                 logger.error("signal.processing.error", extra={"meta": {"ticker": ticker, "error": str(e)}})
@@ -402,7 +456,7 @@ class DarkTradingOrchestrator:
                 exit_price = exit_data['exit_price']
                 exit_reason = exit_data['exit_reason']
                 direction = pos.get(TradeColumns.DIRECTION.value)
-                size = pos.get(TradeColumns.SIZE.value)
+                size = pos.get(TradeColumns.FILLED_QTY.value, pos.get(TradeColumns.SIZE.value))
                 side = 'sell' if direction == 1 else 'buy'  # flatten position
                 logger.info(
                     'exit.signal',
@@ -630,12 +684,13 @@ class DarkTradingOrchestrator:
                     # If we already have a position for ticker, accumulate (simple aggregation)
                     existing = self.trade_manager.current_positions.get(ticker)
                     if not existing:
-                        # Create a synthetic position record similar to TradeManager.create_entry_position output
+                        # Create a base position record (target size = order qty); fills start at 0 then ledger updated
                         pos = {
                             TradeColumns.ENTRY_IDX.value: current_idx,
                             TradeColumns.ENTRY_TIME.value: order.get("timestamp"),
-                            TradeColumns.ENTRY_PRICE.value: fill_price,
-                            TradeColumns.SIZE.value: filled_qty,
+                            TradeColumns.ENTRY_PRICE.value: fill_price,  # initial price; will become VWAP
+                            TradeColumns.SIZE.value: order.get("qty"),
+                            TradeColumns.FILLED_QTY.value: 0,
                             TradeColumns.DIRECTION.value: direction,
                             TradeColumns.TICKER.value: ticker,
                             TradeColumns.STOP_LOSS.value: None,
@@ -643,18 +698,17 @@ class DarkTradingOrchestrator:
                             TradeColumns.ACCOUNT_BALANCE.value: self.trade_manager.current_balance,
                             TradeColumns.TICKER_REGIME.value: None,
                             TradeColumns.TRAILING_STOP_DATA.value: None,
+                            TradeColumns.FILLS.value: []
                         }
                         self.trade_manager.current_positions[ticker] = pos
                         self.trade_manager.current_position = pos
-                        logger.debug("position.opened", extra={"meta": {"ticker": ticker, "size": filled_qty, "entry_price": fill_price}})
-                    else:
-                        # Adjust weighted average entry and size
-                        total_size = existing[TradeColumns.SIZE.value] + filled_qty
-                        if total_size > 0:
-                            existing_price = existing[TradeColumns.ENTRY_PRICE.value]
-                            existing[TradeColumns.ENTRY_PRICE.value] = (existing_price * existing[TradeColumns.SIZE.value] + fill_price * filled_qty) / total_size
-                            existing[TradeColumns.SIZE.value] = total_size
-                            logger.debug("position.adjusted", extra={"meta": {"ticker": ticker, "new_size": total_size, "avg_entry": existing[TradeColumns.ENTRY_PRICE.value]}})
+                        logger.debug("position.opened", extra={"meta": {"ticker": ticker, "target_size": order.get('qty'), "initial_fill": filled_qty, "entry_price": fill_price}})
+                    # Record the new fill (updates VWAP + filled quantity)
+                    ts_fill = response.get("timestamp") or order.get("timestamp")
+                    self.trade_manager.record_fill(ticker, int(filled_qty), float(fill_price), ts_fill)
+                    ledger_pos = self.trade_manager.current_positions.get(ticker)
+                    if ledger_pos:
+                        logger.debug("position.fill.ledger", extra={"meta": {"ticker": ticker, "filled_qty": ledger_pos.get(TradeColumns.FILLED_QTY.value), "target_size": ledger_pos.get(TradeColumns.SIZE.value), "vwap": ledger_pos.get(TradeColumns.ENTRY_PRICE.value)}})
                     # Apply/update risk parameters if available
                     if hasattr(self.risk_manager, 'apply') and current_idx is not None:
                         signal_series = pd.Series({
@@ -792,7 +846,7 @@ class DarkTradingOrchestrator:
                         "orders": self.orders_executed_this_cycle,
                         "cash": round(acct.get('cash', 0), 2),
                         "equity": round(acct.get('equity', 0), 2),
-                        "positions": len(self.trade_manager.current_positions)
+                        "positions": self.trade_manager.current_positions
                     }
                 },
             )

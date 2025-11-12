@@ -1,13 +1,17 @@
 import pandas as pd
 from .base import StrategyBase
 from ..indicators import calculate_orb_levels, IndicatorFactory
+from src.utils.logger import get_logger
 
 
 class ORBStrategy(StrategyBase):
     """Opening Range Breakout (ORB) Strategy."""
 
-    def __init__(self, breakout_window=5, strategy_config=None):
-        super().__init__(strategy_config=strategy_config)
+    def __init__(self, breakout_window=5, strategy_config=None, logger=None):
+        # Provide a strategy-specific logger name so base + child logs coalesce
+        if logger is None:
+            logger = get_logger("ORBStrategy")
+        super().__init__(strategy_config=strategy_config, logger=logger)
         self.breakout_window = breakout_window  # in minutes (assuming intraday data)
 
     def initial_stop_value(self, entry_price, is_long, row=None):
@@ -89,14 +93,38 @@ class ORBStrategy(StrategyBase):
                         raise ValueError("initial_stop should never be None after entry; ensure OR levels are present.")
                     signals.iloc[i] = breakout
                     entry_day = current_day
+                    self.logger.info(
+                        f"[{str(df.index[i])}] entry.flag",
+                        extra={"meta": {
+                            "ts": str(df.index[i]),
+                            "signal": breakout,
+                            "close": close,
+                            "entry_price": entry_price,
+                            "take_profit": take_profit,
+                            "initial_stop": initial_stop,
+                            "orb_low": df.iloc[i].get("ORB_Low"),
+                            "orb_high": df.iloc[i].get("ORB_High"),
+                            "reason": "orb_breakout.long" if breakout == 1 else "orb_breakout.short"
+                        }}
+                    )
             else:
-                if self.check_exit(in_position, close, take_profit, i, df, initial_stop=initial_stop):
+                should_exit, reason = self.check_exit(in_position, close, take_profit, i, df, initial_stop=initial_stop)
+                if should_exit:
                     signals.iloc[i] = -in_position
                     in_position = 0
                     entry_price = None
                     take_profit = None
                     initial_stop = None
                     # Do NOT clear entry_day to enforce single entry per day
+                    self.logger.info(
+                        f"[{str(df.index[i])}] exit.signal",
+                        extra={"meta": {
+                            "ts": str(df.index[i]),
+                            "signal": signals.iloc[i],
+                            "reason": reason,
+                            "close": close
+                        }}
+                    )
         return signals
 
     # Incremental generation: returns (entry_signal, exit_signal) for the latest bar only.
@@ -163,14 +191,40 @@ class ORBStrategy(StrategyBase):
                     raise ValueError("initial_stop should never be None for incremental entry; OR levels missing.")
                 entry_signal = breakout
                 self._entry_day = current_day
+                self.logger.info(
+                    f"[{str(df.index[last_idx])}] entry.flag.incremental",
+                    extra={"meta": {
+                        "ts": str(df.index[last_idx]),
+                        "signal": entry_signal,
+                        "close": close,
+                        "entry_price": self._entry_price,
+                        "take_profit": self._take_profit,
+                        "initial_stop": self._initial_stop,
+                        "orb_low": row.get("ORB_Low"),
+                        "orb_high": row.get("ORB_High"),
+                        "reason": "orb_breakout.long" if breakout == 1 else "orb_breakout.short"
+                    }}
+                )
         elif self._in_position != 0:
             # Evaluate exit only on latest bar
-            if self.check_exit(self._in_position, close, self._take_profit, last_idx, df, initial_stop=self._initial_stop):
+            should_exit, reason = self.check_exit(self._in_position, close, self._take_profit, last_idx, df, initial_stop=self._initial_stop)
+            if should_exit:
                 exit_flag = True
+                # Persist reason so orchestrator can act on it when respecting exit_flag
+                self._last_exit_reason = reason
                 # Reset state
                 self._in_position = 0
                 self._entry_price = None
                 self._take_profit = None
                 self._initial_stop = None
                 # Do NOT clear _entry_day to block further entries same day
+                self.logger.info(
+                    f"[{str(df.index[last_idx])}] exit.flag.incremental",
+                    extra={"meta": {
+                        "ts": str(df.index[last_idx]),
+                        "signal": -1 if breakout == 1 else 1,  # generic notation not used downstream here
+                        "reason": reason,
+                        "close": close
+                    }}
+                )
         return entry_signal, exit_flag
