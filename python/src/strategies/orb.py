@@ -127,14 +127,33 @@ class ORBStrategy(StrategyBase):
                     )
         return signals
 
-    # Incremental generation: returns (entry_signal, exit_signal) for the latest bar only.
-    # entry_signal: 1 (long entry), -1 (short entry), 0 (no new entry)
-    # exit_signal: True if an exit should occur on this bar, else False
-    def generate_signal_incremental(self, df: pd.DataFrame) -> tuple[int, bool]:
+
+    def get_last_exit_reason(self, ticker: str) -> str | None:
+        if hasattr(self, '_last_exit_reasons'):
+            return self._last_exit_reasons.get(ticker)
+        return getattr(self, '_last_exit_reason', None)
+
+    # --- New Stateless Context-Based API ----------------------------------------------------
+    def generate_signal_incremental_ctx(self, df: pd.DataFrame, position_ctx: dict | None) -> tuple[int, bool, dict | None]:
+        """Stateless incremental signal evaluation using external position context.
+
+        Args:
+            df: DataFrame containing up-to-date bars (indicators may be appended here).
+            position_ctx: None if flat; otherwise dict with keys:
+                in_position (int: -1/0/1), entry_price (float), take_profit (float|None),
+                initial_stop (float|None), entry_day (date)
+
+        Returns:
+            (entry_signal, exit_flag, new_ctx_or_existing_or_none)
+            entry_signal: 1 (long), -1 (short), 0 (no new entry)
+            exit_flag: True if an exit should occur now for this context
+            context: New context on entry, same context if holding, or None if flat/exit
+        """
         if df.empty:
-            return 0, False
-        # Ensure indicators present for last bar evaluation
-        if "ORB_Breakout" not in df.columns:
+            return 0, False, position_ctx
+
+        # Ensure ORB indicators present for latest bar
+        if "ORB_Breakout" not in df.columns or ("ORB_Low" not in df.columns or "ORB_High" not in df.columns):
             start_time = self.strategy_config.orb_config.start_time if self.strategy_config else "09:30"
             duration_minutes = int(self.strategy_config.orb_config.timeframe) if self.strategy_config else 5
             body_pct = self.strategy_config.orb_config.body_breakout_percentage if self.strategy_config else 0.5
@@ -145,86 +164,101 @@ class ORBStrategy(StrategyBase):
                     'body_pct': body_pct
                 }}
             ])
-        else:
-            # Ensure ORB_Low/High present when Breakout column already exists (subset slice edge case)
-            if "ORB_Low" not in df.columns or "ORB_High" not in df.columns:
-                start_time = self.strategy_config.orb_config.start_time if self.strategy_config else "09:30"
-                duration_minutes = int(self.strategy_config.orb_config.timeframe) if self.strategy_config else 5
-                body_pct = self.strategy_config.orb_config.body_breakout_percentage if self.strategy_config else 0.5
-                df = IndicatorFactory.apply(df, [
-                    {'name': 'orb_levels', 'params': {
-                        'start_time': start_time,
-                        'duration_minutes': duration_minutes,
-                        'body_pct': body_pct
-                    }}
-                ])
+
         last_idx = len(df) - 1
         row = df.iloc[last_idx]
         breakout = row.get("ORB_Breakout", 0)
         close = row.get("close")
-        # Track persistent position state on the strategy instance
-        if not hasattr(self, '_in_position'):
-            self._in_position = 0
-            self._entry_price = None
-            self._take_profit = None
-            self._initial_stop = None
-        # Track single-entry-per-day state
-        if not hasattr(self, '_entry_day'):
-            self._entry_day = None
-        entry_signal = 0
-        exit_flag = False
-        current_day = df.index[last_idx].date()
-        # Allow a new entry only if day advanced since last entry (and we are flat)
-        if self._entry_day is not None and current_day != self._entry_day and self._in_position == 0:
-            self._entry_day = None
-        if self._in_position == 0 and breakout in (1, -1):
-            # Enforce single entry per trading day
-            if self._entry_day is None:
-                self._in_position = breakout
-                self._entry_price = close
+        current_day = row.name.date()
+
+        # Re-entry configuration: simple boolean toggle
+        allow_reentry = False
+        try:
+            if self.strategy_config and getattr(self.strategy_config, 'orb_config', None):
+                # Prefer new boolean; fall back to legacy max_entries_per_day if present (>1 implies allow)
+                if hasattr(self.strategy_config.orb_config, 'allow_same_day_reentry'):
+                    allow_reentry = bool(getattr(self.strategy_config.orb_config, 'allow_same_day_reentry'))
+                elif hasattr(self.strategy_config.orb_config, 'max_entries_per_day'):
+                    allow_reentry = getattr(self.strategy_config.orb_config, 'max_entries_per_day') > 1
+        except Exception:
+            allow_reentry = False
+
+        # Flat or context indicates flat: evaluate potential entry while enforcing per-day limit
+        if position_ctx is None or position_ctx.get('in_position', 0) == 0:
+            prior_entry_day = position_ctx.get('entry_day') if position_ctx else None
+            # Block re-entry if same day and flag disabled
+            if prior_entry_day == current_day and not allow_reentry:
+                return 0, False, position_ctx
+            if breakout in (1, -1):
                 is_long = breakout == 1
-                self._take_profit = self.take_profit_value(self._entry_price, is_long=is_long, row=row)
-                if self._take_profit is None:
+                take_profit = self.take_profit_value(close, is_long=is_long, row=row)
+                if take_profit is None:
                     raise ValueError("take_profit should never be None for incremental entry; check indicators/config.")
-                self._initial_stop = self.initial_stop_value(self._entry_price, is_long=is_long, row=row)
-                if self._initial_stop is None:
+                initial_stop = self.initial_stop_value(close, is_long=is_long, row=row)
+                if initial_stop is None:
                     raise ValueError("initial_stop should never be None for incremental entry; OR levels missing.")
-                entry_signal = breakout
-                self._entry_day = current_day
+                new_ctx = {
+                    'in_position': breakout,
+                    'entry_price': close,
+                    'take_profit': take_profit,
+                    'initial_stop': initial_stop,
+                    'entry_day': current_day,
+                    # For compatibility keep entries_today if upstream still references it
+                    'entries_today': 1
+                }
+                self._last_exit_reason = None
                 self.logger.info(
-                    f"[{str(df.index[last_idx])}] entry.flag.incremental",
+                    f"[{str(row.name)}] entry.flag.incremental.ctx",
                     extra={"meta": {
-                        "ts": str(df.index[last_idx]),
-                        "signal": entry_signal,
+                        "signal": breakout,
                         "close": close,
-                        "entry_price": self._entry_price,
-                        "take_profit": self._take_profit,
-                        "initial_stop": self._initial_stop,
+                        "entry_price": close,
+                        "take_profit": take_profit,
+                        "initial_stop": initial_stop,
                         "orb_low": row.get("ORB_Low"),
                         "orb_high": row.get("ORB_High"),
+                        "allow_same_day_reentry": allow_reentry,
                         "reason": "orb_breakout.long" if breakout == 1 else "orb_breakout.short"
                     }}
                 )
-        elif self._in_position != 0:
-            # Evaluate exit only on latest bar
-            should_exit, reason = self.check_exit(self._in_position, close, self._take_profit, last_idx, df, initial_stop=self._initial_stop)
+                return breakout, False, new_ctx
+            # Remain flat; preserve prior context (could contain prior_entry_day for blocking)
+            return 0, False, position_ctx
+
+        # Holding a position: evaluate exit
+        in_pos = position_ctx.get('in_position', 0)
+        if in_pos != 0:
+            should_exit, reason = self.check_exit(
+                in_pos,
+                close,
+                position_ctx.get('take_profit'),
+                last_idx,
+                df,
+                initial_stop=position_ctx.get('initial_stop')
+            )
             if should_exit:
-                exit_flag = True
-                # Persist reason so orchestrator can act on it when respecting exit_flag
                 self._last_exit_reason = reason
-                # Reset state
-                self._in_position = 0
-                self._entry_price = None
-                self._take_profit = None
-                self._initial_stop = None
-                # Do NOT clear _entry_day to block further entries same day
                 self.logger.info(
-                    f"[{str(df.index[last_idx])}] exit.flag.incremental",
+                    f"[{str(row.name)}] exit.flag.incremental.ctx",
                     extra={"meta": {
-                        "ts": str(df.index[last_idx]),
-                        "signal": -1 if breakout == 1 else 1,  # generic notation not used downstream here
+                        "signal": -in_pos,
                         "reason": reason,
                         "close": close
                     }}
                 )
-        return entry_signal, exit_flag
+                # Preserve entry_day to block further entries this day
+                hold_ctx = {
+                    'in_position': 0,
+                    'entry_price': None,
+                    'take_profit': None,
+                    'initial_stop': None,
+                    # Preserve entry_day only if we disallow re-entry; else clear it so fresh entries allowed
+                    'entry_day': position_ctx.get('entry_day') if not allow_reentry else None,
+                    'entries_today': 1
+                }
+                return 0, True, hold_ctx
+            # Still holding; enforce single entry per day via entry_day logic externally
+            return 0, False, position_ctx
+
+        # Position context claims flat but we treat it as None now
+        return 0, False, None

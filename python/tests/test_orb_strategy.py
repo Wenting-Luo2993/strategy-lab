@@ -74,9 +74,10 @@ def test_orb_strategy_adds_indicators_and_generates_entry(ticker):
         pytest.skip(f"Missing OHLC columns in cached data for {ticker}")
     strategy = ORBStrategy(strategy_config=build_default_orb_strategy_config())
     entries = 0
+    position_ctx = None
     for i in range(len(day_df)):
         window = day_df.iloc[: i + 1]
-        entry_signal, exit_flag = strategy.generate_signal_incremental(window)
+        entry_signal, exit_flag, position_ctx = strategy.generate_signal_incremental_ctx(window, position_ctx)
         if entry_signal != 0:
             entries += 1
     # Indicators should have been added lazily
@@ -91,21 +92,18 @@ def test_orb_strategy_initial_stop_and_take_profit_assignment():
         pytest.skip("No cached data found for AAPL")
     day_df = _first_trading_day(df)
     strategy = ORBStrategy(strategy_config=build_default_orb_strategy_config())
-    initial_stop_values = []
-    take_profit_values = []
-    # Walk through bars until first entry established
+    captured_ctx = None
+    position_ctx = None
     for i in range(len(day_df)):
         window = day_df.iloc[: i + 1]
-        entry_signal, exit_flag = strategy.generate_signal_incremental(window)
+        entry_signal, exit_flag, position_ctx = strategy.generate_signal_incremental_ctx(window, position_ctx)
         if entry_signal != 0:
-            # Capture assigned stops
-            initial_stop_values.append(strategy._initial_stop)
-            take_profit_values.append(strategy._take_profit)
+            captured_ctx = position_ctx
             break
-    if not initial_stop_values:
+    if not captured_ctx:
         pytest.skip("No ORB entry occurred on first trading day for AAPL; cannot verify stops")
-    assert initial_stop_values[0] is None or isinstance(initial_stop_values[0], (int, float)), "Initial stop not numeric or None"
-    assert take_profit_values[0] is None or isinstance(take_profit_values[0], (int, float)), "Take profit not numeric or None"
+    assert captured_ctx.get('initial_stop') is None or isinstance(captured_ctx.get('initial_stop'), (int, float)), "Initial stop not numeric or None"
+    assert captured_ctx.get('take_profit') is None or isinstance(captured_ctx.get('take_profit'), (int, float)), "Take profit not numeric or None"
 
 
 def test_orb_strategy_exit_flag_eventually_triggers_eod():
@@ -114,17 +112,18 @@ def test_orb_strategy_exit_flag_eventually_triggers_eod():
         pytest.skip("No cached data found for AAPL")
     day_df = _first_trading_day(df)
     strategy = ORBStrategy(strategy_config=build_default_orb_strategy_config())
+    position_ctx = None
     entered = False
     exit_triggered = False
     for i in range(len(day_df)):
         window = day_df.iloc[: i + 1]
-        entry_signal, exit_flag = strategy.generate_signal_incremental(window)
+        entry_signal, exit_flag, position_ctx = strategy.generate_signal_incremental_ctx(window, position_ctx)
         if entry_signal != 0:
             entered = True
         if exit_flag:
             exit_triggered = True
+            position_ctx = None
             break
     if not entered:
         pytest.skip("No entry; cannot test exit logic")
-    # We allow that an exit may occur via EOD logic or stop/take-profit
     assert exit_triggered, "Exit flag did not trigger before end of first trading day"

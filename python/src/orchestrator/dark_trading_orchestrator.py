@@ -96,6 +96,8 @@ class DarkTradingOrchestrator:
 
         self._init_results_files()
         self._configure_auto_stop()
+        # Persistent per-ticker stateless strategy contexts (tracks per-day gating)
+        self._strategy_ctx_map: Dict[str, Dict[str, Any]] = {}
 
     def _init_results_files(self) -> None:
         """Initialize result CSV files with headers."""
@@ -268,9 +270,37 @@ class DarkTradingOrchestrator:
                         # df = IndicatorFactory.apply(df, indicators)
                         # logger.debug("indicators.applied", extra={"meta": {"ticker": ticker, "indicators": [i['name'] for i in indicators]}})
 
-                # Incremental signal generation
+                # Incremental signal generation (stateless context path preferred)
                 latest_bar = df.iloc[-1]
-                entry_signal, exit_flag = self.strategy.generate_signal_incremental(df)
+                from src.config.columns import TradeColumns
+                tm_pos = self.trade_manager.current_positions.get(ticker)
+                existing_ctx = self._strategy_ctx_map.get(ticker)
+                position_ctx = None
+                if tm_pos:
+                    direction = tm_pos.get(TradeColumns.DIRECTION.value, 0)
+                    entry_price = tm_pos.get(TradeColumns.ENTRY_PRICE.value)
+                    take_profit = tm_pos.get(TradeColumns.TAKE_PROFIT.value)
+                    initial_stop = tm_pos.get(TradeColumns.STOP_LOSS.value)
+                    entry_time = tm_pos.get(TradeColumns.ENTRY_TIME.value)
+                    entry_day = None
+                    try:
+                        if entry_time is not None and hasattr(entry_time, 'date'):
+                            entry_day = entry_time.date()
+                    except Exception:
+                        entry_day = None
+                    position_ctx = {
+                        'in_position': direction,
+                        'entry_price': entry_price,
+                        'take_profit': take_profit,
+                        'initial_stop': initial_stop,
+                        'entry_day': entry_day
+                    }
+                elif existing_ctx:
+                    # Preserve flat-day context (last entry_day) even when no open position
+                    position_ctx = existing_ctx
+                entry_signal, exit_flag, new_ctx = self.strategy.generate_signal_incremental_ctx(df, position_ctx)
+                # Persist returned context regardless of signal (may be None)
+                self._strategy_ctx_map[ticker] = new_ctx if new_ctx is not None else existing_ctx
                 # Record diagnostics even when no entry (signal may be 0)
                 if entry_signal != 0:
                         signal_cycle_meta["with_signal"] += 1
@@ -343,7 +373,20 @@ class DarkTradingOrchestrator:
                                     "timestamp": latest_bar.name,
                                 }
                                 self._execute_signal(order, market_data=df, current_idx=len(df)-1)
-                                # order execution already done; diagnostics captured via helper above
+                                # Persist ORB-specific context values onto position after initial fill creation
+                                if new_ctx:
+                                    try:
+                                        pos_ref = self.trade_manager.current_positions.get(ticker)
+                                        if pos_ref:
+                                            if new_ctx.get('take_profit') is not None:
+                                                pos_ref[TradeColumns.TAKE_PROFIT.value] = new_ctx.get('take_profit')
+                                            if new_ctx.get('initial_stop') is not None:
+                                                pos_ref[TradeColumns.STOP_LOSS.value] = new_ctx.get('initial_stop')
+                                                pos_ref[TradeColumns.INITIAL_STOP.value] = new_ctx.get('initial_stop')
+                                        # Update persistent context after successful entry
+                                        self._strategy_ctx_map[ticker] = new_ctx
+                                    except Exception as e:
+                                        logger.debug('position.ctx.persist.error', extra={'meta': {'ticker': ticker, 'error': str(e)}})
                 else:
                     # Record a holding/no-signal bar for visibility
                     self._record_signal_diagnostic(
@@ -359,7 +402,8 @@ class DarkTradingOrchestrator:
                     )
                 # Respect exit_flag: log and execute exit immediately for existing position
                 if exit_flag:
-                    exit_reason = getattr(self.strategy, '_last_exit_reason', 'strategy_exit_flag')
+                    # Retrieve per-ticker exit reason if strategy supports it (multi-ticker safe)
+                    exit_reason = getattr(self.strategy, 'get_last_exit_reason', lambda t: getattr(self.strategy, '_last_exit_reason', 'strategy_exit_flag'))(ticker) or 'strategy_exit_flag'
                     logger.info(
                         "signal.exit",
                         extra={"meta": {"ticker": ticker, "bar_time": str(latest_bar.name), "price": float(latest_bar['close']), "reason": exit_reason}}

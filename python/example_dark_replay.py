@@ -21,8 +21,8 @@ from src.visualization.signal_plots import plot_signals_for_run
 
 def main():
     logging.basicConfig(level=logging.INFO)
-    symbols = ["AAPL"]
-    runId = "verify04"
+    symbols = ["AAPL", "NVDA", "AMZN"]
+    runId = "verify06"
 
     # Replay loader (cache-only)
     replay_loader = DataReplayCacheDataLoader(

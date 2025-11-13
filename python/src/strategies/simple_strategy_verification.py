@@ -44,17 +44,19 @@ strategy = ORBStrategy(breakout_window=5, strategy_config=build_orb_atr_strategy
 entry_signals: list[int] = []
 exit_flags: list[int] = []
 
+position_ctx = None
 for i in range(len(df)):
     window = df.iloc[: i + 1]
-    entry_signal, exit_flag = strategy.generate_signal_incremental(window)
+    entry_signal, exit_flag, position_ctx = strategy.generate_signal_incremental_ctx(window, position_ctx)
     entry_signals.append(int(entry_signal or 0))
     exit_flags.append(int(exit_flag or 0))
     latest = window.iloc[-1]
+    in_pos = position_ctx.get('in_position') if position_ctx else 0
+    tp = position_ctx.get('take_profit') if position_ctx else None
+    istop = position_ctx.get('initial_stop') if position_ctx else None
     print(
         f"[{ticker}][{latest.name}] close={latest['close']:.2f} breakout={latest.get('ORB_Breakout', None)} "
-        f"entry_signal={entry_signal} exit_flag={exit_flag} "
-        f"in_pos={getattr(strategy, '_in_position', 0)} TP={getattr(strategy, '_take_profit', None)} "
-        f"STOP={getattr(strategy, '_initial_stop', None)}"
+        f"entry_signal={entry_signal} exit_flag={exit_flag} in_pos={in_pos} TP={tp} STOP={istop}"
     )
 
 # Append collected signals to DataFrame

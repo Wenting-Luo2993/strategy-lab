@@ -58,16 +58,25 @@ def verify_replay(strategy: ORBStrategy, loader: DataReplayCacheDataLoader, tick
         if current_len > processed:
             for i in range(processed, current_len):
                 window = df_current.iloc[: i + 1]
-                entry_signal, exit_flag = strategy.generate_signal_incremental(window)
+                position_ctx = None
+                pos_ref = strategy._last_position_ctx if hasattr(strategy, '_last_position_ctx') else None
+                if pos_ref:
+                    position_ctx = pos_ref
+                entry_signal, exit_flag, new_ctx = strategy.generate_signal_incremental_ctx(window, position_ctx)
                 ts = window.index[-1]
                 signals[ts] = entry_signal
                 exits[ts] = 1 if exit_flag else 0
                 if entry_signal != 0:
                     entry_count += 1
+                    strategy._last_position_ctx = new_ctx  # persist active context
                     if verbose:
                         logger.info("signal.entry", extra={"meta": {"ticker": ticker, "bar": str(ts), "signal": entry_signal}})
-                if exit_flag:
+                elif new_ctx is not None and position_ctx is None:
+                    # new position opened with entry_signal 0? (should not happen) safeguard
+                    strategy._last_position_ctx = new_ctx
+                elif exit_flag:
                     exit_count += 1
+                    strategy._last_position_ctx = None
                     if verbose:
                         logger.info("signal.exit_flag", extra={"meta": {"ticker": ticker, "bar": str(ts)}})
             processed = current_len
@@ -97,10 +106,10 @@ def incremental_apply(strategy: ORBStrategy, df: pd.DataFrame) -> pd.DataFrame:
     """
     sig_col = []
     exit_col = []
+    position_ctx = None
     for i in range(len(df)):
         window = df.iloc[: i + 1]
-        entry_signal, exit_flag = strategy.generate_signal_incremental(window)
-        # We record only the entry signal (not opposite exit) per design
+        entry_signal, exit_flag, position_ctx = strategy.generate_signal_incremental_ctx(window, position_ctx)
         sig_col.append(entry_signal)
         exit_col.append(1 if exit_flag else 0)
 
