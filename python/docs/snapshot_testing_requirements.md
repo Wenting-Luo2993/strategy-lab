@@ -55,22 +55,29 @@ Inputs:
 - Validate data completeness (no missing essential columns).
 - Fail fast if any ticker/date missing.
 
-## 6. Snapshot Generation Utility
+## 6. Snapshot Generation Mechanics
 
-Script Name: `scripts/generate_snapshots.py`.
-Modes:
+Primary mechanism: Pytest custom CLI flags drive snapshot creation and updates during test runs. A standalone script (`scripts/generate_snapshots.py`) is optional for bulk/CI operations but not required for normal workflow.
 
-- Default: Validate (compare current outputs vs existing snapshots).
-- Update: Regenerate snapshots (requires `UPDATE_SNAPSHOTS=1`).
-  Inputs:
+Pytest Flags (defined in `conftest.py` or plugin):
+
+- `--auto-create-snapshots` – create missing snapshots for any test invoking `assert_snapshot`.
+- `--update-snapshots` – overwrite existing snapshots with current outputs (baseline regeneration).
+- `--snapshot-visualize` – emit HTML diff artifacts for mismatches.
+- `--snapshot-prune` – after session, list (and optionally delete with confirmation) stale snapshot files not touched by any test.
+
+Optional Script Inputs (if script retained):
+
 - `--fixture <fixture_name>` or `--fixture-path`.
 - `--strategies orb-strategy ...` (supports multiple).
-- `--risk-profile <name>` (maps to risk config).
-- `--orchestrator-config <path>` (optional; if absent only strategy-level snapshots).
-  Outputs:
-- `signals_<strategy>_<ticker>.snapshot.csv` per fixture.
-- `trades_<strategy>_<ticker>.snapshot.csv` (when orchestrator + risk provided).
-- Sidecar `snapshot_metadata.json` with: commit, created_at, generator_version, config_hash, fixture_name, strategy list, risk config summary, orchestrator settings.
+- `--risk-profile <name>`.
+- `--orchestrator-config <path>`.
+
+Outputs:
+
+- `signals__<fixture>__<strategy>__<test_context>.snapshot.csv`
+- `trades__<fixture>__<strategy>__<risk_profile>__<test_context>.snapshot.csv`
+- `snapshot_metadata.json` containing: commit, created_at, generator_version, config_hash, fixture_name, strategies, risk config summary, orchestrator settings.
 
 ## 7. Snapshot File Format
 
@@ -130,16 +137,17 @@ Existing tests to augment:
 ## 11. Update Workflow
 
 1. Developer changes logic.
-2. Run tests; see diff failure.
-3. Review diff; if intentional: `set UPDATE_SNAPSHOTS=1` (Windows PowerShell: `$env:UPDATE_SNAPSHOTS=1`) then rerun generation script.
-4. Commit updated snapshots + metadata.
-5. CI ensures `UPDATE_SNAPSHOTS` not set but snapshots match.
+2. Run tests normally: `pytest -k orb_strategy` -> potential FAIL with diff if behavior changed.
+3. Review diff; if intentional regenerate: `pytest --update-snapshots -k orb_strategy` (overwrites affected snapshots).
+4. Re-run without flag: `pytest -k orb_strategy` -> PASS.
+5. Commit updated snapshots + metadata; CI runs without update flag and must PASS.
 
 ## 12. CI Governance & Pre-Commit Integration
 
-- Pre-commit hook runs snapshot validation for changed fixtures/strategies (fast subset) before allowing commits.
-- CI full run: Validate all snapshots; fail if any differs (git diff) unless running in update mode explicitly.
-- Optional artifact: diff report (tabular + HTML visualization when flag enabled).
+- Pre-commit hook: runs `pytest --maxfail=1 -q` (or targeted subset) without snapshot flags; any diff fails commit.
+- CI validation job: `pytest` (no update/auto-create flags) must pass; diffs cause failure.
+- Optional regeneration job (manual trigger) can run `pytest --update-snapshots` then commit via PR if approved.
+- HTML diff artifacts produced only if `--snapshot-visualize` specified in a diagnostic run.
 
 ## 13. Edge Cases & Considerations
 
@@ -195,10 +203,13 @@ Implementation tasks have been moved to `snapshot_testing_todo.md` to keep this 
 ## 21. Example Workflow (Developer)
 
 1. Extract fixture: `python scripts/extract_fixture_data.py --tickers AAPL NVDA --start-date 2025-11-07 --fixture-name orb_smoke`
-2. Generate snapshots initial: `$env:UPDATE_SNAPSHOTS=1; python scripts/generate_snapshots.py --fixture orb_smoke --strategies orb-strategy --risk-profile default`
-3. Run tests: `pytest -k orb_strategy` -> PASS.
-4. Change logic; rerun tests -> FAIL with diff.
-5. Review diff; if acceptable: regenerate snapshots (step 2) and commit.
+2. Initial baseline creation: `pytest --auto-create-snapshots -k orb_strategy` (writes missing snapshots).
+3. Standard validation: `pytest -k orb_strategy` -> PASS.
+4. Logic change: run `pytest -k orb_strategy` -> FAIL with diff.
+5. Intentional change: `pytest --update-snapshots -k orb_strategy` regenerates affected snapshots.
+6. Optional review with visualization: `pytest --snapshot-visualize -k orb_strategy` (if mismatches exist).
+7. Prune stale: `pytest --snapshot-prune` (lists unused snapshots; optional removal flow).
+8. Commit updated snapshots; CI (no flags) passes.
 
 ## 22. Minimal Contract Summaries
 
@@ -219,6 +230,7 @@ Data Extraction Script:
 ## 23. Edge Case Testing List
 
 - Single ticker single day.
+- Single ticker multi-day.
 - Multi-ticker multi-day small range.
 - Missing midday data (simulate).
 - Price with high precision decimals.
@@ -273,8 +285,8 @@ flowchart TD
   D1 --> CMP
   D2 --> CMP
   CMP --> OUT["Diff Report (Console)"]
-  CMP -->|SNAPSHOT_VISUALIZE=1| HTML[HTML Visualization]
-  O -->|AUTO_CREATE_SNAPSHOTS=1 & missing| SG
+  CMP -->|--snapshot-visualize| HTML[HTML Visualization]
+  O -->|--auto-create-snapshots & missing| SG
   OUT --> CI[CI & Pre-Commit Hooks]
   HTML --> CI
     CI --> PRN["Pruning Hook (SNAPSHOT_PRUNE=1)"]
@@ -283,8 +295,8 @@ flowchart TD
 Diagram Legend:
 
 - Fixture Extraction produces stable input slice (fixture directory).
-- Snapshot Generation (update or auto-create flows) writes CSV + metadata.
-- `assert_snapshot` pytest fixture orchestrates strategy execution, normalization, comparison, auto-create (flagged), HTML rendering, and pruning signaling.
+- Snapshot Generation writes CSV + metadata during update or auto-create flows.
+- `assert_snapshot` pytest fixture orchestrates execution, normalization, comparison, auto-create, HTML rendering, pruning signaling.
 - Comparator applies sorting, rounding, tolerance checks, and emits diff artifacts.
-- Environment Flags: `UPDATE_SNAPSHOTS`, `AUTO_CREATE_SNAPSHOTS`, `SNAPSHOT_VISUALIZE`, `SNAPSHOT_PRUNE` govern optional behaviors.
+- Pytest CLI Flags: `--update-snapshots`, `--auto-create-snapshots`, `--snapshot-visualize`, `--snapshot-prune` govern optional behaviors.
 - CI / Pre-Commit enforce snapshot stability and optionally perform pruning.
