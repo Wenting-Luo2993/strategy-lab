@@ -148,7 +148,7 @@ Deliverables:
 
 | Stage | Status      | Key Pending Tests                       |
 | ----- | ----------- | --------------------------------------- |
-| 1     | NOT STARTED | test_fixture_generation                 |
+| 1     | VALIDATED   | test_fixture_generation                 |
 | 2     | NOT STARTED | test_config_hashing, test_snapshot_diff |
 | 3     | NOT STARTED | test_snapshot_workflow                  |
 | 4     | NOT STARTED | existing strategy tests integrated      |
@@ -232,19 +232,6 @@ Stage 6 – Maintenance & Extensions:
 - Floating point differences: enforce rounding & tolerance compare.
 - Hidden randomness: seed all random or pseudo-random sources at test start.
 - Performance degradation: monitor runtime; fallback to smaller fixture set if threshold exceeded.
-
-## Tracking Status (To Be Updated During Implementation)
-
-| Stage | Name                            | Status      | Owner | Notes                                    |
-| ----- | ------------------------------- | ----------- | ----- | ---------------------------------------- |
-| 1     | Data & Determinism Foundation   | NOT STARTED |       | Extraction, metadata, sorting, tolerance |
-| 2     | Snapshot Core & Diff Logic      | NOT STARTED |       | Hashing, comparison, diff reporter       |
-| 3     | Pytest Integration & Flags      | NOT STARTED |       | CLI flags + assert_snapshot fixture      |
-| 4     | Strategy & Orchestrator Integr. | NOT STARTED |       | Param tests & risk checks                |
-| 5     | Visualization & Governance      | NOT STARTED |       | HTML, pruning, CI, guard rails           |
-| 6     | Maintenance & Extensions        | NOT STARTED |       | Edge cases, plugin evaluation            |
-
-Update this table as tasks progress.
 
 ---
 

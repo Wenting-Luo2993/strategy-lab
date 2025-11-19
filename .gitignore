@@ -36,5 +36,6 @@ token.json
 # MacOS
 .DS_Store
 
-# Test coverage
+# Test fixtures and outputs
 .coverage
+**/tests/scenarios/
