@@ -248,23 +248,43 @@ This document is intended to evolve; adjust sections as implementation proceeds.
 
 ```mermaid
 flowchart TD
-  A[Fixture Extraction Script] -->|writes| B[tests/scenarios/<fixture>]
-  B --> C[Snapshot Generation Utility]
-  C -->|signals csv| D[signals__fixture__strategy__context.snapshot.csv]
-  C -->|trades csv| E[trades__fixture__strategy__risk__context.snapshot.csv]
-  C --> F[metadata.json]
-  G[pytest tests] -->|load fixture| B
-  G -->|compute signals/trades| H[Strategy + Orchestrator]
-  H -->|actual outputs| I[Comparison Helpers]
-  D -->|expected signals| I
-  E -->|expected trades| I
-  I -->|diff report| J[Console / HTML (flagged)]
-  J -->|status| K[CI & Pre-Commit]
+  subgraph Extraction
+    A[Fixture Extraction Script]
+    A -->|writes fixture data| B[tests/scenarios/<fixture>]
+  end
+
+  subgraph SnapshotGen
+    SG["Snapshot Generation Utility (update mode)"] --> D1[Signals Snapshots CSV]
+    SG --> D2[Trades Snapshots CSV]
+    SG --> M[snapshot_metadata.json]
+  end
+
+  B --> SG
+
+  subgraph TestRun
+    T[pytest test] --> FX[assert_snapshot fixture]
+    FX --> H[Strategy + Orchestrator Execution]
+    H --> O["Actual Output DF (signals/trades)"]
+    FX --> N[Normalization & Sorting]
+    N --> CMP[Comparator & Diff Engine]
+  end
+
+  O --> N
+  D1 --> CMP
+  D2 --> CMP
+  CMP --> OUT["Diff Report (Console)"]
+  CMP -->|SNAPSHOT_VISUALIZE=1| HTML[HTML Visualization]
+  O -->|AUTO_CREATE_SNAPSHOTS=1 & missing| SG
+  OUT --> CI[CI & Pre-Commit Hooks]
+  HTML --> CI
+    CI --> PRN["Pruning Hook (SNAPSHOT_PRUNE=1)"]
 ```
 
 Diagram Legend:
 
-- Fixture Extraction: produces stable input slice.
-- Snapshot Generation: (update mode) creates baseline expected outputs.
-- Tests: run logic, compare via helpers, produce diff & optional HTML visualization (guarded by flag `SNAPSHOT_VISUALIZE=1`).
-- CI/Pre-Commit: enforce stability and manage updates.
+- Fixture Extraction produces stable input slice (fixture directory).
+- Snapshot Generation (update or auto-create flows) writes CSV + metadata.
+- `assert_snapshot` pytest fixture orchestrates strategy execution, normalization, comparison, auto-create (flagged), HTML rendering, and pruning signaling.
+- Comparator applies sorting, rounding, tolerance checks, and emits diff artifacts.
+- Environment Flags: `UPDATE_SNAPSHOTS`, `AUTO_CREATE_SNAPSHOTS`, `SNAPSHOT_VISUALIZE`, `SNAPSHOT_PRUNE` govern optional behaviors.
+- CI / Pre-Commit enforce snapshot stability and optionally perform pruning.
