@@ -12,7 +12,7 @@ import pandas as pd
 
 from src.utils.workspace import resolve_workspace_path
 from scripts.extract_fixture_data import extract_fixture
-from src.utils.snapshot_stage1 import NUMERIC_PRECISION as SNAP_PRECISION
+from python.src.utils.snapshot_utils import NUMERIC_PRECISION as SNAP_PRECISION
 
 
 def _pick_tickers_and_dates(source_path: Path, limit: int = 2):

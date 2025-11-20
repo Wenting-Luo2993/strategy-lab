@@ -10,29 +10,29 @@ This document centralizes implementation tasks referenced by `snapshot_testing_r
 ## Core Tasks
 
 1. Requirements doc (DONE) – initial specification established.
-2. Data extraction script – implement `extract_fixture_data.py` using `resolve_workspace_path`.
-3. Finalize snapshot file formats – confirm column set & naming convention (signals/trades per test context).
+2. Data extraction script (DONE) – implement `extract_fixture_data.py` using `resolve_workspace_path`.
+3. Finalize snapshot file formats (DONE) – confirm column set & naming convention (signals/trades per test context).
 4. Identify strategies to cover – enumerate initial strategy list (orb-strategy + others) & map to fixtures.
 5. Design orchestrator snapshot tests – define end-to-end test flow & parametrization.
 6. Implement fixture generator – actual code for extraction script with metadata.json.
 7. Implement pytest snapshot flags – register CLI options & hook into fixture (`--update-snapshots`, `--auto-create-snapshots`, `--snapshot-visualize`, `--snapshot-prune`).
-8. Snapshot comparison helpers – utilities for DataFrame vs CSV diff with tolerances.
+8. Snapshot comparison helpers (DONE) – utilities for DataFrame vs CSV diff with tolerances.
 9. Integrate snapshots into existing tests – modify `test_orb_indicator.py`, `test_orb_strategy.py`, add orchestrator test.
 10. Risk-managed order checks – include position sizing & stop logic in trade snapshot comparison.
-11. Config hashing function – deterministic SHA256 over canonical JSON of configs.
+11. Config hashing function (DONE) – deterministic SHA256 over canonical JSON of configs.
 12. CI governance integration – include snapshot validation in pre-commit + full CI pipeline.
 13. Document workflow in README – add contributor instructions for snapshot lifecycle.
 14. Edge case handling – missing days, partial sessions, zero-signal scenarios, high precision prices.
-15. Performance considerations – keep fixtures minimal & caching strategy for reused computations.
-16. Metadata schema – finalize & enforce keys (version, commit, created_at, generator, config_hash, tickers, dates).
-17. Diff reporter – produce concise textual diff + limited row detail (first N mismatches).
-18. Tolerance settings – central constants for numeric comparisons & allowable timestamp drift (likely zero).
-19. Deterministic sorting utilities – shared function to sort outputs before snapshot write / compare.
+15. Performance considerations (DONE) – keep fixtures minimal & caching strategy for reused computations.
+16. Metadata schema (DONE) – finalize & enforce keys (version, commit, created_at, generator, config_hash, tickers, dates).
+17. Diff reporter (DONE) – produce concise textual diff + limited row detail (first N mismatches).
+18. Tolerance settings (DONE) – central constants for numeric comparisons & allowable timestamp drift (likely zero).
+19. Deterministic sorting utilities (DONE) – shared function to sort outputs before snapshot write / compare.
 20. Security & privacy review – ensure no secrets or creds leak into fixtures or metadata.
 21. Snapshot diff visualization (HTML) – initial implementation guarded by `SNAPSHOT_VISUALIZE` flag.
 22. Auto-create missing snapshots – implement logic under `--auto-create-snapshots` flag in fixture.
 23. Stale snapshot detection – list (and optional prune with confirmation) under `--snapshot-prune` flag.
-24. Workspace path enforcement – audit scripts to ensure all path resolution uses `resolve_workspace_path`.
+24. Workspace path enforcement (DONE) – audit scripts to ensure all path resolution uses `resolve_workspace_path`.
 25. Guard rails for future test generation – guidelines & checks preventing inadvertent snapshot bloat or misuse.
 26. Architecture diagram maintenance – keep diagram in sync when flow changes.
 
@@ -149,7 +149,7 @@ Deliverables:
 | Stage | Status      | Key Pending Tests                       |
 | ----- | ----------- | --------------------------------------- |
 | 1     | VALIDATED   | test_fixture_generation                 |
-| 2     | NOT STARTED | test_config_hashing, test_snapshot_diff |
+| 2     | VALIDATED   | test_config_hashing, test_snapshot_diff |
 | 3     | NOT STARTED | test_snapshot_workflow                  |
 | 4     | NOT STARTED | existing strategy tests integrated      |
 | 5     | NOT STARTED | test_snapshot_governance                |

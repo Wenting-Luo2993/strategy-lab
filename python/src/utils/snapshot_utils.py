@@ -15,8 +15,9 @@ from __future__ import annotations
 from typing import Iterable
 import pandas as pd
 
-NUMERIC_ABS_TOL = 1e-6
-NUMERIC_PRECISION = 6
+NUMERIC_ABS_TOLERANCE = 1e-6  # Retain legacy name
+NUMERIC_ABS_TOL = NUMERIC_ABS_TOLERANCE  # Alias for newer imports
+NUMERIC_PRECISION = 4
 
 
 def normalize_numeric(df: pd.DataFrame) -> pd.DataFrame:
@@ -46,6 +47,7 @@ def sort_trades(df: pd.DataFrame) -> pd.DataFrame:
 
 
 __all__ = [
+    "NUMERIC_ABS_TOLERANCE",
     "NUMERIC_ABS_TOL",
     "NUMERIC_PRECISION",
     "normalize_numeric",

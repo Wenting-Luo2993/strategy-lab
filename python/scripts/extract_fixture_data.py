@@ -60,11 +60,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 try:
     from src.utils.workspace import resolve_workspace_path
-    from src.utils.snapshot_stage1 import normalize_numeric, NUMERIC_PRECISION
+    from python.src.utils.snapshot_utils import normalize_numeric, NUMERIC_PRECISION
 except ImportError:  # Fallback if relative import context differs
     # Secondary attempt if executed from a different entry context
     from python.src.utils.workspace import resolve_workspace_path  # type: ignore
-    from python.src.utils.snapshot_stage1 import normalize_numeric, NUMERIC_PRECISION  # type: ignore
+    from python.src.utils.snapshot_utils import normalize_numeric, NUMERIC_PRECISION  # type: ignore
 GENERATOR_VERSION = "1.0.0"
 
 
