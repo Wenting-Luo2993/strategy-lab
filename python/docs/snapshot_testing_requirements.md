@@ -211,6 +211,96 @@ Implementation tasks have been moved to `snapshot_testing_todo.md` to keep this 
 7. Prune stale: `pytest --snapshot-prune` (lists unused snapshots; optional removal flow).
 8. Commit updated snapshots; CI (no flags) passes.
 
+### Pytest Command Examples
+
+Common commands for interacting with snapshot tests.
+
+Baseline creation (auto-create any missing snapshots):
+`-k orb_strategy` filters tests by substring matching in node ids.
+
+```
+pytest --auto-create-snapshots -k orb_strategy
+```
+
+Run full suite without modifying snapshots (CI style):
+
+```
+pytest
+```
+
+Update existing snapshots after intentional logic change:
+
+```
+pytest --update-snapshots -k orb_strategy
+```
+
+Generate HTML diff artifacts for failing snapshot tests:
+
+```
+pytest --snapshot-visualize -k snapshot
+```
+
+List stale (untouched) snapshot files this session:
+
+```
+pytest --snapshot-prune
+```
+
+Use environment variables instead of CLI flags (helpful for IDE or CI matrix runs):
+
+```
+SET SNAPSHOT_AUTO_CREATE=1
+pytest -k orb_indicator
+```
+
+or (PowerShell)
+
+```
+$env:SNAPSHOT_UPDATE=1; pytest -k orb_strategy
+```
+
+Force update of all snapshots (broad regeneration – use sparingly):
+
+```
+pytest --update-snapshots -k "snapshot or orb"
+```
+
+Run only snapshot workflow test:
+
+```
+pytest -k snapshot_workflow
+```
+
+Show slow snapshot tests (if marked later):
+
+```
+pytest -m slow --snapshot-visualize
+```
+
+Dry-run expected failures with verbose diff output (pair with -vv for extra logging):
+
+```
+pytest -k orb_strategy -vv
+```
+
+Regenerate and visualize simultaneously (diff HTML emitted before overwrite not needed; usually two steps, but can inspect first):
+
+```
+pytest --snapshot-visualize --update-snapshots -k orb_strategy
+```
+
+Override snapshot directory (e.g., isolated temp path) for experimental runs:
+
+```
+$env:SNAPSHOT_ROOT=python/tests/snapshots_tmp; pytest --auto-create-snapshots -k snapshot
+```
+
+Prune listing with environment variable instead of flag:
+
+```
+$env:SNAPSHOT_PRUNE=1; pytest
+```
+
 ## 22. Minimal Contract Summaries
 
 Data Extraction Script:
