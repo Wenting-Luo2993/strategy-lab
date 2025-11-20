@@ -6,7 +6,7 @@ from src.core.trade_manager import TradeManager
 from src.config.columns import TradeColumns
 from src.config.Enums import Regime
 
-from .utils import MockRiskManager, make_market_data_one_day
+from tests.utils import MockRiskManager, make_market_data_one_day
 
 
 def test_create_entry_position_basic():
@@ -119,7 +119,7 @@ def test_close_position_updates_balance_and_storage():
     tm.record_fill(pos[TradeColumns.TICKER.value], pos[TradeColumns.SIZE.value]//2, pos[TradeColumns.ENTRY_PRICE.value], df.index[0])
     # Partial fill second chunk
     tm.record_fill(pos[TradeColumns.TICKER.value], pos[TradeColumns.SIZE.value]-pos[TradeColumns.SIZE.value]//2, pos[TradeColumns.ENTRY_PRICE.value], df.index[0])
-    trade = tm.close_position(exit_price=103.0, time=df.index[1], current_idx=1, exit_reason='manual')
+    trade = tm.close_position(exit_price=103.0, time=df.index[1], current_idx=1, exit_reason='manual', ticker=pos[TradeColumns.TICKER.value])
     assert trade[TradeColumns.PNL.value] > 0
     assert tm.get_current_balance() > balance_before
     assert tm.get_current_position() is None
@@ -149,7 +149,7 @@ def test_reset_clears_state():
     df = make_market_data_one_day(base_price=50.0).iloc[:10]
     pos = tm.create_entry_position(price=50.0, signal=1, time=df.index[0], market_data=df, current_idx=0, initial_stop=49.0)
     tm.record_fill(pos[TradeColumns.TICKER.value], pos[TradeColumns.SIZE.value], pos[TradeColumns.ENTRY_PRICE.value], df.index[0])
-    tm.close_position(exit_price=52.0, time=df.index[1], current_idx=1, exit_reason='manual')
+    tm.close_position(exit_price=52.0, time=df.index[1], current_idx=1, exit_reason='manual', ticker=pos[TradeColumns.TICKER.value])
     tm.reset()
     assert tm.get_current_balance() == 5000
     assert tm.get_current_position() is None
