@@ -1,0 +1,22 @@
+{
+  "content_hash": "6977651a52f813d61659b7acc2a24bb562c78aedb6973d6ae4822b2d1c75cbd6",
+  "created_at": "2025-11-23T23:49:30.458654+00:00",
+  "end_date": "2025-11-07",
+  "fixture_name": "2025-11-07",
+  "generator_version": "1.0.0",
+  "git_commit": "abf325843adc94e18e9957a3fe5f20b11002d3c2",
+  "numeric_precision": 4,
+  "rows_per_ticker": {
+    "AAPL": 78,
+    "MSFT": 78,
+    "NVDA": 78
+  },
+  "source_path": "C:\\dev\\strategy-lab\\python\\data_cache",
+  "start_date": "2025-11-07",
+  "tickers": [
+    "AAPL",
+    "MSFT",
+    "NVDA"
+  ],
+  "version": 1
+}

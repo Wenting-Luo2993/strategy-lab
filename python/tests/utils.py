@@ -3,15 +3,18 @@
 Contains mock RiskManagement implementations and market data builders.
 """
 from __future__ import annotations
+import os
 import random
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional
 import pandas as pd
 
 from src.risk_management.base import RiskManagement
 from src.config.columns import TradeColumns
-
+from src.utils.workspace import resolve_workspace_path
+from paths import get_scenarios_root
 
 class DummyRiskConfig(SimpleNamespace):
     def __init__(self, risk_per_trade=0.01, max_position_size_percent=1.0, position_allocation_cap_percent=0.25):
@@ -163,3 +166,106 @@ def build_three_market_data(seed: int = 101) -> dict:
     bear.attrs['ticker'] = 'BEAR_TICK'
     side.attrs['ticker'] = 'SIDE_TICK'
     return {'bull': bull, 'bear': bear, 'side': side}
+
+
+def strategy_config_to_dict(cfg):
+    """Convert a StrategyConfig instance (nested dataclasses) into a plain dict.
+
+    This supports stable hashing via `hash_config` and reuse across snapshot tests.
+    Safe when `trailing_stop` is None.
+    """
+    return {
+        "orb_config": {
+            "timeframe": cfg.orb_config.timeframe,
+            "start_time": cfg.orb_config.start_time,
+            "body_breakout_percentage": cfg.orb_config.body_breakout_percentage,
+            "initial_stop_orb_pct": cfg.orb_config.initial_stop_orb_pct,
+        },
+        "entry_volume_filter": cfg.entry_volume_filter,
+        "risk": {
+            "stop_loss_type": cfg.risk.stop_loss_type,
+            "stop_loss_value": cfg.risk.stop_loss_value,
+            "take_profit_type": cfg.risk.take_profit_type,
+            "take_profit_value": cfg.risk.take_profit_value,
+            "risk_per_trade": cfg.risk.risk_per_trade,
+            "position_allocation_cap_percent": cfg.risk.position_allocation_cap_percent,
+            "trailing_stop": (
+                {
+                    "enabled": cfg.risk.trailing_stop.enabled,
+                    "dynamic_mode": cfg.risk.trailing_stop.dynamic_mode,
+                    "base_trail_r": cfg.risk.trailing_stop.base_trail_r,
+                    "breakpoints": cfg.risk.trailing_stop.breakpoints,
+                    "levels": cfg.risk.trailing_stop.levels,
+                }
+                if getattr(cfg.risk, "trailing_stop", None)
+                else None
+            ),
+        },
+        "eod_exit": cfg.eod_exit,
+    }
+
+
+def load_fixture_df(
+    ticker: str,
+    start_date: str,
+    end_date: Optional[str] = None,
+    timeframe: Optional[str] = None,
+    root_candidates: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """Load deterministic fixture market data for a ticker & date range.
+
+    Uses the shared scenarios root (SCENARIOS_REL_DIR) resolved via
+    `get_scenarios_root()` unless explicit root candidates are provided. Each
+    candidate is resolved with `resolve_workspace_path` to ensure portability.
+
+    Directory naming convention matches extraction script:
+      Single day: YYYY-MM-DD
+      Date range: YYYY-MM-DD_YYYY-MM-DD
+
+    Args:
+        ticker: Symbol (e.g. 'AAPL').
+        start_date: Inclusive start date.
+        end_date: Optional inclusive end date for multi-day fixtures.
+        timeframe: Optional substring filter (e.g. '5m').
+        root_candidates: Optional list of alternative scenario roots.
+
+    Returns:
+        DataFrame with datetime index or empty DataFrame if not found/error.
+    """
+    from paths import get_fixture_name
+    expected_dir_name = get_fixture_name(start_date, end_date)
+
+    if root_candidates is None:
+        roots = [get_scenarios_root()]
+    else:
+        roots = [resolve_workspace_path(r) for r in root_candidates]
+
+    for base in roots:
+        if not base.exists():
+            continue
+        candidate_dir = base / expected_dir_name
+        if not (candidate_dir.exists() and candidate_dir.is_dir()):
+            continue
+        fixture_dir = candidate_dir
+        # Look for ticker-specific data file
+        patterns = [f"{ticker}.parquet", f"{ticker}.csv", f"{ticker}_*.parquet", f"{ticker}_*.csv"]
+        data_files: List[Path] = []
+        for pat in patterns:
+            data_files.extend(fixture_dir.glob(pat))
+        if timeframe:
+            data_files = [f for f in data_files if timeframe in f.name]
+        data_files.sort(key=lambda p: (p.suffix != ".parquet", p.name))
+        if not data_files:
+            continue
+        path = data_files[0]
+        try:
+            if path.suffix == ".parquet":
+                df = pd.read_parquet(path)
+            else:
+                df = pd.read_csv(path, parse_dates=True, index_col=0)
+            if not isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.to_datetime(df.index, errors="coerce")
+            return df
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()

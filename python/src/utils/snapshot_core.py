@@ -59,13 +59,28 @@ class SnapshotDiff:
 def compare_snapshots(
     expected: pd.DataFrame,
     actual: pd.DataFrame,
-    sort_keys: Sequence[str] | None = None,
     numeric_tol: float = NUMERIC_ABS_TOL,
     max_diffs: int = 50,
+    compare_columns: Sequence[str] | None = None,
 ) -> SnapshotDiff:
+    """Compare two snapshot DataFrames with optional column filtering.
+
+    Args:
+        expected: Expected DataFrame from snapshot file.
+        actual: Actual DataFrame from test execution.
+        numeric_tol: Absolute tolerance for numeric comparisons.
+        max_diffs: Maximum number of differences to collect.
+        compare_columns: If specified, only compare these columns. Otherwise compare all.
+    """
     # Normalize but do NOT reorder; rely on caller producing identical ordering.
     expected_work = normalize_numeric(expected.copy())
     actual_work = normalize_numeric(actual.copy())
+
+    # Normalize indices: convert datetime indices to comparable format
+    if isinstance(expected_work.index, pd.DatetimeIndex) and isinstance(actual_work.index, pd.DatetimeIndex):
+        # Remove timezone info for comparison if both have it (or one is naive)
+        expected_work.index = pd.DatetimeIndex(expected_work.index.tz_localize(None) if expected_work.index.tz else expected_work.index)
+        actual_work.index = pd.DatetimeIndex(actual_work.index.tz_localize(None) if actual_work.index.tz else actual_work.index)
 
     # Structural checks first: length and index must match exactly.
     if len(expected_work) != len(actual_work):
@@ -74,8 +89,13 @@ def compare_snapshots(
         raise AssertionError("Snapshot index mismatch: indices differ")
 
     cols_equal = list(expected_work.columns) == list(actual_work.columns)
-    # Use intersection for cell comparison if schema drift occurred
-    compare_cols = [c for c in expected_work.columns if c in actual_work.columns]
+    # Determine columns to compare
+    if compare_columns:
+        # Filter to specified columns that exist in both DataFrames
+        compare_cols = [c for c in compare_columns if c in expected_work.columns and c in actual_work.columns]
+    else:
+        # Use intersection for cell comparison if schema drift occurred
+        compare_cols = [c for c in expected_work.columns if c in actual_work.columns]
 
     differing_cells: List[Dict[str, Any]] = []
     within_tolerance = True

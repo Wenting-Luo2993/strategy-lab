@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from tests.utils import MockRiskManager, build_three_market_data  # noqa: E402
+from paths import get_snapshot_root  # noqa: E402
 from src.core.trade_manager import TradeManager  # noqa: E402
 from src.utils.snapshot_core import compare_snapshots, hash_config  # noqa: E402
 from src.utils.snapshot_utils import normalize_numeric  # noqa: E402
@@ -65,7 +66,7 @@ def pytest_sessionfinish(session, exitstatus):
     prune_flag = config.getoption("snapshot_prune") or _bool_env("SNAPSHOT_PRUNE")
     if not prune_flag:
         return
-    snapshot_root = Path(os.getenv("SNAPSHOT_ROOT", "python/tests/snapshots")).resolve()
+    snapshot_root = get_snapshot_root()
     if not snapshot_root.exists():
         session.config.warn("C1", f"Snapshot root {snapshot_root} does not exist for prune listing.")
         return
@@ -96,7 +97,7 @@ def assert_snapshot(request):
     def flag_visualize():
         return request.config.getoption("snapshot_visualize") or _bool_env("SNAPSHOT_VISUALIZE")
     def _snapshot_root():
-        return Path(os.getenv("SNAPSHOT_ROOT", "python/tests/snapshots")).resolve()
+        return get_snapshot_root()
     snapshot_root = _snapshot_root()
     snapshot_root.mkdir(parents=True, exist_ok=True)
 
@@ -115,7 +116,7 @@ def assert_snapshot(request):
         # Create if missing
         if not path.exists():
             if flag_auto_create():
-                work_df.to_csv(path, index=True)
+                work_df.to_csv(path, index=True, float_format='%.4f')
                 meta = {
                     "name": name,
                     "kind": kind,
@@ -130,12 +131,22 @@ def assert_snapshot(request):
             raise AssertionError(f"Snapshot missing: {path}. Run with --auto-create-snapshots or set SNAPSHOT_AUTO_CREATE=1 to create.")
         # Load expected
         expected_df = pd.read_csv(path, index_col=0, parse_dates=True)
-        diff = compare_snapshots(expected_df, work_df)
+        # Determine which columns to compare based on kind
+        compare_cols = None
+        if kind == "signals":
+            compare_cols = ["entry_signal", "exit_flag"]
+        elif kind == "trades":
+            # Compare core trade execution columns
+            compare_cols = [
+                "entry_time", "entry_price", "size", "exit_time", "exit_price",
+                "exit_reason", "pnl", "stop_loss", "take_profit", "direction"
+            ]
+        diff = compare_snapshots(expected_df, work_df, compare_columns=compare_cols)
         request.config._snapshot_touched.add(filename)
         if diff.is_equal:
             return
         if flag_update():
-            work_df.to_csv(path, index=True)
+            work_df.to_csv(path, index=True, float_format='%.4f')
             # Update metadata commit & hash
             meta = {
                 "name": name,

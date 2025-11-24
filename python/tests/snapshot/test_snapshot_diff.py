@@ -16,7 +16,7 @@ def test_compare_snapshots_exact_match():
         {"timestamp": 2, "ticker": "A", "value": 11.0},
     ])
     actual = expected.copy()
-    diff = compare_snapshots(expected, actual, sort_keys=["timestamp", "ticker"])
+    diff = compare_snapshots(expected, actual)
     assert diff.within_tolerance
     report = render_diff_report(diff)
     assert "PASS" in report
@@ -29,7 +29,7 @@ def test_compare_snapshots_numeric_tolerance():
     actual = _df([
         {"timestamp": 1, "ticker": "A", "value": 10.0000002},
     ])
-    diff = compare_snapshots(expected, actual, sort_keys=["timestamp", "ticker"])
+    diff = compare_snapshots(expected, actual)
     assert diff.within_tolerance, "Difference should be within tolerance"
 
 
@@ -40,7 +40,7 @@ def test_compare_snapshots_exceeds_tolerance():
     actual = _df([
         {"timestamp": 1, "ticker": "A", "value": 10.01},
     ])
-    diff = compare_snapshots(expected, actual, sort_keys=["timestamp", "ticker"], numeric_tol=1e-4)
+    diff = compare_snapshots(expected, actual, numeric_tol=1e-4)
     assert not diff.within_tolerance
     assert diff.differing_cells
     report = render_diff_report(diff)

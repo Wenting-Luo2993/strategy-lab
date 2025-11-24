@@ -17,7 +17,7 @@ This document centralizes implementation tasks referenced by `snapshot_testing_r
 6. Implement fixture generator – actual code for extraction script with metadata.json.
 7. Implement pytest snapshot flags – register CLI options & hook into fixture (`--update-snapshots`, `--auto-create-snapshots`, `--snapshot-visualize`, `--snapshot-prune`).
 8. Snapshot comparison helpers (DONE) – utilities for DataFrame vs CSV diff with tolerances.
-9. Integrate snapshots into existing tests – modify `test_orb_indicator.py`, `test_orb_strategy.py`, add orchestrator test.
+9. Integrate snapshots into existing tests – modify `test_orb_indicator.py`, `test_orb_strategy.py` (IN PROGRESS: orb strategy signals snapshot integrated), add orchestrator test.
 10. Risk-managed order checks – include position sizing & stop logic in trade snapshot comparison.
 11. Config hashing function (DONE) – deterministic SHA256 over canonical JSON of configs.
 12. CI governance integration – include snapshot validation in pre-commit + full CI pipeline.
@@ -146,14 +146,14 @@ Deliverables:
 
 ## Stage Verification Summary Table (to append as progress updates)
 
-| Stage | Status      | Key Pending Tests                       |
-| ----- | ----------- | --------------------------------------- |
-| 1     | VALIDATED   | test_fixture_generation                 |
-| 2     | VALIDATED   | test_config_hashing, test_snapshot_diff |
-| 3     | TEST PASS   | test_snapshot_workflow                  |
-| 4     | NOT STARTED | existing strategy tests integrated      |
-| 5     | NOT STARTED | test_snapshot_governance                |
-| 6     | NOT STARTED | edge case matrix                        |
+| Stage | Status              | Key Pending Tests                       |
+| ----- | ------------------- | --------------------------------------- |
+| 1     | VALIDATED           | test_fixture_generation                 |
+| 2     | VALIDATED           | test_config_hashing, test_snapshot_diff |
+| 3     | TEST PASS           | test_snapshot_workflow                  |
+| 4     | DONE (orb strategy) | expand to indicator + orchestrator      |
+| 5     | NOT STARTED         | test_snapshot_governance                |
+| 6     | NOT STARTED         | edge case matrix                        |
 
 ## Acceptance Gates Per Stage
 

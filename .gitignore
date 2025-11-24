@@ -38,4 +38,4 @@ token.json
 
 # Test fixtures and outputs
 .coverage
-**/tests/scenarios/
+**/tests/__snapshots__/html/

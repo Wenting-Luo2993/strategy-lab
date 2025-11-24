@@ -5,37 +5,9 @@ import pytest
 
 from src.strategies.orb import ORBStrategy
 from src.config import build_default_orb_strategy_config
+from tests.utils import strategy_config_to_dict, load_fixture_df
 
-
-CACHE_ROOTS = [
-    Path("python/data_cache"),  # primary
-    Path("data_cache"),  # fallback root
-]
-
-
-def _load_cached_df(ticker: str, timeframe: str = "5m") -> pd.DataFrame:
-    """Attempt to load real cached market data for a ticker/timeframe.
-
-    Searches known cache roots for a subdirectory named for the ticker and a file
-    whose name contains the timeframe string. Supports .csv or .parquet.
-    Returns empty DataFrame if not found.
-    """
-    for root in CACHE_ROOTS:
-        ticker_dir = root
-        if not ticker_dir.exists() or not ticker_dir.is_dir():
-            continue
-        # Prefer parquet then csv
-        candidates = list(ticker_dir.glob(f"{ticker}*{timeframe}*.parquet")) + list(ticker_dir.glob(f"{ticker}*{timeframe}*.csv"))
-        if not candidates:
-            continue
-        path = candidates[0]
-        try:
-            if path.suffix == ".parquet":
-                return pd.read_parquet(path)
-            return pd.read_csv(path, parse_dates=True, index_col=0)
-        except Exception:
-            return pd.DataFrame()
-    return pd.DataFrame()
+FIXTURE_START_DATE = "2025-11-07"  # single-day fixture date; adjust if changed
 
 
 def _first_trading_day(df: pd.DataFrame) -> pd.DataFrame:
@@ -63,8 +35,8 @@ def _first_trading_day(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @pytest.mark.parametrize("ticker", ["AAPL", "MSFT", "NVDA"])  # broaden coverage; will skip if missing
-def test_orb_strategy_adds_indicators_and_generates_entry(ticker):
-    df = _load_cached_df(ticker)
+def test_orb_strategy_with_default_config_adds_indicators_and_generates_entry(ticker, assert_snapshot):
+    df = load_fixture_df(ticker, start_date=FIXTURE_START_DATE)
     if df.empty:
         pytest.skip(f"No cached data found for {ticker}")
     day_df = _first_trading_day(df)
@@ -72,22 +44,38 @@ def test_orb_strategy_adds_indicators_and_generates_entry(ticker):
     required_cols = {"open", "high", "low", "close"}
     if not required_cols.issubset(set(day_df.columns)):
         pytest.skip(f"Missing OHLC columns in cached data for {ticker}")
-    strategy = ORBStrategy(strategy_config=build_default_orb_strategy_config())
+    strategy_cfg = build_default_orb_strategy_config()
+    strategy = ORBStrategy(strategy_config=strategy_cfg)
     entries = 0
     position_ctx = None
+    entry_signals = []
+    exit_flags = []
     for i in range(len(day_df)):
         window = day_df.iloc[: i + 1]
         entry_signal, exit_flag, position_ctx = strategy.generate_signal_incremental_ctx(window, position_ctx)
         if entry_signal != 0:
             entries += 1
+        entry_signals.append(entry_signal)
+        exit_flags.append(1 if exit_flag else 0)
     # Indicators should have been added lazily
     assert "ORB_Breakout" in day_df.columns or entries >= 0, "ORB_Breakout indicator not added"
     # At most one entry expected for ORB logic per day (after exit strategy resets)
     assert entries <= 1, f"More than one entry detected ({entries}) for {ticker} on first day"
+    # Snapshot signals + generated entry/exit flags for regression tracking
+    snapshot_df = day_df.copy()
+    snapshot_df["entry_signal"] = entry_signals
+    snapshot_df["exit_flag"] = exit_flags
+    # Name pattern ensures one snapshot per ticker; kind defaults to 'signals'
+    assert_snapshot(
+        snapshot_df,
+        name=f"orb_strategy__{ticker}",
+        kind="signals",
+        strategy_config=strategy_config_to_dict(strategy_cfg),
+    )
 
 
 def test_orb_strategy_initial_stop_and_take_profit_assignment():
-    df = _load_cached_df("AAPL")
+    df = load_fixture_df("AAPL", start_date=FIXTURE_START_DATE)
     if df.empty:
         pytest.skip("No cached data found for AAPL")
     day_df = _first_trading_day(df)
@@ -107,7 +95,7 @@ def test_orb_strategy_initial_stop_and_take_profit_assignment():
 
 
 def test_orb_strategy_exit_flag_eventually_triggers_eod():
-    df = _load_cached_df("AAPL")
+    df = load_fixture_df("AAPL", start_date=FIXTURE_START_DATE)
     if df.empty:
         pytest.skip("No cached data found for AAPL")
     day_df = _first_trading_day(df)

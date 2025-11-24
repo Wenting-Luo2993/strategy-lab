@@ -60,11 +60,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 try:
     from src.utils.workspace import resolve_workspace_path
-    from python.src.utils.snapshot_utils import normalize_numeric, NUMERIC_PRECISION
-except ImportError:  # Fallback if relative import context differs
-    # Secondary attempt if executed from a different entry context
-    from python.src.utils.workspace import resolve_workspace_path  # type: ignore
-    from python.src.utils.snapshot_utils import normalize_numeric, NUMERIC_PRECISION  # type: ignore
+    from paths import get_scenarios_root
+    from src.utils.snapshot_utils import normalize_numeric, NUMERIC_PRECISION
+except ImportError:
+    # Ultimate fallback: raise explicit error to surface missing module in CI
+    raise
 GENERATOR_VERSION = "1.0.0"
 
 
@@ -190,11 +190,6 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--start-date", required=True, help="Start date YYYY-MM-DD")
     parser.add_argument("--end-date", required=False, help="End date YYYY-MM-DD (inclusive)")
     parser.add_argument("--source-path", default="data_cache", help="Relative or absolute path to source data cache")
-    parser.add_argument(
-        "--dest-path",
-        default="tests/scenarios",
-        help="Base destination directory for fixture (fixture subdir will be created)",
-    )
     parser.add_argument("--fixture-name", required=False, help="Optional explicit fixture name")
     return parser.parse_args(argv)
 
@@ -204,10 +199,16 @@ def main(argv: List[str]) -> int:
     start_date = args.start_date
     end_date = args.end_date or start_date
     tickers = args.tickers
-    fixture_name = args.fixture_name or f"{'_'.join(tickers)}_{start_date}_{end_date}"
+    # Use shared fixture naming logic
+    if args.fixture_name:
+        fixture_name = args.fixture_name
+    else:
+        from paths import get_fixture_name
+        fixture_name = get_fixture_name(start_date, end_date)
 
     source_path = resolve_workspace_path(args.source_path)
-    base_dest = resolve_workspace_path(args.dest_path)
+    # Always use shared scenarios root (dest-path argument removed for consistency)
+    base_dest = get_scenarios_root()
     dest_path = base_dest / fixture_name
 
     rows = extract_fixture(tickers, start_date, end_date, source_path, dest_path, fixture_name)
