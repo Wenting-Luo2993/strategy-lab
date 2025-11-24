@@ -152,7 +152,7 @@ Deliverables:
 | 2     | VALIDATED           | test_config_hashing, test_snapshot_diff |
 | 3     | TEST PASS           | test_snapshot_workflow                  |
 | 4     | DONE (orb strategy) | expand to indicator + orchestrator      |
-| 5     | NOT STARTED         | test_snapshot_governance                |
+| 5     | COMPLETED           | test_snapshot_governance                |
 | 6     | NOT STARTED         | edge case matrix                        |
 
 ## Acceptance Gates Per Stage

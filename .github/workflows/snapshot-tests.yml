@@ -1,0 +1,86 @@
+name: Snapshot Tests CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python/requirements.txt
+
+      - name: Run tests with snapshot validation
+        run: |
+          cd python
+          pytest tests/ -v --tb=short
+        env:
+          # Ensure no snapshot updates in CI
+          SNAPSHOT_UPDATE: "0"
+          SNAPSHOT_AUTO_CREATE: "0"
+
+      - name: Check for snapshot governance compliance
+        run: |
+          cd python
+          pytest tests/snapshot/test_snapshot_governance.py -v
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: python/.pytest_cache/
+
+  snapshot-governance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r python/requirements.txt
+
+      - name: Validate snapshot files
+        run: |
+          cd python
+          python -c "
+              from pathlib import Path
+              from src.utils.snapshot_governance import check_snapshot_directory
+              from paths import get_snapshot_root
+
+              root = get_snapshot_root()
+              if root.exists():
+                  result = check_snapshot_directory(root)
+                  print(f'Snapshot count: {result[\"count\"]}')
+                  print(f'Oversized files: {len(result[\"oversized\"])}')
+                  print(f'Insecure files: {len(result[\"insecure\"])}')
+                  if not result['pass']:
+                      print(f'FAILED: {result[\"message\"]}')
+                      exit(1)
+                  print('All snapshot governance checks passed')
+              else:
+                  print('No snapshots found, skipping governance check')
+              "

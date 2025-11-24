@@ -76,7 +76,30 @@ def pytest_sessionfinish(session, exitstatus):
     if stale:
         print("\n[Snapshot Prune] Stale snapshot files (not touched this run):")
         for p in stale:
-            print(f"  - {p}")
+            print(f"  - {p.name}")
+
+        # Offer interactive deletion if running interactively
+        delete_env = _bool_env("SNAPSHOT_PRUNE_DELETE")
+        if delete_env or (hasattr(session.config, "option") and session.config.option.capture == "no"):
+            # Only prompt in interactive mode or if env var set
+            try:
+                if delete_env:
+                    confirm = "yes"
+                else:
+                    confirm = input(f"\nDelete these {len(stale)} stale snapshot(s)? [yes/no]: ").strip().lower()
+
+                if confirm == "yes":
+                    for p in stale:
+                        # Also delete associated metadata file
+                        metadata_path = p.with_suffix(".metadata.json")
+                        if metadata_path.exists():
+                            metadata_path.unlink()
+                        p.unlink()
+                    print(f"[Snapshot Prune] Deleted {len(stale)} stale snapshot file(s).")
+                else:
+                    print("[Snapshot Prune] Deletion cancelled.")
+            except (EOFError, KeyboardInterrupt):
+                print("\n[Snapshot Prune] Deletion cancelled.")
     else:
         print("\n[Snapshot Prune] No stale snapshot files detected.")
 
