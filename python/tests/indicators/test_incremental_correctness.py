@@ -184,6 +184,159 @@ class TestIncrementalCorrectness:
         last_val = df_full['EMA_20'].iloc[-1]
         assert pd.notna(last_val), "Single bar update should produce a value"
 
+    def test_orb_incremental_matches_batch(self):
+        """Test ORB incremental calculation matches batch (hybrid approach for day-scoped indicator)."""
+        # Generate 3 days of 5-minute data (288 bars per day)
+        np.random.seed(42)
+        n_days = 3
+        bars_per_day = 288
+        n_bars = n_days * bars_per_day
+
+        dates = pd.date_range('2025-01-02 00:00', periods=n_bars, freq='5min')
+        base_price = 100.0
+        returns = np.random.randn(n_bars) * 0.001
+        close = base_price * (1 + returns).cumprod()
+
+        df = pd.DataFrame({
+            'open': np.roll(close, 1),
+            'high': close * (1 + np.abs(np.random.randn(n_bars) * 0.002)),
+            'low': close * (1 - np.abs(np.random.randn(n_bars) * 0.002)),
+            'close': close,
+            'volume': np.random.randint(1000, 10000, n_bars)
+        }, index=dates)
+        df['open'].iloc[0] = base_price
+
+        # Batch calculation
+        from src.indicators.orb import calculate_orb_levels
+        df_batch = calculate_orb_levels(
+            df.copy(),
+            start_time='00:00',  # Use midnight for testing
+            duration_minutes=5,
+            body_pct=0.5
+        )
+
+        # Incremental calculation: simulate cache (first 2 days) + new data (day 3)
+        cache_size = 2 * bars_per_day  # 2 days
+        engine = IncrementalIndicatorEngine()
+
+        df_incremental = df.copy()
+        for col in ['ORB_High', 'ORB_Low', 'ORB_Range', 'ORB_Breakout']:
+            df_incremental[col] = None
+
+        indicators = [{
+            'name': 'orb_levels',
+            'params': {'start_time': '00:00', 'duration_minutes': 5, 'body_pct': 0.5},
+            'columns': ['ORB_High', 'ORB_Low', 'ORB_Range', 'ORB_Breakout']
+        }]
+
+        df_incremental = engine.update(
+            df_incremental, cache_size, indicators, 'TEST', '5m'
+        )
+
+        # Compare ORB values for day 3 (newly calculated day)
+        day3_start = 2 * bars_per_day
+        for idx in range(day3_start, day3_start + 50):  # Check first 50 bars of day 3
+            for col in ['ORB_High', 'ORB_Low', 'ORB_Range']:
+                batch_val = df_batch[col].iloc[idx]
+                incr_val = df_incremental[col].iloc[idx]
+
+                if pd.notna(batch_val) and pd.notna(incr_val):
+                    assert abs(batch_val - incr_val) < 1e-6, (
+                        f"ORB {col} mismatch at index {idx}: "
+                        f"batch={batch_val}, incr={incr_val}"
+                    )
+
+            # Breakout flags should match exactly
+            batch_flag = df_batch['ORB_Breakout'].iloc[idx]
+            incr_flag = df_incremental['ORB_Breakout'].iloc[idx]
+            assert batch_flag == incr_flag, (
+                f"ORB_Breakout mismatch at index {idx}: "
+                f"batch={batch_flag}, incr={incr_flag}"
+            )
+
+    def test_macd_incremental_matches_batch(self, sample_data):
+        """Test MACD incremental calculation matches batch."""
+        df = sample_data.copy()
+
+        # Batch calculation
+        df_batch = df.copy()
+        df_batch.ta.macd(fast=12, slow=26, signal=9, append=True)
+
+        # Incremental calculation
+        engine = IncrementalIndicatorEngine()
+        cache_size = 80
+        df_incremental = df.copy()
+        for col in ['MACD_12_26_9', 'MACDs_12_26_9', 'MACDh_12_26_9']:
+            df_incremental[col] = None
+
+        indicators = [{
+            'name': 'macd',
+            'params': {'fast': 12, 'slow': 26, 'signal': 9},
+            'columns': ['MACD_12_26_9', 'MACDs_12_26_9', 'MACDh_12_26_9']
+        }]
+        df_incremental = engine.update(
+            df_incremental, cache_size, indicators, 'TEST', '5m'
+        )
+
+        # Compare last 10 values (after convergence)
+        for i in range(90, 100):
+            batch_macd = df_batch['MACD_12_26_9'].iloc[i]
+            incr_macd = df_incremental['MACD_12_26_9'].iloc[i]
+            batch_signal = df_batch['MACDs_12_26_9'].iloc[i]
+            incr_signal = df_incremental['MACDs_12_26_9'].iloc[i]
+
+            if pd.notna(batch_macd) and pd.notna(incr_macd):
+                macd_diff = abs(batch_macd - incr_macd)
+                assert macd_diff < 0.15, (
+                    f"MACD mismatch at {i}: batch={batch_macd}, incr={incr_macd}, diff={macd_diff}"
+                )
+
+            if pd.notna(batch_signal) and pd.notna(incr_signal):
+                signal_diff = abs(batch_signal - incr_signal)
+                assert signal_diff < 0.15, (
+                    f"MACD signal mismatch at {i}: batch={batch_signal}, incr={incr_signal}, diff={signal_diff}"
+                )
+
+    def test_bbands_incremental_matches_batch(self, sample_data):
+        """Test Bollinger Bands incremental calculation matches batch."""
+        df = sample_data.copy()
+
+        # Batch calculation
+        df_batch = df.copy()
+        df_batch.ta.bbands(length=20, std=2, append=True)
+
+        # Incremental calculation
+        engine = IncrementalIndicatorEngine()
+        cache_size = 80
+        df_incremental = df.copy()
+        for col in ['BBU_20_2.0_2.0', 'BBM_20_2.0_2.0', 'BBL_20_2.0_2.0']:
+            df_incremental[col] = None
+
+        indicators = [{
+            'name': 'bbands',
+            'params': {'period': 20, 'std_dev': 2.0},
+            'columns': ['BBU_20_2.0_2.0', 'BBM_20_2.0_2.0', 'BBL_20_2.0_2.0']
+        }]
+        df_incremental = engine.update(
+            df_incremental, cache_size, indicators, 'TEST', '5m'
+        )
+
+        # Compare last 10 values
+        for i in range(90, 100):
+            for batch_col, incr_col in [
+                ('BBU_20_2.0_2.0', 'BBU_20_2.0_2.0'),  # Upper band
+                ('BBM_20_2.0_2.0', 'BBM_20_2.0_2.0'),  # Middle band (SMA)
+                ('BBL_20_2.0_2.0', 'BBL_20_2.0_2.0'),  # Lower band
+            ]:
+                batch_val = df_batch[batch_col].iloc[i]
+                incr_val = df_incremental[incr_col].iloc[i]
+
+                if pd.notna(batch_val) and pd.notna(incr_val):
+                    diff = abs(batch_val - incr_val)
+                    assert diff < 0.1, (
+                        f"{batch_col} mismatch at {i}: batch={batch_val}, incr={incr_val}, diff={diff}"
+                    )
+
 
 class TestStatePersistence:
     """Test indicator state save/load functionality."""
