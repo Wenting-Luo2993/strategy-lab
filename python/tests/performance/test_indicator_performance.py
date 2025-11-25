@@ -226,9 +226,8 @@ class TestIndicatorPerformance:
             f"exceeds 100ms target for real-time use"
         )
 
-    @pytest.mark.skip(reason="Phase 4: Memory overhead from warmup will be eliminated with state persistence")
-    def test_memory_efficiency(self, sample_data):
-        """Test that incremental calculation uses memory proportional to new data size."""
+    def test_memory_efficiency(self, sample_data, tmp_path):
+        """Test that incremental calculation with state persistence uses less memory than batch."""
         import tracemalloc
 
         bars_per_day = 288
@@ -254,9 +253,40 @@ class TestIndicatorPerformance:
         batch_current, batch_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
-        # Measure incremental calculation memory
+        # Measure incremental calculation memory WITH state persistence
+        # First, initialize state from cache data
+        engine = IncrementalIndicatorEngine()
+        df_init = df_cache.copy()
+        _ = engine.update(
+            df=df_init,
+            new_start_idx=0,
+            indicators=indicators,
+            symbol='TEST',
+            timeframe='5m'
+        )
+
+        # Save state to temporary file
+        state_path = tmp_path / "TEST_5m_indicators.pkl"
+        engine.save_state(state_path)
+
+        # Now measure memory for loading state + processing new data
         tracemalloc.start()
-        _, df_incremental = self._time_incremental_calculation(df_cache, df_new, indicators)
+
+        # Create new engine and load state (this is the real-world scenario)
+        engine2 = IncrementalIndicatorEngine()
+        engine2.load_state(state_path)
+
+        # Process only new data
+        df_combined = pd.concat([df_cache, df_new])
+        new_start_idx = len(df_cache)
+        _ = engine2.update(
+            df=df_combined,
+            new_start_idx=new_start_idx,
+            indicators=indicators,
+            symbol='TEST',
+            timeframe='5m'
+        )
+
         incremental_current, incremental_peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
 
@@ -265,16 +295,17 @@ class TestIndicatorPerformance:
         memory_ratio = batch_peak / incremental_peak if incremental_peak > 0 else float('inf')
 
         print(f"\n{'='*60}")
-        print(f"Memory Efficiency Test")
+        print(f"Memory Efficiency Test (with state persistence)")
         print(f"{'='*60}")
         print(f"Batch peak memory: {batch_peak_mb:.2f} MB")
-        print(f"Incremental peak memory: {incremental_peak_mb:.2f} MB")
+        print(f"Incremental peak memory (load + update): {incremental_peak_mb:.2f} MB")
         print(f"Memory ratio: {memory_ratio:.1f}x")
         print(f"{'='*60}\n")
 
-        # Incremental should use significantly less memory than batch
+        # With state persistence, incremental should use less memory than batch
+        # because it only processes new data (2016 bars) vs full dataset (10656 bars)
         assert incremental_peak <= batch_peak, (
-            f"Incremental used more memory ({incremental_peak_mb:.2f}MB) "
+            f"Incremental with state persistence used more memory ({incremental_peak_mb:.2f}MB) "
             f"than batch ({batch_peak_mb:.2f}MB)"
         )
 

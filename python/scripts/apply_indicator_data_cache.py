@@ -83,6 +83,7 @@ try:
 	from src.indicators import IndicatorFactory  # ensures registry populated
 	from src.indicators.orb import calculate_orb_levels  # noqa: F401 (registration side-effect)
 	from src.utils.logger import get_logger
+	from src.config.indicators import CORE_INDICATORS, ORB_DEFAULT_PARAMS
 except ModuleNotFoundError as e:
 	print("[FATAL] Unable to import project modules. Ensure you run from project root or that PYTHONPATH includes project root.")
 	print(f"[DETAIL] {e}")
@@ -90,12 +91,10 @@ except ModuleNotFoundError as e:
 
 logger = get_logger("CacheIndicatorPrecompute")
 
-EMA_LENGTHS = [20, 30, 50, 200]
-RSI_LENGTH = 14
-ATR_LENGTH = 14
-ORB_DEFAULT_START = "09:30"
-ORB_DEFAULT_WINDOW = 5
-ORB_DEFAULT_BODY_PCT = 0.5
+# Parse indicator lengths from CORE_INDICATORS config
+EMA_LENGTHS = [int(ind.split("_")[1]) for ind in CORE_INDICATORS if ind.startswith("EMA_")]
+RSI_LENGTH = int(next((ind.split("_")[1] for ind in CORE_INDICATORS if ind.startswith("RSI_")), "14"))
+ATR_LENGTH = int(next((ind.split("_")[1] for ind in CORE_INDICATORS if ind.startswith("ATR_")), "14"))
 
 TIMEFRAME_WHITELIST = {"1m", "5m", "15m", "1h", "1d"}
 
@@ -105,9 +104,9 @@ def parse_args() -> argparse.Namespace:
 	p.add_argument("--cache-dir", default="data_cache", help="Root cache directory containing parquet files")
 	p.add_argument("--tickers", nargs="*", help="Optional list of ticker symbols to process (default: all discovered)")
 	p.add_argument("--timeframes", nargs="*", help="Optional list of timeframe filters (e.g. 5m 1m)")
-	p.add_argument("--orb-start", default=ORB_DEFAULT_START, help="Opening range start time HH:MM")
-	p.add_argument("--orb-window", type=int, default=ORB_DEFAULT_WINDOW, help="Opening range duration minutes")
-	p.add_argument("--body-pct", type=float, default=ORB_DEFAULT_BODY_PCT, help="ORB breakout body percentage threshold")
+	p.add_argument("--orb-start", default=ORB_DEFAULT_PARAMS["start_time"], help="Opening range start time HH:MM")
+	p.add_argument("--orb-window", type=int, default=ORB_DEFAULT_PARAMS["duration_minutes"], help="Opening range duration minutes")
+	p.add_argument("--body-pct", type=float, default=ORB_DEFAULT_PARAMS["body_pct"], help="ORB breakout body percentage threshold")
 	p.add_argument("--force", action="store_true", help="Recalculate indicators even if columns already present")
 	p.add_argument("--dry-run", action="store_true", help="Do not write changes back to parquet files")
 	p.add_argument("--workers", type=int, default=0, help="Process pool worker count (0 = sequential)")

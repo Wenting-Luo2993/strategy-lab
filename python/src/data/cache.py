@@ -10,6 +10,8 @@ from src.data.base import DataLoader
 from src.utils.logger import get_logger
 from src.utils.google_drive_sync import DriveSync
 from src.utils.workspace import resolve_workspace_path
+from src.indicators.incremental import IncrementalIndicatorEngine
+from src.config.indicators import CORE_INDICATORS, ORB_DEFAULT_PARAMS
 
 # Get a configured logger for this module
 logger = get_logger("Cache")
@@ -43,7 +45,26 @@ class CacheDataLoader(DataLoader):
         drive_root: str = "strategy-lab",
         use_service_account: bool = True,
         service_account_env: str = "GOOGLE_SERVICE_ACCOUNT_KEY",
+        auto_indicators: Optional[List[str]] = None,
+        indicator_mode: str = "incremental",
     ):
+        """Initialize CacheDataLoader with optional incremental indicator calculation.
+
+        Args:
+            wrapped_loader: Underlying data loader (None = cache-only mode)
+            cache_dir: Cache directory path
+            max_lookback_days: Maximum lookback window for new fetches
+            timeframe_minutes_map: Map timeframe strings to minutes
+            cloud_sync: Enable Google Drive sync
+            drive_root: Drive root folder name
+            use_service_account: Use service account for Drive auth
+            service_account_env: Environment variable for service account key
+            auto_indicators: List of indicators to calculate automatically (None = CORE_INDICATORS)
+            indicator_mode: How to handle indicators:
+                - 'incremental': Use IncrementalIndicatorEngine for efficient updates (default)
+                - 'batch': Recalculate all indicators on every fetch (legacy behavior)
+                - 'skip': Don't calculate indicators, preserve existing values only
+        """
         # Underlying loader is optional; if None we operate in cache-only mode
         self.wrapped_loader = wrapped_loader
         # Anchor relative cache_dir paths using shared workspace utility
@@ -67,10 +88,82 @@ class CacheDataLoader(DataLoader):
             use_service_account=use_service_account,
         ) if cloud_sync else None
 
+        # Indicator configuration
+        self.indicator_mode = indicator_mode
+        if auto_indicators is None and indicator_mode != 'skip':
+            self.auto_indicators = CORE_INDICATORS
+        else:
+            self.auto_indicators = auto_indicators or []
+
+        # Initialize incremental indicator engine if needed
+        if indicator_mode == 'incremental' and self.auto_indicators:
+            self.indicator_engine = IncrementalIndicatorEngine()
+            logger.info(f"Initialized incremental indicator engine with {len(self.auto_indicators)} indicators: {self.auto_indicators}")
+        else:
+            self.indicator_engine = None
+
     # ---------------------- Path & Migration Helpers ---------------------- #
     def _rolling_cache_path(self, symbol: str, timeframe: str) -> Path:
         clean_symbol = symbol.replace(":", "_").replace("/", "_")
         return self.cache_dir / f"{clean_symbol}_{timeframe}.parquet"
+
+    def _indicator_state_path(self, symbol: str, timeframe: str) -> Path:
+        """Get path to indicator state file for this symbol/timeframe."""
+        clean_symbol = symbol.replace(":", "_").replace("/", "_")
+        return self.cache_dir / f"{clean_symbol}_{timeframe}_indicators.pkl"
+
+    @staticmethod
+    def _parse_indicator_config(indicator_str: str) -> dict:
+        """Parse indicator string into configuration dictionary.
+
+        Examples:
+            "EMA_9" -> {'name': 'ema', 'params': {'length': 9}, 'column': 'EMA_9'}
+            "RSI_14" -> {'name': 'rsi', 'params': {'length': 14}, 'column': 'RSI_14'}
+            "ATR_14" -> {'name': 'atr', 'params': {'length': 14}, 'column': 'ATRr_14'}
+            "MACD_12_26_9" -> {'name': 'macd', 'params': {'fast': 12, 'slow': 26, 'signal': 9}, 'column': 'MACD_12_26_9'}
+            "bbands_20_2" -> {'name': 'bbands', 'params': {'length': 20, 'std': 2.0}, 'column': 'bbands_20_2'}
+            "orb_levels" -> {'name': 'orb_levels', 'params': {}, 'column': 'orb_levels'}
+            "SMA_20" -> {'name': 'sma', 'params': {'length': 20}, 'column': 'SMA_20'}
+        """
+        parts = indicator_str.split("_")
+        name = parts[0].lower()
+
+        # Handle special cases
+        if name == "macd" and len(parts) == 4:
+            return {
+                'name': 'macd',
+                'params': {'fast': int(parts[1]), 'slow': int(parts[2]), 'signal': int(parts[3])},
+                'column': indicator_str
+            }
+        elif name == "bbands" and len(parts) == 3:
+            return {
+                'name': 'bbands',
+                'params': {'length': int(parts[1]), 'std': float(parts[2])},
+                'column': indicator_str
+            }
+        elif name == "orb":
+            # ORB with default parameters from centralized config
+            return {
+                'name': 'orb_levels',
+                'params': ORB_DEFAULT_PARAMS.copy(),
+                'column': 'orb_levels'
+            }
+        elif name == "atr" and len(parts) == 2:
+            # ATR uses ATRr_ prefix for column name
+            return {
+                'name': 'atr',
+                'params': {'length': int(parts[1])},
+                'column': f'ATRr_{parts[1]}'
+            }
+        elif len(parts) == 2:
+            # Standard format: INDICATOR_LENGTH
+            return {
+                'name': name,
+                'params': {'length': int(parts[1])},
+                'column': indicator_str
+            }
+        else:
+            raise ValueError(f"Unsupported indicator format: {indicator_str}")
 
     def _legacy_files(self, symbol: str, timeframe: str) -> List[Path]:
         clean_symbol = symbol.replace(":", "_").replace("/", "_")
@@ -145,6 +238,18 @@ class CacheDataLoader(DataLoader):
 
         df_cache = self._read_cache(rolling_path)
         logger.debug(f"Cache read for {symbol} {timeframe} from {rolling_path}: rows={len(df_cache)}")
+
+        # Load indicator state if in incremental mode
+        state_loaded = False
+        if self.indicator_mode == 'incremental' and self.indicator_engine:
+            state_path = self._indicator_state_path(symbol, timeframe)
+            if state_path.exists():
+                try:
+                    self.indicator_engine.load_state(state_path)
+                    state_loaded = True
+                    logger.debug(f"Loaded indicator state from {state_path.name}")
+                except Exception as e:  # pragma: no cover
+                    logger.warning(f"Failed to load indicator state from {state_path.name}: {e}. Starting fresh.")
 
         if start is None and not df_cache.empty:
             # Derive earliest date only if we truly have a DatetimeIndex
@@ -236,9 +341,45 @@ class CacheDataLoader(DataLoader):
 
         # Merge and persist if we have new data
         if new_frames:
+            # Track old cache size to determine where new data starts
+            old_cache_size = len(df_cache)
+
             combined = pd.concat([df_cache] + new_frames, axis=0) if not df_cache.empty else pd.concat(new_frames, axis=0)
             combined = self._standardize_df(combined)
             combined = self._dedupe_and_sort(combined)
+
+            # Calculate indicators incrementally on new data if configured
+            if self.indicator_mode == 'incremental' and self.indicator_engine and self.auto_indicators:
+                try:
+                    # Determine where new data starts in the combined dataframe
+                    # After deduplication, the boundary might have shifted slightly
+                    new_start_idx = old_cache_size if old_cache_size > 0 else 0
+
+                    # Only calculate if we have new bars to process
+                    if new_start_idx < len(combined):
+                        # Parse indicator strings into configuration dicts
+                        indicator_configs = [self._parse_indicator_config(ind) for ind in self.auto_indicators]
+
+                        logger.debug(f"Calculating {len(indicator_configs)} indicators incrementally starting at index {new_start_idx}")
+                        combined = self.indicator_engine.update(
+                            df=combined,
+                            new_start_idx=new_start_idx,
+                            indicators=indicator_configs,
+                            symbol=symbol,
+                            timeframe=timeframe
+                        )
+                        logger.debug(f"Incremental indicator calculation complete for {len(combined) - new_start_idx} new bars")
+
+                        # Save indicator state after successful calculation
+                        state_path = self._indicator_state_path(symbol, timeframe)
+                        try:
+                            self.indicator_engine.save_state(state_path)
+                            logger.debug(f"Saved indicator state to {state_path.name}")
+                        except Exception as e:  # pragma: no cover
+                            logger.warning(f"Failed to save indicator state to {state_path.name}: {e}")
+                except Exception as e:  # pragma: no cover
+                    logger.error(f"Failed to calculate indicators incrementally: {e}. Continuing without indicators.")
+
             # Save
             combined.to_parquet(rolling_path)
             df_cache = combined
@@ -246,6 +387,30 @@ class CacheDataLoader(DataLoader):
                 f"Updated rolling cache {rolling_path.name}: total rows={len(df_cache)} (added {sum(len(f) for f in new_frames)})"
             )
         else:
+            # No new data fetched, but check if we need to initialize state from existing cache
+            logger.debug(f"No new frames fetched. Checking state initialization: mode={self.indicator_mode}, engine={self.indicator_engine is not None}, indicators={len(self.auto_indicators) if self.auto_indicators else 0}, cache_empty={df_cache.empty}, state_loaded={state_loaded}")
+            if self.indicator_mode == 'incremental' and self.indicator_engine and self.auto_indicators and not df_cache.empty and not state_loaded:
+                state_path = self._indicator_state_path(symbol, timeframe)
+                logger.info(f"No state file found but cache exists. Initializing state from {len(df_cache)} cached bars.")
+                try:
+                    # Calculate indicators on entire cache to build initial state
+                    indicator_configs = [self._parse_indicator_config(ind) for ind in self.auto_indicators]
+                    df_cache = self.indicator_engine.update(
+                        df=df_cache,
+                        new_start_idx=0,  # Process all cached data
+                        indicators=indicator_configs,
+                        symbol=symbol,
+                        timeframe=timeframe
+                    )
+                    # Save the newly built state
+                    logger.info(f"About to save indicator state to {state_path}")
+                    self.indicator_engine.save_state(state_path)
+                    logger.info(f"Successfully initialized and saved indicator state to {state_path.name}")                    # Update the parquet cache with calculated indicators
+                    df_cache.to_parquet(rolling_path)
+                    logger.debug(f"Updated cache with indicators: {rolling_path.name}")
+                except Exception as e:  # pragma: no cover
+                    logger.error(f"Failed to initialize indicator state: {e}")
+
             if df_cache.empty:
                 logger.warning(
                     f"No data fetched and cache empty for {symbol} {timeframe}; returning empty DataFrame"
