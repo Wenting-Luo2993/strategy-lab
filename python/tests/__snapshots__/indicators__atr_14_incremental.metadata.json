@@ -1,0 +1,8 @@
+{
+  "name": "atr_14_incremental",
+  "kind": "indicators",
+  "updated_at": null,
+  "commit": "bfffcd5b4d030d994dee5b55c2574274ec86ace7",
+  "config_hash": "8ba4fa49710a0e32f7ae75e0d6e3fc4092b3f1f3898dcbdec5e91d7fe5af3e92",
+  "rows": 219
+}

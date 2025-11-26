@@ -1,0 +1,8 @@
+{
+  "name": "bbands_20_2_incremental",
+  "kind": "indicators",
+  "updated_at": null,
+  "commit": "bfffcd5b4d030d994dee5b55c2574274ec86ace7",
+  "config_hash": "09e508e7a3c38644e24bd03b11eb00e02a694d7e55501c30e3f3ddfbc9ef67e9",
+  "rows": 214
+}

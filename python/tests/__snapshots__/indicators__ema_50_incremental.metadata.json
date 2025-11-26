@@ -1,0 +1,8 @@
+{
+  "name": "ema_50_incremental",
+  "kind": "indicators",
+  "updated_at": null,
+  "commit": "bfffcd5b4d030d994dee5b55c2574274ec86ace7",
+  "config_hash": "26d52d2f20c0cb6568b994b3a4941f5ff71264d37a73d7da11a2b89af89d4f0d",
+  "rows": 184
+}

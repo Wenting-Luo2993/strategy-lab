@@ -146,6 +146,7 @@ def extract_fixture(
     source_path: Path,
     dest_path: Path,
     fixture_name: str,
+    drop_indicators: bool = False,
 ) -> Dict[str, int]:
     dest_path.mkdir(parents=True, exist_ok=True)
     rows_per_ticker: Dict[str, int] = {}
@@ -156,6 +157,13 @@ def extract_fixture(
         df = _read_parquet(file_path)
         df = _filter_date_range(df, start_date, end_date)
         df = _sort_and_index(df)
+
+        # Drop indicator columns if requested (keep only OHLCV + adj close)
+        if drop_indicators:
+            ohlcv_columns = ['open', 'high', 'low', 'close', 'volume', 'adj close']
+            existing_ohlcv = [col for col in ohlcv_columns if col in df.columns]
+            df = df[existing_ohlcv]
+
         df = normalize_numeric(df)
         rows_per_ticker[t] = len(df)
         # Write out as parquet (preserve types)
@@ -191,6 +199,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--end-date", required=False, help="End date YYYY-MM-DD (inclusive)")
     parser.add_argument("--source-path", default="data_cache", help="Relative or absolute path to source data cache")
     parser.add_argument("--fixture-name", required=False, help="Optional explicit fixture name")
+    parser.add_argument("--drop-indicators", action="store_true", help="Drop all indicator columns, keep only OHLCV")
     return parser.parse_args(argv)
 
 
@@ -211,8 +220,9 @@ def main(argv: List[str]) -> int:
     base_dest = get_scenarios_root()
     dest_path = base_dest / fixture_name
 
-    rows = extract_fixture(tickers, start_date, end_date, source_path, dest_path, fixture_name)
-    print(f"Fixture '{fixture_name}' created at {dest_path}. Rows per ticker: {rows}")
+    rows = extract_fixture(tickers, start_date, end_date, source_path, dest_path, fixture_name, drop_indicators=args.drop_indicators)
+    mode = "OHLCV-only" if args.drop_indicators else "full"
+    print(f"Fixture '{fixture_name}' ({mode}) created at {dest_path}. Rows per ticker: {rows}")
     return 0
 
 

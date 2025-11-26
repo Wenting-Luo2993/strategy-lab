@@ -1,0 +1,8 @@
+{
+  "name": "rsi_14_incremental",
+  "kind": "indicators",
+  "updated_at": null,
+  "commit": "bfffcd5b4d030d994dee5b55c2574274ec86ace7",
+  "config_hash": "50a6021cc64828ff01d58406f299fa244e6da84c78cde58e11c848c55df471a9",
+  "rows": 219
+}

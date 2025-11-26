@@ -1,0 +1,8 @@
+{
+  "name": "incremental_extension_state_load",
+  "kind": "indicators",
+  "updated_at": null,
+  "commit": "bfffcd5b4d030d994dee5b55c2574274ec86ace7",
+  "config_hash": "c76c971867e429051f17b2585ca4eb2a35ee37e95b9ff1829205479c2c22f60e",
+  "rows": 214
+}

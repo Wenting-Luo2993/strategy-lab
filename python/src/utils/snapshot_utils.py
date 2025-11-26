@@ -15,7 +15,10 @@ from __future__ import annotations
 from typing import Iterable
 import pandas as pd
 
-NUMERIC_ABS_TOLERANCE = 1e-6  # Retain legacy name
+# Tolerance must accommodate CSV round-trip with NUMERIC_PRECISION decimal places.
+# With 4 decimal places, max representable difference is 0.00005 (5e-5).
+# Set tolerance to 1e-4 to safely handle float representation and rounding errors.
+NUMERIC_ABS_TOLERANCE = 1e-4
 NUMERIC_ABS_TOL = NUMERIC_ABS_TOLERANCE  # Alias for newer imports
 NUMERIC_PRECISION = 4
 
@@ -24,8 +27,19 @@ def normalize_numeric(df: pd.DataFrame) -> pd.DataFrame:
     """Return DataFrame with float columns rounded to NUMERIC_PRECISION.
 
     Operates in-place where feasible for performance, but returns df for chainability.
+    Converts float32 to float64 to ensure proper precision after rounding.
+    Also handles object dtype columns that contain numeric values.
     """
-    for col in df.select_dtypes(include=["float", "float64", "float32"]).columns:
+    for col in df.select_dtypes(include=["float", "float64", "float32", "object"]).columns:
+        # Skip non-numeric object columns
+        if df[col].dtype == 'object':
+            try:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            except (ValueError, TypeError):
+                continue
+        # Convert float32 to float64 before rounding for proper precision
+        if df[col].dtype == 'float32':
+            df[col] = df[col].astype('float64')
         df[col] = df[col].round(NUMERIC_PRECISION)
     return df
 

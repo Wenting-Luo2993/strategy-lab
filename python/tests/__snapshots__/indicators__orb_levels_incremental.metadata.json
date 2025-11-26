@@ -1,0 +1,8 @@
+{
+  "name": "orb_levels_incremental",
+  "kind": "indicators",
+  "updated_at": null,
+  "commit": "bfffcd5b4d030d994dee5b55c2574274ec86ace7",
+  "config_hash": "08e047f986c509813b0d721663445ea78404eadf3689660473194f849b28f436",
+  "rows": 234
+}

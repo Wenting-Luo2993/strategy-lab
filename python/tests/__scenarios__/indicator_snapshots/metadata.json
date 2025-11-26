@@ -1,0 +1,22 @@
+{
+  "content_hash": "a0e78e584a5ca367c710ca2be34b157890bf33cae01c8e05dc9a46a86ab79db5",
+  "created_at": "2025-11-26T00:00:03.506818+00:00",
+  "end_date": "2025-11-07",
+  "fixture_name": "indicator_snapshots",
+  "generator_version": "1.0.0",
+  "git_commit": "bfffcd5b4d030d994dee5b55c2574274ec86ace7",
+  "numeric_precision": 4,
+  "rows_per_ticker": {
+    "AAPL": 234,
+    "AMZN": 234,
+    "NVDA": 234
+  },
+  "source_path": "C:\\dev\\strategy-lab\\python\\data_cache",
+  "start_date": "2025-11-05",
+  "tickers": [
+    "AAPL",
+    "NVDA",
+    "AMZN"
+  ],
+  "version": 1
+}

@@ -1,0 +1,8 @@
+{
+  "name": "sma_20_incremental",
+  "kind": "indicators",
+  "updated_at": null,
+  "commit": "bfffcd5b4d030d994dee5b55c2574274ec86ace7",
+  "config_hash": "830bb7a4cebc80c572d5d1b447e599f09d0eb9fac73fd7373b085312a722a794",
+  "rows": 214
+}
