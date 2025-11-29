@@ -78,11 +78,40 @@
 - ✅ **Requirements Compliance**: CORE_INDICATORS matches specification in docs (EMA 20/30/50/200, RSI_14, ATR_14, orb_levels only)
 - **Performance**: Eliminates warmup overhead by loading persisted state instead of reprocessing entire cache
 
+**Phase 5 Results:**
+
+- ✅ **Snapshot Testing Complete (11/11 tests passing)**:
+
+  - Created `tests/snapshot/test_indicator_snapshots.py` with comprehensive coverage
+  - Tests all incremental indicators: EMA, SMA, RSI, ATR, MACD, Bollinger Bands, ORB
+  - Fixed float32/object dtype normalization issues for consistent snapshots
+  - Uses `assert_snapshot` fixture with normalized DataFrames
+  - Validates incremental calculation matches batch mode within tolerance
+
+- ✅ **Performance Regression Testing Complete (9/9 cache integration tests passing)**:
+  - **Renamed test files for clarity**:
+    - `test_performance_regression.py` → `test_cache_integration_performance.py` (PRIMARY suite)
+    - `test_indicator_performance.py` → `test_indicator_engine_microbenchmarks.py` (specialized)
+  - **Fixed CacheDataLoader API compatibility**:
+    - Updated 7 occurrences: `cache_path` → `cache_dir` parameter
+    - Fixed fetch() parameters: `start_date`/`end_date` → `start`/`end`
+  - **Established performance baselines** (stored in `tests/__baselines__/performance_baselines.json`):
+    - Small cache extension (1 day, 288 bars): **14.14ms avg**, 27.24ms p95
+    - Medium cache extension (7 days, 2016 bars): **17.50ms avg**, 30.54ms p95
+    - Large cache extension (30 days, 8640 bars): **46.68ms avg**, 65.92ms p95
+    - Initial population (30 days): **1611ms avg** (includes cold start overhead)
+    - State load performance: **3.39ms avg**, 4.45ms p95 (<50ms target)
+    - Indicator scaling: Linear performance with indicator count (~15-18ms per 2-7 indicators)
+    - Multi-symbol (3 symbols): **88.08ms avg** for 1-day extension across all symbols
+  - **Regression detection**: 50% slower than baseline triggers test failure
+  - **Test suite runtime**: ~11 minutes for full 9-test suite
+  - **Engine microbenchmarks**: 2 active tests (single-bar latency <100ms, memory efficiency), 2 skipped (engine overhead dominates without cache I/O)
+
 ### Phase 5: Testing & Validation (Week 5-6) - 🔄 In Progress
 
-- [ ] Snapshot testing for all indicators
+- [x] Snapshot testing for all indicators - **DONE: test_indicator_snapshots.py with 11/11 passing tests**
 - [ ] Edge case testing (gaps, NaN, timezone)
-- [ ] Performance regression tests - **Note**: Existing performance tests in test_indicator_performance.py test the engine directly without cache integration. They need to be rewritten to use CacheDataLoader with state persistence to properly validate Phase 4's performance improvements. Integration tests demonstrate the functionality works correctly.
+- [x] Performance regression tests - **DONE: test_cache_integration_performance.py (9/9 passing) + test_indicator_engine_microbenchmarks.py (2/4 passing, 2 skipped)**
 - [ ] Validate against existing cache files
 
 ### Phase 6: Documentation & Rollout (Week 6-7) - ⏳ Not Started
