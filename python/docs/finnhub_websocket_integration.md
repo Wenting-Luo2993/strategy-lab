@@ -154,7 +154,55 @@ This document outlines the requirements and implementation plan for integrating 
          wss://ws.finnhub.io (Finnhub WebSocket)
 ```
 
-### 3.2 Live vs. Cache/Replay Separation
+### 3.2 WebSocket Client Architecture (Phase 2 Implementation)
+
+Detailed internal architecture of the `FinnhubWebSocketClient`:
+
+```
+┌─────────────────────────────────────────────┐
+│     FinnhubWebSocketClient                  │
+│                                             │
+│  ┌────────────────────────────────────┐    │
+│  │  Connection (websockets lib)       │    │
+│  │  - wss://ws.finnhub.io?token=...   │    │
+│  │  - Auto ping/pong keep-alive        │    │
+│  │  - Async connection management      │    │
+│  └────────────────────────────────────┘    │
+│                                             │
+│  ┌────────────────────────────────────┐    │
+│  │  _receive_loop() [async task]      │    │
+│  │  - Continuous message reception     │    │
+│  │  - JSON parsing & validation        │    │
+│  │  - Message type routing             │    │
+│  │  - Error handling & logging         │    │
+│  └────────────────────────────────────┘    │
+│                                             │
+│  ┌────────────────────────────────────┐    │
+│  │  Message Queue (asyncio.Queue)     │    │
+│  │  - Thread-safe producer/consumer    │    │
+│  │  - Max 1000 messages buffered       │    │
+│  │  - Non-blocking get_message()       │    │
+│  │  - Backpressure handling            │    │
+│  └────────────────────────────────────┘    │
+│                                             │
+│  ┌────────────────────────────────────┐    │
+│  │  Statistics & Monitoring           │    │
+│  │  - Messages received/parsed/errors  │    │
+│  │  - Connection uptime                │    │
+│  │  - Subscribed symbols tracking      │    │
+│  │  - Queue size metrics               │    │
+│  └────────────────────────────────────┘    │
+└─────────────────────────────────────────────┘
+```
+
+**Key Features:**
+
+- **Async/Await Pattern**: Non-blocking I/O for efficient WebSocket handling
+- **Producer-Consumer**: Receive loop produces messages, aggregator consumes
+- **Comprehensive Error Handling**: Connection failures, parse errors, timeouts
+- **Statistics Tracking**: Full observability for debugging and monitoring
+
+### 3.3 Live vs. Cache/Replay Separation
 
 **Architecture Decision**: Keep live WebSocket subscription logic separate from cache/replay logic to maintain clean responsibilities.
 
@@ -236,31 +284,31 @@ This document outlines the requirements and implementation plan for integrating 
 
 ### Phase 1: Configuration & Credentials Setup
 
-- [ ] **T1.1**: Create `src/config/finnhub_config.json` schema
+- [x] **T1.1**: Create `src/config/finnhub_config.json` schema
 
   - Fields: `api_key`, `websocket_url`, `bar_interval`, `symbols`, `market_hours`
   - Add `finnhub_config.json` to `.gitignore` for security
   - Create `finnhub_config.example.json` as template
 
-- [ ] **T1.2**: Implement config loader utility
+- [x] **T1.2**: Implement config loader utility
 
   - Function to read and validate JSON config
   - Error handling for missing/invalid config
   - Default values for optional fields
 
-- [ ] **T1.3**: Add dependencies to `requirements.txt`
+- [x] **T1.3**: Add dependencies to `requirements.txt`
 
   - `websockets>=12.0` (async WebSocket client)
   - `finnhub-python>=2.4.0` (REST API client)
   - `pytest-asyncio>=0.23.0` (async test support)
 
-- [ ] **T1.4**: Configure market hours
+- [x] **T1.4**: Configure market hours
 
   - Regular hours: 09:30-16:00 ET
   - Pre-market: 04:00-09:30, After-hours: 16:00-20:00
   - Filter trades by session configuration
 
-- [ ] **T1.5**: **VALIDATION**: Manual config test
+- [ ] **T1.5**: **VALIDATION PENDING**: Manual config test
   - Create test script `scripts/test_finnhub_config.py`
   - Verify config loads correctly with valid API key
   - Test error handling for missing/invalid config

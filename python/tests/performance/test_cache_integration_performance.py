@@ -57,6 +57,9 @@ class TestPerformanceRegression:
     BASELINE_FILE = BASELINE_DIR / "performance_baselines.json"
     REGRESSION_THRESHOLD = 1.5  # Fail if 50% slower than baseline
 
+    # Mark all tests in this class as slow and performance tests
+    pytestmark = [pytest.mark.slow, pytest.mark.performance]
+
     @pytest.fixture(scope="class")
     def baseline_data(self) -> dict:
         """Load or initialize baseline performance data."""

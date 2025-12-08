@@ -9,8 +9,8 @@ repos:
   - repo: local
     hooks:
       - id: pytest
-        name: Run pytest
-        entry: pytest
+        name: Run pytest (affected tests only, skip slow)
+        entry: pytest --testmon --no-cov -m "not slow" -x
         language: system
         types: [python]
         pass_filenames: false

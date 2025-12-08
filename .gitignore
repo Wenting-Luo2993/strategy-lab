@@ -30,6 +30,9 @@ token.json
 **/credentials/
 .env
 
+# Finnhub credentials
+python/src/config/finnhub_config.json
+
 # Logs
 *.log
 
@@ -39,3 +42,4 @@ token.json
 # Test fixtures and outputs
 .coverage
 **/tests/__snapshots__/html/
+.testmondata**
