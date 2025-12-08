@@ -10,6 +10,9 @@ Usage:
 Requirements:
     - Finnhub API key configured in src/config/finnhub_config.json
     - Market must be open to see trade data
+
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 """
 
 import sys
@@ -55,19 +58,19 @@ class ConnectionTester:
 
                 # Print trade (first 5 trades per symbol for brevity)
                 if self.trade_count <= 20:
-                    print(f"  💹 {symbol}: ${price:,.2f} x {volume:,} shares @ {timestamp}")
+                    print(f"  > {symbol}: ${price:,.2f} x {volume:,} shares @ {timestamp}")
 
         elif msg_type == "subscription":
             symbol = message.get("symbol")
             status = message.get("status")
-            print(f"  📊 Subscription: {symbol} - {status}")
+            print(f"  + Subscription: {symbol} - {status}")
 
         elif msg_type == "ping":
-            print(f"  💓 Heartbeat from server")
+            print(f"  * Heartbeat from server")
 
         elif msg_type == "error":
             error_msg = message.get("msg", "Unknown error")
-            print(f"  ❌ Error: {error_msg}")
+            print(f"  X Error: {error_msg}")
 
 
 async def main():
@@ -81,10 +84,10 @@ async def main():
     print("Step 1: Loading configuration...")
     try:
         config = load_finnhub_config()
-        print(f"✅ Config loaded: {len(config.symbols)} symbols configured")
+        print(f"[OK] Config loaded: {len(config.symbols)} symbols configured")
         print(f"   Symbols: {', '.join(config.symbols)}")
     except Exception as e:
-        print(f"❌ Failed to load config: {e}")
+        print(f"[FAIL] Failed to load config: {e}")
         print()
         print("Please ensure finnhub_config.json is set up correctly.")
         print("Run: python scripts/test_finnhub_config.py")
@@ -101,7 +104,7 @@ async def main():
         websocket_url=config.websocket_url,
         message_callback=tester.message_callback
     )
-    print(f"✅ Client created for {config.websocket_url}")
+    print(f"[OK] Client created for {config.websocket_url}")
     print()
 
     # Connect
@@ -109,16 +112,16 @@ async def main():
     try:
         connected = await client.connect()
         if not connected:
-            print("❌ Failed to connect")
+            print("[FAIL] Failed to connect")
             print()
             print("Possible issues:")
             print("  - Invalid API key")
             print("  - Network connectivity problem")
             print("  - Finnhub service unavailable")
             return False
-        print("✅ Successfully connected!")
+        print("[OK] Successfully connected!")
     except Exception as e:
-        print(f"❌ Connection error: {e}")
+        print(f"[FAIL] Connection error: {e}")
         return False
     print()
 
@@ -132,12 +135,12 @@ async def main():
 
         success = await client.subscribe(symbols_to_test)
         if not success:
-            print("❌ Failed to subscribe")
+            print("[FAIL] Failed to subscribe")
             await client.disconnect()
             return False
-        print(f"✅ Subscribed to: {', '.join(symbols_to_test)}")
+        print(f"[OK] Subscribed to: {', '.join(symbols_to_test)}")
     except Exception as e:
-        print(f"❌ Subscription error: {e}")
+        print(f"[FAIL] Subscription error: {e}")
         await client.disconnect()
         return False
     print()
@@ -153,7 +156,7 @@ async def main():
         # Wait for 30 seconds
         await asyncio.sleep(30)
     except KeyboardInterrupt:
-        print("\n\n⚠️  Interrupted by user")
+        print("\n\n[WARN] Interrupted by user")
     print()
     print("-" * 70)
     print()
@@ -165,7 +168,7 @@ async def main():
     status = client.get_connection_status()
 
     print(f"Connection Status:")
-    print(f"  Connected: {'✅ Yes' if status['connected'] else '❌ No'}")
+    print(f"  Connected: {'[OK] Yes' if status['connected'] else '[FAIL] No'}")
     print(f"  Uptime: {status['uptime_seconds']:.1f} seconds")
     print(f"  Subscribed symbols: {', '.join(status['subscribed_symbols'])}")
     print()
@@ -189,35 +192,35 @@ async def main():
 
     # Check if we received trades
     if tester.trade_count == 0:
-        print("⚠️  No trades received during test period")
+        print("[WARN] No trades received during test period")
         print()
         print("This is normal if:")
         print("  - Market is closed (regular hours: 9:30 AM - 4:00 PM ET)")
         print("  - Symbols have low trading volume")
         print("  - Test ran during after-hours with filter enabled")
         print()
-        print("✅ However, connection and subscription worked correctly!")
+        print("[OK] However, connection and subscription worked correctly!")
     else:
-        print(f"✅ Received {tester.trade_count} trades - Connection working perfectly!")
+        print(f"[OK] Received {tester.trade_count} trades - Connection working perfectly!")
     print()
 
     # Disconnect
     print("Step 7: Disconnecting...")
     await client.disconnect()
-    print("✅ Disconnected cleanly")
+    print("[OK] Disconnected cleanly")
     print()
 
     # Summary
     print("=" * 70)
     print("Test Summary")
     print("=" * 70)
-    print("✅ Configuration: Loaded successfully")
-    print("✅ Connection: Connected and authenticated")
-    print("✅ Subscription: Subscribed to symbols")
-    print(f"{'✅' if tester.trade_count > 0 else '⚠️ '} Trade Data: {tester.trade_count} trades received")
-    print("✅ Disconnect: Clean shutdown")
+    print("[OK] Configuration: Loaded successfully")
+    print("[OK] Connection: Connected and authenticated")
+    print("[OK] Subscription: Subscribed to symbols")
+    print(f"{'[OK]' if tester.trade_count > 0 else '[WARN]'} Trade Data: {tester.trade_count} trades received")
+    print("[OK] Disconnect: Clean shutdown")
     print()
-    print("🎉 Phase 2 Validation: PASSED")
+    print("[SUCCESS] Phase 2 Validation: PASSED")
     print()
     print("Next steps:")
     print("1. ✓ WebSocket client is working")
@@ -233,10 +236,10 @@ if __name__ == "__main__":
         success = asyncio.run(main())
         sys.exit(0 if success else 1)
     except KeyboardInterrupt:
-        print("\n\n⚠️  Test interrupted by user")
+        print("\n\n[WARN] Test interrupted by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\n[FAIL] Unexpected error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)

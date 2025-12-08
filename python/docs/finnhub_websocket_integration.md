@@ -308,7 +308,7 @@ Detailed internal architecture of the `FinnhubWebSocketClient`:
   - Pre-market: 04:00-09:30, After-hours: 16:00-20:00
   - Filter trades by session configuration
 
-- [ ] **T1.5**: **VALIDATION PENDING**: Manual config test
+- [x] **T1.5**: **VALIDATION PENDING**: Manual config test
   - Create test script `scripts/test_finnhub_config.py`
   - Verify config loads correctly with valid API key
   - Test error handling for missing/invalid config

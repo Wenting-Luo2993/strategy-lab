@@ -113,7 +113,7 @@ class FinnhubWebSocketClient:
             # Start background tasks
             self._receive_task = asyncio.create_task(self._receive_loop())
 
-            logger.info("✅ Successfully connected to Finnhub WebSocket")
+            logger.info("[SUCCESS] Successfully connected to Finnhub WebSocket")
             return True
 
         except ConnectionRefusedError as e:
@@ -165,7 +165,7 @@ class FinnhubWebSocketClient:
                 self._websocket = None
 
             self._connected = False
-            logger.info("✅ Disconnected from Finnhub WebSocket")
+            logger.info("[SUCCESS] Disconnected from Finnhub WebSocket")
             return True
 
         except Exception as e:
@@ -200,7 +200,7 @@ class FinnhubWebSocketClient:
 
                 await self._websocket.send(json.dumps(subscribe_msg))
                 self._subscribed_symbols.add(symbol)
-                logger.info(f"📊 Subscribed to {symbol}")
+                logger.info(f"> Subscribed to {symbol}")
 
             return True
 
@@ -239,7 +239,7 @@ class FinnhubWebSocketClient:
 
                 await self._websocket.send(json.dumps(unsubscribe_msg))
                 self._subscribed_symbols.discard(symbol)
-                logger.info(f"🚫 Unsubscribed from {symbol}")
+                logger.info(f"[SUCCESS] Unsubscribed from {symbol}")
 
             return True
 
