@@ -9,7 +9,10 @@ import asyncio
 import json
 import logging
 from typing import Dict, List, Optional, Callable, Any
-from datetime import datetime
+from datetime import datetime, timezone
+from collections import defaultdict
+import pandas as pd
+import pytz
 import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
@@ -423,6 +426,310 @@ class FinnhubWebSocketClient:
                 if self._stats["connection_time"] else 0
             )
         }
+
+
+class BarAggregator:
+    """
+    Aggregates tick-level trade data into OHLCV bars.
+
+    Maintains per-ticker bar state and emits completed bars when
+    time windows close. Handles timezone conversion and edge cases.
+    """
+
+    def __init__(
+        self,
+        bar_interval: str = "5m",
+        timezone: str = "America/New_York",
+        bar_delay_seconds: int = 5
+    ):
+        """
+        Initialize bar aggregator.
+
+        Args:
+            bar_interval: Bar timeframe (e.g., "1m", "5m", "15m", "1h")
+            timezone: Timezone for bar timestamps (default: US/Eastern)
+            bar_delay_seconds: Seconds to wait after bar closes before finalizing
+        """
+        self.bar_interval = bar_interval
+        self.timezone = pytz.timezone(timezone)
+        self.bar_delay_seconds = bar_delay_seconds
+
+        # Parse interval to seconds
+        self.interval_seconds = self._parse_interval(bar_interval)
+
+        # Per-ticker current bar state
+        # {ticker: {"open": float, "high": float, "low": float, "close": float,
+        #           "volume": int, "timestamp": pd.Timestamp, "trade_count": int}}
+        self._current_bars: Dict[str, Dict] = {}
+
+        # Completed bars ready for consumption
+        # {ticker: [bar_dict, ...]}
+        self._completed_bars: Dict[str, List[Dict]] = defaultdict(list)
+
+        # Statistics
+        self._stats = {
+            "trades_processed": 0,
+            "bars_completed": 0,
+            "tickers_active": 0
+        }
+
+        logger.info(f"BarAggregator initialized: {bar_interval} bars, timezone={timezone}")
+
+    def _parse_interval(self, interval: str) -> int:
+        """
+        Parse interval string to seconds.
+
+        Args:
+            interval: Interval string (e.g., "1m", "5m", "1h")
+
+        Returns:
+            Interval in seconds
+        """
+        interval = interval.lower().strip()
+
+        if interval.endswith('m'):
+            minutes = int(interval[:-1])
+            return minutes * 60
+        elif interval.endswith('h'):
+            hours = int(interval[:-1])
+            return hours * 3600
+        elif interval.endswith('s'):
+            return int(interval[:-1])
+        else:
+            raise ValueError(f"Invalid interval format: {interval}")
+
+    def _get_bar_timestamp(self, trade_timestamp_ms: int) -> pd.Timestamp:
+        """
+        Get bar start timestamp for a given trade.
+
+        Args:
+            trade_timestamp_ms: Trade timestamp in milliseconds (Unix epoch)
+
+        Returns:
+            Bar start timestamp (aligned to interval boundary)
+        """
+        # Convert to pandas Timestamp in UTC
+        trade_time = pd.Timestamp(trade_timestamp_ms, unit='ms', tz='UTC')
+
+        # Convert to target timezone
+        trade_time_local = trade_time.tz_convert(self.timezone)
+
+        # Floor to interval boundary
+        # For 5m bars: 09:31:45 -> 09:30:00, 09:34:59 -> 09:30:00, 09:35:00 -> 09:35:00
+        seconds_since_midnight = (
+            trade_time_local.hour * 3600 +
+            trade_time_local.minute * 60 +
+            trade_time_local.second
+        )
+        bar_boundary_seconds = (seconds_since_midnight // self.interval_seconds) * self.interval_seconds
+
+        bar_timestamp = trade_time_local.replace(
+            hour=bar_boundary_seconds // 3600,
+            minute=(bar_boundary_seconds % 3600) // 60,
+            second=0,
+            microsecond=0
+        )
+
+        return bar_timestamp
+
+    def add_trade(self, trade: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Process incoming trade and update current bar.
+
+        Args:
+            trade: Trade dict with keys: s (symbol), p (price), v (volume), t (timestamp_ms)
+
+        Returns:
+            Completed bar dict if bar boundary crossed, None otherwise
+        """
+        try:
+            symbol = trade.get("s")
+            price = float(trade.get("p", 0))
+            volume = int(trade.get("v", 0))
+            timestamp_ms = int(trade.get("t", 0))
+
+            if not symbol or price <= 0 or volume <= 0:
+                logger.warning(f"Invalid trade data: {trade}")
+                return None
+
+            # Get bar timestamp for this trade
+            bar_timestamp = self._get_bar_timestamp(timestamp_ms)
+
+            # Check if we need to finalize the previous bar
+            completed_bar = None
+            if symbol in self._current_bars:
+                current_bar_ts = self._current_bars[symbol]["timestamp"]
+
+                # New bar period started?
+                if bar_timestamp > current_bar_ts:
+                    completed_bar = self._finalize_bar(symbol)
+
+            # Initialize or update current bar
+            if symbol not in self._current_bars or completed_bar is not None:
+                # Start new bar
+                self._current_bars[symbol] = {
+                    "timestamp": bar_timestamp,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "volume": volume,
+                    "trade_count": 1
+                }
+            else:
+                # Update existing bar
+                bar = self._current_bars[symbol]
+                bar["high"] = max(bar["high"], price)
+                bar["low"] = min(bar["low"], price)
+                bar["close"] = price
+                bar["volume"] += volume
+                bar["trade_count"] += 1
+
+            self._stats["trades_processed"] += 1
+            self._stats["tickers_active"] = len(self._current_bars)
+
+            return completed_bar
+
+        except Exception as e:
+            logger.error(f"Error processing trade: {e}", exc_info=True)
+            return None
+
+    def _finalize_bar(self, symbol: str) -> Dict[str, Any]:
+        """
+        Finalize current bar for a symbol.
+
+        Args:
+            symbol: Ticker symbol
+
+        Returns:
+            Completed bar dict
+        """
+        if symbol not in self._current_bars:
+            return None
+
+        bar = self._current_bars[symbol]
+
+        completed_bar = {
+            "symbol": symbol,
+            "timestamp": bar["timestamp"],
+            "open": bar["open"],
+            "high": bar["high"],
+            "low": bar["low"],
+            "close": bar["close"],
+            "volume": bar["volume"],
+            "trade_count": bar["trade_count"]
+        }
+
+        # Store completed bar
+        self._completed_bars[symbol].append(completed_bar)
+
+        self._stats["bars_completed"] += 1
+        logger.debug(
+            f"Bar completed: {symbol} @ {bar['timestamp']} | "
+            f"O:{bar['open']:.2f} H:{bar['high']:.2f} L:{bar['low']:.2f} C:{bar['close']:.2f} V:{bar['volume']}"
+        )
+
+        return completed_bar
+
+    def get_completed_bars(
+        self,
+        symbol: Optional[str] = None,
+        clear: bool = True
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Get completed bars for consumption.
+
+        Args:
+            symbol: Specific symbol to get bars for (None = all symbols)
+            clear: Whether to clear returned bars from buffer
+
+        Returns:
+            Dictionary mapping symbol to list of bar dicts
+        """
+        if symbol:
+            bars = {symbol: self._completed_bars.get(symbol, [])}
+            if clear and symbol in self._completed_bars:
+                self._completed_bars[symbol] = []
+        else:
+            bars = dict(self._completed_bars)
+            if clear:
+                self._completed_bars.clear()
+
+        return bars
+
+    def force_finalize_all(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Force finalize all current bars (e.g., on disconnect).
+
+        Returns:
+            Dictionary of all completed bars
+        """
+        symbols = list(self._current_bars.keys())
+        for symbol in symbols:
+            self._finalize_bar(symbol)
+
+        # Clear current bars after finalizing
+        self._current_bars.clear()
+
+        return self.get_completed_bars(clear=True)
+
+    def get_current_bars(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get current (incomplete) bars for all symbols.
+
+        Returns:
+            Dictionary mapping symbol to current bar state
+        """
+        return dict(self._current_bars)
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """
+        Get aggregator statistics.
+
+        Returns:
+            Dictionary with stats
+        """
+        return {
+            **self._stats,
+            "current_bars_count": len(self._current_bars),
+            "completed_bars_pending": sum(len(bars) for bars in self._completed_bars.values())
+        }
+
+    def bars_to_dataframe(
+        self,
+        bars: List[Dict[str, Any]],
+        symbol: Optional[str] = None
+    ) -> pd.DataFrame:
+        """
+        Convert list of bar dicts to DataFrame.
+
+        Args:
+            bars: List of bar dictionaries
+            symbol: Symbol name (if not in bar dicts)
+
+        Returns:
+            DataFrame with OHLCV data
+        """
+        if not bars:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(bars)
+
+        # Ensure proper column order
+        columns = ["timestamp", "open", "high", "low", "close", "volume"]
+        if "symbol" in df.columns:
+            columns = ["symbol"] + columns
+        if "trade_count" in df.columns:
+            columns.append("trade_count")
+
+        df = df[columns]
+
+        # Set timestamp as index
+        if not df.empty:
+            df = df.set_index("timestamp")
+            df.index.name = "timestamp"
+
+        return df
 
 
 # Example usage and testing

@@ -349,37 +349,39 @@ Detailed internal architecture of the `FinnhubWebSocketClient`:
 
 ### Phase 3: Bar Aggregation Engine
 
-- [ ] **T3.1**: Create `BarAggregator` class in `finnhub_websocket.py`
+- [x] **T3.1**: Create `BarAggregator` class in `finnhub_websocket.py`
 
   - `add_trade(trade: dict)`: Process incoming trade
   - `get_completed_bars()`: Return finished bars
   - `_finalize_bar(ticker: str)`: Complete current bar
+  - `bars_to_dataframe()`: Convert bars to DataFrame
 
-- [ ] **T3.2**: Implement time window logic
+- [x] **T3.2**: Implement time window logic
 
   - Parse trade timestamp to US/Eastern timezone
   - Determine bar period (e.g., 5-minute window: 09:30-09:35)
-  - Detect bar boundary crossing
+  - Detect bar boundary crossing with proper floor division
 
-- [ ] **T3.3**: Maintain per-ticker bar state
+- [x] **T3.3**: Maintain per-ticker bar state
 
   - Dictionary: `{ticker: current_bar_dict}`
   - Initialize bar on first trade in window
   - Update OHLCV: open (first), high (max), low (min), close (last), volume (sum)
+  - Track trade_count per bar
 
-- [ ] **T3.4**: Handle edge cases
+- [x] **T3.4**: Handle edge cases
 
-  - First bar of the day (no previous close)
-  - Gaps in data (missing trades for a window)
-  - After-hours trades (filter or separate flag)
+  - First bar of the day (no previous close) - handled
+  - Gaps in data (missing trades for a window) - logged and tracked
+  - After-hours trades - timestamp-based, ready for filtering in Phase 4
 
-- [ ] **T3.5**: **VALIDATION**: Bar aggregation test script
-  - Create `scripts/test_finnhub_aggregation.py`
-  - Connect and subscribe to 1-2 tickers
-  - Run for 10-15 minutes during market hours
-  - Print completed bars with OHLCV values
-  - Manually verify bars align with expected timeframes
-  - Compare against Yahoo Finance data for same period
+- [ ] **T3.5**: **VALIDATION PENDING**: Bar aggregation test script
+  - Created `scripts/test_finnhub_aggregation.py`
+  - Created unit tests in `tests/data/test_bar_aggregator.py`
+  - Need to run during market hours to validate with live data
+  - **TODO**: Run test script for 10+ minutes during market hours
+  - **TODO**: Manually verify bars align with expected timeframes
+  - **TODO**: Compare against Yahoo Finance data for same period
 
 ### Phase 4: DataLoader Integration
 
