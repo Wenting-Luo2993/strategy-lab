@@ -4,6 +4,7 @@ from .yahoo import YahooDataLoader
 from .ib import InteractiveBrokersDataLoader
 from .polygon import PolygonDataLoader
 from .cache import CacheDataLoader
+from .finnhub_loader import FinnhubWebSocketLoader
 
 __all__ = [
     "DataLoaderFactory",
@@ -11,6 +12,7 @@ __all__ = [
     "YahooDataLoader",
     "InteractiveBrokersDataLoader",
     "PolygonDataLoader",
+    "FinnhubWebSocketLoader",
     "DataSource",
     "Timeframe",
     "CacheDataLoader"

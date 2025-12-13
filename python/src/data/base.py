@@ -5,6 +5,7 @@ class DataSource(Enum):
     YAHOO = "yahoo"
     INTERACTIVE_BROKERS = "ib"
     POLYGON = "polygon"
+    FINNHUB = "finnhub"
 
 
 class Timeframe(Enum):
