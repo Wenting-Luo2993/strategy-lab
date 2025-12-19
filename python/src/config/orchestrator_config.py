@@ -34,3 +34,7 @@ class OrchestratorConfig:
     speedup: float = 1.0
     initial_capital: float = 10_000.0
     dry_run: bool = False
+    # Live mode configuration
+    live_mode: bool = False
+    live_min_bars: int = 20  # Minimum bars before trading in live mode
+    live_warmup_cycles: int = 5  # Number of polling cycles to wait before first trade

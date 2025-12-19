@@ -55,6 +55,7 @@ class DarkTradingOrchestrator:
         results_dir: str = "results",
         run_id: Optional[str] = None,
         callbacks: Optional[Dict[str, Callable]] = None,
+        live_mode: bool = False,
     ) -> None:
         self.strategy = strategy
         self.risk_manager = risk_manager
@@ -64,6 +65,11 @@ class DarkTradingOrchestrator:
         if replay_cfg and replay_cfg.enabled:
             if not isinstance(data_fetcher, DataReplayCacheDataLoader):
                 raise TypeError("Replay mode enabled but data_fetcher is not a DataReplayCacheDataLoader.")
+        # Set live mode from parameter
+        self.live_mode = live_mode
+        if self.live_mode and replay_cfg and replay_cfg.enabled:
+            logger.warning("Live mode enabled with replay_cfg.enabled=True. Replay takes precedence; live_mode disabled.")
+            self.live_mode = False
         self.data_fetcher = data_fetcher
         self.tickers = tickers
         self.market_hours = market_hours or MarketHoursConfig()
@@ -156,6 +162,47 @@ class DarkTradingOrchestrator:
         close_dt = tz.localize(close_dt)
         self.auto_stop_at = close_dt + self.market_hours.auto_stop_grace
 
+    @staticmethod
+    def _timeframe_to_seconds(timeframe: str) -> int:
+        """T9.3: Convert timeframe string to seconds.
+
+        Args:
+            timeframe: Timeframe string (e.g., '1m', '5m', '15m', '1h', '1d')
+
+        Returns:
+            Timeframe in seconds
+        """
+        mapping = {
+            '1m': 60, '5m': 300, '15m': 900,
+            '30m': 1800, '1h': 3600, '4h': 14400,
+            '1d': 86400
+        }
+        return mapping.get(timeframe, 300)  # Default to 5m
+
+    def _check_market_open(self) -> bool:
+        """T9.4: Check if market is open for live trading.
+
+        Returns:
+            True if market is open, False otherwise
+        """
+        tz = pytz.timezone(self.market_hours.timezone)
+        now = datetime.now(tz)
+        weekday = now.weekday()  # 0=Monday, 6=Sunday
+
+        # Check if today is a trading day
+        if not self.market_hours.should_trade_today(weekday):
+            logger.debug("market.closed.weekend", extra={"meta": {"weekday": weekday}})
+            return False
+
+        # Check if current time is within market hours
+        current_time = now.time()
+        if current_time < self.market_hours.open_time or current_time >= self.market_hours.close_time:
+            logger.debug("market.closed.hours", extra={"meta": {"current_time": str(current_time), "open": str(self.market_hours.open_time), "close": str(self.market_hours.close_time)}})
+            return False
+
+        logger.debug("market.open", extra={"meta": {"current_time": str(current_time)}})
+        return True
+
     def _fetch_latest_data(self) -> Dict[str, pd.DataFrame]:
         """
         Fetch the latest data for all tickers.
@@ -170,8 +217,8 @@ class DarkTradingOrchestrator:
         for ticker in self.tickers:
             try:
                 timeframe = self.replay_cfg.timeframe if self.replay_cfg.enabled else "5m"
-                # For replay mode we rely on custom loader behavior
-                # TODO: probably need to specify start and end during paper trading
+                # For live mode, passing start=None and end=None retrieves
+                # only the latest aggregated bar(s) from the data loader
                 df = self.data_fetcher.fetch(
                     ticker,
                     timeframe=timeframe,
@@ -979,9 +1026,27 @@ class DarkTradingOrchestrator:
             logger.warning("Trading loop already running")
             return
 
+        # For live mode, check market is open before connecting
+        if self.live_mode and not self.replay_cfg.enabled:
+            if not self._check_market_open():
+                logger.warning("Market is closed. Cannot start live trading.")
+                return
+            # Connect to data fetcher for live mode
+            try:
+                self.data_fetcher.connect()
+                logger.info("liveMode.connected", extra={"meta": {"mode": "live"}})
+            except Exception as e:
+                logger.error("liveMode.connect.failed", extra={"meta": {"error": str(e)}})
+                return
+
         # Connect to exchange
         if not self.exchange.connect():
             logger.error("Failed to connect to exchange")
+            if self.live_mode and not self.replay_cfg.enabled:
+                try:
+                    self.data_fetcher.disconnect()
+                except Exception:
+                    pass
             return
         if self.replay_cfg.enabled and hasattr(self.exchange, 'enable_force_fill'):
             try:
@@ -992,7 +1057,7 @@ class DarkTradingOrchestrator:
 
         self.running = True
         start_time = time.time()
-        logger.info("loop.start", extra={"meta": {"poll_seconds": self.cfg.polling_seconds, "speedup": self.cfg.speedup, "tickers": self.tickers}})
+        logger.info("loop.start", extra={"meta": {"poll_seconds": self.cfg.polling_seconds, "speedup": self.cfg.speedup, "tickers": self.tickers, "live_mode": self.live_mode}})
 
         try:
             while self.running:
@@ -1025,9 +1090,16 @@ class DarkTradingOrchestrator:
                     self.stop()
                     break
 
-                # Use specialized replay sleep timing if configured
+                # Calculate sleep time with bar synchronization for live mode
                 if self.replay_cfg.enabled and hasattr(self.replay_cfg, 'replay_sleep_seconds') and self.replay_cfg.replay_sleep_seconds is not None:
                     sleep_time = max(0, self.replay_cfg.replay_sleep_seconds)
+                elif self.live_mode:
+                    # Live mode: synchronize to bar completion time with 5+ second buffer
+                    timeframe = "5m"  # Default live timeframe
+                    bar_seconds = self._timeframe_to_seconds(timeframe)
+                    target_sleep = max(5, bar_seconds + 5 - elapsed)
+                    sleep_time = max(0.1, target_sleep / self.cfg.speedup) if self.cfg.speedup > 1 else max(0.1, target_sleep)
+                    logger.debug("bar.sync", extra={"meta": {"bar_seconds": bar_seconds, "elapsed": elapsed, "target_sleep": target_sleep, "actual_sleep": sleep_time}})
                 else:
                     sleep_time = max(0, (self.cfg.polling_seconds - elapsed) / self.cfg.speedup)
 
@@ -1037,6 +1109,13 @@ class DarkTradingOrchestrator:
         except KeyboardInterrupt:
             logger.info("loop.interrupted", extra={"meta": {"cycle": self.tick_count}})
         finally:
+            # Disconnect data fetcher for live mode
+            if self.live_mode and not self.replay_cfg.enabled:
+                try:
+                    self.data_fetcher.disconnect()
+                    logger.info("liveMode.disconnected")
+                except Exception as e:
+                    logger.warning("liveMode.disconnect.error", extra={"meta": {"error": str(e)}})
             # Ensure we disconnect from exchange
             self.exchange.disconnect()
             self.running = False
