@@ -43,6 +43,22 @@ def pytest_addoption(parser):
     group.addoption("--snapshot-prune", action="store_true", dest="snapshot_prune", help="List stale snapshot files not touched this session")
 
 
+def pytest_configure(config):
+    """Register custom pytest markers and initialize snapshot tracking."""
+    # Register custom markers
+    config.addinivalue_line(
+        "markers", "live: mark test as requiring live Finnhub API connection (requires FINNHUB_API_KEY env var)"
+    )
+    config.addinivalue_line(
+        "markers", "slow: mark test as slow running"
+    )
+    config.addinivalue_line(
+        "markers", "integration: mark test as integration test"
+    )
+    # Initialize snapshot tracking
+    config._snapshot_touched = set()
+
+
 def _bool_env(name: str) -> bool:
     val = os.getenv(name)
     if val is None:
@@ -55,10 +71,6 @@ def _get_commit_hash() -> str:
         return subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
     except Exception:
         return "UNKNOWN"
-
-
-def pytest_configure(config):
-    config._snapshot_touched = set()
 
 
 def pytest_sessionfinish(session, exitstatus):

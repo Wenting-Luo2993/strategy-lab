@@ -1,0 +1,46 @@
+[
+  {
+    "description": "Subscription confirmation for AAPL",
+    "message": "{\"type\":\"subscription\",\"symbol\":\"AAPL\",\"status\":\"subscribed\"}"
+  },
+  {
+    "description": "Trade message with 2 AAPL trades",
+    "message": "{\"type\":\"trade\",\"data\":[{\"s\":\"AAPL\",\"p\":150.00,\"t\":1699892400000,\"v\":100,\"c\":[\"12\"]},{\"s\":\"AAPL\",\"p\":150.05,\"t\":1699892401000,\"v\":150,\"c\":[\"12\"]}]}"
+  },
+  {
+    "description": "Trade message with single AAPL trade",
+    "message": "{\"type\":\"trade\",\"data\":[{\"s\":\"AAPL\",\"p\":150.10,\"t\":1699892402000,\"v\":200,\"c\":[\"12\"]}]}"
+  },
+  {
+    "description": "Subscription confirmation for MSFT",
+    "message": "{\"type\":\"subscription\",\"symbol\":\"MSFT\",\"status\":\"subscribed\"}"
+  },
+  {
+    "description": "Trade message with MSFT trades",
+    "message": "{\"type\":\"trade\",\"data\":[{\"s\":\"MSFT\",\"p\":350.25,\"t\":1699892403000,\"v\":75,\"c\":[\"12\"]},{\"s\":\"MSFT\",\"p\":350.30,\"t\":1699892404000,\"v\":100,\"c\":[\"12\"]}]}"
+  },
+  {
+    "description": "Mixed trades for multiple symbols",
+    "message": "{\"type\":\"trade\",\"data\":[{\"s\":\"AAPL\",\"p\":150.15,\"t\":1699892405000,\"v\":250,\"c\":[\"12\"]},{\"s\":\"MSFT\",\"p\":350.35,\"t\":1699892406000,\"v\":125,\"c\":[\"12\"]},{\"s\":\"AAPL\",\"p\":150.20,\"t\":1699892407000,\"v\":180,\"c\":[\"12\"]}]}"
+  },
+  {
+    "description": "Trade with very high volume",
+    "message": "{\"type\":\"trade\",\"data\":[{\"s\":\"AAPL\",\"p\":150.25,\"t\":1699892408000,\"v\":10000,\"c\":[\"12\"]}]}"
+  },
+  {
+    "description": "Trade with very low volume",
+    "message": "{\"type\":\"trade\",\"data\":[{\"s\":\"MSFT\",\"p\":350.40,\"t\":1699892409000,\"v\":1,\"c\":[\"12\"]}]}"
+  },
+  {
+    "description": "Error message from server",
+    "message": "{\"type\":\"error\",\"msg\":\"Invalid symbol subscription\"}"
+  },
+  {
+    "description": "Ping message from server",
+    "message": "{\"type\":\"ping\"}"
+  },
+  {
+    "description": "Unsubscribe confirmation",
+    "message": "{\"type\":\"subscription\",\"symbol\":\"AAPL\",\"status\":\"unsubscribed\"}"
+  }
+]
