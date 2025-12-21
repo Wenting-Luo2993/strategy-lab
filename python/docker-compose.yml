@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  strategy-lab:
+    build:
+      context: ..
+      dockerfile: python/Dockerfile
+    container_name: strategy-lab
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - ./logs:/app/python/logs
+      - ./data_cache:/app/python/data_cache
+      - ./results:/app/python/results
+    # Uncomment for interactive mode
+    # stdin_open: true
+    # tty: true
+    # Uncomment to override default command
+    # command: python main.py
