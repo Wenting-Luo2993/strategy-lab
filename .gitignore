@@ -21,6 +21,12 @@ data_cache/
 python/results
 results/
 
+# Trading database files (keep folder structure, ignore data)
+python/data/*.db
+python/data/*.db-shm
+python/data/*.db-wal
+python/data/backups/
+
 # Google API credentials (service account & OAuth tokens)
 *.service-account.json
 gdrive-key.json

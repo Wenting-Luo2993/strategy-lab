@@ -1,0 +1,14 @@
+# data/ folder
+
+This folder contains the SQLite trading database and related data files.
+
+## Files (git ignored):
+- `trades.db` - Main trading database
+- `trades.db-shm` - SQLite shared memory file
+- `trades.db-wal` - SQLite write-ahead log file
+- `backups/` - Local database backups (before cloud sync)
+
+## Purpose:
+Stores all trade execution data recorded by the TradeStore module.
+
+**Note:** Database files are git ignored. Each environment maintains its own data.
