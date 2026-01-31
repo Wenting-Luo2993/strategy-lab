@@ -23,3 +23,13 @@ websockets>=12.0
 finnhub-python>=2.4.0
 pytest-asyncio>=0.23.0
 pytest-testmon>=2.1.0
+
+# Cloud Storage Providers (Optional - install as needed)
+# Oracle Cloud Infrastructure: pip install oci
+# oci>=2.126.0
+# Azure Blob Storage: pip install azure-storage-blob
+# azure-storage-blob>=12.19.0
+# AWS S3: pip install boto3
+# boto3>=1.34.0
+# Google Cloud Storage: pip install google-cloud-storage
+# google-cloud-storage>=2.14.0
