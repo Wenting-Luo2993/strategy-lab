@@ -24,6 +24,7 @@ from src.core.trade_manager import TradeManager
 from src.config.orchestrator_config import MarketHoursConfig, OrchestratorConfig, DataReplayConfig
 from src.utils.logger import get_logger
 from src.config.columns import TradeColumns
+from src.data.trade_store import TradeStore
 
 # Configure module-specific logger using project pattern
 logger = get_logger("DarkTradingOrchestrator")
@@ -99,6 +100,14 @@ class DarkTradingOrchestrator:
         self.results_dir.mkdir(parents=True, exist_ok=True)
         self.trades_file = self.results_dir / f"{self.run_id}_trades.csv"
         self.equity_file = self.results_dir / f"{self.run_id}_equity.csv"
+
+        # Initialize TradeStore for database recording
+        try:
+            self.trade_store = TradeStore('data/trades.db')
+            logger.info("TradeStore initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize TradeStore: {e}", exc_info=True)
+            self.trade_store = None  # Continue without DB if it fails
 
         self._init_results_files()
         self._configure_auto_stop()
@@ -834,7 +843,7 @@ class DarkTradingOrchestrator:
 
     def _record_trade(self, order: Dict[str, Any], response: Dict[str, Any]) -> None:
         """
-        Record trade details to the trades CSV file.
+        Record trade details to the trades CSV file and TradeStore database.
 
         Args:
             order: Order dictionary
@@ -855,6 +864,8 @@ class DarkTradingOrchestrator:
                 ts = order.get("timestamp") or response.get("timestamp")
             else:
                 ts = response.get("timestamp") or order.get("timestamp")
+
+            # Record to CSV file
             with open(self.trades_file, 'a', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([
@@ -869,6 +880,40 @@ class DarkTradingOrchestrator:
                     response.get("order_id"),
                     response.get("status")
                 ])
+
+            # Record to TradeStore database (if available)
+            if self.trade_store and response.get("status") == "filled":
+                try:
+                    # Convert timestamp to datetime if it's a pandas Timestamp
+                    if isinstance(ts, pd.Timestamp):
+                        timestamp_dt = ts.to_pydatetime()
+                    elif isinstance(ts, str):
+                        timestamp_dt = pd.to_datetime(ts).to_pydatetime()
+                    else:
+                        timestamp_dt = ts
+
+                    # Record the trade with metadata
+                    self.trade_store.record_trade(
+                        symbol=order["ticker"],
+                        side=order["side"].upper(),
+                        quantity=float(response.get("filled_qty", 0)),
+                        price=float(response.get("avg_fill_price", 0)),
+                        strategy=getattr(self.strategy, 'name', self.strategy.__class__.__name__),
+                        pnl=float(pnl) if pnl else None,
+                        metadata={
+                            'run_id': self.run_id,
+                            'order_id': response.get("order_id"),
+                            'commission': float(response.get("commission", 0.0)),
+                            'order_status': response.get("status"),
+                            'live_mode': self.live_mode,
+                            'replay_mode': self.replay_cfg.enabled
+                        },
+                        timestamp=timestamp_dt
+                    )
+                    logger.debug(f"Trade recorded to database: {order['side']} {response.get('filled_qty')} {order['ticker']}")
+                except Exception as e:
+                    # Don't crash if database write fails - log error and continue
+                    logger.error(f"Failed to record trade to database: {e}", exc_info=True)
 
     def _record_account_state(self) -> None:
         """Record current account state to the equity CSV file."""
@@ -1121,10 +1166,18 @@ class DarkTradingOrchestrator:
             self.running = False
 
     def stop(self) -> None:
-        """Stop the trading loop."""
+        """Stop the trading loop and cleanup resources."""
         if self.running:
             logger.info("loop.stop", extra={"meta": {"cycle": self.tick_count}})
             self.running = False
+
+        # Close TradeStore database connection
+        if hasattr(self, 'trade_store') and self.trade_store:
+            try:
+                self.trade_store.close()
+                logger.info("TradeStore connection closed")
+            except Exception as e:
+                logger.error(f"Error closing TradeStore: {e}", exc_info=True)
 
     def save_state(self, csv_folder: Optional[str] = None) -> None:
         """
