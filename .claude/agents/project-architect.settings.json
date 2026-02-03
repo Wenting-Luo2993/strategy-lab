@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(//)",
+      "Edit(~/**)",
+      "Edit(..**)",
+      "Edit(/src/**)",
+      "Edit(/tests/**)",
+      "Edit(/scripts/**)",
+      "Edit(/*.py)",
+      "Edit(/*.json)",
+      "Edit(/*.md)",
+      "Write(//)",
+      "Write(~/**)",
+      "Write(..**)",
+      "Write(/src/**)",
+      "Write(/tests/**)",
+      "Write(/scripts/**)",
+      "Write(/*.py)",
+      "Write(/*.json)",
+      "Write(/*.md)",
+      "Read(/pine/**)",
+      "Read(/python/**)"
+    ],
+    "allow": [
+      "Edit(/docs/**)",
+      "Write(/docs/**)"
+    ]
+  },
+  "defaultMode": "acceptEdits"
+}

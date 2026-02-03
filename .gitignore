@@ -27,6 +27,14 @@ python/data/*.db-shm
 python/data/*.db-wal
 python/data/backups/
 
+# Trading bot data (MVP)
+data/
+*.db
+*.db-shm
+*.db-wal
+vibe/trading-bot/data/
+vibe/backtester/data/
+
 # Google API credentials (service account & OAuth tokens)
 *.service-account.json
 gdrive-key.json
@@ -34,13 +42,26 @@ gdrive_service_account.json
 .strategy_lab/gdrive_token.json
 token.json
 **/credentials/
+
+# Environment variables (never commit secrets!)
 .env
+.env.local
+.env.dev
+.env.prod
+.env.*
+!.env.example
+
+# Streamlit secrets
+.streamlit/secrets.toml
 
 # Finnhub credentials
 python/src/config/finnhub_config.json
 
 # Logs
 *.log
+logs/
+vibe/trading-bot/logs/
+vibe/backtester/logs/
 
 # MacOS
 .DS_Store

@@ -1,0 +1,62 @@
+# config/local.yaml
+# Configuration for local development on your laptop
+
+environment: local
+
+api:
+  host: "127.0.0.1"
+  port: 8080
+  base_url: "http://localhost:8080"
+  enable_auth: false  # No auth needed locally
+  cors_origins:
+    - "*"
+
+dashboard:
+  enabled: true
+  streamlit_mode: "local"  # Run Streamlit locally
+  auto_refresh_seconds: 5
+
+data:
+  historical_provider: "yahoo"  # Free
+  realtime_provider: "finnhub"
+  # finnhub_api_key loaded from .env
+
+exchange:
+  exchange_type: "mock"
+  initial_capital: 10000.0
+  paper_trading: true
+
+notifications:
+  discord_enabled: false  # Don't spam during development
+  notify_on_order_sent: false
+  notify_on_order_filled: false
+  notify_on_order_cancelled: false
+  notify_on_error: true
+
+storage:
+  database_path: "./data/local/trading.db"
+  cloud_sync_enabled: false  # No cloud sync locally
+  cloud_sync_interval_minutes: 5
+  # cloud_provider loaded from STORAGE__CLOUD_PROVIDER env var (defaults to "local")
+
+features:
+  enable_dashboard_api: true
+  enable_health_checks: true
+  enable_cloud_sync: false
+  enable_notifications: false  # Quiet during dev
+  enable_mtf_validation: true
+  enable_risk_management: true
+  allow_short_selling: false
+  allow_options_trading: false
+  allow_margin_trading: false
+
+# Strategy configuration
+symbols:
+  - "AAPL"
+  - "MSFT"
+
+strategy_name: "opening_range_breakout"
+
+# Logging
+log_level: "DEBUG"
+log_file: "./logs/local.log"

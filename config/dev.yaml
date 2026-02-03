@@ -1,0 +1,66 @@
+# config/dev.yaml
+# Configuration for Oracle Cloud deployment with SSH tunnel access
+
+environment: dev
+
+api:
+  host: "0.0.0.0"
+  port: 8080
+  base_url: "http://localhost:8080"  # Accessed via SSH tunnel
+  enable_auth: false  # SSH tunnel provides security
+  cors_origins:
+    - "*"
+
+dashboard:
+  enabled: true
+  streamlit_mode: "local"  # Streamlit runs on Oracle, accessed via SSH tunnel
+  auto_refresh_seconds: 5
+
+data:
+  historical_provider: "yahoo"
+  realtime_provider: "finnhub"
+  # API keys loaded from .env
+
+exchange:
+  exchange_type: "mock"
+  initial_capital: 10000.0
+  paper_trading: true
+
+notifications:
+  discord_enabled: true  # Enable for real trading simulation
+  notify_on_order_sent: true
+  notify_on_order_filled: true
+  notify_on_order_cancelled: true
+  notify_on_error: true
+
+storage:
+  database_path: "/app/data/trading.db"
+  cloud_sync_enabled: true  # Backup to cloud storage
+  cloud_sync_interval_minutes: 5
+  # cloud_provider loaded from STORAGE__CLOUD_PROVIDER env var (oracle, aws, azure, gcp)
+  # Cloud credentials loaded from env vars based on provider
+
+features:
+  enable_dashboard_api: true
+  enable_health_checks: true
+  enable_cloud_sync: true
+  enable_notifications: true
+  enable_mtf_validation: true
+  enable_risk_management: true
+  allow_short_selling: false
+  allow_options_trading: false
+  allow_margin_trading: false
+
+# Strategy configuration
+symbols:
+  - "AAPL"
+  - "MSFT"
+  - "AMZN"
+  - "TSLA"
+  - "GOOGL"
+
+strategy_name: "opening_range_breakout"
+
+# Logging
+log_level: "INFO"
+log_file: "/app/logs/trading-bot.log"

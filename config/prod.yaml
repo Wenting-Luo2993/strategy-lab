@@ -1,0 +1,68 @@
+# config/prod.yaml
+# Configuration for production deployment with Streamlit Cloud dashboard
+
+environment: prod
+
+api:
+  host: "0.0.0.0"
+  port: 8080
+  base_url: "https://your-oracle-ip-or-domain.com:8080"  # CHANGE THIS to your public URL
+  enable_auth: true  # API key required for security
+  # api_key loaded from .env
+  cors_origins:
+    - "https://your-trading-dashboard.streamlit.app"  # CHANGE THIS to your Streamlit Cloud URL
+    - "https://streamlit.app"
+
+dashboard:
+  enabled: true
+  streamlit_mode: "remote"  # Streamlit hosted on Streamlit Cloud
+  auto_refresh_seconds: 10  # Slower refresh to reduce API calls
+
+data:
+  historical_provider: "yahoo"
+  realtime_provider: "finnhub"
+  # API keys loaded from .env
+
+exchange:
+  exchange_type: "mock"  # Still mock for MVP
+  initial_capital: 10000.0
+  paper_trading: true
+
+notifications:
+  discord_enabled: true
+  notify_on_order_sent: true
+  notify_on_order_filled: true
+  notify_on_order_cancelled: true
+  notify_on_error: true  # Critical for production monitoring
+
+storage:
+  database_path: "/app/data/trading.db"
+  cloud_sync_enabled: true
+  cloud_sync_interval_minutes: 5
+  # cloud_provider loaded from STORAGE__CLOUD_PROVIDER env var (oracle, aws, azure, gcp)
+  # Cloud credentials loaded from env vars based on provider
+
+features:
+  enable_dashboard_api: true
+  enable_health_checks: true
+  enable_cloud_sync: true
+  enable_notifications: true
+  enable_mtf_validation: true
+  enable_risk_management: true
+  allow_short_selling: false
+  allow_options_trading: false
+  allow_margin_trading: false
+
+# Strategy configuration
+symbols:
+  - "AAPL"
+  - "MSFT"
+  - "AMZN"
+  - "TSLA"
+  - "GOOGL"
+
+strategy_name: "opening_range_breakout"
+
+# Logging
+log_level: "INFO"
+log_file: "/app/logs/trading-bot.log"
