@@ -18,7 +18,7 @@ class Bar(BaseModel):
     close: float = Field(..., description="Closing price")
     volume: float = Field(..., description="Trading volume")
 
-    @field_validator("high", "low", "open", "close")
+    @field_validator("open", "high", "low", "close")
     @classmethod
     def validate_prices(cls, v):
         """Validate that prices are positive."""
@@ -35,10 +35,24 @@ class Bar(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def validate_high_low(self):
-        """Validate that high >= low."""
+    def validate_ohlc_relationships(self):
+        """Validate OHLC relationships: high >= max(open,close) and low <= min(open,close)."""
+        # High must be >= both open and close
+        if self.high < self.open:
+            raise ValueError("High must be >= Open")
+        if self.high < self.close:
+            raise ValueError("High must be >= Close")
+
+        # Low must be <= both open and close
+        if self.low > self.open:
+            raise ValueError("Low must be <= Open")
+        if self.low > self.close:
+            raise ValueError("Low must be <= Close")
+
+        # High must be >= Low
         if self.high < self.low:
             raise ValueError("High must be >= Low")
+
         return self
 
     class Config:

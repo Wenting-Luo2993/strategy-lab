@@ -131,9 +131,11 @@ Test coverage includes:
 - All imports work without circular dependencies
 
 ### Task 0.2: Shared Data Models
-- Implemented 7 data models with Pydantic validation
+- Implemented 7 data models with comprehensive Pydantic validation
 - All models support JSON serialization/deserialization
-- Trade model includes automatic P&L calculations
+- Trade model includes automatic P&L calculations for long and short positions
+- Position model calculates unrealized P&L automatically
+- Extensive field validations to prevent invalid orders from crashing the execution engine
 
 ### Task 0.3: Abstract Execution Interface
 - Defined ExecutionEngine ABC with 5 abstract methods
@@ -149,6 +151,69 @@ Test coverage includes:
 - Defined Clock ABC with 2 abstract methods
 - LiveClock implementation using system time
 - Market hours function for NYSE (9:30 AM - 4:00 PM ET, Mon-Fri)
+
+## Phase 0 Critical Fixes (Code Review Fixes)
+
+### Issue 1: Trade Model P&L Calculation
+- FIXED: Now handles both long and short positions correctly using Pydantic @model_validator
+- For long positions: profit when exit_price > entry_price
+- For short positions: profit when exit_price < entry_price
+- Replaced manual __init__ calculation with Pydantic validators
+- Added side validation ('buy' or 'sell')
+- Added quantity and price validations
+
+### Issue 2: Order Model Validations
+- FIXED: Added comprehensive field validations to prevent invalid orders
+- Validates quantity > 0
+- Validates price > 0
+- Validates order_type in ('limit', 'market', 'stop')
+- Validates filled_qty <= quantity (cannot fill more than ordered)
+- Validates all monetary fields are non-negative
+
+### Issue 3: Position Model P&L Calculation
+- FIXED: Added automatic P&L and P&L% calculation on initialization
+- Handles long positions: unrealized_pnl = (current_price - entry_price) * quantity
+- Handles short positions: unrealized_pnl = (entry_price - current_price) * quantity
+- Added unrealized_pnl and unrealized_pnl_pct fields
+- Kept deprecated pnl/pnl_pct fields for backward compatibility
+- Added side, quantity, and price validations
+
+### Issue 4: Bar Model OHLC Validations
+- FIXED: Enhanced OHLC relationship validations
+- Validates high >= open
+- Validates high >= close
+- Validates low <= open
+- Validates low <= close
+- Validates high >= low
+- All prices must be positive
+- Volume must be non-negative
+
+### Issue 5: Signal Model Validations
+- FIXED: Added strength and confidence range validations
+- Validates strength is in range -1.0 to 1.0 (including negative values for short signals)
+- Validates confidence is in range 0.0 to 1.0
+- Validates side in ('buy', 'sell', 'neutral')
+- Validates price > 0 when provided
+
+### Issue 6: AccountState Model Validations
+- FIXED: Added comprehensive non-negative validations
+- Validates cash >= 0
+- Validates equity >= 0
+- Validates buying_power >= 0
+- Validates portfolio_value >= 0
+- Validates total_trades >= 0
+- Validates winning_trades >= 0
+- Validates losing_trades >= 0
+- Validates win_rate is in range 0-100%
+- Validates winning_trades + losing_trades <= total_trades
+
+### Issue 7: Market Hours Logic
+- FIXED: Improved timezone handling and edge case handling
+- Now properly handles timezone-aware and naive datetimes
+- Added detailed documentation about holiday limitations
+- Uses time comparison objects instead of string manipulation
+- Clear comments explaining the check flow
+- Documented that holiday handling is NOT implemented (requires external calendar)
 
 ## Dependencies
 

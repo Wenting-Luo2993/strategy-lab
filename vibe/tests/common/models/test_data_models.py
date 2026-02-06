@@ -91,6 +91,66 @@ class TestBarModel:
         assert bar_loaded.open == bar.open
         assert bar_loaded.close == bar.close
 
+    def test_bar_high_greater_than_open(self):
+        """Test that Bar validates high >= open."""
+        with pytest.raises(ValidationError):
+            Bar(
+                timestamp=datetime.now(),
+                open=105.0,
+                high=100.0,  # Invalid: high < open
+                low=99.0,
+                close=102.0,
+                volume=1000000,
+            )
+
+    def test_bar_high_greater_than_close(self):
+        """Test that Bar validates high >= close."""
+        with pytest.raises(ValidationError):
+            Bar(
+                timestamp=datetime.now(),
+                open=100.0,
+                high=101.0,  # Invalid: high < close
+                low=99.0,
+                close=102.0,
+                volume=1000000,
+            )
+
+    def test_bar_low_less_than_open(self):
+        """Test that Bar validates low <= open."""
+        with pytest.raises(ValidationError):
+            Bar(
+                timestamp=datetime.now(),
+                open=100.0,
+                high=105.0,
+                low=101.0,  # Invalid: low > open
+                close=102.0,
+                volume=1000000,
+            )
+
+    def test_bar_low_less_than_close(self):
+        """Test that Bar validates low <= close."""
+        with pytest.raises(ValidationError):
+            Bar(
+                timestamp=datetime.now(),
+                open=100.0,
+                high=105.0,
+                low=103.0,  # Invalid: low > close
+                close=102.0,
+                volume=1000000,
+            )
+
+    def test_bar_zero_volume(self):
+        """Test that Bar accepts zero volume."""
+        bar = Bar(
+            timestamp=datetime.now(),
+            open=100.0,
+            high=105.0,
+            low=99.0,
+            close=102.0,
+            volume=0,
+        )
+        assert bar.volume == 0
+
 
 class TestOrderModel:
     """Tests for Order model."""
@@ -139,6 +199,122 @@ class TestOrderModel:
         assert order.avg_price == 299.5
         assert order.status == OrderStatus.PARTIAL
 
+    def test_order_invalid_side(self):
+        """Test that Order validates side is 'buy' or 'sell'."""
+        with pytest.raises(ValidationError):
+            Order(
+                order_id="789",
+                symbol="AAPL",
+                side="invalid",
+                quantity=100,
+                price=150.0,
+            )
+
+    def test_order_zero_quantity(self):
+        """Test that Order rejects zero quantity."""
+        with pytest.raises(ValidationError):
+            Order(
+                order_id="789",
+                symbol="AAPL",
+                side="buy",
+                quantity=0,
+                price=150.0,
+            )
+
+    def test_order_negative_quantity(self):
+        """Test that Order rejects negative quantity."""
+        with pytest.raises(ValidationError):
+            Order(
+                order_id="789",
+                symbol="AAPL",
+                side="buy",
+                quantity=-10,
+                price=150.0,
+            )
+
+    def test_order_invalid_order_type(self):
+        """Test that Order validates order_type is valid."""
+        with pytest.raises(ValidationError):
+            Order(
+                order_id="789",
+                symbol="AAPL",
+                side="buy",
+                quantity=100,
+                price=150.0,
+                order_type="invalid_type",
+            )
+
+    def test_order_valid_order_types(self):
+        """Test that Order accepts valid order types."""
+        for order_type in ("limit", "market", "stop"):
+            order = Order(
+                order_id="789",
+                symbol="AAPL",
+                side="buy",
+                quantity=100,
+                price=150.0,
+                order_type=order_type,
+            )
+            assert order.order_type == order_type
+
+    def test_order_zero_price(self):
+        """Test that Order rejects zero price."""
+        with pytest.raises(ValidationError):
+            Order(
+                order_id="789",
+                symbol="AAPL",
+                side="buy",
+                quantity=100,
+                price=0,
+            )
+
+    def test_order_negative_price(self):
+        """Test that Order rejects negative price."""
+        with pytest.raises(ValidationError):
+            Order(
+                order_id="789",
+                symbol="AAPL",
+                side="buy",
+                quantity=100,
+                price=-150.0,
+            )
+
+    def test_order_filled_qty_exceeds_quantity(self):
+        """Test that filled_qty cannot exceed quantity."""
+        with pytest.raises(ValidationError):
+            Order(
+                order_id="789",
+                symbol="AAPL",
+                side="buy",
+                quantity=100,
+                price=150.0,
+                filled_qty=150,
+            )
+
+    def test_order_negative_filled_qty(self):
+        """Test that Order rejects negative filled_qty."""
+        with pytest.raises(ValidationError):
+            Order(
+                order_id="789",
+                symbol="AAPL",
+                side="buy",
+                quantity=100,
+                price=150.0,
+                filled_qty=-10,
+            )
+
+    def test_order_negative_commission(self):
+        """Test that Order rejects negative commission."""
+        with pytest.raises(ValidationError):
+            Order(
+                order_id="789",
+                symbol="AAPL",
+                side="buy",
+                quantity=100,
+                price=150.0,
+                commission=-5.0,
+            )
+
 
 class TestOrderStatusEnum:
     """Tests for OrderStatus enum."""
@@ -186,7 +362,117 @@ class TestPositionModel:
             pnl_pct=3.33,
         )
         assert position.pnl == 500.0
-        assert position.pnl_pct == 3.33
+        assert position.pnl_pct == pytest.approx(3.33, abs=0.01)
+
+    def test_position_long_pnl_calculation(self):
+        """Test that Position calculates long P&L automatically."""
+        position = Position(
+            symbol="AAPL",
+            side="long",
+            quantity=100,
+            entry_price=150.0,
+            current_price=155.0,
+        )
+        # Long: profit when current > entry
+        assert position.unrealized_pnl == 500.0  # (155-150) * 100
+        assert position.unrealized_pnl_pct == pytest.approx(3.33, abs=0.01)
+        # Check deprecated fields
+        assert position.pnl == position.unrealized_pnl
+        assert position.pnl_pct == position.unrealized_pnl_pct
+
+    def test_position_long_loss(self):
+        """Test long position loss calculation."""
+        position = Position(
+            symbol="AAPL",
+            side="long",
+            quantity=100,
+            entry_price=150.0,
+            current_price=145.0,
+        )
+        # Long: loss when current < entry
+        assert position.unrealized_pnl == -500.0  # (145-150) * 100
+        assert position.unrealized_pnl_pct == pytest.approx(-3.33, abs=0.01)
+
+    def test_position_short_pnl_calculation(self):
+        """Test that Position calculates short P&L automatically."""
+        position = Position(
+            symbol="AAPL",
+            side="short",
+            quantity=100,
+            entry_price=150.0,
+            current_price=145.0,
+        )
+        # Short: profit when current < entry
+        assert position.unrealized_pnl == 500.0  # (150-145) * 100
+        assert position.unrealized_pnl_pct == pytest.approx(3.33, abs=0.01)
+
+    def test_position_short_loss(self):
+        """Test short position loss calculation."""
+        position = Position(
+            symbol="AAPL",
+            side="short",
+            quantity=100,
+            entry_price=150.0,
+            current_price=155.0,
+        )
+        # Short: loss when current > entry
+        assert position.unrealized_pnl == -500.0  # (150-155) * 100
+        assert position.unrealized_pnl_pct == pytest.approx(-3.33, abs=0.01)
+
+    def test_position_invalid_side(self):
+        """Test that Position validates side is 'long' or 'short'."""
+        with pytest.raises(ValidationError):
+            Position(
+                symbol="AAPL",
+                side="invalid",
+                quantity=100,
+                entry_price=150.0,
+                current_price=152.5,
+            )
+
+    def test_position_zero_quantity(self):
+        """Test that Position rejects zero quantity."""
+        with pytest.raises(ValidationError):
+            Position(
+                symbol="AAPL",
+                side="long",
+                quantity=0,
+                entry_price=150.0,
+                current_price=152.5,
+            )
+
+    def test_position_negative_quantity(self):
+        """Test that Position rejects negative quantity."""
+        with pytest.raises(ValidationError):
+            Position(
+                symbol="AAPL",
+                side="long",
+                quantity=-100,
+                entry_price=150.0,
+                current_price=152.5,
+            )
+
+    def test_position_zero_entry_price(self):
+        """Test that Position rejects zero entry price."""
+        with pytest.raises(ValidationError):
+            Position(
+                symbol="AAPL",
+                side="long",
+                quantity=100,
+                entry_price=0,
+                current_price=152.5,
+            )
+
+    def test_position_zero_current_price(self):
+        """Test that Position rejects zero current price."""
+        with pytest.raises(ValidationError):
+            Position(
+                symbol="AAPL",
+                side="long",
+                quantity=100,
+                entry_price=150.0,
+                current_price=0,
+            )
 
 
 class TestTradeModel:
@@ -215,6 +501,32 @@ class TestTradeModel:
         )
         assert trade.pnl == -100  # (90-100) * 10
         assert trade.pnl_pct == -10.0
+
+    def test_trade_short_position_pnl(self):
+        """Test Trade P&L calculation for short positions."""
+        trade = Trade(
+            symbol="AAPL",
+            side="sell",
+            quantity=10,
+            entry_price=100,
+            exit_price=90,
+        )
+        # Short: profit when exit < entry
+        assert trade.pnl == 100  # (100-90) * 10
+        assert trade.pnl_pct == 10.0  # ((100-90)/100) * 100
+
+    def test_trade_short_position_loss(self):
+        """Test Trade loss for short position."""
+        trade = Trade(
+            symbol="AAPL",
+            side="sell",
+            quantity=10,
+            entry_price=100,
+            exit_price=110,
+        )
+        # Short: loss when exit > entry
+        assert trade.pnl == -100  # (100-110) * 10
+        assert trade.pnl_pct == -10.0  # ((100-110)/100) * 100
 
     def test_trade_without_exit(self):
         """Test Trade without exit price (still open)."""
@@ -262,6 +574,83 @@ class TestTradeModel:
         assert trade_loaded.trade_id == trade.trade_id
         assert trade_loaded.pnl == trade.pnl
 
+    def test_trade_invalid_side(self):
+        """Test that Trade validates side is 'buy' or 'sell'."""
+        with pytest.raises(ValidationError):
+            Trade(
+                symbol="AAPL",
+                side="invalid",
+                quantity=10,
+                entry_price=100,
+                exit_price=110,
+            )
+
+    def test_trade_zero_quantity(self):
+        """Test that Trade rejects zero quantity."""
+        with pytest.raises(ValidationError):
+            Trade(
+                symbol="AAPL",
+                side="buy",
+                quantity=0,
+                entry_price=100,
+                exit_price=110,
+            )
+
+    def test_trade_negative_quantity(self):
+        """Test that Trade rejects negative quantity."""
+        with pytest.raises(ValidationError):
+            Trade(
+                symbol="AAPL",
+                side="buy",
+                quantity=-10,
+                entry_price=100,
+                exit_price=110,
+            )
+
+    def test_trade_zero_entry_price(self):
+        """Test that Trade rejects zero entry price."""
+        with pytest.raises(ValidationError):
+            Trade(
+                symbol="AAPL",
+                side="buy",
+                quantity=10,
+                entry_price=0,
+                exit_price=110,
+            )
+
+    def test_trade_negative_entry_price(self):
+        """Test that Trade rejects negative entry price."""
+        with pytest.raises(ValidationError):
+            Trade(
+                symbol="AAPL",
+                side="buy",
+                quantity=10,
+                entry_price=-100,
+                exit_price=110,
+            )
+
+    def test_trade_zero_exit_price(self):
+        """Test that Trade rejects zero exit price."""
+        with pytest.raises(ValidationError):
+            Trade(
+                symbol="AAPL",
+                side="buy",
+                quantity=10,
+                entry_price=100,
+                exit_price=0,
+            )
+
+    def test_trade_negative_exit_price(self):
+        """Test that Trade rejects negative exit price."""
+        with pytest.raises(ValidationError):
+            Trade(
+                symbol="AAPL",
+                side="buy",
+                quantity=10,
+                entry_price=100,
+                exit_price=-110,
+            )
+
 
 class TestSignalModel:
     """Tests for Signal model."""
@@ -299,6 +688,97 @@ class TestSignalModel:
         )
         assert signal.side == "neutral"
 
+    def test_signal_invalid_side(self):
+        """Test that Signal validates side."""
+        with pytest.raises(ValidationError):
+            Signal(
+                symbol="AAPL",
+                side="invalid",
+                strategy="orb",
+            )
+
+    def test_signal_strength_range(self):
+        """Test that Signal validates strength is in -1.0 to 1.0 range."""
+        # Valid strengths
+        for strength in (-1.0, -0.5, 0, 0.5, 1.0):
+            signal = Signal(
+                symbol="AAPL",
+                side="buy",
+                strategy="orb",
+                strength=strength,
+            )
+            assert signal.strength == strength
+
+    def test_signal_strength_too_high(self):
+        """Test that Signal rejects strength > 1.0."""
+        with pytest.raises(ValidationError):
+            Signal(
+                symbol="AAPL",
+                side="buy",
+                strategy="orb",
+                strength=1.1,
+            )
+
+    def test_signal_strength_too_low(self):
+        """Test that Signal rejects strength < -1.0."""
+        with pytest.raises(ValidationError):
+            Signal(
+                symbol="AAPL",
+                side="buy",
+                strategy="orb",
+                strength=-1.1,
+            )
+
+    def test_signal_confidence_range(self):
+        """Test that Signal validates confidence is in 0.0 to 1.0 range."""
+        # Valid confidences
+        for confidence in (0.0, 0.25, 0.5, 0.75, 1.0):
+            signal = Signal(
+                symbol="AAPL",
+                side="buy",
+                strategy="orb",
+                confidence=confidence,
+            )
+            assert signal.confidence == confidence
+
+    def test_signal_confidence_too_high(self):
+        """Test that Signal rejects confidence > 1.0."""
+        with pytest.raises(ValidationError):
+            Signal(
+                symbol="AAPL",
+                side="buy",
+                strategy="orb",
+                confidence=1.1,
+            )
+
+    def test_signal_confidence_negative(self):
+        """Test that Signal rejects negative confidence."""
+        with pytest.raises(ValidationError):
+            Signal(
+                symbol="AAPL",
+                side="buy",
+                strategy="orb",
+                confidence=-0.1,
+            )
+
+    def test_signal_price_validation(self):
+        """Test that Signal validates price is positive."""
+        with pytest.raises(ValidationError):
+            Signal(
+                symbol="AAPL",
+                side="buy",
+                strategy="orb",
+                price=0,
+            )
+
+        with pytest.raises(ValidationError):
+            Signal(
+                symbol="AAPL",
+                side="buy",
+                strategy="orb",
+                price=-100,
+            )
+
 
 class TestAccountStateModel:
     """Tests for AccountState model."""
@@ -333,6 +813,127 @@ class TestAccountStateModel:
         assert account.losing_trades == 14
         assert account.win_rate == 66.67
         assert account.total_pnl == 5000.0
+
+    def test_account_state_negative_cash(self):
+        """Test that AccountState rejects negative cash."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=-1000.0,
+                equity=15000.0,
+                buying_power=30000.0,
+                portfolio_value=15000.0,
+            )
+
+    def test_account_state_negative_equity(self):
+        """Test that AccountState rejects negative equity."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=5000.0,
+                equity=-15000.0,
+                buying_power=30000.0,
+                portfolio_value=15000.0,
+            )
+
+    def test_account_state_negative_buying_power(self):
+        """Test that AccountState rejects negative buying_power."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=5000.0,
+                equity=15000.0,
+                buying_power=-30000.0,
+                portfolio_value=15000.0,
+            )
+
+    def test_account_state_negative_portfolio_value(self):
+        """Test that AccountState rejects negative portfolio_value."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=5000.0,
+                equity=15000.0,
+                buying_power=30000.0,
+                portfolio_value=-15000.0,
+            )
+
+    def test_account_state_negative_total_trades(self):
+        """Test that AccountState rejects negative total_trades."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=5000.0,
+                equity=15000.0,
+                buying_power=30000.0,
+                portfolio_value=15000.0,
+                total_trades=-5,
+            )
+
+    def test_account_state_negative_winning_trades(self):
+        """Test that AccountState rejects negative winning_trades."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=5000.0,
+                equity=15000.0,
+                buying_power=30000.0,
+                portfolio_value=15000.0,
+                winning_trades=-10,
+            )
+
+    def test_account_state_negative_losing_trades(self):
+        """Test that AccountState rejects negative losing_trades."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=5000.0,
+                equity=15000.0,
+                buying_power=30000.0,
+                portfolio_value=15000.0,
+                losing_trades=-5,
+            )
+
+    def test_account_state_win_rate_range(self):
+        """Test that AccountState validates win_rate is 0-100."""
+        # Valid win rates
+        for wr in (0.0, 25.0, 50.0, 75.0, 100.0):
+            account = AccountState(
+                cash=5000.0,
+                equity=15000.0,
+                buying_power=30000.0,
+                portfolio_value=15000.0,
+                win_rate=wr,
+            )
+            assert account.win_rate == wr
+
+    def test_account_state_win_rate_too_high(self):
+        """Test that AccountState rejects win_rate > 100."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=5000.0,
+                equity=15000.0,
+                buying_power=30000.0,
+                portfolio_value=15000.0,
+                win_rate=101.0,
+            )
+
+    def test_account_state_win_rate_negative(self):
+        """Test that AccountState rejects negative win_rate."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=5000.0,
+                equity=15000.0,
+                buying_power=30000.0,
+                portfolio_value=15000.0,
+                win_rate=-1.0,
+            )
+
+    def test_account_state_trades_exceed_total(self):
+        """Test that winning + losing trades cannot exceed total."""
+        with pytest.raises(ValidationError):
+            AccountState(
+                cash=5000.0,
+                equity=15000.0,
+                buying_power=30000.0,
+                portfolio_value=15000.0,
+                total_trades=10,
+                winning_trades=7,
+                losing_trades=5,  # 7+5=12 > 10
+            )
 
 
 class TestModelSerializationFunctional:
