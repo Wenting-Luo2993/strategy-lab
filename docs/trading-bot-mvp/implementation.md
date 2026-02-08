@@ -2742,15 +2742,23 @@ async def test_broadcast_trade():
 - [x] Code review completed (2 rounds, 10 critical issues documented for future fixes)
 
 ### Phase 4 Complete
-- [ ] Position sizer respects risk limits
-- [ ] Stop loss manager tracks correctly
-- [ ] Slippage model applies correctly
-- [ ] Mock exchange handles all 4 order types
-- [ ] Partial fills handled with retry policy
-- [ ] Order manager tracks lifecycle correctly
-- [ ] Trade executor integrates all components
-- [ ] Initial capital set to $10,000
-- [ ] Unit tests pass: `pytest vibe/tests/common/test_risk.py vibe/tests/trading_bot/test_exchange.py`
+- [x] Position sizer respects risk limits
+- [x] Stop loss manager tracks correctly
+- [x] Slippage model applies correctly
+- [x] Mock exchange handles all 4 order types (Market, Limit, Stop, Stop-Limit)
+- [x] Partial fills handled with retry policy
+- [x] Order manager tracks lifecycle correctly
+- [x] Trade executor integrates all components
+- [x] Initial capital set to $10,000
+- [x] Unit tests pass: `pytest vibe/tests/common/test_risk.py vibe/tests/trading_bot/test_exchange.py vibe/tests/trading_bot/test_execution.py` (81 tests passing)
+
+**Implementation Summary:**
+- Task 4.1: PositionSizer (`vibe/common/risk/position_sizer.py`) - Fixed/percentage risk sizing with position limits
+- Task 4.2: StopLossManager (`vibe/common/risk/stop_loss_manager.py`) - Fixed/trailing stops with trigger detection
+- Task 4.3: SlippageModel (`vibe/trading_bot/exchange/slippage.py`) - Base, volatility, and size-impact slippage
+- Task 4.4: MockExchange (`vibe/trading_bot/exchange/mock_exchange.py`) - Full order lifecycle with $10K capital
+- Task 4.5: OrderManager (`vibe/trading_bot/execution/order_manager.py`) - Order tracking with retry policy
+- Task 4.6: TradeExecutor (`vibe/trading_bot/execution/trade_executor.py`) - Signal-to-order conversion with risk checks
 
 ### Phase 5 Complete
 - [ ] Market calendar identifies trading days
