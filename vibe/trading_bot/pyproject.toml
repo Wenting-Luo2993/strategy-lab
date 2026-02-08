@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibe-trading-bot"
+version = "0.1.0"
+description = "Live trading bot with real-time data streaming, indicators, and execution"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "fastapi>=0.104",
+    "uvicorn>=0.24",
+    "aiohttp>=3.9",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "yfinance>=0.2.28",
+    "websockets>=11.0",
+    "structlog>=23.2",
+    "pytz>=2023.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.1",
+    "httpx>=0.24",
+]
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["vibe.trading_bot*"]
