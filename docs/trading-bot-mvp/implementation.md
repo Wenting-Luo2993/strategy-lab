@@ -2731,14 +2731,14 @@ async def test_broadcast_trade():
 - [x] Code review completed (2 rounds, 75 issues identified, 1 critical fix applied)
 
 ### Phase 3 Complete
-- [ ] Incremental indicators match batch values
-- [ ] ORB levels calculate correctly
-- [ ] ORB strategy generates valid signals
-- [ ] MTF data store aggregates bars correctly
-- [ ] All validation rules pass unit tests
-- [ ] MTF validator orchestrates rules correctly
-- [ ] ORB with MTF validation filters false signals
-- [ ] Unit tests pass: `pytest vibe/tests/common/test_indicators.py vibe/tests/common/test_strategies.py vibe/tests/common/test_validation.py`
+- [x] Incremental indicators match batch values
+- [x] ORB levels calculate correctly
+- [x] ORB strategy generates valid signals
+- [x] MTF data store aggregates bars correctly
+- [x] All validation rules pass unit tests
+- [x] MTF validator orchestrates rules correctly
+- [x] ORB with MTF validation filters false signals
+- [x] Unit tests pass: `pytest vibe/tests/common/test_indicators.py vibe/tests/common/test_strategies.py vibe/tests/common/test_validation.py` (61 tests passing)
 
 ### Phase 4 Complete
 - [ ] Position sizer respects risk limits
