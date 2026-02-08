@@ -2723,11 +2723,12 @@ async def test_broadcast_trade():
 - [x] Unit tests pass: `pytest vibe/tests/trading_bot/test_config.py vibe/tests/trading_bot/test_storage.py` (121 tests passed)
 
 ### Phase 2 Complete
-- [ ] Yahoo provider fetches historical data
-- [ ] Finnhub WebSocket connects and streams
-- [ ] Bar aggregator produces correct OHLCV
-- [ ] Data cache reduces API calls
-- [ ] Unit tests pass: `pytest vibe/tests/trading_bot/test_data.py`
+- [x] Yahoo provider fetches historical data
+- [x] Finnhub WebSocket connects and streams
+- [x] Bar aggregator produces correct OHLCV
+- [x] Data cache reduces API calls
+- [x] Unit tests pass: `pytest vibe/tests/trading_bot/test_data.py` (35 tests passed)
+- [x] Code review completed (2 rounds, 75 issues identified, 1 critical fix applied)
 
 ### Phase 3 Complete
 - [ ] Incremental indicators match batch values

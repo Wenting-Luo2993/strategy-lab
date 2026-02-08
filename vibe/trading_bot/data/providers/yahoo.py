@@ -243,7 +243,7 @@ class YahooDataProvider(LiveDataProvider):
                 raise ValueError(f"No data found for symbol {symbol}")
             return float(data["Close"].iloc[-1])
 
-        return await self._retry_with_backoff(fetch())
+        return await self._retry_with_backoff(fetch)  # Pass callable, not coroutine
 
     async def get_bar(self, symbol: str, timeframe: str = "1m") -> Optional[dict]:
         """
