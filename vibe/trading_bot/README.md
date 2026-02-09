@@ -1,11 +1,19 @@
-# Trading Bot - Phase 1 Implementation
+# Trading Bot - Complete Implementation
 
-Live trading bot infrastructure with real-time data streaming, execution management, and health monitoring.
+Live trading bot infrastructure with real-time data streaming, execution management, orchestration, notifications, and cloud sync.
 
 ## Overview
 
-Phase 1 establishes the foundation infrastructure for the trading bot:
+The trading bot is organized in phases from foundation to deployment:
 
+### Phase 0: Shared Components
+- Core models (Trade, Order, Position, Signal)
+- Data models and validation
+- Risk management (position sizing, stop loss)
+- Strategies (ORB, indicators, signal generation)
+- Validation rules (trend alignment, volume confirmation)
+
+### Phase 1: Foundation Infrastructure
 - **Configuration System**: Pydantic-based settings with environment variable support
 - **Logging Infrastructure**: Structured JSON logging with rotation and database storage
 - **Trade Storage**: SQLite database for persistent trade data
@@ -14,25 +22,65 @@ Phase 1 establishes the foundation infrastructure for the trading bot:
 - **Graceful Shutdown**: Signal handling with ordered cleanup sequence
 - **Health Checks**: FastAPI endpoints for container orchestration
 
+### Phase 2-4: Data, Exchange, and Execution
+- Real-time data fetching from multiple providers
+- Exchange integration and order execution
+- Trade execution with risk management
+
+### Phase 5: Orchestration and Deployment
+- **Market Calendar Integration**: Market hours and holiday detection
+- **Discord Notifications**: Real-time trade alerts with formatting
+- **Rate Limiting**: Token bucket rate limiter for API compliance
+- **Cloud Sync**: Database backup/restore to Azure/AWS
+- **Health Monitoring**: System health aggregation and reporting
+- **Main Orchestrator**: Trading loop coordination and component management
+- **CLI Entry Point**: Command-line interface with backtest/validation/status
+- **Docker Containerization**: Multi-stage builds and deployment-ready image
+- **E2E Integration Tests**: Full trading cycle validation
+
 ## Directory Structure
 
 ```
 vibe/trading_bot/
-├── api/                    # API endpoints
-│   └── health.py          # Health check endpoints (liveness, readiness, metrics)
-├── config/                # Configuration
-│   ├── settings.py        # Pydantic BaseSettings for app configuration
-│   ├── constants.py       # Static constants (market hours, symbols, etc.)
-│   └── logging_config.py  # Logging configuration
-├── core/                  # Core infrastructure
-│   └── service.py         # TradingService with graceful shutdown
-├── storage/               # Data persistence
-│   ├── trade_store.py     # SQLite store for trades
-│   ├── metrics_store.py   # SQLite store for metrics
-│   └── log_store.py       # SQLite store for service logs
-├── utils/                 # Utilities
-│   └── logger.py          # Logger factory with JSON formatting
-└── data/                  # Data providers (Phase 2)
+├── api/                         # API endpoints
+│   ├── health.py               # Health check endpoints
+│   └── dashboard.py            # REST API for dashboard (Phase 6)
+├── config/                      # Configuration
+│   ├── settings.py             # Pydantic BaseSettings
+│   ├── constants.py            # Static constants
+│   └── logging_config.py       # Logging configuration
+├── core/                        # Core infrastructure
+│   ├── service.py              # TradingService base
+│   ├── scheduler.py            # Market calendar & hours (Phase 5.1)
+│   ├── health_monitor.py       # Health monitoring (Phase 5.7)
+│   └── orchestrator.py         # Main trading loop (Phase 5.8)
+├── data/                        # Data management
+│   ├── manager.py              # Data aggregation
+│   ├── aggregator.py           # Multi-provider aggregation
+│   ├── cache.py                # Data caching
+│   └── providers/              # Data source providers
+├── exchange/                    # Exchange integration
+│   ├── mock_exchange.py        # Mock exchange for testing
+│   └── slippage.py             # Slippage modeling
+├── execution/                   # Order execution
+│   ├── trade_executor.py       # Trade execution engine
+│   └── order_manager.py        # Order lifecycle management
+├── notifications/              # Discord notifications (Phase 5)
+│   ├── payloads.py             # Notification payload schemas
+│   ├── formatter.py            # Discord embed formatting
+│   ├── rate_limiter.py         # Token bucket rate limiter
+│   └── discord.py              # Discord webhook service
+├── storage/                     # Data persistence
+│   ├── trade_store.py          # SQLite trade storage
+│   ├── metrics_store.py        # SQLite metrics storage
+│   ├── log_store.py            # SQLite log storage
+│   └── sync.py                 # Cloud sync service (Phase 5.6)
+├── utils/                       # Utilities
+│   └── logger.py               # Logger factory
+├── main.py                      # CLI entry point (Phase 5.9)
+├── Dockerfile                   # Docker image definition (Phase 5.10)
+├── docker-compose.yml           # Docker Compose configuration
+└── requirements.txt             # Python dependencies
 ```
 
 ## Installation
@@ -98,7 +146,158 @@ export DATA_CACHE_TTL_SECONDS=3600
 export ENABLE_CLOUD_SYNC=true
 export CLOUD_PROVIDER="azure"
 
-# Notifications
+# Phase 5 Notifications
+export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+
+## Phase 5: Orchestration and Deployment Features
+
+### Market Calendar Integration (Task 5.1)
+Market-aware trading with pandas_market_calendars:
+- Automatic market hours detection
+- Holiday and early close handling
+- Next open/close time queries
+- Support for multiple exchanges (NYSE, NASDAQ, etc.)
+
+### Discord Notifications (Tasks 5.2-5.5)
+Real-time trade notifications with formatting:
+- Order notification payloads (ORDER_SENT, ORDER_FILLED, ORDER_CANCELLED)
+- Discord embed message formatting with colors
+- P&L and slippage calculations
+- Token bucket rate limiting (5 req/2s compliance)
+- Async notification queue with retry logic
+
+### Cloud Sync Service (Task 5.6)
+Automatic database backup and synchronization:
+- Support for Azure Blob Storage and AWS S3
+- Compression before upload
+- Sync metrics tracking (success rate, last sync time)
+- Automatic download on startup if cloud is newer
+
+### Health Monitoring (Task 5.7)
+System health tracking and reporting:
+- Component health aggregation
+- Error tracking and reporting
+- Heartbeat logging (configurable interval)
+- Health check endpoints (liveness, readiness, startup probes)
+- Status queries for external monitoring
+
+### Main Orchestrator (Task 5.8)
+Complete trading loop coordination:
+- Component initialization in correct order
+- Market-aware trading cycles (sleep during off-hours)
+- Error handling with component isolation
+- Graceful shutdown with position closure
+- Backtesting support
+
+### CLI Entry Point (Task 5.9)
+Command-line interface with multiple commands:
+```bash
+# Start live trading
+python -m vibe.trading_bot run
+
+# Run backtest for date range
+python -m vibe.trading_bot backtest --start 2026-02-01 --end 2026-02-05
+
+# Validate configuration
+python -m vibe.trading_bot validate-config
+
+# Show current status
+python -m vibe.trading_bot show-status
+
+# Help
+python -m vibe.trading_bot --help
+```
+
+### Docker Containerization (Task 5.10)
+Production-ready containerization:
+- Multi-stage build for optimized image size
+- Non-root user for security
+- Health checks integrated
+- Memory limit: <512MB
+- Proper signal handling (exec form ENTRYPOINT)
+- JSON logging for container log aggregation
+
+## Testing
+
+Comprehensive test suite with 107+ tests:
+
+```bash
+# Run all Phase 5 tests
+pytest vibe/tests/trading_bot/core/test_scheduler.py
+pytest vibe/tests/trading_bot/notifications/
+pytest vibe/tests/trading_bot/core/test_health_monitor.py
+pytest vibe/tests/trading_bot/storage/test_sync.py
+pytest vibe/tests/e2e/test_full_cycle.py
+
+# Run with coverage
+pytest vibe/tests/trading_bot/ --cov=vibe.trading_bot --cov-report=html
+```
+
+Test coverage includes:
+- Market scheduler: 19 tests (market open/close detection, holidays, schedules)
+- Notification payloads: 15 tests (validation, serialization, P&L calculations)
+- Message formatter: 11 tests (formatting, colors, field layout)
+- Rate limiter: 21 tests (burst, blocking, refilling, concurrent access)
+- Discord notifier: 11 tests (queueing, rate limiting, webhook handling)
+- Health monitor: 16 tests (aggregation, error tracking, health endpoints)
+- Cloud sync: 12 tests (upload, download, compression, metrics)
+- E2E integration: 16 tests (orchestrator lifecycle, full trading cycle)
+
+## Quick Start
+
+### Local Development
+
+```bash
+# Install dependencies
+pip install -e vibe/trading_bot/
+
+# Configure environment
+export SYMBOLS='["AAPL"]'
+export INITIAL_CAPITAL=10000
+export FINNHUB_API_KEY="your-key"
+export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+
+# Run backtest
+python -m vibe.trading_bot backtest --start 2026-02-01 --end 2026-02-05
+
+# Start live trading (with mock exchange)
+python -m vibe.trading_bot run
+
+# Check status
+python -m vibe.trading_bot show-status
+```
+
+### Docker Deployment
+
+```bash
+# Build image
+docker build -t trading-bot:latest .
+
+# Run container
+docker run \
+  -e SYMBOLS='["AAPL","GOOGL"]' \
+  -e INITIAL_CAPITAL=50000 \
+  -e DISCORD_WEBHOOK_URL="..." \
+  -v ./data:/app/data \
+  trading-bot:latest run
+
+# Or use docker-compose
+docker-compose up
+```
+
+## Architecture Highlights
+
+- **Modular Design**: Each component is independent and testable
+- **Async/Await**: Non-blocking I/O for data fetching and notifications
+- **Thread-Safe**: SQLite connection pooling, thread-local storage
+- **Rate Limiting**: Automatic API compliance with token bucket algorithm
+- **Error Resilience**: Graceful degradation when components fail
+- **Monitoring**: Health checks and metrics for observability
+- **Cloud-Ready**: Container-native with health probes and log streaming
+
+## Environment Variables
+
+# Additional Notifications
 export DISCORD_WEBHOOK_URL="https://discord.com/..."
 
 # App settings
