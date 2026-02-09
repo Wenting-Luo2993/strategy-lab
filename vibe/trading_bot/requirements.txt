@@ -17,6 +17,7 @@ docker>=6.0
 azure-storage-blob>=12.0
 boto3>=1.26
 streamlit>=1.28
+plotly>=5.0
 
 # Development dependencies
 pytest>=7.0

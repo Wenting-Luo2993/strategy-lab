@@ -38,6 +38,13 @@ The trading bot is organized in phases from foundation to deployment:
 - **Docker Containerization**: Multi-stage builds and deployment-ready image
 - **E2E Integration Tests**: Full trading cycle validation
 
+### Phase 6: Dashboard and Monitoring
+- **REST API Endpoints**: Account, positions, trades, metrics, health
+- **WebSocket Server**: Real-time updates for trades, positions, metrics
+- **Chart Generation**: P&L curves, drawdowns, win rates, performance
+- **Streamlit Dashboard**: Interactive UI with auto-refresh
+- **97 Unit Tests**: Comprehensive coverage of all dashboard components
+
 ## Directory Structure
 
 ```
@@ -620,13 +627,79 @@ Development dependencies:
 
 All 121 tests passing with 100% code coverage for core components.
 
+## Phase 6: Dashboard and Monitoring
+
+Comprehensive real-time monitoring dashboard with REST API, WebSocket support, and interactive UI.
+
+### Components
+
+1. **FastAPI REST Endpoints** (`dashboard/api.py`)
+   - GET /api/account - Account summary (capital, P&L, statistics)
+   - GET /api/positions - Open positions with unrealized P&L
+   - GET /api/trades - Trade history with pagination and filtering
+   - GET /api/metrics/performance - Win rate, Sharpe ratio, drawdown, profit factor
+   - GET /api/health - System health status (uptime, errors, connectivity)
+
+2. **WebSocket Server** (`dashboard/websocket_server.py`)
+   - ConnectionManager for managing multiple WebSocket clients
+   - Real-time broadcasting of:
+     - Trade executions
+     - Position updates
+     - Metrics updates
+     - Account changes
+     - Health status changes
+
+3. **Chart Generation** (`dashboard/charts.py`)
+   - P&L equity curve visualization
+   - Trade distribution by symbol
+   - Win rate pie chart
+   - Drawdown analysis
+   - Monthly performance summary
+   - All charts use Plotly with interactive features
+
+4. **Streamlit Dashboard** (`dashboard/app.py`)
+   - Account summary with metrics cards
+   - Performance indicators (win rate, Sharpe, drawdown)
+   - Health status monitoring
+   - Open positions table with real-time P&L
+   - Trade history with pagination
+   - Interactive performance charts
+   - Auto-refresh capability (5-60 second intervals)
+   - Responsive design with dark theme
+
+### Key Features
+
+- **Real-time Updates**: WebSocket broadcasting to multiple connected clients
+- **REST API**: Clean HTTP endpoints for dashboard data access
+- **Performance Optimized**: Indexed database queries, pagination support
+- **Comprehensive Testing**: 97 unit tests covering all functionality
+- **Deployment Ready**: Docker support, Streamlit Cloud compatible
+- **Error Handling**: Graceful error messages and fallbacks
+
+### Testing Coverage
+
+- 34 API endpoint tests
+- 29 WebSocket server tests
+- 34 chart generation tests
+- Total: 97 tests passing
+
+### Dependencies Added
+
+- `fastapi>=0.104` - REST API framework
+- `uvicorn>=0.24` - ASGI server
+- `websockets>=11.0` - WebSocket protocol
+- `streamlit>=1.28` - Dashboard UI
+- `plotly>=5.0` - Interactive charts
+
 ## Next Steps
 
-Phase 2 will implement:
-- Data providers (Yahoo Finance, Finnhub WebSocket)
-- Bar aggregation from tick data
-- Data caching and coordination
-- Real-time data streaming
+Phase 7 will implement:
+- Advanced analytics and risk metrics
+- Trade journal with notes and analysis
+- Strategy performance comparison
+- Real-time alerts and notifications integration
+- Mobile-responsive dashboard improvements
+- Export functionality (CSV, PDF reports)
 
 ## License
 
