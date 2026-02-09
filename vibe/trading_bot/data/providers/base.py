@@ -58,9 +58,10 @@ class RateLimiter:
             if self.tokens < 1:
                 wait_time = (1 - self.tokens) * (self.period / self.rate)
                 await asyncio.sleep(wait_time)
-                self.tokens = 0
-            else:
-                self.tokens -= 1
+                self.tokens = 1.0  # Now we have exactly 1 token after waiting
+
+            # Consume the token
+            self.tokens -= 1
 
 
 class LiveDataProvider(DataProvider, ABC):

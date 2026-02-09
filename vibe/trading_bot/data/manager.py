@@ -204,8 +204,9 @@ class DataManager:
         else:
             bar_df = bar
 
-        # Track real-time bars
+        # Track real-time bars with memory limit
         key = f"{symbol}_{timeframe}"
+        MAX_REALTIME_BARS = 1000  # Keep last 1000 bars per symbol/timeframe
 
         if key not in self._real_time_bars:
             self._real_time_bars[key] = bar_df
@@ -214,6 +215,9 @@ class DataManager:
                 [self._real_time_bars[key], bar_df],
                 ignore_index=True
             )
+            # Trim to prevent unbounded growth
+            if len(self._real_time_bars[key]) > MAX_REALTIME_BARS:
+                self._real_time_bars[key] = self._real_time_bars[key].tail(MAX_REALTIME_BARS)
 
         # Emit update event
         if self._on_data_update:

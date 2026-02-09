@@ -149,13 +149,26 @@ class FinnhubWebSocketClient:
         self.connected = False
         self.state = ConnectionState.DISCONNECTED
 
-        # Cancel all tasks
+        # Cancel all tasks and wait for them to finish
+        tasks_to_cancel = []
         if self._listen_task:
             self._listen_task.cancel()
+            tasks_to_cancel.append(self._listen_task)
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
+            tasks_to_cancel.append(self._heartbeat_task)
         if self._reconnect_task:
             self._reconnect_task.cancel()
+            tasks_to_cancel.append(self._reconnect_task)
+
+        # Wait for all cancelled tasks to complete
+        for task in tasks_to_cancel:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass  # Expected for cancelled tasks
+            except Exception as e:
+                logger.error(f"Error while cancelling task: {e}")
 
         # Close WebSocket
         if self.ws:

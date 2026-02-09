@@ -7,6 +7,7 @@ and validation against batch calculations.
 
 import logging
 import pickle
+from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field
@@ -110,18 +111,18 @@ class IncrementalIndicatorEngine:
 
     def _initialize_sma(self, length: int) -> Dict[str, Any]:
         """Initialize SMA state."""
-        return {"length": length, "sum": 0.0, "values": [], "count": 0}
+        return {"length": length, "sum": 0.0, "values": deque(maxlen=length), "count": 0}
 
     def _update_sma(self, state: Dict[str, Any], close: float) -> float:
         """Update SMA incrementally."""
+        # Check if deque is full - if so, sum will be automatically adjusted
+        if len(state["values"]) >= state["length"]:
+            # Deque will auto-remove oldest, so subtract it first
+            old_value = state["values"][0]
+            state["sum"] -= old_value
+
         state["values"].append(close)
         state["sum"] += close
-        state["count"] += 1
-
-        # Keep only the last N values
-        if len(state["values"]) > state["length"]:
-            old_value = state["values"].pop(0)
-            state["sum"] -= old_value
 
         return state["sum"] / len(state["values"])
 
@@ -138,7 +139,7 @@ class IncrementalIndicatorEngine:
         }
 
     def _update_rsi(self, state: Dict[str, Any], close: float) -> Optional[float]:
-        """Update RSI incrementally."""
+        """Update RSI incrementally using Wilder's smoothing."""
         if state["prev_close"] is None:
             state["prev_close"] = close
             return None
@@ -146,27 +147,29 @@ class IncrementalIndicatorEngine:
         change = close - state["prev_close"]
         state["prev_close"] = close
 
-        if change > 0:
-            state["gains"] += change
-        else:
-            state["losses"] -= change
+        # Calculate current bar's gain/loss
+        current_gain = change if change > 0 else 0.0
+        current_loss = -change if change < 0 else 0.0
 
         state["count"] += 1
 
-        # Not enough data yet
+        # Not enough data yet - accumulate for initial average
         if state["count"] < state["length"]:
+            state["gains"] += current_gain
+            state["losses"] += current_loss
             return None
 
-        # Initialize averages
+        # Initialize averages on first complete period
         if state["avg_gain"] is None:
             state["avg_gain"] = state["gains"] / state["length"]
             state["avg_loss"] = state["losses"] / state["length"]
+            # Apply Wilder's smoothing for current bar
+            state["avg_gain"] = (state["avg_gain"] * (state["length"] - 1) + current_gain) / state["length"]
+            state["avg_loss"] = (state["avg_loss"] * (state["length"] - 1) + current_loss) / state["length"]
         else:
-            # Smooth average (Wilder's smoothing)
-            state["avg_gain"] = (state["avg_gain"] * (state["length"] - 1) + (state["gains"] if state["count"] == state["length"] else 0)) / state["length"]
-            state["avg_loss"] = (state["avg_loss"] * (state["length"] - 1) + (state["losses"] if state["count"] == state["length"] else 0)) / state["length"]
-            state["gains"] = 0.0
-            state["losses"] = 0.0
+            # Wilder's smoothing for subsequent bars
+            state["avg_gain"] = (state["avg_gain"] * (state["length"] - 1) + current_gain) / state["length"]
+            state["avg_loss"] = (state["avg_loss"] * (state["length"] - 1) + current_loss) / state["length"]
 
         if state["avg_loss"] == 0:
             return 100.0 if state["avg_gain"] > 0 else 0.0
@@ -182,18 +185,22 @@ class IncrementalIndicatorEngine:
             "length": length,
             "tr_values": [],
             "atr": None,
+            "prev_close": None,
         }
 
     def _update_atr(self, state: Dict[str, Any], high: float, low: float, close: float) -> Optional[float]:
         """Update ATR incrementally."""
-        if len(state["tr_values"]) == 0:
-            # Need previous close for first TR
+        if state["prev_close"] is None:
+            # First bar - can't calculate TR without previous close
+            state["prev_close"] = close
             state["tr_values"].append(high - low)
             return None
 
+        # Calculate True Range
         prev_close = state["prev_close"]
         tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
         state["tr_values"].append(tr)
+        state["prev_close"] = close  # Update for next bar
 
         # Keep only last N values
         if len(state["tr_values"]) > state["length"]:
@@ -203,8 +210,8 @@ class IncrementalIndicatorEngine:
         if state["atr"] is None and len(state["tr_values"]) >= state["length"]:
             state["atr"] = sum(state["tr_values"]) / state["length"]
         elif state["atr"] is not None:
-            # Smooth average
-            state["atr"] = (state["atr"] * (state["length"] - 1) + state["tr_values"][-1]) / state["length"]
+            # Wilder's smoothing
+            state["atr"] = (state["atr"] * (state["length"] - 1) + tr) / state["length"]
 
         return state["atr"]
 
@@ -256,25 +263,33 @@ class IncrementalIndicatorEngine:
         return {
             "length": length,
             "std_dev": std_dev,
-            "prices": [],
-            "sma": None,
+            "prices": deque(maxlen=length),
+            "sum": 0.0,
+            "sum_sq": 0.0,  # Sum of squares for O(1) variance
+            "count": 0,
         }
 
     def _update_bb(self, state: Dict[str, Any], close: float) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-        """Update Bollinger Bands incrementally."""
-        state["prices"].append(close)
+        """Update Bollinger Bands incrementally with O(1) variance calculation."""
+        # Handle deque auto-eviction
+        if len(state["prices"]) >= state["length"]:
+            old_price = state["prices"][0]
+            state["sum"] -= old_price
+            state["sum_sq"] -= old_price ** 2
+            state["count"] -= 1
 
-        # Keep only last N prices
-        if len(state["prices"]) > state["length"]:
-            state["prices"].pop(0)
+        state["prices"].append(close)
+        state["sum"] += close
+        state["sum_sq"] += close ** 2
+        state["count"] += 1
 
         # Calculate SMA
-        sma = sum(state["prices"]) / len(state["prices"])
+        sma = state["sum"] / state["count"]
 
-        # Calculate standard deviation
-        if len(state["prices"]) == state["length"]:
-            variance = sum((p - sma) ** 2 for p in state["prices"]) / state["length"]
-            std = np.sqrt(variance)
+        # Calculate standard deviation using sum of squares
+        if state["count"] >= state["length"]:
+            variance = (state["sum_sq"] / state["count"]) - (sma ** 2)
+            std = np.sqrt(max(0, variance))  # max(0, ...) to handle floating point errors
 
             upper_band = sma + (std * state["std_dev"])
             lower_band = sma - (std * state["std_dev"])
@@ -383,10 +398,6 @@ class IncrementalIndicatorEngine:
             close = row["close"]
             high = row["high"]
             low = row["low"]
-
-            # Store previous close for ATR calculation
-            if i > 0 and state.atr_state is not None:
-                state.atr_state["prev_close"] = df.iloc[i - 1]["close"]
 
             if ind_name == "ema":
                 value = self._update_ema(state.ema_state, close)

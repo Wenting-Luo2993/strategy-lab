@@ -131,6 +131,10 @@ class ORBStrategy(StrategyBase):
         Returns:
             (signal, metadata)
         """
+        # Check if position already open - prevent duplicate entries
+        if self.has_position(symbol):
+            return 0, {"reason": "position_already_open"}
+
         if df_context.empty or "ATR_14" not in df_context.columns:
             return 0, {"reason": "insufficient_data"}
 

@@ -126,11 +126,17 @@ class ORBCalculator:
                 reason="Empty dataframe",
             )
 
-        # Check if data is for new day
-        current_date = df.iloc[-1]["timestamp"].date()
-        current_date_str = str(current_date)
+        # Check if data is for new day - use FIRST bar's date, not last
+        first_date = df.iloc[0]["timestamp"].date()
+        first_date_str = str(first_date)
 
-        if self._current_date == current_date_str and self._current_levels:
+        # If we have cached levels for a different day, invalidate
+        if self._current_date != first_date_str:
+            self._current_date = None
+            self._current_levels = None
+
+        # Check cache
+        if self._current_date == first_date_str and self._current_levels:
             return self._current_levels
 
         # Filter bars in opening window
@@ -187,7 +193,7 @@ class ORBCalculator:
         )
 
         # Cache for current day
-        self._current_date = current_date_str
+        self._current_date = first_date_str
         self._current_levels = levels
 
         return levels
@@ -201,9 +207,9 @@ class ORBCalculator:
             levels: ORBLevels from calculate()
 
         Returns:
-            True if price > ORB_High
+            True if price >= ORB_High (inclusive)
         """
-        return current_price > levels.high
+        return current_price >= levels.high
 
     def is_short_breakout(self, current_price: float, levels: ORBLevels) -> bool:
         """
@@ -214,9 +220,9 @@ class ORBCalculator:
             levels: ORBLevels from calculate()
 
         Returns:
-            True if price < ORB_Low
+            True if price <= ORB_Low (inclusive)
         """
-        return current_price < levels.low
+        return current_price <= levels.low
 
     def get_long_exit_level(self, levels: ORBLevels, atr: float, multiplier: float = 2.0) -> float:
         """

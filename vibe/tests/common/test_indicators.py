@@ -325,8 +325,9 @@ class TestORBCalculator:
         self.calculator.reset_cache()
         levels2 = self.calculator.calculate(df2)
 
-        # Should recalculate for new day
-        assert self.calculator._current_date != str(df.iloc[-1]["timestamp"].date())
+        # Should recalculate for new day - now using first bar's date
+        assert self.calculator._current_date == str(df2.iloc[0]["timestamp"].date())
+        assert self.calculator._current_date != str(df.iloc[0]["timestamp"].date())
 
 
 class TestMTFDataStore:

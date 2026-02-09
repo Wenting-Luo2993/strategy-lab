@@ -9,6 +9,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
+from datetime import time, datetime as dt
 import pandas as pd
 from pydantic import BaseModel, Field
 
@@ -239,8 +240,33 @@ class StrategyBase(ABC):
             )
 
         # Check time-based exit (end of day)
-        current_time_str = current_time.strftime("%H:%M") if hasattr(current_time, "strftime") else str(current_time)
-        if current_time_str >= market_close:
+        # Parse current_time to time object
+        if isinstance(current_time, str):
+            # Parse string to time
+            try:
+                current_time_obj = dt.strptime(current_time, "%H:%M").time()
+            except ValueError:
+                try:
+                    current_time_obj = dt.strptime(current_time, "%H:%M:%S").time()
+                except ValueError:
+                    self.logger.warning(f"Could not parse time string: {current_time}")
+                    return None
+        elif hasattr(current_time, "time"):
+            current_time_obj = current_time.time()
+        elif hasattr(current_time, "hour"):
+            current_time_obj = current_time
+        else:
+            self.logger.warning(f"Unknown time format: {type(current_time)}")
+            return None
+
+        # Parse market_close to time object
+        if isinstance(market_close, str):
+            hour, minute = map(int, market_close.split(":"))
+            market_close_obj = time(hour, minute)
+        else:
+            market_close_obj = market_close
+
+        if current_time_obj >= market_close_obj:
             return ExitSignal(
                 exit_type="time_exit",
                 reason="Market close approaching",

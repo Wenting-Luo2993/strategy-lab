@@ -2,6 +2,7 @@
 Yahoo Finance data provider for historical OHLCV data.
 """
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
@@ -11,6 +12,7 @@ import yfinance as yf
 
 from .base import LiveDataProvider
 from vibe.common.data import DataProvider
+from vibe.common.models import Bar
 
 
 logger = logging.getLogger(__name__)
@@ -97,6 +99,34 @@ class YahooDataProvider(LiveDataProvider):
             end_time=end_time,
         )
 
+    def _fetch_historical_sync(
+        self,
+        symbol: str,
+        period: Optional[str],
+        interval: str,
+        start_time: Optional[datetime],
+        end_time: Optional[datetime],
+    ) -> pd.DataFrame:
+        """
+        Synchronous helper to fetch data from yfinance.
+
+        This runs in a thread pool executor to avoid blocking the event loop.
+        """
+        ticker = yf.Ticker(symbol)
+
+        if start_time and end_time:
+            # Use start and end dates
+            df = ticker.history(
+                start=start_time.date() if isinstance(start_time, datetime) else start_time,
+                end=end_time.date() if isinstance(end_time, datetime) else end_time,
+                interval=interval,
+            )
+        else:
+            # Use period
+            df = ticker.history(period=period or "1mo", interval=interval)
+
+        return df
+
     async def get_historical(
         self,
         symbol: str,
@@ -149,19 +179,17 @@ class YahooDataProvider(LiveDataProvider):
         # Fetch data with retry
         async def fetch():
             try:
-                # Use yfinance to download data
-                ticker = yf.Ticker(symbol)
-
-                if start_time and end_time:
-                    # Use start and end dates
-                    df = ticker.history(
-                        start=start_time.date() if isinstance(start_time, datetime) else start_time,
-                        end=end_time.date() if isinstance(end_time, datetime) else end_time,
-                        interval=interval,
-                    )
-                else:
-                    # Use period
-                    df = ticker.history(period=period or "1mo", interval=interval)
+                # Use run_in_executor to avoid blocking the event loop
+                loop = asyncio.get_event_loop()
+                df = await loop.run_in_executor(
+                    None,
+                    self._fetch_historical_sync,
+                    symbol,
+                    period,
+                    interval,
+                    start_time,
+                    end_time,
+                )
 
                 # Check if we got data
                 if df.empty:
@@ -236,16 +264,20 @@ class YahooDataProvider(LiveDataProvider):
 
         await self._apply_rate_limit()
 
-        async def fetch():
+        def fetch_sync():
             ticker = yf.Ticker(symbol.upper().strip())
             data = ticker.history(period="1d")
             if data.empty:
                 raise ValueError(f"No data found for symbol {symbol}")
             return float(data["Close"].iloc[-1])
 
+        async def fetch():
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, fetch_sync)
+
         return await self._retry_with_backoff(fetch)  # Pass callable, not coroutine
 
-    async def get_bar(self, symbol: str, timeframe: str = "1m") -> Optional[dict]:
+    async def get_bar(self, symbol: str, timeframe: str = "1m") -> Optional[Bar]:
         """
         Get the latest bar for a symbol.
 
@@ -254,7 +286,7 @@ class YahooDataProvider(LiveDataProvider):
             timeframe: Timeframe
 
         Returns:
-            Dictionary with bar data or None if not available
+            Bar object with latest bar data or None if not available
         """
         try:
             df = await self.get_historical(symbol, period="1d", interval=timeframe)
@@ -262,14 +294,14 @@ class YahooDataProvider(LiveDataProvider):
                 return None
 
             latest = df.iloc[-1]
-            return {
-                "timestamp": latest["timestamp"],
-                "open": latest["open"],
-                "high": latest["high"],
-                "low": latest["low"],
-                "close": latest["close"],
-                "volume": latest["volume"],
-            }
+            return Bar(
+                timestamp=latest["timestamp"],
+                open=latest["open"],
+                high=latest["high"],
+                low=latest["low"],
+                close=latest["close"],
+                volume=latest["volume"],
+            )
         except Exception as e:
             logger.error(f"Error getting latest bar for {symbol}: {str(e)}")
             return None

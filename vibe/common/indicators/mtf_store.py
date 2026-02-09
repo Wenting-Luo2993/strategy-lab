@@ -7,7 +7,7 @@ maintaining synchronized data across all timeframes.
 
 import logging
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from collections import deque
 from dataclasses import dataclass
 import pandas as pd
@@ -192,19 +192,57 @@ class MTFDataStore:
         return aligned > last_htf_ts
 
     def _align_timestamp(self, ts: datetime, timeframe: str) -> datetime:
-        """Align timestamp to timeframe grid."""
+        """Align timestamp to timeframe grid aligned with market hours."""
         minutes = TIMEFRAME_MINUTES[timeframe]
 
         if timeframe == "1d":
-            # Align to start of day
-            return ts.replace(hour=0, minute=0, second=0, microsecond=0)
+            # Align to market open (9:30) of the trading day
+            # If before 9:30, use previous day's 9:30
+            market_open_time = time(9, 30)
+            if ts.time() < market_open_time:
+                # Before market open - belongs to previous day
+                aligned = (ts - timedelta(days=1)).replace(hour=9, minute=30, second=0, microsecond=0)
+            else:
+                aligned = ts.replace(hour=9, minute=30, second=0, microsecond=0)
+            return aligned
 
-        # Align to nearest timeframe boundary
-        # Floor to nearest multiple of minutes
+        if timeframe == "4h":
+            # 4h bars aligned to market hours: 9:30-13:30, 13:30-17:30
+            market_open_minutes = 9 * 60 + 30  # 570 minutes from midnight
+            total_minutes = ts.hour * 60 + ts.minute
+
+            # Calculate minutes since market open
+            minutes_since_open = total_minutes - market_open_minutes
+
+            if minutes_since_open < 0:
+                # Before market open - align to previous day's last 4h bar (13:30)
+                return (ts - timedelta(days=1)).replace(hour=13, minute=30, second=0, microsecond=0)
+
+            # Determine which 4h bar (0 = 9:30-13:30, 1 = 13:30-17:30)
+            bar_index = minutes_since_open // 240
+            aligned_minutes_since_open = bar_index * 240
+            aligned_total_minutes = market_open_minutes + aligned_minutes_since_open
+
+            aligned_hour = aligned_total_minutes // 60
+            aligned_minute = aligned_total_minutes % 60
+
+            return ts.replace(hour=aligned_hour, minute=aligned_minute, second=0, microsecond=0)
+
+        # For other timeframes (5m, 15m, 30m, 1h), align to market open boundary
+        market_open_minutes = 9 * 60 + 30  # 570 minutes
         total_minutes = ts.hour * 60 + ts.minute
-        aligned_minutes = (total_minutes // minutes) * minutes
-        aligned_hour = aligned_minutes // 60
-        aligned_minute = aligned_minutes % 60
+
+        if total_minutes < market_open_minutes:
+            # Before market open - align to previous day's market close (16:00)
+            return (ts - timedelta(days=1)).replace(hour=16, minute=0, second=0, microsecond=0)
+
+        # Align to nearest timeframe boundary from market open
+        minutes_since_open = total_minutes - market_open_minutes
+        aligned_minutes_since_open = (minutes_since_open // minutes) * minutes
+        aligned_total_minutes = market_open_minutes + aligned_minutes_since_open
+
+        aligned_hour = aligned_total_minutes // 60
+        aligned_minute = aligned_total_minutes % 60
 
         return ts.replace(hour=aligned_hour, minute=aligned_minute, second=0, microsecond=0)
 
