@@ -99,6 +99,26 @@ class MockExchange(ExecutionEngine):
         self._filled_orders: List[str] = []
         self._cancelled_orders: List[str] = []
 
+        logger.info(f"MockExchange initialized with ${initial_capital:,.2f} capital")
+
+    async def initialize(self) -> None:
+        """
+        Initialize the exchange (async setup).
+
+        For MockExchange, this is a no-op since all initialization
+        happens in __init__, but provided for interface compatibility.
+        """
+        logger.info("MockExchange initialization complete")
+
+    async def close(self) -> None:
+        """
+        Close the exchange and cleanup resources.
+
+        For MockExchange, this is a no-op since there are no connections
+        to close, but provided for interface compatibility.
+        """
+        logger.info("MockExchange closed")
+
     async def set_price(self, symbol: str, price: float) -> None:
         """
         Set current price for a symbol (for testing).

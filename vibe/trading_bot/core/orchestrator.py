@@ -3,15 +3,20 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from vibe.trading_bot.config.settings import AppSettings, get_settings
 from vibe.trading_bot.core.scheduler import MarketScheduler
 from vibe.trading_bot.core.health_monitor import HealthMonitor
 from vibe.trading_bot.data.manager import DataManager
+from vibe.trading_bot.data.aggregator import BarAggregator
+from vibe.trading_bot.data.providers.yahoo import YahooDataProvider
 from vibe.trading_bot.storage.trade_store import TradeStore
 from vibe.trading_bot.exchange.mock_exchange import MockExchange
+from vibe.trading_bot.execution.order_manager import OrderManager, OrderRetryPolicy
 from vibe.trading_bot.execution.trade_executor import TradeExecutor
+from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
 
 
@@ -64,8 +69,21 @@ class TradingOrchestrator:
 
             # 1. Initialize data manager
             try:
+                # Create data provider
+                data_provider = YahooDataProvider()
+
+                # Create cache directory
+                cache_dir = Path(self.config.data.cache_dir) if hasattr(self.config.data, 'cache_dir') else Path("./data/cache")
+                cache_dir.mkdir(parents=True, exist_ok=True)
+
+                # Create aggregator for real-time data
+                aggregator = BarAggregator(bar_interval="5m")
+
+                # Initialize data manager
                 self.data_manager = DataManager(
-                    symbols=self.config.trading.symbols,
+                    provider=data_provider,
+                    cache_dir=cache_dir,
+                    aggregator=aggregator,
                     cache_ttl_seconds=self.config.data.data_cache_ttl_seconds,
                 )
                 self.logger.info("Data manager initialized")
@@ -81,12 +99,31 @@ class TradingOrchestrator:
                 self.logger.error(f"Failed to initialize exchange: {e}")
                 raise
 
-            # 3. Initialize trade executor
+            # 3. Initialize trading components
             try:
+                # Create position sizer
+                position_sizer = PositionSizer(
+                    account_size=self.exchange.initial_capital,
+                    risk_per_trade_pct=1.0,  # 1% risk per trade
+                    position_size_type="percentage",
+                )
+
+                # Create order manager with retry policy
+                retry_policy = OrderRetryPolicy(
+                    max_retries=3,
+                    base_delay_seconds=1.0,
+                    cancel_after_seconds=60,
+                )
+                order_manager = OrderManager(
+                    exchange=self.exchange,
+                    retry_policy=retry_policy,
+                )
+
+                # Create trade executor
                 self.trade_executor = TradeExecutor(
                     exchange=self.exchange,
-                    data_manager=self.data_manager,
-                    position_sizer=None,  # Use default
+                    order_manager=order_manager,
+                    position_sizer=position_sizer,
                 )
                 self.logger.info("Trade executor initialized")
             except Exception as e:
