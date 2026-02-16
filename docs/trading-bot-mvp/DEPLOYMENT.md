@@ -285,9 +285,18 @@ cd ~/strategy-lab/vibe/trading_bot
 nano .env
 ```
 
+**On Windows (from your workspace root):**
+```powershell
+cd python
+# Or: cd vibe\trading_bot (depending on which trading bot you're deploying)
+notepad .env
+```
+
 ### Step 2: Configure Environment Variables
 
 Add the following configuration (replace placeholders with your actual values):
+
+**IMPORTANT:** Use comma-separated values (not JSON arrays) and NO inline comments with `#`.
 
 ```bash
 # ============================================
@@ -305,28 +314,27 @@ HEALTH_CHECK_PORT=8080
 # ------------------------------
 # Trading Configuration
 # ------------------------------
-# Comma-separated list of symbols to trade
-SYMBOLS=["AAPL", "GOOGL", "MSFT"]
+# Comma-separated list of symbols to trade (no spaces, no brackets)
+SYMBOLS=AAPL,GOOGL,MSFT
 
 # Initial capital in USD
 INITIAL_CAPITAL=10000
 
 # Risk management parameters
-MAX_POSITION_SIZE=0.1        # 10% of capital per position
+MAX_POSITION_SIZE=0.1
 USE_STOP_LOSS=true
-STOP_LOSS_PCT=0.02          # 2% stop loss
-TAKE_PROFIT_PCT=0.05        # 5% take profit
+STOP_LOSS_PCT=0.02
+TAKE_PROFIT_PCT=0.05
 
 # ------------------------------
 # Data Provider Configuration
 # ------------------------------
-# Yahoo Finance rate limiting
-YAHOO_RATE_LIMIT=5          # Requests per second
+YAHOO_RATE_LIMIT=5
 YAHOO_RETRY_COUNT=3
-DATA_CACHE_TTL_SECONDS=3600  # 1 hour cache
+DATA_CACHE_TTL_SECONDS=3600
 
-# Bar intervals to track
-BAR_INTERVALS=["1m", "5m", "15m"]
+# Bar intervals to track (comma-separated)
+BAR_INTERVALS=1m,5m,15m
 
 # ------------------------------
 # Finnhub API Configuration
@@ -340,35 +348,22 @@ FINNHUB_API_KEY=your_finnhub_api_key_here
 # SQLite database path (will be created automatically)
 DATABASE_PATH=/app/data/trades.db
 
-# For PostgreSQL upgrade (optional, for production):
-# DATABASE_URL=postgresql://user:password@localhost:5432/trading_bot
-
 # ------------------------------
 # Discord Notifications
 # ------------------------------
-# OPTIONAL: Get webhook URL from Discord Server Settings → Integrations → Webhooks
+# OPTIONAL: Get webhook URL from Discord Server Settings
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_URL_HERE
 
-# Notification preferences
 NOTIFY_ON_TRADE=true
 NOTIFY_ON_ERROR=true
 
 # ------------------------------
 # Cloud Storage (Optional)
 # ------------------------------
-# Enable cloud sync for backup/disaster recovery
 ENABLE_CLOUD_SYNC=false
-CLOUD_PROVIDER=azure  # or 'aws'
+CLOUD_PROVIDER=azure
 CLOUD_CONTAINER=trading-bot-backup
-SYNC_INTERVAL_SECONDS=300  # 5 minutes
-
-# Azure Storage (if using Azure)
-# AZURE_STORAGE_CONNECTION_STRING=your_connection_string_here
-
-# AWS S3 (if using AWS)
-# AWS_ACCESS_KEY_ID=your_access_key_here
-# AWS_SECRET_ACCESS_KEY=your_secret_key_here
-# AWS_REGION=us-east-1
+SYNC_INTERVAL_SECONDS=300
 
 # ------------------------------
 # Dashboard Configuration
@@ -378,9 +373,8 @@ DASHBOARD_AUTO_REFRESH_SECONDS=5
 ```
 
 **Save the file:**
-- Press `Ctrl+X`
-- Press `Y` to confirm
-- Press `Enter` to save
+- Linux: Press `Ctrl+X`, then `Y`, then `Enter`
+- Windows: File → Save, then close Notepad
 
 ### Step 3: Secure Environment File
 
@@ -395,14 +389,31 @@ ls -la .env
 
 ### Step 4: Validate Configuration
 
-Test your configuration before deployment:
+**IMPORTANT:** Navigate to the correct directory first:
 
 ```bash
-# Set environment variables for testing
-export $(cat .env | grep -v '^#' | xargs)
+# On Linux/Mac (Oracle Cloud)
+cd ~/strategy-lab/vibe/trading_bot
 
-# Validate (if you have Python setup locally)
-python3 -m vibe.trading_bot.main validate-config
+# On Windows (local development)
+cd d:\development\strategy-lab\python
+# Or for vibe trading bot:
+cd d:\development\strategy-lab\vibe\trading_bot
+```
+
+**Option 1: Validate using Docker** (recommended):
+```bash
+# Make sure you're in the directory with docker-compose.yml
+ls docker-compose.yml  # Should show the file
+
+# Validate configuration using Docker
+docker-compose config
+```
+
+**Option 2: Quick environment check**:
+```bash
+# View parsed environment variables
+docker-compose config | grep -A 20 environment
 ```
 
 **Expected Output:**

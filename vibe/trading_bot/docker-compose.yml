@@ -28,8 +28,14 @@ services:
     restart: unless-stopped
     networks:
       - trading-network
-    memory: 512m
-    cpus: '1'
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
     logging:
       driver: "json-file"
       options:
