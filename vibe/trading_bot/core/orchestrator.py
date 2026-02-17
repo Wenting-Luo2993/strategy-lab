@@ -75,6 +75,9 @@ class TradingOrchestrator:
         self._daily_stats: Dict[str, Any] = self._initialize_daily_stats()
         self._last_summary_date: Optional[str] = None
 
+        # Market closed state tracking (to avoid log spam)
+        self._market_closed_logged: bool = False
+
     async def initialize(self) -> bool:
         """Initialize all components in correct order.
 
@@ -366,18 +369,28 @@ class TradingOrchestrator:
                         )).total_seconds()
 
                         if sleep_seconds > 0:
-                            self.logger.info(
-                                f"Market closed, sleeping for {sleep_seconds:.0f}s "
-                                f"until {next_open}"
-                            )
+                            # Log only once when market first closes (avoid log spam)
+                            if not self._market_closed_logged:
+                                self.logger.info(
+                                    f"Market closed, sleeping until {next_open} "
+                                    f"({sleep_seconds/3600:.1f} hours). "
+                                    f"Checking for shutdown every 5 minutes."
+                                )
+                                self._market_closed_logged = True
+
                             try:
+                                # Check for shutdown every 5 minutes (instead of every minute)
+                                # Still responsive but reduces wake-ups
                                 await asyncio.wait_for(
                                     self._shutdown_event.wait(),
-                                    timeout=min(sleep_seconds, 60)  # Check every minute
+                                    timeout=min(sleep_seconds, 300)  # 5 minutes
                                 )
                             except asyncio.TimeoutError:
                                 pass
                         continue
+                    else:
+                        # Market opened, reset the flag so we log next time it closes
+                        self._market_closed_logged = False
 
                     # Market is open, run trading cycle
                     success = await self._trading_cycle()
