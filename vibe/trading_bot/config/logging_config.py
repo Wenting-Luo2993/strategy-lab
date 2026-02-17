@@ -95,3 +95,15 @@ def configure_logging(log_level: str = "INFO", log_dir: str = "./logs") -> None:
     """
     config = get_logging_config(log_level, log_dir)
     logging.config.dictConfig(config)
+
+
+# Alias for backward compatibility
+def setup_logging(level: str = "INFO", environment: str = "development") -> None:
+    """Setup logging (alias for configure_logging).
+
+    Args:
+        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        environment: Environment name (for log directory organization)
+    """
+    log_dir = "./logs" if environment == "development" else f"./logs/{environment}"
+    configure_logging(log_level=level, log_dir=log_dir)

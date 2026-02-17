@@ -167,10 +167,29 @@ class ORBStrategy(StrategyBase):
                 return 0, {"reason": "insufficient_volume"}
 
         current_price = current_bar["close"]
+
+        # Calculate distance to breakout levels for logging
+        distance_to_high = ((levels.high - current_price) / current_price) * 100 if current_price < levels.high else 0
+        distance_to_low = ((current_price - levels.low) / current_price) * 100 if current_price > levels.low else 0
+
+        # Determine price position
+        if current_price > levels.high:
+            price_position = "above_high"
+        elif current_price < levels.low:
+            price_position = "below_low"
+        else:
+            price_position = "within_range"
+
         metadata = {
             "orb_high": levels.high,
             "orb_low": levels.low,
             "orb_range": levels.range,
+            "current_price": current_price,
+            "current_bar": current_bar,
+            "price_position": price_position,
+            "distance_to_high_pct": distance_to_high,
+            "distance_to_low_pct": distance_to_low,
+            "bar_time": bar_time.strftime("%H:%M"),
         }
 
         # Long breakout

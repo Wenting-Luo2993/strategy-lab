@@ -7,9 +7,9 @@ services:
       dockerfile: vibe/trading_bot/Dockerfile
     container_name: trading-bot
     environment:
-      - ENVIRONMENT=production
+      - ENVIRONMENT=development
       - LOG_LEVEL=INFO
-      - SYMBOLS='["AAPL", "GOOGL", "MSFT"]'
+      # SYMBOLS defaults to ["AAPL", "GOOGL", "MSFT"] in settings.py
       - INITIAL_CAPITAL=10000
       - DATABASE_PATH=/app/data/trades.db
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}

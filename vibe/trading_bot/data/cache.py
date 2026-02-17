@@ -119,6 +119,9 @@ class DataCache:
         """
         Check if cached data is still valid (within TTL).
 
+        For historical data optimization: Cache is valid if data exists and is
+        reasonably recent. Historical bars never change, so long TTL is safe.
+
         Args:
             symbol: Trading symbol
             timeframe: Timeframe
@@ -145,6 +148,19 @@ class DataCache:
         except Exception as e:
             logger.warning(f"Error checking cache validity for {symbol}/{timeframe}: {e}")
             return False
+
+    def get_metadata(self, symbol: str, timeframe: str) -> Optional[dict]:
+        """
+        Get cache metadata for a symbol/timeframe.
+
+        Args:
+            symbol: Trading symbol
+            timeframe: Timeframe
+
+        Returns:
+            Metadata dict or None if not found
+        """
+        return self._load_metadata(symbol, timeframe)
 
     def get(
         self,

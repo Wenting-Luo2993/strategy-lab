@@ -91,9 +91,15 @@ class YahooDataProvider(LiveDataProvider):
             raise ValueError(f"Invalid timeframe {timeframe}. Valid: {self.VALID_INTERVALS}")
 
         # Use get_historical as the main method
+        # If no dates provided, use period-based fetching (more reliable)
+        if start_time is None and end_time is None:
+            period = "5d"  # Default to 5 days of data
+        else:
+            period = None  # Use date range instead
+
         return await self.get_historical(
             symbol=symbol,
-            period=None,
+            period=period,
             interval=timeframe,
             start_time=start_time,
             end_time=end_time,

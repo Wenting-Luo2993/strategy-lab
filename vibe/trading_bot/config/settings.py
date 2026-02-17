@@ -8,6 +8,8 @@ from pydantic import Field
 class TradingSettings(BaseSettings):
     """Trading configuration."""
 
+    market_type: str = Field(default="stocks", description="Market type (stocks, forex, crypto)")
+    exchange: str = Field(default="NYSE", description="Exchange name (for stocks: NYSE, NASDAQ, etc.)")
     symbols: List[str] = Field(default=["AAPL", "GOOGL", "MSFT"], description="Trading symbols")
     initial_capital: float = Field(default=10000.0, description="Initial capital in USD")
     max_position_size: float = Field(default=0.1, description="Max position size as % of capital")
@@ -26,7 +28,7 @@ class DataSettings(BaseSettings):
 
     yahoo_rate_limit: int = Field(default=5, description="Yahoo Finance requests per second")
     yahoo_retry_count: int = Field(default=3, description="Yahoo Finance retry attempts")
-    data_cache_ttl_seconds: int = Field(default=3600, description="Cache TTL in seconds")
+    data_cache_ttl_seconds: int = Field(default=2592000, description="Cache TTL in seconds (30 days - historical data never changes)")
     bar_intervals: List[str] = Field(default=["1m", "5m", "15m"], description="Bar intervals to track")
 
     class Config:

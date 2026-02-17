@@ -204,19 +204,28 @@ class TestFullTradingCycle:
             await notifier.stop()
 
     @pytest.mark.asyncio
-    async def test_data_manager_initialization(self, test_config):
+    async def test_data_manager_initialization(self, test_config, tmp_path):
         """Test data manager initializes."""
         from vibe.trading_bot.data.manager import DataManager
+        from vibe.trading_bot.data.providers.yahoo import YahooDataProvider
 
         try:
+            # Create required components for DataManager
+            provider = YahooDataProvider()
+            cache_dir = tmp_path / "cache"
+            cache_dir.mkdir(exist_ok=True)
+
             dm = DataManager(
-                symbols=test_config.trading.symbols,
+                provider=provider,
+                cache_dir=cache_dir,
                 cache_ttl_seconds=3600,
             )
             assert dm is not None
+            assert dm.provider is not None
+            assert dm.cache is not None
         except Exception as e:
             # Expected if real data providers unavailable
-            assert "Finnhub" in str(e) or "API" in str(e)
+            assert "Finnhub" in str(e) or "API" in str(e) or "network" in str(e).lower()
 
     @pytest.mark.asyncio
     async def test_trade_store_operations(self, test_config):

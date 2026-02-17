@@ -106,14 +106,17 @@ class DataManager:
         max_age_seconds: Optional[int] = None,
     ) -> pd.DataFrame:
         """
-        Get historical data for a symbol.
+        Get historical data for a symbol with smart caching.
 
-        Checks cache first, falls back to provider, then updates cache.
+        Implements intelligent cache management:
+        - Historical data (previous days) is cached long-term (never changes)
+        - Only fetches new data if needed, appending to existing cache
+        - Checks cache first, falls back to provider, then updates cache
 
         Args:
             symbol: Trading symbol
             timeframe: Timeframe ('5m', '15m', '1h', etc.)
-            days: Number of days of historical data
+            days: Number of days of historical data (not used with smart caching)
             max_age_seconds: Maximum age of cache in seconds (uses default TTL if None)
 
         Returns:
@@ -121,14 +124,16 @@ class DataManager:
         """
         symbol = symbol.upper().strip()
 
-        logger.info(f"Getting data for {symbol} ({timeframe}, {days} days)")
-
-        # Check cache first
+        # Check cache first (before logging, to avoid confusion)
         cached_df = self.cache.get(symbol, timeframe)
 
         if cached_df is not None and len(cached_df) > 0:
             self._cache_hits += 1
-            logger.debug(f"Cache hit for {symbol}/{timeframe}")
+            # Log cache hit at INFO level so it's visible
+            logger.info(
+                f"[CACHE HIT] {symbol} ({timeframe}): "
+                f"Returning {len(cached_df)} cached rows (TTL: {self.cache.ttl_seconds}s = {self.cache.ttl_seconds//86400} days)"
+            )
 
             # Still emit update event
             if self._on_data_update:
@@ -141,29 +146,74 @@ class DataManager:
 
             return cached_df
 
-        # Cache miss - fetch from provider
-        logger.debug(f"Cache miss for {symbol}/{timeframe}, fetching from provider")
+        # Cache miss - but check if we have expired cached data we can append to
+        cache_metadata = self.cache.get_metadata(symbol, timeframe)
+        existing_cached_df = None
+
+        if cache_metadata is not None:
+            # We have cached data but it's expired - let's try to append new data
+            cache_path = self.cache._get_cache_path(symbol, timeframe)
+            try:
+                if cache_path.exists():
+                    existing_cached_df = pd.read_parquet(cache_path)
+                    if not existing_cached_df.empty:
+                        logger.info(
+                            f"[CACHE EXPIRED] {symbol} ({timeframe}): "
+                            f"Found {len(existing_cached_df)} expired cached rows, will append new data"
+                        )
+            except Exception as e:
+                logger.warning(f"Error reading expired cache for {symbol}/{timeframe}: {e}")
+                existing_cached_df = None
+
+        # Fetch from provider
+        logger.info(f"[CACHE MISS] {symbol} ({timeframe}): Fetching from yfinance...")
 
         self._total_fetches += 1
 
         try:
+            # Use period-based fetching (more reliable than explicit date ranges)
+            # Passing None for both dates triggers period-based fetching in provider
             df = await self.provider.get_bars(
                 symbol=symbol,
                 timeframe=timeframe,
                 limit=None,
-                end_time=datetime.now(),
-                start_time=datetime.now() - timedelta(days=days),
+                start_time=None,  # None = use period-based fetching
+                end_time=None,    # None = use period-based fetching
             )
 
             if df.empty:
                 logger.warning(f"No data fetched for {symbol}/{timeframe}")
+                # Return existing cached data if we have it, even if expired
+                if existing_cached_df is not None and not existing_cached_df.empty:
+                    logger.info(f"Returning {len(existing_cached_df)} expired cached rows as fallback")
+                    return existing_cached_df
                 return pd.DataFrame()
+
+            # If we have existing cached data, merge it intelligently
+            if existing_cached_df is not None and not existing_cached_df.empty:
+                # Combine old cached data with new fetched data
+                combined_df = pd.concat([existing_cached_df, df], ignore_index=True)
+
+                # Remove duplicates based on timestamp (prefer newer data)
+                if "timestamp" in combined_df.columns:
+                    combined_df = combined_df.drop_duplicates(subset=["timestamp"], keep="last")
+                    combined_df = combined_df.sort_values("timestamp").reset_index(drop=True)
+
+                logger.info(
+                    f"[MERGE] {symbol} ({timeframe}): "
+                    f"Merged {len(existing_cached_df)} cached + {len(df)} new = {len(combined_df)} total rows"
+                )
+                df = combined_df
 
             # Run quality checks
             quality_checks = await self._run_quality_checks(symbol, timeframe, df)
 
             # Cache the data
             self.cache.put(symbol, timeframe, df)
+            logger.info(
+                f"[YFINANCE] {symbol} ({timeframe}): "
+                f"Fetched {len(df)} rows from yfinance, cached for {self.cache.ttl_seconds}s ({self.cache.ttl_seconds//86400} days)"
+            )
 
             # Emit update event
             if self._on_data_update:
@@ -174,12 +224,14 @@ class DataManager:
                     "rows": len(df),
                 })
 
-            logger.info(f"Fetched {len(df)} rows for {symbol}/{timeframe}")
-
             return df
 
         except Exception as e:
             logger.error(f"Error fetching data for {symbol}/{timeframe}: {e}")
+            # Return existing cached data if we have it, even if expired
+            if existing_cached_df is not None and not existing_cached_df.empty:
+                logger.info(f"Returning {len(existing_cached_df)} expired cached rows as fallback after error")
+                return existing_cached_df
             raise
 
     async def add_real_time_bar(

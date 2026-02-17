@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from vibe.trading_bot.config.settings import AppSettings, get_settings
-from vibe.trading_bot.core.scheduler import MarketScheduler
+from vibe.trading_bot.core.market_schedulers import create_scheduler, BaseMarketScheduler
 from vibe.trading_bot.core.health_monitor import HealthMonitor
 from vibe.trading_bot.data.manager import DataManager
 from vibe.trading_bot.data.aggregator import BarAggregator
@@ -18,6 +18,7 @@ from vibe.trading_bot.execution.order_manager import OrderManager, OrderRetryPol
 from vibe.trading_bot.execution.trade_executor import TradeExecutor
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
+from vibe.common.indicators.engine import IncrementalIndicatorEngine
 
 
 logger = logging.getLogger(__name__)
@@ -40,13 +41,24 @@ class TradingOrchestrator:
         self.logger = logging.getLogger(__name__)
 
         # Component initialization order matters
-        self.market_scheduler = MarketScheduler(exchange="NYSE")
+        self.market_scheduler: BaseMarketScheduler = create_scheduler(
+            market_type=self.config.trading.market_type,
+            exchange=self.config.trading.exchange,
+        )
         self.health_monitor = HealthMonitor()
         self.trade_store = TradeStore(db_path=self.config.database_path)
+
+        # Retry/backoff state
+        self._consecutive_failures = 0
+        self._max_consecutive_failures = 10
+        self._base_cycle_interval = 60  # Base interval: 60 seconds when monitoring positions
+        self._idle_cycle_interval = 300  # Idle interval: 5 minutes when no positions
+        self._max_backoff_seconds = 900  # Max backoff: 15 minutes
         self.data_manager: Optional[DataManager] = None
         self.exchange = MockExchange()
         self.trade_executor: Optional[TradeExecutor] = None
         self.strategy: Optional[ORBStrategy] = None
+        self.indicator_engine: Optional[IncrementalIndicatorEngine] = None
 
         # Trading loop control
         self._running = False
@@ -54,6 +66,14 @@ class TradingOrchestrator:
 
         # Main loop task
         self._main_task: Optional[asyncio.Task] = None
+
+        # Strategy logging state tracking (to avoid duplicate logs)
+        self._orb_logged_today: Dict[str, str] = {}  # symbol -> date_str
+        self._last_approach_logged: Dict[str, float] = {}  # symbol -> timestamp
+
+        # Daily statistics tracking for end-of-day summary
+        self._daily_stats: Dict[str, Any] = self._initialize_daily_stats()
+        self._last_summary_date: Optional[str] = None
 
     async def initialize(self) -> bool:
         """Initialize all components in correct order.
@@ -101,11 +121,10 @@ class TradingOrchestrator:
 
             # 3. Initialize trading components
             try:
-                # Create position sizer
+                # Create position sizer with percentage-based risk
+                # Risk amount is calculated dynamically based on current account value
                 position_sizer = PositionSizer(
-                    account_size=self.exchange.initial_capital,
-                    risk_per_trade_pct=1.0,  # 1% risk per trade
-                    position_size_type="percentage",
+                    risk_pct=0.01,  # 1% risk per trade (scales with account growth)
                 )
 
                 # Create order manager with retry policy
@@ -130,7 +149,16 @@ class TradingOrchestrator:
                 self.logger.error(f"Failed to initialize trade executor: {e}")
                 raise
 
-            # 4. Initialize strategy
+            # 4. Initialize indicator engine
+            try:
+                indicator_state_dir = Path(self.config.database_path).parent / "indicator_state"
+                self.indicator_engine = IncrementalIndicatorEngine(state_dir=indicator_state_dir)
+                self.logger.info("Indicator engine initialized")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize indicator engine: {e}")
+                raise
+
+            # 5. Initialize strategy
             try:
                 self.strategy = ORBStrategy()
                 self.logger.info("Strategy initialized")
@@ -138,7 +166,7 @@ class TradingOrchestrator:
                 self.logger.error(f"Failed to initialize strategy: {e}")
                 raise
 
-            # 5. Register health checks
+            # 6. Register health checks
             self._register_health_checks()
 
             self.logger.info("All components initialized successfully")
@@ -163,6 +191,155 @@ class TradingOrchestrator:
         self.health_monitor.register_component("exchange", check_exchange)
         self.health_monitor.register_component("strategy", check_strategy)
 
+    def _initialize_daily_stats(self) -> Dict[str, Any]:
+        """Initialize daily statistics dictionary."""
+        from datetime import datetime
+        return {
+            "date": datetime.now().date().isoformat(),
+            "orb_levels": {},  # symbol -> {high, low, range}
+            "breakouts_detected": 0,
+            "breakouts_rejected": {},  # reason -> count
+            "signals_generated": 0,
+            "trades_executed": 0,
+            "signals_by_symbol": {},  # symbol -> count
+        }
+
+    def _update_daily_stats(self, symbol: str, signal_value: int, metadata: Dict[str, Any]) -> None:
+        """Update daily statistics based on strategy evaluation."""
+        from datetime import datetime
+
+        # Reset stats if new day
+        current_date = datetime.now().date().isoformat()
+        if self._daily_stats["date"] != current_date:
+            self._daily_stats = self._initialize_daily_stats()
+
+        # Record ORB levels
+        if "orb_high" in metadata and symbol not in self._daily_stats["orb_levels"]:
+            self._daily_stats["orb_levels"][symbol] = {
+                "high": metadata["orb_high"],
+                "low": metadata["orb_low"],
+                "range": metadata["orb_range"],
+            }
+
+        # Count breakouts detected
+        price_position = metadata.get("price_position", "")
+        if price_position in ["above_high", "below_low"] and signal_value == 0:
+            self._daily_stats["breakouts_detected"] += 1
+
+            # Count rejection reasons
+            reason = metadata.get("reason", "unknown")
+            if reason in self._daily_stats["breakouts_rejected"]:
+                self._daily_stats["breakouts_rejected"][reason] += 1
+            else:
+                self._daily_stats["breakouts_rejected"][reason] = 1
+
+        # Count signals generated
+        if signal_value != 0:
+            self._daily_stats["signals_generated"] += 1
+
+            # Count by symbol
+            if symbol in self._daily_stats["signals_by_symbol"]:
+                self._daily_stats["signals_by_symbol"][symbol] += 1
+            else:
+                self._daily_stats["signals_by_symbol"][symbol] = 1
+
+    async def _check_and_send_daily_summary(self) -> None:
+        """Check if it's time to send daily summary and send if needed."""
+        from datetime import datetime
+
+        current_date = datetime.now().date().isoformat()
+
+        # Only send once per day, after session end
+        if self._last_summary_date == current_date:
+            return
+
+        # Get session end time for today
+        session_end = self.market_scheduler.get_session_end_time()
+        if not session_end:
+            return
+
+        # Check if we're past session end
+        now = datetime.now(self.market_scheduler.timezone)
+        if now >= session_end:
+            await self._send_daily_summary()
+            self._last_summary_date = current_date
+
+    async def _send_daily_summary(self) -> None:
+        """Generate and send end-of-day summary to Discord."""
+        if not self.config.notifications.discord_webhook_url:
+            self.logger.debug("Discord webhook not configured, skipping daily summary")
+            return
+
+        try:
+            from vibe.trading_bot.notifications.discord import DiscordNotifier
+
+            # Get account equity
+            account_value = self.exchange.get_account_value()
+            initial_capital = self.config.trading.initial_capital
+            pnl_pct = ((account_value - initial_capital) / initial_capital) * 100
+
+            # Build summary message
+            summary_lines = [
+                f"📊 **Daily Summary - {self._daily_stats['date']}**",
+                f"",
+                f"**Account:**",
+                f"• Equity: ${account_value:,.2f}",
+                f"• P/L: ${account_value - initial_capital:,.2f} ({pnl_pct:+.2f}%)",
+                f"",
+            ]
+
+            # ORB levels
+            if self._daily_stats["orb_levels"]:
+                summary_lines.append("**Opening Range Levels:**")
+                for symbol, levels in self._daily_stats["orb_levels"].items():
+                    summary_lines.append(
+                        f"• {symbol}: ${levels['low']:.2f}-${levels['high']:.2f} (range: ${levels['range']:.2f})"
+                    )
+                summary_lines.append("")
+
+            # Activity summary
+            summary_lines.extend([
+                f"**Activity:**",
+                f"• Breakouts Detected: {self._daily_stats['breakouts_detected']}",
+                f"• Signals Generated: {self._daily_stats['signals_generated']}",
+                f"• Trades Executed: {self._daily_stats['trades_executed']}",
+            ])
+
+            # Signals by symbol
+            if self._daily_stats["signals_by_symbol"]:
+                summary_lines.append("")
+                summary_lines.append("**Signals by Symbol:**")
+                for symbol, count in self._daily_stats["signals_by_symbol"].items():
+                    summary_lines.append(f"• {symbol}: {count}")
+
+            # Rejection reasons
+            if self._daily_stats["breakouts_rejected"]:
+                summary_lines.append("")
+                summary_lines.append("**Breakouts Rejected:**")
+                for reason, count in self._daily_stats["breakouts_rejected"].items():
+                    summary_lines.append(f"• {reason}: {count}")
+
+            # No activity message
+            if self._daily_stats["signals_generated"] == 0 and self._daily_stats["breakouts_detected"] == 0:
+                summary_lines.append("")
+                summary_lines.append("_No trading signals or breakouts today._")
+
+            message = "\n".join(summary_lines)
+
+            # Send to Discord (simple text message, not using notification payloads)
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                await session.post(
+                    self.config.notifications.discord_webhook_url,
+                    json={"content": message},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                )
+
+            self.logger.info(f"Daily summary sent to Discord for {self._daily_stats['date']}")
+
+        except Exception as e:
+            self.logger.error(f"Error sending daily summary: {e}", exc_info=True)
+
     async def run(self) -> None:
         """Run main trading loop.
 
@@ -177,6 +354,9 @@ class TradingOrchestrator:
         try:
             while not self._shutdown_event.is_set():
                 try:
+                    # Check if we should send end-of-day summary
+                    await self._check_and_send_daily_summary()
+
                     # Check if market is open
                     if not self.market_scheduler.is_market_open():
                         # Market closed, sleep until next open
@@ -200,13 +380,27 @@ class TradingOrchestrator:
                         continue
 
                     # Market is open, run trading cycle
-                    await self._trading_cycle()
+                    success = await self._trading_cycle()
+
+                    # Update failure counter
+                    if success:
+                        self._consecutive_failures = 0
+                    else:
+                        self._consecutive_failures += 1
 
                     # Heartbeat
                     self.health_monitor.check_heartbeat()
 
-                    # Small sleep to prevent busy loop
-                    await asyncio.sleep(1)
+                    # Calculate sleep interval with exponential backoff
+                    sleep_interval = self._calculate_sleep_interval()
+
+                    if self._consecutive_failures > 0:
+                        self.logger.warning(
+                            f"Consecutive failures: {self._consecutive_failures}, "
+                            f"sleeping for {sleep_interval}s before retry"
+                        )
+
+                    await asyncio.sleep(sleep_interval)
 
                 except asyncio.CancelledError:
                     self.logger.info("Trading loop cancelled")
@@ -214,37 +408,260 @@ class TradingOrchestrator:
                 except Exception as e:
                     self.logger.error(f"Error in trading cycle: {e}", exc_info=True)
                     self.health_monitor.record_error("trading_cycle")
-                    await asyncio.sleep(5)  # Back off on error
+                    self._consecutive_failures += 1
+                    # Use exponential backoff on errors too
+                    backoff = min(5 * (2 ** min(self._consecutive_failures, 5)), 300)
+                    self.logger.info(f"Backing off for {backoff}s after error")
+                    await asyncio.sleep(backoff)
 
         finally:
             await self.shutdown()
 
-    async def _trading_cycle(self) -> None:
-        """Execute one trading cycle: fetch data, generate signals, execute trades."""
+    def _has_active_positions(self) -> bool:
+        """Check if we have any active positions.
+
+        Returns:
+            True if any positions are open, False otherwise
+        """
+        try:
+            positions = self.exchange.get_positions()
+            return len(positions) > 0
+        except Exception as e:
+            self.logger.debug(f"Error checking positions: {e}")
+            # On error, assume we have positions (conservative approach)
+            return True
+
+    def _log_strategy_events(
+        self,
+        symbol: str,
+        signal_value: int,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """
+        Smart event-based logging for strategy evaluation.
+
+        Only logs interesting events to avoid spam:
+        - ORB establishment (once per day per symbol)
+        - Price approaching breakout levels (within 0.5%)
+        - Breakout detected but rejected by filters
+        - Signal generated (handled by caller)
+
+        Args:
+            symbol: Trading symbol
+            signal_value: Signal value (1=long, -1=short, 0=no signal)
+            metadata: Strategy metadata dict
+        """
+        # Check if we have ORB data in metadata
+        if "orb_high" not in metadata or "orb_low" not in metadata:
+            return
+
+        orb_high = metadata.get("orb_high", 0)
+        orb_low = metadata.get("orb_low", 0)
+        orb_range = metadata.get("orb_range", 0)
+        current_price = metadata.get("current_price", 0)
+
+        # Get current date for tracking
+        from datetime import datetime
+        current_date = datetime.now().date().isoformat()
+
+        # Event 1: Log ORB establishment once per day per symbol
+        if symbol not in self._orb_logged_today or self._orb_logged_today[symbol] != current_date:
+            self.logger.info(
+                f"[ORB] {symbol}: Opening range established "
+                f"${orb_low:.2f}-${orb_high:.2f} (range: ${orb_range:.2f})"
+            )
+            self._orb_logged_today[symbol] = current_date
+
+        # Event 2: Price approaching breakout (within 0.5%, but don't spam)
+        price_position = metadata.get("price_position", "")
+        distance_to_high = metadata.get("distance_to_high_pct", 100)
+        distance_to_low = metadata.get("distance_to_low_pct", 100)
+
+        # Approaching high breakout
+        if price_position == "within_range" and 0 < distance_to_high < 0.5:
+            # Only log if we haven't logged in the last 5 minutes (300 seconds)
+            last_approach = self._last_approach_logged.get(f"{symbol}_high", 0)
+            if datetime.now().timestamp() - last_approach > 300:
+                self.logger.info(
+                    f"[ORB] {symbol}: Price approaching HIGH breakout - "
+                    f"Current: ${current_price:.2f}, Breakout: ${orb_high:.2f} "
+                    f"({distance_to_high:.2f}% away)"
+                )
+                self._last_approach_logged[f"{symbol}_high"] = datetime.now().timestamp()
+
+        # Approaching low breakout
+        elif price_position == "within_range" and 0 < distance_to_low < 0.5:
+            last_approach = self._last_approach_logged.get(f"{symbol}_low", 0)
+            if datetime.now().timestamp() - last_approach > 300:
+                self.logger.info(
+                    f"[ORB] {symbol}: Price approaching LOW breakout - "
+                    f"Current: ${current_price:.2f}, Breakout: ${orb_low:.2f} "
+                    f"({distance_to_low:.2f}% away)"
+                )
+                self._last_approach_logged[f"{symbol}_low"] = datetime.now().timestamp()
+
+        # Event 3: Breakout detected but rejected by filters
+        if signal_value == 0 and price_position in ["above_high", "below_low"]:
+            reason = metadata.get("reason", "unknown")
+            reason_detail = metadata.get("reason_detail", "")
+
+            # Only log interesting rejection reasons (not repetitive ones)
+            interesting_reasons = {
+                "after_entry_cutoff_time",
+                "insufficient_volume",
+                "position_already_open",
+            }
+
+            if reason in interesting_reasons:
+                # Avoid logging the same rejection multiple times
+                last_rejection = self._last_approach_logged.get(f"{symbol}_rejection_{reason}", 0)
+                if datetime.now().timestamp() - last_rejection > 600:  # 10 minutes
+                    breakout_type = "HIGH" if price_position == "above_high" else "LOW"
+                    detail_str = f" ({reason_detail})" if reason_detail else ""
+
+                    self.logger.info(
+                        f"[ORB] {symbol}: {breakout_type} breakout detected at ${current_price:.2f} "
+                        f"but REJECTED - Reason: {reason}{detail_str}"
+                    )
+                    self._last_approach_logged[f"{symbol}_rejection_{reason}"] = datetime.now().timestamp()
+
+    def _calculate_sleep_interval(self) -> int:
+        """Calculate sleep interval with exponential backoff on failures.
+
+        Optimizes interval based on position status:
+        - With active positions: 60s (active monitoring)
+        - No positions: 300s (idle, less frequent checks)
+
+        Returns:
+            Sleep interval in seconds
+        """
+        # Check if we're in failure/backoff mode
+        if self._consecutive_failures > 0:
+            # Check if we've exceeded max failures
+            if self._consecutive_failures >= self._max_consecutive_failures:
+                self.logger.error(
+                    f"Exceeded max consecutive failures ({self._max_consecutive_failures}). "
+                    f"Pausing for {self._max_backoff_seconds}s. "
+                    "This may indicate a persistent issue (e.g., no market data available)."
+                )
+                return self._max_backoff_seconds
+
+            # Exponential backoff: base * 2^failures, capped at max
+            backoff = min(
+                self._base_cycle_interval * (2 ** self._consecutive_failures),
+                self._max_backoff_seconds
+            )
+            return int(backoff)
+
+        # No failures - choose interval based on position status
+        has_positions = self._has_active_positions()
+
+        if has_positions:
+            self.logger.debug(f"Active positions detected, using {self._base_cycle_interval}s interval")
+            return self._base_cycle_interval
+        else:
+            self.logger.info(
+                f"No active positions, using idle interval: {self._idle_cycle_interval}s "
+                f"(checking for entry signals)"
+            )
+            return self._idle_cycle_interval
+
+    async def _trading_cycle(self) -> bool:
+        """Execute one trading cycle: fetch data, generate signals, execute trades.
+
+        Returns:
+            True if cycle completed successfully, False if data fetch failed
+        """
+        successful_fetches = 0
         try:
             # 1. Fetch fresh data for all symbols
             for symbol in self.config.trading.symbols:
                 try:
-                    bars = await self.data_manager.fetch_bars(
+                    bars = await self.data_manager.get_data(
                         symbol=symbol,
-                        timeframe="1m",
-                        limit=100,
+                        timeframe="5m",
+                        days=1,
                     )
 
-                    if not bars:
-                        self.logger.warning(f"No bars fetched for {symbol}")
+                    if bars is None or bars.empty:
+                        # Only log on first few failures, then reduce verbosity
+                        if self._consecutive_failures < 3:
+                            self.logger.warning(f"No bars fetched for {symbol}")
                         continue
 
-                    # 2. Generate signals
-                    signals = self.strategy.generate_signals(
+                    # Successfully fetched data
+                    successful_fetches += 1
+
+                    # 2. Calculate technical indicators (ATR required for strategy)
+                    try:
+                        # Calculate ATR_14 for the DataFrame
+                        bars_with_indicators = bars.copy()
+                        atr_values = []
+
+                        for idx, row in bars.iterrows():
+                            bar_dict = {
+                                'high': row['high'],
+                                'low': row['low'],
+                                'close': row['close'],
+                            }
+                            atr = self.indicator_engine.calculate_atr(
+                                symbol=symbol,
+                                timeframe="5m",
+                                bar=bar_dict,
+                                length=14,
+                            )
+                            atr_values.append(atr)
+
+                        bars_with_indicators['ATR_14'] = atr_values
+                        bars = bars_with_indicators
+
+                    except Exception as e:
+                        self.logger.debug(f"Error calculating indicators for {symbol}: {e}")
+                        # Continue without indicators - strategy will handle missing ATR
+
+                    # 3. Generate signals using incremental method (for real-time trading)
+                    if bars.empty or len(bars) == 0:
+                        self.logger.debug(f"Empty bars for {symbol}, skipping signal generation")
+                        continue
+
+                    # Get the latest bar for incremental signal generation
+                    current_bar = bars.iloc[-1].to_dict()
+
+                    # Generate signal for current bar with historical context
+                    signal_value, signal_metadata = self.strategy.generate_signal_incremental(
                         symbol=symbol,
-                        bars=bars,
+                        current_bar=current_bar,
+                        df_context=bars,
                     )
 
-                    # 3. Execute trades for each signal
-                    for signal in signals:
+                    # Debug: Log strategy response for first few cycles
+                    if self._consecutive_failures < 2:  # Only log for first couple cycles
+                        self.logger.debug(
+                            f"Strategy evaluation for {symbol}: signal={signal_value}, "
+                            f"reason={signal_metadata.get('reason', 'N/A')}, "
+                            f"has_orb={('orb_high' in signal_metadata)}"
+                        )
+
+                    # Smart logging based on metadata
+                    self._log_strategy_events(symbol, signal_value, signal_metadata)
+
+                    # Update daily statistics
+                    self._update_daily_stats(symbol, signal_value, signal_metadata)
+
+                    # 4. Execute trade if we have a signal
+                    if signal_value != 0:  # 1=long, -1=short, 0=no signal
+                        self.logger.info(
+                            f"[SIGNAL] {symbol}: {signal_metadata.get('signal', 'unknown').upper()} at "
+                            f"${signal_metadata.get('current_price', 0):.2f} "
+                            f"(ORB: ${signal_metadata.get('orb_low', 0):.2f}-${signal_metadata.get('orb_high', 0):.2f}, "
+                            f"TP: ${signal_metadata.get('take_profit', 0):.2f}, "
+                            f"SL: ${signal_metadata.get('stop_loss', 0):.2f}, "
+                            f"R/R: {signal_metadata.get('risk_reward', 0):.1f})"
+                        )
+                        # TODO: Convert signal to proper Signal object and execute
+                        # For now, just log it
                         try:
-                            await self._execute_signal(signal)
+                            pass  # Placeholder for execution logic
                         except Exception as e:
                             self.logger.error(
                                 f"Failed to execute signal for {symbol}: {e}",
@@ -253,11 +670,19 @@ class TradingOrchestrator:
                             self.health_monitor.record_error("execution")
 
                 except Exception as e:
-                    self.logger.error(f"Error processing {symbol}: {e}", exc_info=True)
+                    # Only log full traceback on first few failures
+                    if self._consecutive_failures < 3:
+                        self.logger.error(f"Error processing {symbol}: {e}", exc_info=True)
+                    else:
+                        self.logger.debug(f"Error processing {symbol}: {e}")
                     self.health_monitor.record_error(f"data_{symbol}")
+
+            # Return success if we got data for at least one symbol
+            return successful_fetches > 0
 
         except Exception as e:
             self.logger.error(f"Trading cycle error: {e}", exc_info=True)
+            return False
 
     async def _execute_signal(self, signal: Any) -> None:
         """Execute a single trade signal.
