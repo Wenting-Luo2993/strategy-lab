@@ -1096,7 +1096,69 @@ CMD ["run"]
 
 ### Deployment Commands
 
-#### Initial Deployment
+#### Quick Start Guide
+
+**Step 1: Navigate to the trading bot directory**
+
+On Linux/Oracle Cloud:
+```bash
+cd ~/strategy-lab/vibe/trading_bot
+```
+
+On Windows (local development):
+```powershell
+cd d:\development\strategy-lab\vibe\trading_bot
+```
+
+**Step 2: Start the service**
+```bash
+# Start the trading bot (builds image if needed, runs in background)
+docker-compose up -d
+```
+
+**What happens on first run:**
+- Docker builds the image (takes 3-5 minutes)
+- Downloads Python dependencies
+- Creates data and logs directories
+- Initializes the database
+- Starts the trading bot and dashboard
+
+**Step 3: Watch the startup logs**
+```bash
+# View logs in real-time
+docker-compose logs -f
+
+# Press Ctrl+C to stop watching (service keeps running)
+```
+
+**Expected output:**
+```
+trading-bot | INFO - Starting trading bot (environment=production)
+trading-bot | INFO - Database initialized at /app/data/trades.db
+trading-bot | INFO - Initialized data manager for 3 symbols
+trading-bot | INFO - Dashboard API started on port 8080
+trading-bot | INFO - Streamlit dashboard available at http://0.0.0.0:8501
+```
+
+**Step 4: Check service status**
+```bash
+docker-compose ps
+
+# Should show:
+# NAME          STATUS
+# trading-bot   Up X seconds (healthy)
+```
+
+**Step 5: Access the dashboard**
+
+Open your browser to:
+- **Local**: `http://localhost:8501`
+- **Remote** (via SSH tunnel): `http://localhost:8501`
+- **Public** (if firewall allows): `http://<YOUR_SERVER_IP>:8501`
+
+#### Initial Deployment (Alternative - Step by Step)
+
+If you prefer to build and start separately:
 
 ```bash
 cd ~/strategy-lab/vibe/trading_bot
@@ -1122,22 +1184,44 @@ NAME          IMAGE         STATUS        PORTS
 trading-bot   trading-bot   Up 2 hours    0.0.0.0:8080->8080/tcp, 0.0.0.0:8501->8501/tcp
 ```
 
-**Restart Services:**
+**View Logs:**
 ```bash
-# Restart all services
-docker-compose restart
+# Real-time logs (all services)
+docker-compose logs -f
 
-# Restart specific service
-docker-compose restart trading-bot
+# Last 100 lines
+docker-compose logs --tail=100
+
+# Follow logs for specific service
+docker-compose logs -f trading-bot
+
+# Filter by level (ERROR, WARNING, INFO)
+docker-compose logs | grep "ERROR"
 ```
 
 **Stop Services:**
 ```bash
-# Stop all services (data preserved)
+# Stop all services (data preserved, containers remain)
 docker-compose stop
 
 # Stop and remove containers (data preserved in volumes)
 docker-compose down
+
+# Stop, remove containers, and remove volumes (⚠️ deletes all data)
+docker-compose down -v
+```
+
+**Restart Services:**
+```bash
+# Restart all services (quick restart)
+docker-compose restart
+
+# Restart specific service
+docker-compose restart trading-bot
+
+# Stop and start (full restart)
+docker-compose down
+docker-compose up -d
 ```
 
 **Update Code:**
@@ -1148,7 +1232,19 @@ git pull origin main
 
 # Rebuild and restart
 cd vibe/trading_bot
-docker-compose build
+docker-compose up -d --build
+
+# Or separately:
+docker-compose build --no-cache
+docker-compose up -d
+```
+
+**Start Service (if stopped):**
+```bash
+# Start services (without rebuilding)
+docker-compose start
+
+# Or start and rebuild if needed:
 docker-compose up -d
 ```
 
