@@ -29,14 +29,10 @@ services:
     restart: unless-stopped
     networks:
       - trading-network
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
+    # Resource limits for standalone Docker Compose
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
     logging:
       driver: "json-file"
       options:
