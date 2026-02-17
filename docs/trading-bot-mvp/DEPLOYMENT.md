@@ -314,6 +314,12 @@ HEALTH_CHECK_PORT=8080
 # ------------------------------
 # Trading Configuration
 # ------------------------------
+# Market type: stocks, forex, or crypto
+MARKET_TYPE=stocks
+
+# Exchange name (required for stocks: NYSE, NASDAQ, etc.)
+EXCHANGE=NYSE
+
 # Comma-separated list of symbols to trade (no spaces, no brackets)
 SYMBOLS=AAPL,GOOGL,MSFT
 
@@ -331,7 +337,8 @@ TAKE_PROFIT_PCT=0.05
 # ------------------------------
 YAHOO_RATE_LIMIT=5
 YAHOO_RETRY_COUNT=3
-DATA_CACHE_TTL_SECONDS=3600
+# Cache TTL: 30 days (2592000s) - historical data never changes
+DATA_CACHE_TTL_SECONDS=2592000
 
 # Bar intervals to track (comma-separated)
 BAR_INTERVALS=1m,5m,15m
@@ -387,7 +394,44 @@ ls -la .env
 # Should show: -rw------- (600)
 ```
 
-### Step 4: Validate Configuration
+### Step 4: Market Type Configuration
+
+The bot supports **stocks, forex, and crypto** markets. Choose one:
+
+#### For Stock Trading (Default)
+```bash
+MARKET_TYPE=stocks
+EXCHANGE=NYSE        # Or NASDAQ, LSE, TSX, etc.
+SYMBOLS=AAPL,GOOGL,MSFT
+```
+
+**Trading Hours**: 9:30 AM - 4:00 PM ET, Monday-Friday (excludes holidays)
+
+#### For Forex Trading
+```bash
+MARKET_TYPE=forex
+# No EXCHANGE needed for forex
+SYMBOLS=EURUSD,GBPUSD,USDJPY
+```
+
+**Trading Hours**: 24/5 (Sunday 5:00 PM ET - Friday 5:00 PM ET)
+
+**Note**: Requires forex data provider integration (Yahoo Finance primarily supports stocks)
+
+#### For Crypto Trading
+```bash
+MARKET_TYPE=crypto
+# No EXCHANGE needed for crypto
+SYMBOLS=BTCUSD,ETHUSD,SOLUSD
+```
+
+**Trading Hours**: 24/7 (never closes)
+
+**Note**: Requires crypto data provider integration (Yahoo Finance primarily supports stocks)
+
+For detailed information on multi-market support, see [MULTI_MARKET_GUIDE.md](./MULTI_MARKET_GUIDE.md).
+
+### Step 5: Validate Configuration
 
 **IMPORTANT:** Navigate to the correct directory first:
 
