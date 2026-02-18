@@ -1,7 +1,7 @@
 # Multi-stage Dockerfile for Strategy Lab
 # Optimized for Oracle Cloud Always Free service
 # Uses Python 3.12 for pandas_ta compatibility
-# Located in /python directory
+# NOTE: Build context should be repository root, not python/ directory
 
 # Stage 1: Builder
 FROM python:3.12-slim as builder
@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
-COPY requirements.txt .
+COPY python/requirements.txt .
 RUN pip install --upgrade pip setuptools wheel && \
     pip install --no-cache-dir -r requirements.txt
 
@@ -38,10 +38,14 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
 
-# Copy application code
-COPY . /app/python/
+# Copy vibe package (from repository root)
+COPY vibe/ /app/vibe/
+
+# Copy python application code
+COPY python/ /app/python/
 
 WORKDIR /app/python
 
