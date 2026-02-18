@@ -277,7 +277,8 @@ class TradingOrchestrator:
             from vibe.trading_bot.notifications.discord import DiscordNotifier
 
             # Get account equity
-            account_value = self.exchange.get_account_value()
+            account = await self.exchange.get_account()
+            account_value = account.equity
             initial_capital = self.config.trading.initial_capital
             pnl_pct = ((account_value - initial_capital) / initial_capital) * 100
 
