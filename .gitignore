@@ -35,6 +35,9 @@ data/
 vibe/trading-bot/data/
 vibe/backtester/data/
 
+# EXCEPTION: vibe/common/data/ contains source code, not data files
+!vibe/common/data/
+
 # Google API credentials (service account & OAuth tokens)
 *.service-account.json
 gdrive-key.json
