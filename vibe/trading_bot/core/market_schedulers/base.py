@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import Optional
 import pytz
 
@@ -146,3 +146,53 @@ class BaseMarketScheduler(ABC):
         if dt.tzinfo is None:
             return self.timezone.localize(dt)
         return dt.astimezone(self.timezone)
+
+    def get_warmup_time(self, date: Optional[datetime] = None) -> Optional[datetime]:
+        """
+        Get pre-market warm-up time (market open - 5 minutes).
+
+        Args:
+            date: Date to get warm-up time (default: today)
+
+        Returns:
+            Warm-up start time or None if market closed
+        """
+        open_time = self.get_open_time(date)
+        if open_time is None:
+            return None
+        return open_time - timedelta(minutes=5)
+
+    def is_warmup_phase(self, dt: Optional[datetime] = None) -> bool:
+        """
+        Check if we're in pre-market warm-up phase (5 minutes before open).
+
+        Args:
+            dt: Datetime to check (default: now)
+
+        Returns:
+            True if in warm-up phase, False otherwise
+        """
+        if dt is None:
+            dt = datetime.now(self.timezone)
+
+        dt = self._ensure_timezone_aware(dt)
+
+        warmup_time = self.get_warmup_time(dt)
+        open_time = self.get_open_time(dt)
+
+        if warmup_time is None or open_time is None:
+            return False
+
+        return warmup_time <= dt < open_time
+
+    def should_bot_be_active(self, dt: Optional[datetime] = None) -> bool:
+        """
+        Check if bot should be active (warm-up phase OR market open).
+
+        Args:
+            dt: Datetime to check (default: now)
+
+        Returns:
+            True if bot should be running, False otherwise
+        """
+        return self.is_warmup_phase(dt) or self.is_market_open(dt)

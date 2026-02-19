@@ -544,6 +544,101 @@ class TradingOrchestrator:
         except Exception as e:
             self.logger.error(f"Error disconnecting from Finnhub WebSocket: {e}", exc_info=True)
 
+    async def _pre_market_warmup(self) -> bool:
+        """
+        Pre-market warm-up phase (9:25-9:30 AM EST).
+
+        Prepares the bot for market open by:
+        1. Pre-fetching 2 days of historical data (warm cache)
+        2. Connecting to Finnhub websocket
+        3. Pre-calculating indicators
+        4. Running health checks
+
+        Returns:
+            True if warm-up successful, False if errors occurred
+        """
+        self.logger.info("=" * 60)
+        self.logger.info("PRE-MARKET WARM-UP PHASE")
+        self.logger.info("=" * 60)
+
+        market_open = self.market_scheduler.get_open_time()
+        if market_open:
+            self.logger.info(f"Market opens at: {market_open.strftime('%H:%M:%S %Z')}")
+
+        warmup_success = True
+
+        # Step 1: Pre-fetch historical data (warm cache)
+        self.logger.info("Step 1/4: Warming cache with historical data...")
+        try:
+            for symbol in self.config.trading.symbols:
+                self.logger.info(f"  Pre-fetching 2 days of data for {symbol}...")
+                bars = await self.data_manager.get_data(
+                    symbol=symbol,
+                    timeframe="5m",
+                    days=2,  # Fetch 2 days for indicator context
+                )
+
+                if bars is not None and not bars.empty:
+                    self.logger.info(f"  OK {symbol}: {len(bars)} bars loaded")
+                else:
+                    self.logger.warning(f"  WARNING {symbol}: No data fetched")
+                    warmup_success = False
+
+            self.logger.info("Cache warm-up complete!")
+        except Exception as e:
+            self.logger.error(f"Error during cache warm-up: {e}", exc_info=True)
+            warmup_success = False
+
+        # Step 2: Connect Finnhub websocket
+        self.logger.info("Step 2/4: Connecting to Finnhub WebSocket...")
+        try:
+            if self.finnhub_ws and not self.finnhub_ws.connected:
+                await self._connect_finnhub_websocket()
+                self.logger.info("Finnhub WebSocket ready!")
+            elif self.finnhub_ws:
+                self.logger.info("Finnhub WebSocket already connected")
+            else:
+                self.logger.info("Finnhub not configured (will use Yahoo Finance only)")
+        except Exception as e:
+            self.logger.error(f"Error connecting Finnhub during warm-up: {e}", exc_info=True)
+            self.logger.warning("Continuing without Finnhub (Yahoo Finance fallback)")
+            warmup_success = False
+
+        # Step 3: Pre-calculate indicators (optional, for future optimization)
+        self.logger.info("Step 3/4: Pre-calculating indicators...")
+        try:
+            # For now, just verify indicator engine is ready
+            if self.indicator_engine:
+                self.logger.info("Indicator engine ready!")
+            else:
+                self.logger.warning("Indicator engine not initialized")
+        except Exception as e:
+            self.logger.error(f"Error checking indicators: {e}")
+
+        # Step 4: Health checks
+        self.logger.info("Step 4/4: Running health checks...")
+        health_status = self.health_monitor.check_all()
+
+        all_healthy = all(comp["status"] == "healthy" for comp in health_status.values())
+
+        if all_healthy:
+            self.logger.info("All systems healthy!")
+        else:
+            self.logger.warning("Some systems unhealthy:")
+            for component, status in health_status.items():
+                if status["status"] != "healthy":
+                    self.logger.warning(f"  {component}: {status['status']}")
+
+        # Summary
+        self.logger.info("=" * 60)
+        if warmup_success and all_healthy:
+            self.logger.info("WARM-UP COMPLETE - Ready for market open!")
+        else:
+            self.logger.warning("WARM-UP COMPLETE - Some issues detected (continuing anyway)")
+        self.logger.info("=" * 60)
+
+        return warmup_success
+
     async def run(self) -> None:
         """Run main trading loop.
 
@@ -561,11 +656,16 @@ class TradingOrchestrator:
                     # Check if we should send end-of-day summary
                     await self._check_and_send_daily_summary()
 
-                    # Check if market is open
-                    if not self.market_scheduler.is_market_open():
-                        # Market closed, sleep until next open
+                    # Check if bot should be active (warm-up OR market open)
+                    if not self.market_scheduler.should_bot_be_active():
+                        # Market closed, sleep until warm-up time (5 min before open)
+                        next_warmup = self.market_scheduler.get_warmup_time()
                         next_open = self.market_scheduler.next_market_open()
-                        sleep_seconds = (next_open - datetime.now(
+
+                        # Use warm-up time if available, otherwise market open
+                        target_time = next_warmup if next_warmup else next_open
+
+                        sleep_seconds = (target_time - datetime.now(
                             self.market_scheduler.timezone
                         )).total_seconds()
 
@@ -573,7 +673,7 @@ class TradingOrchestrator:
                             # Log only once when market first closes (avoid log spam)
                             if not self._market_closed_logged:
                                 self.logger.info(
-                                    f"Market closed, sleeping until {next_open} "
+                                    f"Market closed, sleeping until warm-up at {target_time} "
                                     f"({sleep_seconds/3600:.1f} hours). "
                                     f"Checking for shutdown every 5 minutes."
                                 )
@@ -584,8 +684,7 @@ class TradingOrchestrator:
                                     await self._disconnect_finnhub_websocket()
 
                             try:
-                                # Check for shutdown every 5 minutes (instead of every minute)
-                                # Still responsive but reduces wake-ups
+                                # Check for shutdown every 5 minutes
                                 await asyncio.wait_for(
                                     self._shutdown_event.wait(),
                                     timeout=min(sleep_seconds, 300)  # 5 minutes
@@ -593,17 +692,36 @@ class TradingOrchestrator:
                             except asyncio.TimeoutError:
                                 pass
                         continue
-                    else:
-                        # Market opened, reset the flag so we log next time it closes
+
+                    # Bot is active - check if warm-up phase or trading
+                    if self.market_scheduler.is_warmup_phase():
+                        # Pre-market warm-up phase (9:25-9:30 AM)
+                        self.logger.info("Entering pre-market warm-up phase...")
+                        await self._pre_market_warmup()
+
+                        # Sleep until market actually opens
+                        market_open = self.market_scheduler.get_open_time()
+                        if market_open:
+                            now = datetime.now(self.market_scheduler.timezone)
+                            sleep_until_open = (market_open - now).total_seconds()
+
+                            if sleep_until_open > 0:
+                                self.logger.info(
+                                    f"Warm-up complete. Waiting {sleep_until_open:.0f}s "
+                                    f"until market open at {market_open.strftime('%H:%M:%S')}..."
+                                )
+                                await asyncio.sleep(sleep_until_open)
+
+                        continue
+
+                    elif self.market_scheduler.is_market_open():
+                        # Market is open - reset closed flag if needed
                         if self._market_closed_logged:
                             self._market_closed_logged = False
+                            self.logger.info("Market is now open - starting trading cycle")
 
-                            # Connect to Finnhub websocket when market opens
-                            if self.finnhub_ws and not self.finnhub_ws.connected:
-                                await self._connect_finnhub_websocket()
-
-                    # Market is open, run trading cycle
-                    success = await self._trading_cycle()
+                        # Run trading cycle
+                        success = await self._trading_cycle()
 
                     # Update failure counter
                     if success:
