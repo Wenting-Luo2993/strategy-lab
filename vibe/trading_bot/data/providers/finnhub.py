@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Callable, Optional, Set
 
+import pytz
 import websockets
 from websockets.client import WebSocketClientProtocol
 
@@ -281,7 +282,8 @@ class FinnhubWebSocketClient:
                                 "price": trade.get("p"),
                                 "size": trade.get("v"),    # Volume is "v", not "s"
                                 "timestamp": datetime.fromtimestamp(
-                                    trade.get("t", 0) / 1000
+                                    trade.get("t", 0) / 1000,
+                                    tz=pytz.UTC  # Finnhub timestamps are in UTC
                                 ),
                                 "bid": trade.get("bp"),
                                 "ask": trade.get("ap"),
