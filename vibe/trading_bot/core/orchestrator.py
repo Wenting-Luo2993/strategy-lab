@@ -20,6 +20,7 @@ from vibe.trading_bot.execution.order_manager import OrderManager, OrderRetryPol
 from vibe.trading_bot.execution.trade_executor import TradeExecutor
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
+from vibe.common.strategies.orb import ORBStrategyConfig
 from vibe.common.indicators.engine import IncrementalIndicatorEngine
 
 
@@ -172,8 +173,24 @@ class TradingOrchestrator:
 
             # 5. Initialize strategy
             try:
-                self.strategy = ORBStrategy()
-                self.logger.info("Strategy initialized")
+                # Create strategy config from settings
+                strategy_config = ORBStrategyConfig(
+                    name="ORB",
+                    orb_start_time=self.config.strategy.orb_start_time,
+                    orb_duration_minutes=self.config.strategy.orb_duration_minutes,
+                    orb_body_pct_filter=self.config.strategy.orb_body_pct_filter,
+                    entry_cutoff_time=self.config.strategy.entry_cutoff_time,
+                    take_profit_multiplier=self.config.strategy.take_profit_multiplier,
+                    stop_loss_at_level=self.config.strategy.stop_loss_at_level,
+                    use_volume_filter=self.config.strategy.use_volume_filter,
+                    volume_threshold=self.config.strategy.volume_threshold,
+                    market_close_time=self.config.strategy.market_close_time,
+                )
+                self.strategy = ORBStrategy(config=strategy_config)
+                self.logger.info(
+                    f"Strategy initialized: ORB window={self.config.strategy.orb_start_time} "
+                    f"duration={self.config.strategy.orb_duration_minutes}m"
+                )
             except Exception as e:
                 self.logger.error(f"Failed to initialize strategy: {e}")
                 raise

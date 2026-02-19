@@ -50,6 +50,24 @@ class CloudSettings(BaseSettings):
         case_sensitive = False
 
 
+class StrategySettings(BaseSettings):
+    """Strategy configuration."""
+
+    orb_start_time: str = Field(default="09:30", description="ORB window start time (HH:MM)")
+    orb_duration_minutes: int = Field(default=5, description="ORB window duration in minutes")
+    orb_body_pct_filter: float = Field(default=0.5, description="Minimum body percentage for valid breakout candle")
+    entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
+    take_profit_multiplier: float = Field(default=2.0, description="Take-profit = ORB_Range * multiplier")
+    stop_loss_at_level: bool = Field(default=True, description="Stop-loss at ORB level (vs ATR-based)")
+    use_volume_filter: bool = Field(default=False, description="Require above-average volume for breakout")
+    volume_threshold: float = Field(default=1.5, description="Volume must be > average * threshold")
+    market_close_time: str = Field(default="16:00", description="Market close time (HH:MM)")
+
+    class Config:
+        env_prefix = ""
+        case_sensitive = False
+
+
 class NotificationSettings(BaseSettings):
     """Notification configuration."""
 
@@ -73,6 +91,7 @@ class AppSettings(BaseSettings):
 
     trading: TradingSettings = Field(default_factory=TradingSettings)
     data: DataSettings = Field(default_factory=DataSettings)
+    strategy: StrategySettings = Field(default_factory=StrategySettings)
     cloud: CloudSettings = Field(default_factory=CloudSettings)
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)
 
