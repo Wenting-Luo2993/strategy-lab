@@ -118,20 +118,35 @@ class YahooDataProvider(LiveDataProvider):
 
         This runs in a thread pool executor to avoid blocking the event loop.
         """
-        ticker = yf.Ticker(symbol)
+        try:
+            ticker = yf.Ticker(symbol)
 
-        if start_time and end_time:
-            # Use start and end dates
-            df = ticker.history(
-                start=start_time.date() if isinstance(start_time, datetime) else start_time,
-                end=end_time.date() if isinstance(end_time, datetime) else end_time,
-                interval=interval,
-            )
-        else:
-            # Use period
-            df = ticker.history(period=period or "1mo", interval=interval)
+            if start_time and end_time:
+                # Use start and end dates
+                df = ticker.history(
+                    start=start_time.date() if isinstance(start_time, datetime) else start_time,
+                    end=end_time.date() if isinstance(end_time, datetime) else end_time,
+                    interval=interval,
+                )
+            else:
+                # Use period (automatically skips weekends/holidays)
+                df = ticker.history(period=period or "1mo", interval=interval)
 
-        return df
+            # yfinance returns empty DataFrame for invalid symbols, weekends, or holidays
+            # This is expected behavior, not an error
+            if df.empty:
+                logger.debug(
+                    f"No data returned from yfinance for {symbol} "
+                    f"(period={period}, interval={interval}). "
+                    f"This is normal for weekends, holidays, or invalid symbols."
+                )
+
+            return df
+
+        except Exception as e:
+            # Catch yfinance-specific errors
+            logger.warning(f"yfinance fetch error for {symbol}: {str(e)}")
+            return pd.DataFrame()  # Return empty rather than propagating error
 
     async def get_historical(
         self,
@@ -246,8 +261,24 @@ class YahooDataProvider(LiveDataProvider):
                 return df
 
             except Exception as e:
-                logger.error(f"Error fetching data for {symbol}: {str(e)}")
-                raise
+                error_msg = str(e).lower()
+
+                # Provide specific error messages for common issues
+                if "no data" in error_msg or "data doesn't exist" in error_msg:
+                    logger.warning(
+                        f"No data available for {symbol} (likely weekend/holiday/market closed). "
+                        f"Period: {period}, Interval: {interval}"
+                    )
+                    return pd.DataFrame()
+                elif "404" in error_msg or "not found" in error_msg:
+                    logger.error(f"Symbol {symbol} not found on Yahoo Finance")
+                    return pd.DataFrame()
+                elif "rate limit" in error_msg or "429" in error_msg:
+                    logger.warning(f"Rate limited by Yahoo Finance for {symbol}, will retry")
+                    raise  # Retry will handle this
+                else:
+                    logger.error(f"Error fetching data for {symbol}: {str(e)}")
+                    raise
 
         return await self._retry_with_backoff(fetch)
 
