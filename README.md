@@ -1,122 +1,205 @@
 # Strategy Lab
 
-Strategy Lab is a toolkit for developing, backtesting, and executing trading strategies using both Python and Pine Script. It is designed for:
+A comprehensive toolkit for algorithmic trading - from strategy development and backtesting to live trading execution across multiple markets (stocks, forex, crypto).
 
-- **Backtesting**: Simulate and evaluate trading strategies on historical data using Python.
-- **Paper/Live Trading**: Run strategies in real-time or simulated environments.
-- **Rapid Prototyping & Screening**: Quickly prototype, screen, and set up alerts using Pine Script on TradingView.
+## 🚀 Quick Start
 
-## Project Structure
-
-- `python/` — Python package for data loading, indicator calculation, strategy logic, backtesting engine, and visualization.
-
-  - `src/back_test/` — Backtest engine, parameter management, and data fetching.
-  - `src/data/` — Data loaders for Yahoo, Polygon, IB, and caching.
-  - `src/indicators/` — Technical indicators and ORB (Opening Range Breakout) logic.
-  - `src/strategies/` — Strategy base classes and ORB strategy implementation.
-  - `src/visualization/` — Charting and result visualization.
-  - `main.py` — Example: run a backtest from end-to-end.
-
-- `pine/` — Pine Script libraries and strategies for TradingView.
-  - `libraries/` — Modular Pine Script libraries for display, entry, range, and risk management.
-  - `strategies/` — Example strategies (e.g., ORB strategy) for rapid prototyping and alerts.
-
-## Key Features
-
-- Modular Python and Pine Script codebases for flexibility and rapid iteration.
-- Opening Range Breakout (ORB) strategy templates in both Python and Pine Script.
-- Data loading from Yahoo Finance and other sources (Python).
-- Backtesting engine with parameter grid search (Python).
-- Visualization of results and equity curves (Python).
-- Pine Script libraries for advanced entry, risk, and display logic.
-
-## Getting Started
-
-### Python
-
-1. Install dependencies (see requirements.txt, e.g. `yfinance`, `pandas`, `matplotlib`, `mplfinance`).
-2. Run `python/main.py` for a basic backtest example.
-3. Modify or extend strategies in `python/src/strategies/` and parameters in `python/src/backtester/parameters.py`.
-
-### Pine Script
-
-1. Use scripts in `pine/strategies/` directly on TradingView.
-2. Import libraries from `pine/libraries/` for custom strategies.
-3. Adjust parameters and logic for rapid prototyping and screening.
-
-## Example Usage
-
-**Python:**
-
-```python
-from src.data import DataLoaderFactory, DataSource, Timeframe
-from src.strategies.orb import ORBStrategy
-from src.back_test.engine import Backtester
-
-loader = DataLoaderFactory.create(DataSource.YAHOO, interval=Timeframe.MIN_5.value)
-df = loader.fetch("AAPL", timeframe=Timeframe.MIN_5.value, start="2025-08-01", end="2025-08-05")
-strategy = ORBStrategy()
-signals = strategy.generate_signals(df)
-backtester = Backtester(initial_capital=10000)
-result = backtester.run(df, signals)
+**Live Trading Bot (Production-Ready):**
+```bash
+cd vibe/trading_bot
+docker-compose up -d
 ```
 
-**Pine Script:**
-Use `pine/strategies/orb-strategy.pine` in TradingView for rapid prototyping, screening, and alerts.
+**Backtesting:**
+```bash
+cd vibe/backtester
+python main.py --symbol AAPL --start 2024-01-01 --end 2024-12-31
+```
 
-## License
+**Pine Script (TradingView):**
+Open `pine/strategies/orb-strategy.pine` in TradingView for rapid prototyping and alerts.
 
-MIT License
+## 📁 Project Structure
 
-## Testing & Quality Assurance
+### `vibe/` — Production Trading System ⭐
 
-This project uses `pytest` for unit testing and `pre-commit` to enforce that tests pass before commits.
+Modern, production-ready trading infrastructure with comprehensive features:
 
-### Running Tests Locally
+- **`vibe/trading_bot/`** — Live/paper trading bot with multi-market support
+  - Supports stocks, forex, and crypto markets
+  - Smart event-based logging and monitoring
+  - Discord notifications with end-of-day summaries
+  - Docker deployment ready (Oracle Cloud, AWS, Azure)
+  - See [vibe/trading_bot/README.md](./vibe/trading_bot/README.md) for details
 
-From the repository root (ensure dependencies are installed from `python/requirements.txt`):
+- **`vibe/backtester/`** — Advanced backtesting engine
+  - Vectorized backtesting for speed
+  - Event-driven backtesting for accuracy
+  - Parameter optimization and walk-forward analysis
+  - Performance analytics and visualization
+
+- **`vibe/common/`** — Shared components
+  - Strategy implementations (ORB, Mean Reversion, etc.)
+  - Technical indicators with incremental calculation
+  - Risk management and position sizing
+  - Data providers and market models
+
+### `pine/` — TradingView Scripts
+
+Pine Script libraries and strategies for rapid prototyping on TradingView:
+- `libraries/` — Modular components for display, entry, and risk management
+- `strategies/` — Ready-to-use strategies (ORB, etc.) for alerts and screening
+
+### `python/` — Legacy Codebase (Deprecated)
+
+Original Python implementation - superseded by `vibe/`. Kept for reference.
+
+## ✨ Key Features
+
+### Trading Bot (`vibe/trading_bot/`)
+- ✅ **Multi-market support** — Stocks (NYSE/NASDAQ), Forex (24/5), Crypto (24/7)
+- ✅ **Smart caching** — 30-day cache TTL (historical data never changes)
+- ✅ **Event-based logging** — ORB levels, breakouts, rejections (no spam!)
+- ✅ **Position-aware intervals** — 1min active monitoring, 5min idle checking
+- ✅ **Discord summaries** — End-of-day reports with P&L, ORB levels, activity
+- ✅ **Exponential backoff** — Graceful handling of API failures
+- ✅ **Docker deployment** — Production-ready with health checks
+- ✅ **Multiple strategies** — ORB, Mean Reversion, extensible framework
+
+### Backtester (`vibe/backtester/`)
+- ✅ **Dual engines** — Vectorized (fast) and event-driven (realistic)
+- ✅ **Rich analytics** — Sharpe ratio, drawdown, win rate, etc.
+- ✅ **Parameter optimization** — Grid search, walk-forward validation
+- ✅ **Multiple data sources** — Yahoo Finance, Polygon, IEX, custom providers
+
+### Pine Script (`pine/`)
+- ✅ **Modular libraries** — Reusable components for custom strategies
+- ✅ **Visual alerts** — TradingView integration for rapid screening
+
+## 📖 Documentation
+
+- **Trading Bot**: [vibe/trading_bot/README.md](./vibe/trading_bot/README.md)
+- **Multi-Market Guide**: [docs/trading-bot-mvp/MULTI_MARKET_GUIDE.md](./docs/trading-bot-mvp/MULTI_MARKET_GUIDE.md)
+- **Deployment Guide**: [docs/trading-bot-mvp/DEPLOYMENT.md](./docs/trading-bot-mvp/DEPLOYMENT.md)
+- **Backtester**: [vibe/backtester/README.md](./vibe/backtester/README.md)
+
+## 🔧 Technology Stack
+
+- **Python 3.11+** — Core language
+- **Docker** — Containerized deployment
+- **FastAPI** — REST API and WebSocket server
+- **Streamlit** — Real-time dashboard
+- **SQLite/PostgreSQL** — Trade storage
+- **yfinance** — Market data (stocks)
+- **pandas** — Data processing
+- **Discord** — Notifications
+
+## 🧪 Testing
 
 ```bash
-cd python
+# Run all tests
 pytest
+
+# Run with coverage
+pytest --cov=vibe --cov-report=term-missing
+
+# Run specific test suite
+pytest vibe/trading_bot/tests/
 ```
 
-To see coverage details:
-
-```bash
-pytest --cov=python/src --cov-report=term-missing
-```
-
-### Test Layout
-
-- Tests live in `python/tests/`.
-- A sample test for the ORB indicator is in `python/tests/test_orb_indicator.py`.
-- `pytest.ini` configures discovery and coverage.
-
-### Pre-Commit Hook
-
-Install and activate pre-commit hooks to automatically run tests before each commit:
+### Pre-Commit Hooks
 
 ```bash
 pip install pre-commit
 pre-commit install
 ```
 
-If a test fails, the commit is blocked. Fix tests and retry.
+Tests run automatically before each commit. CI/CD via GitHub Actions.
 
-### Continuous Integration
+## 🌐 Multi-Market Trading
 
-GitHub Actions workflow at `.github/workflows/tests.yml` runs the test suite on every push and pull request to `main`.
+Switch between markets via environment variables:
 
-### Adding New Tests
+**Stocks (Default):**
+```bash
+MARKET_TYPE=stocks
+EXCHANGE=NYSE
+SYMBOLS=AAPL,GOOGL,MSFT
+```
 
-1. Create a new file in `python/tests/` named `test_<component>.py`.
-2. Import the module(s) you want to test from `src`. Use fixtures or helper builders for complex objects.
-3. Keep tests deterministic (no live API calls); mock external services.
-4. Run `pytest` and ensure all tests pass before committing.
+**Forex (24/5):**
+```bash
+MARKET_TYPE=forex
+SYMBOLS=EURUSD,GBPUSD,USDJPY
+```
 
-### Recommended Practices
+**Crypto (24/7):**
+```bash
+MARKET_TYPE=crypto
+SYMBOLS=BTCUSD,ETHUSD,SOLUSD
+```
 
-- Use descriptive test names (e.g., `test_orb_long_breakout_detected`).
-- Group related assertions logically; prefer multiple focused tests over one large test.
-- When adding new modules, include at least one happy path and one edge case test.
+See [MULTI_MARKET_GUIDE.md](./docs/trading-bot-mvp/MULTI_MARKET_GUIDE.md) for details.
+
+## 📊 Example Usage
+
+**Live Trading:**
+```bash
+cd vibe/trading_bot
+cp .env.example .env
+# Edit .env with your API keys
+docker-compose up -d
+
+# Monitor logs
+docker-compose logs -f
+```
+
+**Backtesting:**
+```python
+from vibe.backtester import VectorizedBacktester
+from vibe.common.strategies import ORBStrategy
+
+strategy = ORBStrategy()
+backtester = VectorizedBacktester(initial_capital=10000)
+results = backtester.run(df, strategy)
+print(results.summary())
+```
+
+**Pine Script:**
+1. Open TradingView
+2. Pine Editor → New → Import `pine/strategies/orb-strategy.pine`
+3. Configure parameters → Add to chart
+
+## 🚀 Deployment
+
+**Oracle Cloud (Free Tier):**
+```bash
+# SSH into instance
+ssh ubuntu@your-instance-ip
+
+# Clone and deploy
+git clone https://github.com/your-username/strategy-lab.git
+cd strategy-lab/vibe/trading_bot
+docker-compose up -d
+```
+
+See [DEPLOYMENT.md](./docs/trading-bot-mvp/DEPLOYMENT.md) for complete guide.
+
+## 📈 Roadmap
+
+- [x] Multi-market support (stocks/forex/crypto)
+- [x] Docker deployment with health monitoring
+- [x] Discord notifications with daily summaries
+- [x] Smart caching and position-aware intervals
+- [ ] Real broker integrations (Alpaca, Interactive Brokers)
+- [ ] Advanced strategies (ML-based, multi-timeframe)
+- [ ] Portfolio optimization and multi-strategy execution
+- [ ] Web dashboard with live charts
+
+## 📄 License
+
+MIT License
+
+## 🙏 Acknowledgments
+
+Built with contributions from Claude Sonnet 4.5 🤖

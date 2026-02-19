@@ -126,44 +126,97 @@ class DataManager:
 
         # Check cache first (before logging, to avoid confusion)
         cached_df = self.cache.get(symbol, timeframe)
+        existing_cached_df = None  # Will be set if cache is stale or expired
 
         if cached_df is not None and len(cached_df) > 0:
-            self._cache_hits += 1
-            # Log cache hit at INFO level so it's visible
-            logger.info(
-                f"[CACHE HIT] {symbol} ({timeframe}): "
-                f"Returning {len(cached_df)} cached rows (TTL: {self.cache.ttl_seconds}s = {self.cache.ttl_seconds//86400} days)"
-            )
+            # Check if the last bar is stale (for intraday trading, we need fresh data)
+            # Timeframe to minutes mapping
+            timeframe_minutes = {
+                "1m": 1, "5m": 5, "15m": 15, "30m": 30,
+                "1h": 60, "1d": 1440
+            }
+            interval_minutes = timeframe_minutes.get(timeframe, 5)
 
-            # Still emit update event
-            if self._on_data_update:
-                await self._on_data_update({
-                    "symbol": symbol,
-                    "timeframe": timeframe,
-                    "source": "cache",
-                    "rows": len(cached_df),
-                })
+            # Check if last bar timestamp is stale (older than 2x the interval)
+            if "timestamp" in cached_df.columns and not cached_df.empty:
+                last_bar_time = pd.to_datetime(cached_df.iloc[-1]["timestamp"])
+                now = datetime.now()
 
-            return cached_df
+                # Make last_bar_time timezone-aware if it isn't already
+                if last_bar_time.tzinfo is None:
+                    import pytz
+                    last_bar_time = pytz.utc.localize(last_bar_time)
+                if now.tzinfo is None:
+                    import pytz
+                    now = pytz.utc.localize(now)
 
-        # Cache miss - but check if we have expired cached data we can append to
-        cache_metadata = self.cache.get_metadata(symbol, timeframe)
-        existing_cached_df = None
+                age_minutes = (now - last_bar_time).total_seconds() / 60
+                staleness_threshold = interval_minutes * 2  # 2x the interval
 
-        if cache_metadata is not None:
-            # We have cached data but it's expired - let's try to append new data
-            cache_path = self.cache._get_cache_path(symbol, timeframe)
-            try:
-                if cache_path.exists():
-                    existing_cached_df = pd.read_parquet(cache_path)
-                    if not existing_cached_df.empty:
-                        logger.info(
-                            f"[CACHE EXPIRED] {symbol} ({timeframe}): "
-                            f"Found {len(existing_cached_df)} expired cached rows, will append new data"
-                        )
-            except Exception as e:
-                logger.warning(f"Error reading expired cache for {symbol}/{timeframe}: {e}")
-                existing_cached_df = None
+                if age_minutes > staleness_threshold:
+                    logger.info(
+                        f"[CACHE STALE] {symbol} ({timeframe}): "
+                        f"Last bar is {age_minutes:.1f} minutes old (threshold: {staleness_threshold} min), "
+                        f"will fetch and append new data"
+                    )
+                    # Treat cached data as expired, will fetch and append below
+                    existing_cached_df = cached_df
+                    cached_df = None  # Force cache miss to trigger fetch
+                else:
+                    self._cache_hits += 1
+                    # Log cache hit at INFO level so it's visible
+                    logger.info(
+                        f"[CACHE HIT] {symbol} ({timeframe}): "
+                        f"Returning {len(cached_df)} cached rows "
+                        f"(last bar: {age_minutes:.1f} min ago, TTL: {self.cache.ttl_seconds}s = {self.cache.ttl_seconds//86400} days)"
+                    )
+
+                    # Still emit update event
+                    if self._on_data_update:
+                        await self._on_data_update({
+                            "symbol": symbol,
+                            "timeframe": timeframe,
+                            "source": "cache",
+                            "rows": len(cached_df),
+                        })
+
+                    return cached_df
+            else:
+                # No timestamp column, return cached data as-is
+                self._cache_hits += 1
+                logger.info(
+                    f"[CACHE HIT] {symbol} ({timeframe}): "
+                    f"Returning {len(cached_df)} cached rows (TTL: {self.cache.ttl_seconds}s = {self.cache.ttl_seconds//86400} days)"
+                )
+
+                if self._on_data_update:
+                    await self._on_data_update({
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "source": "cache",
+                        "rows": len(cached_df),
+                    })
+
+                return cached_df
+
+        # Cache miss or stale cache - check if we have expired cached data we can append to
+        if cached_df is None and existing_cached_df is None:
+            cache_metadata = self.cache.get_metadata(symbol, timeframe)
+
+            if cache_metadata is not None:
+                # We have cached data but it's expired - let's try to append new data
+                cache_path = self.cache._get_cache_path(symbol, timeframe)
+                try:
+                    if cache_path.exists():
+                        existing_cached_df = pd.read_parquet(cache_path)
+                        if not existing_cached_df.empty:
+                            logger.info(
+                                f"[CACHE EXPIRED] {symbol} ({timeframe}): "
+                                f"Found {len(existing_cached_df)} expired cached rows, will append new data"
+                            )
+                except Exception as e:
+                    logger.warning(f"Error reading expired cache for {symbol}/{timeframe}: {e}")
+                    existing_cached_df = None
 
         # Fetch from provider
         logger.info(f"[CACHE MISS] {symbol} ({timeframe}): Fetching from yfinance...")
