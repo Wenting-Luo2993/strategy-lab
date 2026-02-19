@@ -16,7 +16,6 @@ class TradingSettings(BaseSettings):
     use_stop_loss: bool = Field(default=True, description="Enable stop loss")
     stop_loss_pct: float = Field(default=0.02, description="Stop loss percentage")
     take_profit_pct: float = Field(default=0.05, description="Take profit percentage")
-    finnhub_api_key: Optional[str] = Field(default=None, description="Finnhub API key")
 
     class Config:
         env_prefix = ""
@@ -30,6 +29,8 @@ class DataSettings(BaseSettings):
     yahoo_retry_count: int = Field(default=3, description="Yahoo Finance retry attempts")
     data_cache_ttl_seconds: int = Field(default=2592000, description="Cache TTL in seconds (30 days - historical data never changes)")
     bar_intervals: List[str] = Field(default=["1m", "5m", "15m"], description="Bar intervals to track")
+    finnhub_api_key: Optional[str] = Field(default=None, description="Finnhub API key for real-time intraday data")
+    api_key: Optional[str] = Field(default=None, description="Generic API key (fallback)")
 
     class Config:
         env_prefix = ""

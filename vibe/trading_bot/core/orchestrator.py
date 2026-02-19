@@ -12,7 +12,9 @@ from vibe.trading_bot.core.health_monitor import HealthMonitor
 from vibe.trading_bot.data.manager import DataManager
 from vibe.trading_bot.data.aggregator import BarAggregator
 from vibe.trading_bot.data.providers.yahoo import YahooDataProvider
+from vibe.trading_bot.data.providers.finnhub import FinnhubWebSocketClient
 from vibe.trading_bot.storage.trade_store import TradeStore
+import pandas as pd
 from vibe.trading_bot.exchange.mock_exchange import MockExchange
 from vibe.trading_bot.execution.order_manager import OrderManager, OrderRetryPolicy
 from vibe.trading_bot.execution.trade_executor import TradeExecutor
@@ -77,6 +79,13 @@ class TradingOrchestrator:
 
         # Market closed state tracking (to avoid log spam)
         self._market_closed_logged: bool = False
+
+        # Finnhub websocket for real-time intraday data
+        self.finnhub_ws: Optional[FinnhubWebSocketClient] = None
+        self.bar_aggregators: Dict[str, BarAggregator] = {}  # One aggregator per symbol
+
+        # Real-time bars storage (symbol -> DataFrame with today's bars)
+        self._realtime_bars: Dict[str, pd.DataFrame] = {}
 
     async def initialize(self) -> bool:
         """Initialize all components in correct order.
@@ -169,7 +178,44 @@ class TradingOrchestrator:
                 self.logger.error(f"Failed to initialize strategy: {e}")
                 raise
 
-            # 6. Register health checks
+            # 6. Initialize Finnhub websocket for real-time intraday data
+            try:
+                finnhub_api_key = getattr(self.config.data, 'finnhub_api_key', None) or self.config.data.api_key
+
+                if finnhub_api_key and finnhub_api_key != "your_finnhub_api_key_here":
+                    self.logger.info("Initializing Finnhub WebSocket for real-time intraday data...")
+
+                    # Create websocket client
+                    self.finnhub_ws = FinnhubWebSocketClient(api_key=finnhub_api_key)
+
+                    # Create one bar aggregator per symbol
+                    for symbol in self.config.trading.symbols:
+                        aggregator = BarAggregator(
+                            bar_interval="5m",
+                            timezone=str(self.market_scheduler.timezone)
+                        )
+                        # Set up bar completion callback with symbol binding
+                        aggregator.on_bar_complete(
+                            lambda bar_dict, sym=symbol: self._handle_completed_bar(sym, bar_dict)
+                        )
+                        self.bar_aggregators[symbol] = aggregator
+
+                    # Set up trade callback to feed aggregators
+                    self.finnhub_ws.on_trade(self._handle_realtime_trade)
+
+                    self.logger.info("Finnhub WebSocket configured (will connect at market open)")
+                else:
+                    self.logger.warning(
+                        "Finnhub API key not configured - using Yahoo Finance only (15-min delay). "
+                        "Set FINNHUB_API_KEY in .env for real-time intraday data."
+                    )
+            except Exception as e:
+                self.logger.error(f"Failed to initialize Finnhub WebSocket: {e}")
+                self.logger.warning("Falling back to Yahoo Finance only (15-min delay)")
+                self.finnhub_ws = None
+                self.bar_aggregators = {}
+
+            # 7. Register health checks
             self._register_health_checks()
 
             self.logger.info("All components initialized successfully")
@@ -344,6 +390,108 @@ class TradingOrchestrator:
         except Exception as e:
             self.logger.error(f"Error sending daily summary: {e}", exc_info=True)
 
+    async def _handle_realtime_trade(self, trade: dict) -> None:
+        """
+        Handle real-time trade from Finnhub websocket.
+
+        Feeds trades to appropriate BarAggregator which builds 5m bars.
+
+        Args:
+            trade: Trade dict with {symbol, price, size, timestamp}
+        """
+        try:
+            symbol = trade.get("symbol")
+            price = trade.get("price")
+            size = trade.get("size", 0)
+            timestamp = trade.get("timestamp")
+
+            if not all([symbol, price, timestamp]):
+                return
+
+            # Get aggregator for this symbol
+            aggregator = self.bar_aggregators.get(symbol)
+            if not aggregator:
+                return
+
+            # Add trade to aggregator (will trigger _handle_completed_bar when bar completes)
+            aggregator.add_trade(
+                timestamp=timestamp,
+                price=price,
+                size=size
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error handling real-time trade: {e}", exc_info=True)
+
+    def _handle_completed_bar(self, symbol: str, bar_dict: dict) -> None:
+        """
+        Handle completed 5m bar from aggregator.
+
+        Stores completed bar for use in strategy evaluation.
+
+        Args:
+            symbol: Trading symbol
+            bar_dict: Completed bar dict with {timestamp, open, high, low, close, volume}
+        """
+        try:
+            self.logger.info(
+                f"[REALTIME BAR] {symbol}: "
+                f"timestamp={bar_dict.get('timestamp')}, "
+                f"O={bar_dict.get('open'):.2f}, "
+                f"H={bar_dict.get('high'):.2f}, "
+                f"L={bar_dict.get('low'):.2f}, "
+                f"C={bar_dict.get('close'):.2f}, "
+                f"V={bar_dict.get('volume'):.0f}"
+            )
+
+            # Convert to DataFrame row
+            bar_row = pd.DataFrame([bar_dict])
+
+            # Append to real-time bars for this symbol
+            if symbol in self._realtime_bars:
+                self._realtime_bars[symbol] = pd.concat(
+                    [self._realtime_bars[symbol], bar_row],
+                    ignore_index=True
+                )
+            else:
+                self._realtime_bars[symbol] = bar_row
+
+        except Exception as e:
+            self.logger.error(f"Error handling completed bar for {symbol}: {e}", exc_info=True)
+
+    async def _connect_finnhub_websocket(self) -> None:
+        """Connect to Finnhub websocket and subscribe to symbols."""
+        if not self.finnhub_ws:
+            return
+
+        try:
+            self.logger.info("Connecting to Finnhub WebSocket...")
+            await self.finnhub_ws.connect()
+
+            # Subscribe to all symbols
+            for symbol in self.config.trading.symbols:
+                await self.finnhub_ws.subscribe(symbol)
+                self.logger.info(f"Subscribed to real-time data for {symbol}")
+
+            self.logger.info("Finnhub WebSocket connected and subscribed")
+
+        except Exception as e:
+            self.logger.error(f"Error connecting to Finnhub WebSocket: {e}", exc_info=True)
+            self.logger.warning("Will continue with Yahoo Finance only (15-min delay)")
+
+    async def _disconnect_finnhub_websocket(self) -> None:
+        """Disconnect from Finnhub websocket."""
+        if not self.finnhub_ws or not self.finnhub_ws.connected:
+            return
+
+        try:
+            self.logger.info("Disconnecting from Finnhub WebSocket...")
+            await self.finnhub_ws.disconnect()
+            self.logger.info("Finnhub WebSocket disconnected")
+
+        except Exception as e:
+            self.logger.error(f"Error disconnecting from Finnhub WebSocket: {e}", exc_info=True)
+
     async def run(self) -> None:
         """Run main trading loop.
 
@@ -379,6 +527,10 @@ class TradingOrchestrator:
                                 )
                                 self._market_closed_logged = True
 
+                                # Disconnect from Finnhub websocket when market closes
+                                if self.finnhub_ws and self.finnhub_ws.connected:
+                                    await self._disconnect_finnhub_websocket()
+
                             try:
                                 # Check for shutdown every 5 minutes (instead of every minute)
                                 # Still responsive but reduces wake-ups
@@ -391,7 +543,12 @@ class TradingOrchestrator:
                         continue
                     else:
                         # Market opened, reset the flag so we log next time it closes
-                        self._market_closed_logged = False
+                        if self._market_closed_logged:
+                            self._market_closed_logged = False
+
+                            # Connect to Finnhub websocket when market opens
+                            if self.finnhub_ws and not self.finnhub_ws.connected:
+                                await self._connect_finnhub_websocket()
 
                     # Market is open, run trading cycle
                     success = await self._trading_cycle()
@@ -591,6 +748,7 @@ class TradingOrchestrator:
             # 1. Fetch fresh data for all symbols
             for symbol in self.config.trading.symbols:
                 try:
+                    # Fetch historical data from Yahoo (includes yesterday + today with staleness check)
                     bars = await self.data_manager.get_data(
                         symbol=symbol,
                         timeframe="5m",
@@ -602,6 +760,23 @@ class TradingOrchestrator:
                         if self._consecutive_failures < 3:
                             self.logger.warning(f"No bars fetched for {symbol}")
                         continue
+
+                    # If we have real-time bars from Finnhub websocket, append them
+                    if symbol in self._realtime_bars and not self._realtime_bars[symbol].empty:
+                        realtime_bars = self._realtime_bars[symbol]
+
+                        # Combine historical (Yahoo) + real-time (Finnhub)
+                        bars = pd.concat([bars, realtime_bars], ignore_index=True)
+
+                        # Remove duplicates based on timestamp (prefer real-time data)
+                        if "timestamp" in bars.columns:
+                            bars = bars.drop_duplicates(subset=["timestamp"], keep="last")
+                            bars = bars.sort_values("timestamp").reset_index(drop=True)
+
+                        self.logger.debug(
+                            f"Combined {len(bars) - len(realtime_bars)} historical bars "
+                            f"+ {len(realtime_bars)} real-time bars for {symbol}"
+                        )
 
                     # Successfully fetched data
                     successful_fetches += 1
