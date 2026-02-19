@@ -431,6 +431,11 @@ class TradingOrchestrator:
             size = trade.get("size", 0)
             timestamp = trade.get("timestamp")
 
+            # Debug: Log trades to confirm data is flowing (temporary)
+            self.logger.info(
+                f"[FINNHUB TRADE] {symbol}: price={price}, size={size}, timestamp={timestamp}"
+            )
+
             if not all([symbol, price, timestamp]):
                 return
 
