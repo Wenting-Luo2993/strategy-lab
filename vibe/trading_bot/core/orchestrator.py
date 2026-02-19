@@ -236,13 +236,33 @@ class TradingOrchestrator:
             self._register_health_checks()
 
             # 8. Connect Finnhub websocket if market is already open
-            if self.finnhub_ws and self.market_scheduler.is_market_open():
+            market_is_open = self.market_scheduler.is_market_open()
+
+            if self.finnhub_ws and market_is_open:
                 try:
                     await self._connect_finnhub_websocket()
                     self.logger.info("Finnhub WebSocket connected (market already open)")
                 except Exception as e:
                     self.logger.error(f"Failed to connect Finnhub WebSocket during initialization: {e}")
                     self.logger.warning("Will continue with Yahoo Finance only (15-min delay)")
+
+            # Log data source configuration
+            self.logger.info("=" * 60)
+            self.logger.info("DATA SOURCE CONFIGURATION")
+            self.logger.info("=" * 60)
+            if self.finnhub_ws:
+                if market_is_open:
+                    self.logger.info("Market Status: OPEN")
+                    self.logger.info("Primary Source: Finnhub WebSocket (real-time)")
+                    self.logger.info("Fallback Source: Yahoo Finance (15-min delayed)")
+                    self.logger.info("Expected Gap: ~15 minutes between yfinance and Finnhub on restart")
+                else:
+                    self.logger.info("Market Status: CLOSED")
+                    self.logger.info("Data Source: Yahoo Finance only (Finnhub will connect at market open)")
+            else:
+                self.logger.info("Finnhub: Not configured")
+                self.logger.info("Data Source: Yahoo Finance only (15-min delayed)")
+            self.logger.info("=" * 60)
 
             self.logger.info("All components initialized successfully")
             return True
@@ -500,6 +520,12 @@ class TradingOrchestrator:
                 self.logger.info(f"Subscribed to real-time data for {symbol}")
 
             self.logger.info("Finnhub WebSocket connected and subscribed")
+            self.logger.info(
+                "Note: Finnhub streams real-time trades from NOW forward. "
+                "If bot restarted during market hours, there will be a ~15min gap "
+                "between last yfinance bar (delayed) and first Finnhub bar (real-time). "
+                "This gap will be logged when detected during data combination."
+            )
 
         except Exception as e:
             self.logger.error(f"Error connecting to Finnhub WebSocket: {e}", exc_info=True)
@@ -791,6 +817,32 @@ class TradingOrchestrator:
                     if symbol in self._realtime_bars and not self._realtime_bars[symbol].empty:
                         realtime_bars = self._realtime_bars[symbol]
 
+                        # Detect data gap between yfinance (delayed) and Finnhub (real-time)
+                        if "timestamp" in bars.columns and not bars.empty:
+                            import pytz
+                            last_yf_bar = pd.to_datetime(bars.iloc[-1]["timestamp"])
+                            first_rt_bar = pd.to_datetime(realtime_bars.iloc[0]["timestamp"])
+
+                            # Ensure timezone awareness
+                            if last_yf_bar.tzinfo is None:
+                                last_yf_bar = pytz.utc.localize(last_yf_bar)
+                            if first_rt_bar.tzinfo is None:
+                                first_rt_bar = pytz.utc.localize(first_rt_bar)
+
+                            gap_minutes = (first_rt_bar - last_yf_bar).total_seconds() / 60
+
+                            # Expected gap is 5 minutes (one bar interval)
+                            # If gap > 10 minutes, we're missing data
+                            if gap_minutes > 10:
+                                self.logger.warning(
+                                    f"[DATA GAP] {symbol}: {gap_minutes:.1f} minute gap between "
+                                    f"yfinance (last: {last_yf_bar.strftime('%H:%M:%S')}) and "
+                                    f"Finnhub (first: {first_rt_bar.strftime('%H:%M:%S')}). "
+                                    f"This happens when bot restarts during market hours due to "
+                                    f"yfinance 15-min delay. Consider keeping bot running or using "
+                                    f"Finnhub REST API for backfill."
+                                )
+
                         # Combine historical (Yahoo) + real-time (Finnhub)
                         bars = pd.concat([bars, realtime_bars], ignore_index=True)
 
@@ -799,9 +851,9 @@ class TradingOrchestrator:
                             bars = bars.drop_duplicates(subset=["timestamp"], keep="last")
                             bars = bars.sort_values("timestamp").reset_index(drop=True)
 
-                        self.logger.debug(
-                            f"Combined {len(bars) - len(realtime_bars)} historical bars "
-                            f"+ {len(realtime_bars)} real-time bars for {symbol}"
+                        self.logger.info(
+                            f"[HYBRID DATA] {symbol}: Combined {len(bars) - len(realtime_bars)} "
+                            f"yfinance bars + {len(realtime_bars)} Finnhub real-time bars"
                         )
 
                     # Successfully fetched data
