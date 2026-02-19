@@ -235,6 +235,15 @@ class TradingOrchestrator:
             # 7. Register health checks
             self._register_health_checks()
 
+            # 8. Connect Finnhub websocket if market is already open
+            if self.finnhub_ws and self.market_scheduler.is_market_open():
+                try:
+                    await self._connect_finnhub_websocket()
+                    self.logger.info("Finnhub WebSocket connected (market already open)")
+                except Exception as e:
+                    self.logger.error(f"Failed to connect Finnhub WebSocket during initialization: {e}")
+                    self.logger.warning("Will continue with Yahoo Finance only (15-min delay)")
+
             self.logger.info("All components initialized successfully")
             return True
 
