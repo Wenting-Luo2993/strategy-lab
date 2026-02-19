@@ -277,9 +277,9 @@ class FinnhubWebSocketClient:
                     if self._on_trade:
                         await self._on_trade(
                             {
-                                "symbol": data.get("s"),
+                                "symbol": trade.get("s"),  # Symbol is in each trade
                                 "price": trade.get("p"),
-                                "size": trade.get("s"),
+                                "size": trade.get("v"),    # Volume is "v", not "s"
                                 "timestamp": datetime.fromtimestamp(
                                     trade.get("t", 0) / 1000
                                 ),
