@@ -342,7 +342,9 @@ class TradingOrchestrator:
         """Check if it's time to send daily summary and send if needed."""
         from datetime import datetime
 
-        current_date = datetime.now().date().isoformat()
+        # Use market timezone for date comparison (not system timezone!)
+        now = datetime.now(self.market_scheduler.timezone)
+        current_date = now.date().isoformat()
 
         # Only send once per day, after session end
         if self._last_summary_date == current_date:
@@ -353,8 +355,7 @@ class TradingOrchestrator:
         if not session_end:
             return
 
-        # Check if we're past session end
-        now = datetime.now(self.market_scheduler.timezone)
+        # Check if we're past session end (already have 'now' in market timezone)
         if now >= session_end:
             await self._send_daily_summary()
             self._last_summary_date = current_date
