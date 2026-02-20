@@ -34,6 +34,7 @@ class FinnhubWebSocketClient:
     BASE_URL = "wss://ws.finnhub.io"
     MAX_RECONNECT_ATTEMPTS = 5
     RECONNECT_BACKOFF = [1, 2, 4, 8, 16]  # Exponential backoff in seconds
+    RATE_LIMIT_BACKOFF = 60  # Wait 60 seconds (1 minute) when rate limited
     GAP_DETECTION_THRESHOLD = 60  # Gap > 60s triggers backfill request
 
     def __init__(self, api_key: str):
@@ -130,6 +131,40 @@ class FinnhubWebSocketClient:
                 return
 
             except Exception as e:
+                error_str = str(e)
+
+                # Detect rate limiting (HTTP 429)
+                if "429" in error_str or "rate limit" in error_str.lower():
+                    logger.error(
+                        f"⚠️  RATE LIMITED (HTTP 429) - Finnhub free tier quota exceeded"
+                    )
+                    logger.error(
+                        f"   Will retry in {self.RATE_LIMIT_BACKOFF}s (1 minute)"
+                    )
+                    logger.error(
+                        f"   During this time, NO real-time data will be received"
+                    )
+                    logger.error(
+                        f"   Possible causes:"
+                    )
+                    logger.error(
+                        f"   - Multiple bot instances running (check for duplicates)"
+                    )
+                    logger.error(
+                        f"   - Too many connection attempts (rapid reconnects)"
+                    )
+                    logger.error(
+                        f"   - Free tier limit: 60 requests/minute, 1 websocket connection"
+                    )
+
+                    # Wait 1 minute before retrying on rate limit
+                    await asyncio.sleep(self.RATE_LIMIT_BACKOFF)
+
+                    # Reset attempts so we keep trying after rate limit expires
+                    self.reconnect_attempts = 0
+                    continue
+
+                # Normal errors - use exponential backoff
                 self.reconnect_attempts += 1
                 backoff_time = self.RECONNECT_BACKOFF[
                     min(self.reconnect_attempts - 1, len(self.RECONNECT_BACKOFF) - 1)
@@ -137,7 +172,7 @@ class FinnhubWebSocketClient:
 
                 logger.warning(
                     f"Connection attempt {self.reconnect_attempts}/{self.MAX_RECONNECT_ATTEMPTS} "
-                    f"failed, retrying in {backoff_time}s: {str(e)}"
+                    f"failed, retrying in {backoff_time}s: {error_str}"
                 )
 
                 if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:

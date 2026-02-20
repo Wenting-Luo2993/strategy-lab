@@ -15,7 +15,9 @@
       "Bash(git commit:*)",
       "Bash(docker:*)",
       "Bash(docker-compose:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(chmod:*)",
+      "Bash(ssh:*)"
     ]
   }
 }

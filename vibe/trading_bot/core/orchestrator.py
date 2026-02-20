@@ -918,13 +918,27 @@ class TradingOrchestrator:
         successful_fetches = 0
         try:
             # 1. Fetch fresh data for all symbols
+            # During market hours with Finnhub active, don't use Yahoo Finance fallback
+            # (Yahoo is 15-min delayed and would interfere with real-time data)
+            market_open = self.market_scheduler.is_market_open()
+            finnhub_active = self.finnhub_ws and self.finnhub_ws.connected
+
+            allow_yfinance = not (market_open and finnhub_active)
+
+            if market_open and not allow_yfinance:
+                self.logger.debug(
+                    f"Market is open and Finnhub is active - relying solely on websocket data"
+                )
+
             for symbol in self.config.trading.symbols:
                 try:
                     # Fetch historical data from Yahoo (includes yesterday + today with staleness check)
+                    # During market hours with Finnhub websocket, disable yfinance fallback
                     bars = await self.data_manager.get_data(
                         symbol=symbol,
                         timeframe="5m",
                         days=1,
+                        allow_yfinance_fallback=allow_yfinance,
                     )
 
                     if bars is None or bars.empty:

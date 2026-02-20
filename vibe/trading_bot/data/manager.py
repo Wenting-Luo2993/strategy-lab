@@ -104,6 +104,7 @@ class DataManager:
         timeframe: str = "5m",
         days: int = 7,
         max_age_seconds: Optional[int] = None,
+        allow_yfinance_fallback: bool = True,
     ) -> pd.DataFrame:
         """
         Get historical data for a symbol with smart caching.
@@ -115,9 +116,12 @@ class DataManager:
 
         Args:
             symbol: Trading symbol
-            timeframe: Timeframe ('5m', '15m', '1h', etc.)
+            timeframe: Timeframe ('5m', '15m', '1h', etc.')
             days: Number of days of historical data (not used with smart caching)
             max_age_seconds: Maximum age of cache in seconds (uses default TTL if None)
+            allow_yfinance_fallback: Whether to fall back to yfinance when cache is stale.
+                Set to False during market hours to prevent 15-min delayed data from
+                interfering with real-time Finnhub websocket data.
 
         Returns:
             DataFrame with OHLCV data
@@ -217,6 +221,29 @@ class DataManager:
                 except Exception as e:
                     logger.warning(f"Error reading expired cache for {symbol}/{timeframe}: {e}")
                     existing_cached_df = None
+
+        # Check if yfinance fallback is allowed
+        if not allow_yfinance_fallback:
+            logger.warning(
+                f"[NO FALLBACK] {symbol} ({timeframe}): Cache is stale but yfinance fallback is disabled"
+            )
+            logger.warning(
+                f"   This is expected during market hours when Finnhub websocket is active"
+            )
+            logger.warning(
+                f"   Returning stale cached data (if any) or empty DataFrame"
+            )
+            logger.warning(
+                f"   Waiting for real-time Finnhub bars to arrive..."
+            )
+
+            # Return existing stale cache if we have it, otherwise empty DataFrame
+            if existing_cached_df is not None and not existing_cached_df.empty:
+                logger.info(f"   Returning {len(existing_cached_df)} rows of stale cached data")
+                return existing_cached_df
+            else:
+                logger.info(f"   No cached data available, returning empty DataFrame")
+                return pd.DataFrame()
 
         # Fetch from provider
         logger.info(f"[CACHE MISS] {symbol} ({timeframe}): Fetching from yfinance...")
