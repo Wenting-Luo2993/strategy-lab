@@ -618,7 +618,8 @@ class TradingOrchestrator:
 
         # Step 4: Health checks
         self.logger.info("Step 4/4: Running health checks...")
-        health_status = self.health_monitor.check_all()
+        health_result = self.health_monitor.get_health()
+        health_status = health_result.get("components", {})
 
         all_healthy = all(comp["status"] == "healthy" for comp in health_status.values())
 
