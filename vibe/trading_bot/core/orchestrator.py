@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any
 from vibe.trading_bot.config.settings import AppSettings, get_settings
 from vibe.trading_bot.core.market_schedulers import create_scheduler, BaseMarketScheduler
 from vibe.trading_bot.core.health_monitor import HealthMonitor
+from vibe.trading_bot.api.health import start_health_server_task, set_health_state
 from vibe.trading_bot.data.manager import DataManager
 from vibe.trading_bot.data.aggregator import BarAggregator
 from vibe.trading_bot.data.providers.yahoo import YahooDataProvider
@@ -71,6 +72,9 @@ class TradingOrchestrator:
 
         # Main loop task
         self._main_task: Optional[asyncio.Task] = None
+
+        # Health API server task
+        self._health_server_task: Optional[asyncio.Task] = None
 
         # Strategy logging state tracking (to avoid duplicate logs)
         self._orb_logged_today: Dict[str, str] = {}  # symbol -> date_str
@@ -226,7 +230,7 @@ class TradingOrchestrator:
 
                 self.active_provider = self.primary_provider
                 self.logger.info(
-                    f"✅ Primary provider: {self.primary_provider.provider_name} "
+                    f"[OK] Primary provider: {self.primary_provider.provider_name} "
                     f"(type={self.primary_provider.provider_type.value}, "
                     f"real_time={self.primary_provider.is_real_time})"
                 )
@@ -243,7 +247,7 @@ class TradingOrchestrator:
                         )
                         if self.secondary_provider:
                             self.logger.info(
-                                f"✅ Secondary provider: {self.secondary_provider.provider_name} (fallback)"
+                                f"[OK] Secondary provider: {self.secondary_provider.provider_name} (fallback)"
                             )
                     except Exception as e:
                         self.logger.warning(f"Failed to create secondary provider: {e}")
@@ -297,6 +301,7 @@ class TradingOrchestrator:
             # Removed old duplicate connection code that was causing rate limiting
 
             # Log data source configuration
+            market_is_open = self.market_scheduler.is_market_open()
             self.logger.info("=" * 60)
             self.logger.info("DATA SOURCE CONFIGURATION")
             self.logger.info("=" * 60)
@@ -650,7 +655,7 @@ class TradingOrchestrator:
             await self.active_provider.connect()
 
             if self.active_provider.connected:
-                self.logger.info(f"✅ Successfully switched to {self.active_provider.provider_name}")
+                self.logger.info(f"[OK] Successfully switched to {self.active_provider.provider_name}")
 
                 # If WebSocket, subscribe to symbols
                 if isinstance(self.active_provider, WebSocketDataProvider):
@@ -732,13 +737,16 @@ class TradingOrchestrator:
                 await self.primary_provider.connect()
 
                 if self.primary_provider.connected:
-                    self.logger.info(f"   ✅ Connected to {self.primary_provider.provider_name}")
+                    self.logger.info(f"   [OK] Connected to {self.primary_provider.provider_name}")
+
+                    # Update health state
+                    set_health_state(websocket_connected=True, recent_heartbeat=True)
 
                     # Subscribe if WebSocket
                     if isinstance(self.primary_provider, WebSocketDataProvider):
                         for symbol in self.config.trading.symbols:
                             await self.primary_provider.subscribe(symbol)
-                        self.logger.info(f"   ✅ Subscribed to {len(self.config.trading.symbols)} symbols")
+                        self.logger.info(f"   [OK] Subscribed to {len(self.config.trading.symbols)} symbols")
                 else:
                     raise Exception("Connection failed - provider not connected")
             else:
@@ -793,6 +801,16 @@ class TradingOrchestrator:
         and executes trades until shutdown is triggered.
         """
         await self.initialize()
+
+        # Start health API server for Docker healthcheck
+        self._health_server_task = await start_health_server_task(
+            host="0.0.0.0",
+            port=self.config.health_check_port
+        )
+        self.logger.info(f"Health API server started on port {self.config.health_check_port}")
+
+        # Mark bot as alive for healthcheck
+        set_health_state(is_alive=True)
 
         self._running = True
         self.logger.info("Trading loop started")
@@ -1307,6 +1325,19 @@ class TradingOrchestrator:
                     self.logger.info(f"Disconnected from {self.secondary_provider.provider_name}")
             except Exception as e:
                 self.logger.error(f"Error disconnecting secondary provider: {e}")
+
+            # Update health state before shutdown
+            set_health_state(is_alive=False, websocket_connected=False)
+
+            # Stop health server
+            if self._health_server_task and not self._health_server_task.done():
+                self._health_server_task.cancel()
+                try:
+                    await self._health_server_task
+                except asyncio.CancelledError:
+                    self.logger.debug("Health server task cancelled")
+                except Exception as e:
+                    self.logger.error(f"Error stopping health server: {e}")
 
             # Close components
             try:

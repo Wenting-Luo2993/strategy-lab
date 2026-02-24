@@ -122,6 +122,23 @@ def create_health_app() -> FastAPI:
     """
     app = FastAPI(title="Trading Bot Health Check")
 
+    @app.get("/api/health", response_model=LiveResponse)
+    async def api_health() -> LiveResponse:
+        """Simple health check for Docker healthcheck.
+
+        Returns:
+            200 if alive, 503 if dead
+        """
+        state = get_health_state()
+
+        if not state.is_alive:
+            raise HTTPException(status_code=503, detail="Process not alive")
+
+        return LiveResponse(
+            status="alive",
+            timestamp=datetime.utcnow().isoformat(),
+        )
+
     @app.get("/health/live", response_model=LiveResponse)
     async def liveness_probe() -> LiveResponse:
         """Liveness probe - returns 200 if process is alive.
