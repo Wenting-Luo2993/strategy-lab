@@ -33,10 +33,14 @@ data/
 *.db-shm
 *.db-wal
 vibe/trading-bot/data/
+vibe/trading_bot/data/*.db
+vibe/trading_bot/data/cache/
 vibe/backtester/data/
 
-# EXCEPTION: vibe/common/data/ contains source code, not data files
+# EXCEPTION: Source code in data/ folders must not be ignored
 !vibe/common/data/
+!vibe/trading_bot/data/
+!vibe/trading_bot/data/**/*.py
 
 # Google API credentials (service account & OAuth tokens)
 *.service-account.json
