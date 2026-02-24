@@ -293,16 +293,8 @@ class TradingOrchestrator:
             # 7. Register health checks
             self._register_health_checks()
 
-            # 8. Connect Finnhub websocket if market is already open
-            market_is_open = self.market_scheduler.is_market_open()
-
-            if self.finnhub_ws and market_is_open:
-                try:
-                    await self._connect_finnhub_websocket()
-                    self.logger.info("Finnhub WebSocket connected (market already open)")
-                except Exception as e:
-                    self.logger.error(f"Failed to connect Finnhub WebSocket during initialization: {e}")
-                    self.logger.warning("Will continue with Yahoo Finance only (15-min delay)")
+            # 8. Provider connection now handled in warm-up phase (Step 2)
+            # Removed old duplicate connection code that was causing rate limiting
 
             # Log data source configuration
             self.logger.info("=" * 60)
@@ -564,44 +556,7 @@ class TradingOrchestrator:
         except Exception as e:
             self.logger.error(f"Error handling completed bar for {symbol}: {e}", exc_info=True)
 
-    async def _connect_finnhub_websocket(self) -> None:
-        """Connect to Finnhub websocket and subscribe to symbols."""
-        if not self.finnhub_ws:
-            return
-
-        try:
-            self.logger.info("Connecting to Finnhub WebSocket...")
-            await self.finnhub_ws.connect()
-
-            # Subscribe to all symbols
-            for symbol in self.config.trading.symbols:
-                await self.finnhub_ws.subscribe(symbol)
-                self.logger.info(f"Subscribed to real-time data for {symbol}")
-
-            self.logger.info("Finnhub WebSocket connected and subscribed")
-            self.logger.info(
-                "Note: Finnhub streams real-time trades from NOW forward. "
-                "If bot restarted during market hours, there will be a ~15min gap "
-                "between last yfinance bar (delayed) and first Finnhub bar (real-time). "
-                "This gap will be logged when detected during data combination."
-            )
-
-        except Exception as e:
-            self.logger.error(f"Error connecting to Finnhub WebSocket: {e}", exc_info=True)
-            self.logger.warning("Will continue with Yahoo Finance only (15-min delay)")
-
-    async def _disconnect_finnhub_websocket(self) -> None:
-        """Disconnect from Finnhub websocket."""
-        if not self.finnhub_ws or not self.finnhub_ws.connected:
-            return
-
-        try:
-            self.logger.info("Disconnecting from Finnhub WebSocket...")
-            await self.finnhub_ws.disconnect()
-            self.logger.info("Finnhub WebSocket disconnected")
-
-        except Exception as e:
-            self.logger.error(f"Error disconnecting from Finnhub WebSocket: {e}", exc_info=True)
+    # Old Finnhub connection methods removed - now handled by provider system in warm-up phase
 
     async def _start_rest_polling(self):
         """
@@ -692,8 +647,9 @@ class TradingOrchestrator:
 
         # Connect secondary
         try:
-            success = await self.active_provider.connect()
-            if success:
+            await self.active_provider.connect()
+
+            if self.active_provider.connected:
                 self.logger.info(f"✅ Successfully switched to {self.active_provider.provider_name}")
 
                 # If WebSocket, subscribe to symbols
@@ -706,6 +662,8 @@ class TradingOrchestrator:
                 # If REST, polling loop will handle it automatically
                 elif isinstance(self.active_provider, RESTDataProvider):
                     self.logger.info("REST provider - will continue polling")
+            else:
+                self.logger.error("Secondary provider connected but status not set")
 
         except Exception as e:
             self.logger.error(f"Failed to connect to secondary provider: {e}", exc_info=True)
@@ -771,8 +729,9 @@ class TradingOrchestrator:
         self.logger.info("Step 2/4: Connecting to real-time data provider...")
         try:
             if self.primary_provider:
-                success = await self.primary_provider.connect()
-                if success:
+                await self.primary_provider.connect()
+
+                if self.primary_provider.connected:
                     self.logger.info(f"   ✅ Connected to {self.primary_provider.provider_name}")
 
                     # Subscribe if WebSocket
@@ -781,7 +740,7 @@ class TradingOrchestrator:
                             await self.primary_provider.subscribe(symbol)
                         self.logger.info(f"   ✅ Subscribed to {len(self.config.trading.symbols)} symbols")
                 else:
-                    raise Exception("Connection failed")
+                    raise Exception("Connection failed - provider not connected")
             else:
                 self.logger.info("No real-time provider configured (will use Yahoo Finance only)")
         except Exception as e:
@@ -867,9 +826,10 @@ class TradingOrchestrator:
                                 )
                                 self._market_closed_logged = True
 
-                                # Disconnect from Finnhub websocket when market closes
-                                if self.finnhub_ws and self.finnhub_ws.connected:
-                                    await self._disconnect_finnhub_websocket()
+                                # Disconnect from provider when market closes
+                                if self.active_provider and self.active_provider.connected:
+                                    await self.active_provider.disconnect()
+                                    self.logger.info(f"Disconnected from {self.active_provider.provider_name} (market closed)")
 
                             try:
                                 # Check for shutdown every 5 minutes
