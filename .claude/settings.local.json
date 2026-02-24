@@ -17,7 +17,8 @@
       "Bash(docker-compose:*)",
       "Bash(curl:*)",
       "Bash(chmod:*)",
-      "Bash(ssh:*)"
+      "Bash(ssh:*)",
+      "Bash(tee:*)"
     ]
   }
 }

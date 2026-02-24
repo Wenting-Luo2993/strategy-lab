@@ -25,12 +25,24 @@ class TradingSettings(BaseSettings):
 class DataSettings(BaseSettings):
     """Data provider configuration."""
 
+    # Provider selection
+    primary_provider: str = Field(default="finnhub", description="Primary data provider (polygon, finnhub, alpaca)")
+    secondary_provider: Optional[str] = Field(default=None, description="Secondary provider for fallback (optional)")
+
+    # API keys
+    finnhub_api_key: Optional[str] = Field(default=None, description="Finnhub API key for real-time intraday data")
+    polygon_api_key: Optional[str] = Field(default=None, description="Polygon.io API key (recommended for production)")
+    api_key: Optional[str] = Field(default=None, description="Generic API key (fallback)")
+
+    # REST provider polling configuration
+    poll_interval_with_position: int = Field(default=60, description="Poll interval in seconds when have open positions")
+    poll_interval_no_position: int = Field(default=300, description="Poll interval in seconds when no positions (5 minutes)")
+
+    # Legacy settings
     yahoo_rate_limit: int = Field(default=5, description="Yahoo Finance requests per second")
     yahoo_retry_count: int = Field(default=3, description="Yahoo Finance retry attempts")
     data_cache_ttl_seconds: int = Field(default=2592000, description="Cache TTL in seconds (30 days - historical data never changes)")
     bar_intervals: List[str] = Field(default=["1m", "5m", "15m"], description="Bar intervals to track")
-    finnhub_api_key: Optional[str] = Field(default=None, description="Finnhub API key for real-time intraday data")
-    api_key: Optional[str] = Field(default=None, description="Generic API key (fallback)")
 
     class Config:
         env_prefix = ""
@@ -99,6 +111,7 @@ class AppSettings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        env_nested_delimiter = "__"  # Enable reading nested fields like DATA__FINNHUB_API_KEY
 
 
 def get_settings() -> AppSettings:

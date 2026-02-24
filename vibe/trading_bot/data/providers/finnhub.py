@@ -9,9 +9,13 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Callable, Optional, Set
 
+import pandas as pd
 import pytz
 import websockets
 from websockets.client import WebSocketClientProtocol
+
+from .types import WebSocketDataProvider, ProviderType
+from vibe.common.models import Bar
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +28,7 @@ class ConnectionState(str, Enum):
     RECONNECTING = "reconnecting"
 
 
-class FinnhubWebSocketClient:
+class FinnhubWebSocketClient(WebSocketDataProvider):
     """
     Real-time trade streaming client for Finnhub WebSocket API.
 
@@ -46,7 +50,7 @@ class FinnhubWebSocketClient:
         """
         self.api_key = api_key
         self.state = ConnectionState.DISCONNECTED
-        self.connected = False
+        self._connected = False
         self.ws: Optional[WebSocketClientProtocol] = None
 
         # Subscribed symbols
@@ -61,11 +65,69 @@ class FinnhubWebSocketClient:
         # Reconnection state
         self.reconnect_attempts = 0
         self.last_message_time: Optional[datetime] = None
+        self.last_ping_time: Optional[datetime] = None
+        self.last_pong_time: Optional[datetime] = None
 
         # Task management
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
+
+    # WebSocketDataProvider interface implementation
+    @property
+    def provider_type(self) -> ProviderType:
+        """WebSocket provider."""
+        return ProviderType.WEBSOCKET
+
+    @property
+    def provider_name(self) -> str:
+        """Provider name."""
+        return "Finnhub"
+
+    @property
+    def is_real_time(self) -> bool:
+        """Finnhub provides real-time data."""
+        return True
+
+    @property
+    def connected(self) -> bool:
+        """Is the WebSocket currently connected?"""
+        return self._connected
+
+    async def get_historical_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        days: int
+    ) -> pd.DataFrame:
+        """Finnhub WebSocket doesn't provide historical data."""
+        logger.warning(
+            f"Finnhub WebSocket doesn't support historical data. "
+            f"Use Yahoo Finance or Polygon for historical bars."
+        )
+        return pd.DataFrame()
+
+    # Common DataProvider interface (from vibe.common.data.base)
+    async def get_bars(
+        self,
+        symbol: str,
+        timeframe: str = "1m",
+        limit: Optional[int] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> pd.DataFrame:
+        """Not supported for WebSocket provider."""
+        return await self.get_historical_bars(symbol, timeframe, 1)
+
+    async def get_current_price(self, symbol: str) -> float:
+        """Not directly supported - use last trade from callback."""
+        logger.warning("get_current_price not supported for WebSocket provider")
+        return 0.0
+
+    async def get_bar(self, symbol: str, timeframe: str = "1m") -> Optional[Bar]:
+        """Not directly supported - bars come through callbacks."""
+        logger.warning("get_bar not supported for WebSocket provider")
+        return None
 
     def on_connected(self, callback: Callable) -> None:
         """Register callback for connection established."""
@@ -113,7 +175,7 @@ class FinnhubWebSocketClient:
                 url = f"{self.BASE_URL}?token={self.api_key}"
                 self.ws = await websockets.connect(url)
                 self.state = ConnectionState.CONNECTED
-                self.connected = True
+                self._connected = True
                 self.reconnect_attempts = 0
                 self.last_message_time = datetime.now()
 
@@ -182,7 +244,7 @@ class FinnhubWebSocketClient:
 
     async def disconnect(self) -> None:
         """Disconnect from WebSocket gracefully."""
-        self.connected = False
+        self._connected = False
         self.state = ConnectionState.DISCONNECTED
 
         # Cancel all tasks and wait for them to finish
@@ -269,17 +331,42 @@ class FinnhubWebSocketClient:
             logger.error(f"Error unsubscribing from {symbol}: {str(e)}")
 
     async def _listen_messages(self) -> None:
-        """Listen for messages from WebSocket."""
+        """
+        Listen for messages from WebSocket.
+
+        CRITICAL: Ping/pong handling is done with highest priority to prevent
+        disconnections due to missed pongs. Finnhub has strict ping/pong timeout.
+        """
         try:
             while self.connected and self.ws:
                 try:
                     message = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
                     self.last_message_time = datetime.now()
 
-                    await self._handle_message(json.loads(message))
+                    # Parse message
+                    data = json.loads(message)
+
+                    # CRITICAL: Handle ping with HIGHEST PRIORITY
+                    # Respond immediately before any other processing
+                    if data.get("type") == "ping":
+                        self.last_ping_time = datetime.now()
+                        try:
+                            # Send pong immediately - don't await other operations
+                            await self.ws.send(json.dumps({"type": "pong"}))
+                            self.last_pong_time = datetime.now()
+                            logger.debug("Responded to ping from Finnhub")
+                        except Exception as e:
+                            logger.error(f"Failed to send pong: {e}")
+                            # Pong failure is critical - reconnect
+                            await self._handle_disconnect()
+                            break
+                        continue  # Skip other processing, go to next message
+
+                    # Process other messages (trades, etc.)
+                    await self._handle_message(data)
 
                 except asyncio.TimeoutError:
-                    logger.warning("WebSocket receive timeout")
+                    logger.warning("WebSocket receive timeout (no messages for 30s)")
                     await self._handle_disconnect()
                     break
 
@@ -301,6 +388,8 @@ class FinnhubWebSocketClient:
     async def _handle_message(self, data: dict) -> None:
         """
         Handle received message from WebSocket.
+
+        Note: Ping/pong is now handled in _listen_messages() with highest priority.
 
         Args:
             data: Parsed JSON message
@@ -325,46 +414,71 @@ class FinnhubWebSocketClient:
                             }
                         )
 
-        # Handle ping/pong
-        elif data.get("type") == "ping":
-            if self.ws:
-                await self.ws.send(json.dumps({"type": "pong"}))
-
     async def _heartbeat_check(self) -> None:
         """
-        Check for message gaps and trigger backfill if needed.
+        Enhanced heartbeat monitoring for Finnhub WebSocket.
 
-        Detects if reconnect takes > 1 minute and triggers backfill request.
+        Monitors:
+        1. Message gaps (> 60s since last message)
+        2. Ping health (> 45s since last ping = connection issue)
+        3. Pong response time (track if we're responding quickly)
+
+        Finnhub has strict ping/pong timeout, so we monitor ping frequency
+        to detect connection health issues proactively.
         """
         try:
             while self.connected:
                 await asyncio.sleep(10)  # Check every 10 seconds
 
-                if self.last_message_time is None:
-                    continue
+                now = datetime.now()
 
-                time_since_last_message = (
-                    datetime.now() - self.last_message_time
-                ).total_seconds()
+                # Check 1: Monitor last message time (any message)
+                if self.last_message_time is not None:
+                    time_since_last_message = (now - self.last_message_time).total_seconds()
 
-                if time_since_last_message > self.GAP_DETECTION_THRESHOLD:
-                    logger.warning(
-                        f"Data gap detected: {time_since_last_message:.0f}s "
-                        f"since last message"
-                    )
-
-                    if self._on_error:
-                        await self._on_error(
-                            {
-                                "message": f"Data gap: {time_since_last_message:.0f}s",
-                                "type": "gap_detected",
-                                "gap_duration": time_since_last_message,
-                            }
+                    if time_since_last_message > self.GAP_DETECTION_THRESHOLD:
+                        logger.warning(
+                            f"⚠️  Data gap detected: {time_since_last_message:.0f}s "
+                            f"since last message"
                         )
 
-                    # Trigger reconnection
-                    await self._handle_disconnect()
-                    break
+                        if self._on_error:
+                            await self._on_error(
+                                {
+                                    "message": f"Data gap: {time_since_last_message:.0f}s",
+                                    "type": "gap_detected",
+                                    "gap_duration": time_since_last_message,
+                                }
+                            )
+
+                        # Trigger reconnection
+                        await self._handle_disconnect()
+                        break
+
+                # Check 2: Monitor ping health
+                # Finnhub typically sends pings every 20-30 seconds
+                # If no ping for > 45s, connection might be stale
+                if self.last_ping_time is not None:
+                    time_since_last_ping = (now - self.last_ping_time).total_seconds()
+
+                    if time_since_last_ping > 45:
+                        logger.warning(
+                            f"⚠️  No ping from Finnhub for {time_since_last_ping:.0f}s "
+                            f"(expected every ~20-30s). Connection may be stale."
+                        )
+
+                        # Don't trigger immediate reconnect, but log it
+                        # The message timeout will catch true disconnects
+
+                # Check 3: Log pong response time health
+                if self.last_ping_time and self.last_pong_time:
+                    if self.last_pong_time >= self.last_ping_time:
+                        response_time = (self.last_pong_time - self.last_ping_time).total_seconds()
+                        if response_time > 1.0:
+                            logger.warning(
+                                f"⚠️  Slow pong response: {response_time:.2f}s "
+                                f"(should be < 1s for Finnhub)"
+                            )
 
         except asyncio.CancelledError:
             logger.debug("Heartbeat task cancelled")
@@ -377,7 +491,7 @@ class FinnhubWebSocketClient:
             return
 
         logger.warning("WebSocket disconnected, attempting reconnection")
-        self.connected = False
+        self._connected = False
         self.state = ConnectionState.RECONNECTING
 
         if self._on_disconnected:

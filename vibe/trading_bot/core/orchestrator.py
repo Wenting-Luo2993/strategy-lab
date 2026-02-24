@@ -13,6 +13,8 @@ from vibe.trading_bot.data.manager import DataManager
 from vibe.trading_bot.data.aggregator import BarAggregator
 from vibe.trading_bot.data.providers.yahoo import YahooDataProvider
 from vibe.trading_bot.data.providers.finnhub import FinnhubWebSocketClient
+from vibe.trading_bot.data.providers.factory import DataProviderFactory
+from vibe.trading_bot.data.providers.types import RealtimeDataProvider, WebSocketDataProvider, RESTDataProvider
 from vibe.trading_bot.storage.trade_store import TradeStore
 import pandas as pd
 from vibe.trading_bot.exchange.mock_exchange import MockExchange
@@ -81,12 +83,20 @@ class TradingOrchestrator:
         # Market closed state tracking (to avoid log spam)
         self._market_closed_logged: bool = False
 
-        # Finnhub websocket for real-time intraday data
+        # Real-time data providers (configurable)
+        self.primary_provider: Optional[RealtimeDataProvider] = None
+        self.secondary_provider: Optional[RealtimeDataProvider] = None
+        self.active_provider: Optional[RealtimeDataProvider] = None
+
+        # Finnhub websocket for real-time intraday data (backward compatibility)
         self.finnhub_ws: Optional[FinnhubWebSocketClient] = None
         self.bar_aggregators: Dict[str, BarAggregator] = {}  # One aggregator per symbol
 
         # Real-time bars storage (symbol -> DataFrame with today's bars)
         self._realtime_bars: Dict[str, pd.DataFrame] = {}
+
+        # Polling task for REST providers
+        self._polling_task: Optional[asyncio.Task] = None
 
     async def initialize(self) -> bool:
         """Initialize all components in correct order.
@@ -195,40 +205,88 @@ class TradingOrchestrator:
                 self.logger.error(f"Failed to initialize strategy: {e}")
                 raise
 
-            # 6. Initialize Finnhub websocket for real-time intraday data
+            # 6. Initialize real-time data providers (primary + secondary)
             try:
-                finnhub_api_key = getattr(self.config.data, 'finnhub_api_key', None) or self.config.data.api_key
+                # Get API keys from config
+                finnhub_key = getattr(self.config.data, 'finnhub_api_key', None)
+                polygon_key = getattr(self.config.data, 'polygon_api_key', None)
 
-                if finnhub_api_key and finnhub_api_key != "your_finnhub_api_key_here":
-                    self.logger.info("Initializing Finnhub WebSocket for real-time intraday data...")
+                # Create primary provider (MANDATORY)
+                primary_type = getattr(self.config.data, 'primary_provider', 'polygon')
+                self.logger.info(f"Initializing primary data provider: {primary_type}")
 
-                    # Create websocket client
-                    self.finnhub_ws = FinnhubWebSocketClient(api_key=finnhub_api_key)
+                self.primary_provider = DataProviderFactory.create_realtime_provider(
+                    provider_type=primary_type,
+                    finnhub_api_key=finnhub_key,
+                    polygon_api_key=polygon_key
+                )
 
-                    # Create one bar aggregator per symbol
-                    for symbol in self.config.trading.symbols:
-                        aggregator = BarAggregator(
-                            bar_interval="5m",
-                            timezone=str(self.market_scheduler.timezone)
+                if not self.primary_provider:
+                    raise ValueError(f"Failed to create primary provider: {primary_type}")
+
+                self.active_provider = self.primary_provider
+                self.logger.info(
+                    f"✅ Primary provider: {self.primary_provider.provider_name} "
+                    f"(type={self.primary_provider.provider_type.value}, "
+                    f"real_time={self.primary_provider.is_real_time})"
+                )
+
+                # Create secondary provider (OPTIONAL fallback)
+                secondary_type = getattr(self.config.data, 'secondary_provider', None)
+                if secondary_type:
+                    self.logger.info(f"Initializing secondary data provider: {secondary_type}")
+                    try:
+                        self.secondary_provider = DataProviderFactory.create_realtime_provider(
+                            provider_type=secondary_type,
+                            finnhub_api_key=finnhub_key,
+                            polygon_api_key=polygon_key
                         )
-                        # Set up bar completion callback with symbol binding
-                        aggregator.on_bar_complete(
-                            lambda bar_dict, sym=symbol: self._handle_completed_bar(sym, bar_dict)
-                        )
-                        self.bar_aggregators[symbol] = aggregator
+                        if self.secondary_provider:
+                            self.logger.info(
+                                f"✅ Secondary provider: {self.secondary_provider.provider_name} (fallback)"
+                            )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to create secondary provider: {e}")
+                        self.secondary_provider = None
+
+                # Create bar aggregators for all symbols
+                for symbol in self.config.trading.symbols:
+                    aggregator = BarAggregator(
+                        bar_interval="5m",
+                        timezone=str(self.market_scheduler.timezone)
+                    )
+                    # Set up bar completion callback with symbol binding
+                    aggregator.on_bar_complete(
+                        lambda bar_dict, sym=symbol: self._handle_completed_bar(sym, bar_dict)
+                    )
+                    self.bar_aggregators[symbol] = aggregator
+
+                # Handle WebSocket provider (callback-based)
+                if isinstance(self.primary_provider, WebSocketDataProvider):
+                    self.logger.info("Primary provider is WebSocket - setting up callbacks")
+                    self.finnhub_ws = self.primary_provider  # For backward compatibility
 
                     # Set up trade callback to feed aggregators
-                    self.finnhub_ws.on_trade(self._handle_realtime_trade)
+                    self.primary_provider.on_trade(self._handle_realtime_trade)
+                    self.primary_provider.on_error(self._handle_provider_error)
 
-                    self.logger.info("Finnhub WebSocket configured (will connect at market open)")
-                else:
-                    self.logger.warning(
-                        "Finnhub API key not configured - using Yahoo Finance only (15-min delay). "
-                        "Set FINNHUB_API_KEY in .env for real-time intraday data."
+                    self.logger.info("WebSocket callbacks configured (will connect at market open)")
+
+                # Handle REST provider (polling-based)
+                elif isinstance(self.primary_provider, RESTDataProvider):
+                    self.logger.info("Primary provider is REST - will poll at intervals")
+                    poll_with = getattr(self.config.data, 'poll_interval_with_position', 60)
+                    poll_without = getattr(self.config.data, 'poll_interval_no_position', 300)
+                    self.logger.info(
+                        f"Poll interval: {poll_with}s with positions, {poll_without}s without"
                     )
+
             except Exception as e:
-                self.logger.error(f"Failed to initialize Finnhub WebSocket: {e}")
+                self.logger.error(f"Failed to initialize data providers: {e}")
                 self.logger.warning("Falling back to Yahoo Finance only (15-min delay)")
+                self.primary_provider = None
+                self.secondary_provider = None
+                self.active_provider = None
                 self.finnhub_ws = None
                 self.bar_aggregators = {}
 
@@ -545,6 +603,125 @@ class TradingOrchestrator:
         except Exception as e:
             self.logger.error(f"Error disconnecting from Finnhub WebSocket: {e}", exc_info=True)
 
+    async def _start_rest_polling(self):
+        """
+        Start polling loop for REST API providers (Polygon-style).
+
+        Polls at different intervals based on whether we have open positions:
+        - With positions: poll every 60 seconds (monitor closely)
+        - No positions: poll every 300 seconds (reduce API calls)
+        """
+        if not isinstance(self.active_provider, RESTDataProvider):
+            return
+
+        self.logger.info("Starting REST API polling loop")
+
+        try:
+            while self._running and self.market_scheduler.is_market_open():
+                try:
+                    # Determine poll interval based on positions
+                    has_positions = len(self.exchange.get_all_positions()) > 0
+                    poll_interval = (
+                        self.config.data.poll_interval_with_position if has_positions
+                        else self.config.data.poll_interval_no_position
+                    )
+
+                    self.logger.debug(
+                        f"Polling {self.active_provider.provider_name} "
+                        f"(positions={has_positions}, interval={poll_interval}s)"
+                    )
+
+                    # Fetch latest bars for all symbols
+                    bars = await self.active_provider.get_multiple_latest_bars(
+                        symbols=self.config.trading.symbols,
+                        timeframe="5"  # 5-minute bars (Massive free tier supports 5min, not 1min)
+                    )
+
+                    # Process each bar
+                    for symbol, bar in bars.items():
+                        if bar:
+                            # Feed to bar aggregator (same as WebSocket flow)
+                            aggregator = self.bar_aggregators.get(symbol)
+                            if aggregator:
+                                # Convert bar to trade format for aggregator
+                                aggregator.add_trade(
+                                    timestamp=bar['timestamp'],
+                                    price=bar['close'],
+                                    size=bar['volume']
+                                )
+                        else:
+                            self.logger.warning(f"No bar data received for {symbol}")
+
+                    # Wait before next poll
+                    await asyncio.sleep(poll_interval)
+
+                except Exception as e:
+                    self.logger.error(f"Error during REST polling: {e}", exc_info=True)
+
+                    # Try fallback to secondary provider
+                    if self.secondary_provider and self.active_provider != self.secondary_provider:
+                        await self._switch_to_secondary_provider()
+
+                    # Wait before retry
+                    await asyncio.sleep(30)
+
+        except asyncio.CancelledError:
+            self.logger.info("REST polling task cancelled")
+        except Exception as e:
+            self.logger.error(f"Fatal error in REST polling: {e}", exc_info=True)
+
+    async def _switch_to_secondary_provider(self):
+        """Switch from primary to secondary provider on failure."""
+        if not self.secondary_provider:
+            self.logger.error("No secondary provider available for fallback")
+            return
+
+        self.logger.warning(
+            f"Switching from {self.active_provider.provider_name} "
+            f"to {self.secondary_provider.provider_name}"
+        )
+
+        # Disconnect primary
+        try:
+            await self.active_provider.disconnect()
+        except Exception as e:
+            self.logger.error(f"Error disconnecting primary provider: {e}")
+
+        # Switch to secondary
+        self.active_provider = self.secondary_provider
+
+        # Connect secondary
+        try:
+            success = await self.active_provider.connect()
+            if success:
+                self.logger.info(f"✅ Successfully switched to {self.active_provider.provider_name}")
+
+                # If WebSocket, subscribe to symbols
+                if isinstance(self.active_provider, WebSocketDataProvider):
+                    for symbol in self.config.trading.symbols:
+                        await self.active_provider.subscribe(symbol)
+                    self.active_provider.on_trade(self._handle_realtime_trade)
+                    self.active_provider.on_error(self._handle_provider_error)
+
+                # If REST, polling loop will handle it automatically
+                elif isinstance(self.active_provider, RESTDataProvider):
+                    self.logger.info("REST provider - will continue polling")
+
+        except Exception as e:
+            self.logger.error(f"Failed to connect to secondary provider: {e}", exc_info=True)
+
+    async def _handle_provider_error(self, error_data: dict):
+        """Handle errors from real-time data provider."""
+        error_type = error_data.get("type", "unknown")
+        message = error_data.get("message", "Unknown error")
+
+        self.logger.error(f"Provider error ({error_type}): {message}")
+
+        # If critical error, try secondary provider
+        critical_errors = ["connection_error", "auth_error", "rate_limit", "gap_detected"]
+        if error_type in critical_errors and self.secondary_provider:
+            await self._switch_to_secondary_provider()
+
     async def _pre_market_warmup(self) -> bool:
         """
         Pre-market warm-up phase (9:25-9:30 AM EST).
@@ -590,18 +767,27 @@ class TradingOrchestrator:
             self.logger.error(f"Error during cache warm-up: {e}", exc_info=True)
             warmup_success = False
 
-        # Step 2: Connect Finnhub websocket
-        self.logger.info("Step 2/4: Connecting to Finnhub WebSocket...")
+        # Step 2: Connect to real-time data provider
+        self.logger.info("Step 2/4: Connecting to real-time data provider...")
         try:
-            if self.finnhub_ws and not self.finnhub_ws.connected:
-                await self._connect_finnhub_websocket()
-                self.logger.info("Finnhub WebSocket ready!")
-            elif self.finnhub_ws:
-                self.logger.info("Finnhub WebSocket already connected")
+            if self.primary_provider:
+                success = await self.primary_provider.connect()
+                if success:
+                    self.logger.info(f"   ✅ Connected to {self.primary_provider.provider_name}")
+
+                    # Subscribe if WebSocket
+                    if isinstance(self.primary_provider, WebSocketDataProvider):
+                        for symbol in self.config.trading.symbols:
+                            await self.primary_provider.subscribe(symbol)
+                        self.logger.info(f"   ✅ Subscribed to {len(self.config.trading.symbols)} symbols")
+                else:
+                    raise Exception("Connection failed")
             else:
-                self.logger.info("Finnhub not configured (will use Yahoo Finance only)")
+                self.logger.info("No real-time provider configured (will use Yahoo Finance only)")
         except Exception as e:
-            self.logger.error(f"Error connecting Finnhub during warm-up: {e}", exc_info=True)
+            self.logger.error(f"   ❌ Failed to connect: {e}", exc_info=True)
+            if self.secondary_provider:
+                await self._switch_to_secondary_provider()
             self.logger.warning("Continuing without Finnhub (Yahoo Finance fallback)")
             warmup_success = False
 
@@ -917,6 +1103,13 @@ class TradingOrchestrator:
         """
         successful_fetches = 0
         try:
+            # Start REST polling if needed and market is open
+            if isinstance(self.active_provider, RESTDataProvider):
+                market_open = self.market_scheduler.is_market_open()
+                if market_open and (not self._polling_task or self._polling_task.done()):
+                    self._polling_task = asyncio.create_task(self._start_rest_polling())
+                    self.logger.info("Started REST API polling task")
+
             # 1. Fetch fresh data for all symbols
             # During market hours with Finnhub active, don't use Yahoo Finance fallback
             # (Yahoo is 15-min delayed and would interfere with real-time data)
@@ -1129,6 +1322,31 @@ class TradingOrchestrator:
                     )
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     self.logger.warning("Main task did not complete gracefully")
+
+            # Cancel polling task if running
+            if self._polling_task and not self._polling_task.done():
+                self._polling_task.cancel()
+                try:
+                    await self._polling_task
+                except asyncio.CancelledError:
+                    self.logger.debug("Polling task cancelled")
+                except Exception as e:
+                    self.logger.error(f"Error cancelling polling task: {e}")
+
+            # Disconnect from data providers
+            try:
+                if self.active_provider:
+                    await self.active_provider.disconnect()
+                    self.logger.info(f"Disconnected from {self.active_provider.provider_name}")
+            except Exception as e:
+                self.logger.error(f"Error disconnecting active provider: {e}")
+
+            try:
+                if self.secondary_provider and self.secondary_provider != self.active_provider:
+                    await self.secondary_provider.disconnect()
+                    self.logger.info(f"Disconnected from {self.secondary_provider.provider_name}")
+            except Exception as e:
+                self.logger.error(f"Error disconnecting secondary provider: {e}")
 
             # Close components
             try:
