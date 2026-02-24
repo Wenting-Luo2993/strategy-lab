@@ -886,6 +886,25 @@ class TradingOrchestrator:
                             self._market_closed_logged = False
                             self.logger.info("Market is now open - starting trading cycle")
 
+                        # If bot started during market hours (after warm-up), ensure provider is connected
+                        if self.primary_provider and not self.primary_provider.connected:
+                            self.logger.info("Bot started during market hours - connecting to real-time provider...")
+                            try:
+                                await self.primary_provider.connect()
+                                if self.primary_provider.connected:
+                                    self.logger.info(f"   [OK] Connected to {self.primary_provider.provider_name}")
+                                    set_health_state(websocket_connected=True, recent_heartbeat=True)
+
+                                    # Subscribe if WebSocket
+                                    if isinstance(self.primary_provider, WebSocketDataProvider):
+                                        for symbol in self.config.trading.symbols:
+                                            await self.primary_provider.subscribe(symbol)
+                                        self.logger.info(f"   [OK] Subscribed to {len(self.config.trading.symbols)} symbols")
+                                else:
+                                    self.logger.error("Failed to connect to real-time provider")
+                            except Exception as e:
+                                self.logger.error(f"Error connecting to real-time provider: {e}", exc_info=True)
+
                         # Run trading cycle
                         success = await self._trading_cycle()
 
