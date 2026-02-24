@@ -456,15 +456,15 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                         break
 
                 # Check 2: Monitor ping health
-                # Finnhub typically sends pings every 20-30 seconds
-                # If no ping for > 45s, connection might be stale
+                # Finnhub typically sends pings every 60 seconds
+                # If no ping for > 90s, connection might be stale
                 if self.last_ping_time is not None:
                     time_since_last_ping = (now - self.last_ping_time).total_seconds()
 
-                    if time_since_last_ping > 45:
+                    if time_since_last_ping > 90:
                         logger.warning(
                             f"⚠️  No ping from Finnhub for {time_since_last_ping:.0f}s "
-                            f"(expected every ~20-30s). Connection may be stale."
+                            f"(expected every ~60s). Connection may be stale."
                         )
 
                         # Don't trigger immediate reconnect, but log it
