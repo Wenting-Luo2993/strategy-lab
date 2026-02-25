@@ -12,6 +12,8 @@ services:
       # SYMBOLS defaults to ["AAPL", "GOOGL", "MSFT"] in settings.py
       - INITIAL_CAPITAL=10000
       - DATABASE_PATH=/app/data/trades.db
+      - LOG_FINNHUB_TICKS=true
+      - TICK_LOG_DIR=/app/data/tick_logs
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
     volumes:
