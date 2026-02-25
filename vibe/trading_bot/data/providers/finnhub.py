@@ -79,16 +79,28 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
         self._log_ticks = os.getenv("LOG_FINNHUB_TICKS", "").lower() in ("true", "1", "yes")
         self._tick_log_file = None
         self._tick_log_dir = None
+        self._tick_log_failed = False  # Flag to disable after first failure (fail-safe)
         if self._log_ticks:
             self._tick_log_dir = Path(os.getenv("TICK_LOG_DIR", "./data/tick_logs"))
-            self._tick_log_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self._tick_log_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
 
-            # Clean up old tick logs (older than TTL)
-            self._cleanup_old_tick_logs()
+                # Clean up old tick logs (older than TTL)
+                self._cleanup_old_tick_logs()
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._tick_log_file = self._tick_log_dir / f"finnhub_ticks_{timestamp}.jsonl"
-            logger.info(f"Tick logging ENABLED → {self._tick_log_file}")
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self._tick_log_file = self._tick_log_dir / f"finnhub_ticks_{timestamp}.jsonl"
+
+                # Test write permissions by creating the file
+                self._tick_log_file.touch(mode=0o644, exist_ok=True)
+
+                logger.info(f"Tick logging ENABLED → {self._tick_log_file}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to initialize tick logging: {e}. "
+                    "Tick logging DISABLED (continuing without it)"
+                )
+                self._log_ticks = False  # Disable tick logging on setup failure
         else:
             logger.info("Tick logging disabled (set LOG_FINNHUB_TICKS=true to enable)")
 
@@ -471,8 +483,8 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
             trades = data["data"]
             if isinstance(trades, list):
                 for trade in trades:
-                    # Log raw tick to file if enabled
-                    if self._log_ticks and self._tick_log_file:
+                    # Log raw tick to file if enabled (fail-safe: continues trading if logging fails)
+                    if self._log_ticks and self._tick_log_file and not self._tick_log_failed:
                         try:
                             tick_record = {
                                 "received_at": datetime.now(pytz.UTC).isoformat(),
@@ -493,7 +505,14 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                             with open(self._tick_log_file, "a") as f:
                                 f.write(json.dumps(tick_record) + "\n")
                         except Exception as e:
-                            logger.error(f"Failed to log tick: {e}")
+                            # Fail-safe: Log error once, then disable tick logging for this session
+                            # This prevents log spam while continuing normal trading operations
+                            logger.error(
+                                f"Tick logging failed ({e}). "
+                                "DISABLING tick logging for this session (trading continues normally)"
+                            )
+                            self._tick_log_failed = True  # Disable further attempts
+                            self._log_ticks = False  # Extra safety
 
                     # Process trade callback
                     if self._on_trade:
