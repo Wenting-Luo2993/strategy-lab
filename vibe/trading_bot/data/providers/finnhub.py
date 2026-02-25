@@ -5,8 +5,10 @@ Finnhub WebSocket client for real-time trade streaming.
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Callable, Optional, Set
 
 import pandas as pd
@@ -72,6 +74,18 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
+
+        # Tick logging for validation (controlled by environment variable)
+        self._log_ticks = os.getenv("LOG_FINNHUB_TICKS", "").lower() in ("true", "1", "yes")
+        self._tick_log_file = None
+        if self._log_ticks:
+            tick_log_dir = Path(os.getenv("TICK_LOG_DIR", "./data/tick_logs"))
+            tick_log_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._tick_log_file = tick_log_dir / f"finnhub_ticks_{timestamp}.jsonl"
+            logger.info(f"Tick logging ENABLED → {self._tick_log_file}")
+        else:
+            logger.info("Tick logging disabled (set LOG_FINNHUB_TICKS=true to enable)")
 
     # WebSocketDataProvider interface implementation
     @property
@@ -414,6 +428,31 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
             trades = data["data"]
             if isinstance(trades, list):
                 for trade in trades:
+                    # Log raw tick to file if enabled
+                    if self._log_ticks and self._tick_log_file:
+                        try:
+                            tick_record = {
+                                "received_at": datetime.now(pytz.UTC).isoformat(),
+                                "symbol": trade.get("s"),
+                                "price": trade.get("p"),
+                                "volume": trade.get("v"),
+                                "timestamp_ms": trade.get("t"),
+                                "timestamp": datetime.fromtimestamp(
+                                    trade.get("t", 0) / 1000,
+                                    tz=pytz.UTC
+                                ).isoformat(),
+                                "conditions": trade.get("c", []),
+                                "bid_price": trade.get("bp"),
+                                "ask_price": trade.get("ap"),
+                                "bid_size": trade.get("bs"),
+                                "ask_size": trade.get("as"),
+                            }
+                            with open(self._tick_log_file, "a") as f:
+                                f.write(json.dumps(tick_record) + "\n")
+                        except Exception as e:
+                            logger.error(f"Failed to log tick: {e}")
+
+                    # Process trade callback
                     if self._on_trade:
                         await self._on_trade(
                             {
