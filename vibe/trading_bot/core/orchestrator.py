@@ -86,6 +86,8 @@ class TradingOrchestrator:
 
         # Market closed state tracking (to avoid log spam)
         self._market_closed_logged: bool = False
+        self._cooldown_start_time: Optional[datetime] = None
+        self._cooldown_duration_seconds: int = 300  # 5 minutes cooldown after market close
 
         # Real-time data providers (configurable)
         self.primary_provider: Optional[RealtimeDataProvider] = None
@@ -823,20 +825,66 @@ class TradingOrchestrator:
 
                     # Check if bot should be active (warm-up OR market open)
                     if not self.market_scheduler.should_bot_be_active():
-                        # Market closed, sleep until warm-up time (5 min before open)
-                        next_warmup = self.market_scheduler.get_warmup_time()
-                        next_open = self.market_scheduler.next_market_open()
+                        now = datetime.now(self.market_scheduler.timezone)
 
-                        # Use warm-up time if available, otherwise market open
-                        target_time = next_warmup if next_warmup else next_open
+                        # Check if we're in cooldown phase (5 minutes after market close)
+                        if self._cooldown_start_time is None:
+                            # Market just closed, start cooldown phase
+                            self._cooldown_start_time = now
+                            self.logger.info(
+                                "=" * 60 + "\n"
+                                "MARKET CLOSE COOLDOWN PHASE STARTED\n"
+                                "=" * 60
+                            )
+                            self.logger.info(
+                                f"Market closed at {now.strftime('%H:%M:%S')}. "
+                                f"Entering {self._cooldown_duration_seconds}s cooldown phase for cleanup:"
+                            )
+                            self.logger.info("  - Processing final real-time bars")
+                            self.logger.info("  - Completing pending operations")
+                            self.logger.info("  - Generating daily summaries")
+                            self.logger.info(f"  - Will disconnect from provider at {(now + timedelta(seconds=self._cooldown_duration_seconds)).strftime('%H:%M:%S')}")
 
-                        sleep_seconds = (target_time - datetime.now(
-                            self.market_scheduler.timezone
-                        )).total_seconds()
+                        # Calculate time remaining in cooldown
+                        cooldown_elapsed = (now - self._cooldown_start_time).total_seconds()
 
-                        if sleep_seconds > 0:
-                            # Log only once when market first closes (avoid log spam)
-                            if not self._market_closed_logged:
+                        if cooldown_elapsed < self._cooldown_duration_seconds:
+                            # Still in cooldown - keep provider connected, process final data
+                            remaining = self._cooldown_duration_seconds - cooldown_elapsed
+                            self.logger.info(
+                                f"Cooldown phase: {remaining:.0f}s remaining. "
+                                f"Processing final data..."
+                            )
+
+                            # Continue to process final bars/trades during cooldown
+                            # Sleep briefly then loop again to process any remaining data
+                            await asyncio.sleep(30)  # Check every 30 seconds during cooldown
+                            continue
+
+                        # Cooldown complete, disconnect and sleep until next day
+                        if not self._market_closed_logged:
+                            self.logger.info(
+                                "=" * 60 + "\n"
+                                "COOLDOWN PHASE COMPLETE\n"
+                                "=" * 60
+                            )
+
+                            # Disconnect from provider after cooldown
+                            if self.active_provider and self.active_provider.connected:
+                                await self.active_provider.disconnect()
+                                self.logger.info(f"[OK] Disconnected from {self.active_provider.provider_name} after {self._cooldown_duration_seconds}s cooldown")
+
+                            # Reset cooldown tracker for next day
+                            self._cooldown_start_time = None
+
+                            # Calculate sleep time until next warm-up
+                            next_warmup = self.market_scheduler.get_warmup_time()
+                            next_open = self.market_scheduler.next_market_open()
+                            target_time = next_warmup if next_warmup else next_open
+
+                            sleep_seconds = (target_time - now).total_seconds()
+
+                            if sleep_seconds > 0:
                                 self.logger.info(
                                     f"Market closed, sleeping until warm-up at {target_time} "
                                     f"({sleep_seconds/3600:.1f} hours). "
@@ -844,19 +892,17 @@ class TradingOrchestrator:
                                 )
                                 self._market_closed_logged = True
 
-                                # Disconnect from provider when market closes
-                                if self.active_provider and self.active_provider.connected:
-                                    await self.active_provider.disconnect()
-                                    self.logger.info(f"Disconnected from {self.active_provider.provider_name} (market closed)")
-
-                            try:
-                                # Check for shutdown every 5 minutes
-                                await asyncio.wait_for(
-                                    self._shutdown_event.wait(),
-                                    timeout=min(sleep_seconds, 300)  # 5 minutes
-                                )
-                            except asyncio.TimeoutError:
-                                pass
+                        try:
+                            # Check for shutdown every 5 minutes
+                            sleep_seconds = (target_time - datetime.now(
+                                self.market_scheduler.timezone
+                            )).total_seconds()
+                            await asyncio.wait_for(
+                                self._shutdown_event.wait(),
+                                timeout=min(sleep_seconds, 300)  # 5 minutes
+                            )
+                        except asyncio.TimeoutError:
+                            pass
                         continue
 
                     # Bot is active - check if warm-up phase or trading
@@ -881,9 +927,10 @@ class TradingOrchestrator:
                         continue
 
                     elif self.market_scheduler.is_market_open():
-                        # Market is open - reset closed flag if needed
+                        # Market is open - reset closed flag and cooldown timer if needed
                         if self._market_closed_logged:
                             self._market_closed_logged = False
+                            self._cooldown_start_time = None
                             self.logger.info("Market is now open - starting trading cycle")
 
                         # If bot started during market hours (after warm-up), ensure provider is connected
@@ -1157,14 +1204,13 @@ class TradingOrchestrator:
 
                             # Expected gap is 5 minutes (one bar interval)
                             # If gap > 10 minutes, we're missing data
+                            # Note: This happens when bot restarts during market hours due to yfinance 15-min delay.
+                            # Consider keeping bot running or using Finnhub REST API for backfill.
                             if gap_minutes > 10:
                                 self.logger.warning(
                                     f"[DATA GAP] {symbol}: {gap_minutes:.1f} minute gap between "
                                     f"yfinance (last: {last_yf_bar.strftime('%H:%M:%S')}) and "
-                                    f"Finnhub (first: {first_rt_bar.strftime('%H:%M:%S')}). "
-                                    f"This happens when bot restarts during market hours due to "
-                                    f"yfinance 15-min delay. Consider keeping bot running or using "
-                                    f"Finnhub REST API for backfill."
+                                    f"Finnhub (first: {first_rt_bar.strftime('%H:%M:%S')})"
                                 )
 
                         # Combine historical (Yahoo) + real-time (Finnhub)

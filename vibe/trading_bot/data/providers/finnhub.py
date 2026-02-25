@@ -177,7 +177,11 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                 self.state = ConnectionState.CONNECTED
                 self._connected = True
                 self.reconnect_attempts = 0
+
+                # Reset all timestamp trackers for fresh connection
                 self.last_message_time = datetime.now()
+                self.last_ping_time = None
+                self.last_pong_time = None
 
                 logger.info("Connected to Finnhub WebSocket")
 
@@ -246,6 +250,11 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
         """Disconnect from WebSocket gracefully."""
         self._connected = False
         self.state = ConnectionState.DISCONNECTED
+
+        # Reset timestamp trackers
+        self.last_message_time = None
+        self.last_ping_time = None
+        self.last_pong_time = None
 
         # Cancel all tasks and wait for them to finish
         tasks_to_cancel = []
@@ -336,11 +345,17 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
 
         CRITICAL: Ping/pong handling is done with highest priority to prevent
         disconnections due to missed pongs. Finnhub has strict ping/pong timeout.
+
+        Timeout is set to 90s to accommodate Finnhub's ~60s ping interval. During
+        warm-up and low-activity periods, we may not receive trade messages, so we
+        rely on pings to keep the connection alive.
         """
         try:
             while self.connected and self.ws:
                 try:
-                    message = await asyncio.wait_for(self.ws.recv(), timeout=30.0)
+                    # Timeout: 90s allows for Finnhub's 60s ping interval + buffer
+                    # Previous 30s timeout was too aggressive and caused reconnect loops
+                    message = await asyncio.wait_for(self.ws.recv(), timeout=90.0)
                     self.last_message_time = datetime.now()
 
                     # Parse message
@@ -366,7 +381,7 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                     await self._handle_message(data)
 
                 except asyncio.TimeoutError:
-                    logger.warning("WebSocket receive timeout (no messages for 30s)")
+                    logger.warning("WebSocket receive timeout (no messages for 90s)")
                     await self._handle_disconnect()
                     break
 
