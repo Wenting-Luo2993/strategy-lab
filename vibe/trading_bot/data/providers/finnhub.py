@@ -78,14 +78,57 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
         # Tick logging for validation (controlled by environment variable)
         self._log_ticks = os.getenv("LOG_FINNHUB_TICKS", "").lower() in ("true", "1", "yes")
         self._tick_log_file = None
+        self._tick_log_dir = None
         if self._log_ticks:
-            tick_log_dir = Path(os.getenv("TICK_LOG_DIR", "./data/tick_logs"))
-            tick_log_dir.mkdir(parents=True, exist_ok=True)
+            self._tick_log_dir = Path(os.getenv("TICK_LOG_DIR", "./data/tick_logs"))
+            self._tick_log_dir.mkdir(parents=True, exist_ok=True)
+
+            # Clean up old tick logs (older than TTL)
+            self._cleanup_old_tick_logs()
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._tick_log_file = tick_log_dir / f"finnhub_ticks_{timestamp}.jsonl"
+            self._tick_log_file = self._tick_log_dir / f"finnhub_ticks_{timestamp}.jsonl"
             logger.info(f"Tick logging ENABLED → {self._tick_log_file}")
         else:
             logger.info("Tick logging disabled (set LOG_FINNHUB_TICKS=true to enable)")
+
+    def _cleanup_old_tick_logs(self) -> None:
+        """
+        Clean up tick log files older than TTL.
+
+        Removes JSONL tick log files that are older than the configured TTL
+        (default: 3 days) to prevent disk space issues.
+        """
+        if not self._tick_log_dir or not self._tick_log_dir.exists():
+            return
+
+        try:
+            # Get TTL from environment (default: 3 days)
+            ttl_days = int(os.getenv("TICK_LOG_TTL_DAYS", "3"))
+            ttl_seconds = ttl_days * 24 * 60 * 60
+            cutoff_time = datetime.now().timestamp() - ttl_seconds
+
+            deleted_count = 0
+            deleted_size = 0
+
+            # Find and delete old tick log files
+            for log_file in self._tick_log_dir.glob("finnhub_ticks_*.jsonl"):
+                if log_file.stat().st_mtime < cutoff_time:
+                    file_size = log_file.stat().st_size
+                    log_file.unlink()
+                    deleted_count += 1
+                    deleted_size += file_size
+
+            if deleted_count > 0:
+                logger.info(
+                    f"Cleaned up {deleted_count} old tick log(s) "
+                    f"({deleted_size / 1024 / 1024:.2f} MB freed, TTL: {ttl_days} days)"
+                )
+            else:
+                logger.debug(f"No tick logs older than {ttl_days} days found")
+
+        except Exception as e:
+            logger.warning(f"Failed to clean up old tick logs: {e}")
 
     # WebSocketDataProvider interface implementation
     @property

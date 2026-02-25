@@ -14,6 +14,7 @@ services:
       - DATABASE_PATH=/app/data/trades.db
       - LOG_FINNHUB_TICKS=true
       - TICK_LOG_DIR=/app/data/tick_logs
+      - TICK_LOG_TTL_DAYS=3
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
     volumes:

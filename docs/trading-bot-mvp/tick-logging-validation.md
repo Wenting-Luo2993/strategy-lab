@@ -12,6 +12,7 @@ Add to your `.env` file:
 ```bash
 LOG_FINNHUB_TICKS=true
 TICK_LOG_DIR=./data/tick_logs  # Optional, default location
+TICK_LOG_TTL_DAYS=3  # Optional, auto-cleanup after 3 days (default)
 ```
 
 ### Method 2: Docker Compose
@@ -173,9 +174,20 @@ for i in range(1, len(bar_ticks)):
 
 ---
 
-## Log Rotation
+## Automatic Log Cleanup
 
-Logs are NOT automatically rotated. To prevent disk space issues:
+**Tick logs are automatically cleaned up** on bot startup to prevent disk space issues.
+
+### How It Works
+
+- **Default TTL**: 3 days
+- **When**: Cleanup runs automatically when bot starts (before market open)
+- **What**: Deletes tick log files older than TTL
+- **Configure**: Set `TICK_LOG_TTL_DAYS=7` to keep logs for 7 days instead
+
+### Manual Cleanup (Optional)
+
+If you need to clean up logs manually:
 
 ```bash
 # Delete logs older than 7 days
