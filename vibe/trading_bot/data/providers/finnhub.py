@@ -92,7 +92,7 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                 self._cleanup_old_tick_logs()
 
                 # Initialize first tick log file
-                self._rotate_tick_log_file()
+                self.rotate_tick_log_for_new_session()
 
                 logger.info(f"Tick logging ENABLED → {self._tick_log_file_path}")
             except Exception as e:
