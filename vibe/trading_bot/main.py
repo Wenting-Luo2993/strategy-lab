@@ -44,7 +44,7 @@ class TradingBotCLI:
         # Print version information (helps verify correct build is running)
         logger.info("=" * 80)
         logger.info(f"Trading Bot {BUILD_VERSION}")
-        logger.info(f"Commit: {BUILD_INFO['commit']} | Build: {BUILD_INFO['build_time']}")
+        logger.info(f"Build Time: {BUILD_INFO['build_time']}")
         logger.info("=" * 80)
 
         logger.info(f"Starting trading bot (environment={self.settings.environment})")
