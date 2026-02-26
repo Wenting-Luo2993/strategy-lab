@@ -174,11 +174,24 @@ for i in range(1, len(bar_ticks)):
 
 ---
 
-## Automatic Log Cleanup
+## Automatic Features
 
-**Tick logs are automatically cleaned up** on bot startup to prevent disk space issues.
+### Daily Log Rotation (New!)
 
-### How It Works
+**New tick log file created automatically each trading day** for long-running bots.
+
+- **When**: Automatically rotates at midnight (date change)
+- **How**: Old file closed cleanly, new file opened with current date
+- **Why**: Prevents single file from growing indefinitely; supports continuous bot operation
+- **Example**:
+  - Day 1: `finnhub_ticks_20260226_093000.jsonl`
+  - Day 2: `finnhub_ticks_20260227_000015.jsonl` (rotated at midnight)
+
+**No bot restart required!** The bot can run continuously, and tick logging will automatically rotate to a new file each day.
+
+### Automatic Log Cleanup
+
+**Old tick logs are automatically deleted** on bot startup to prevent disk space issues.
 
 - **Default TTL**: 3 days
 - **When**: Cleanup runs automatically when bot starts (before market open)

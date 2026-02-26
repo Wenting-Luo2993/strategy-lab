@@ -77,9 +77,12 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
 
         # Tick logging for validation (controlled by environment variable)
         self._log_ticks = os.getenv("LOG_FINNHUB_TICKS", "").lower() in ("true", "1", "yes")
-        self._tick_log_file = None
+        self._tick_log_file_path = None
+        self._tick_log_file_handle = None
         self._tick_log_dir = None
+        self._tick_log_current_date = None  # Track current log file date for rotation
         self._tick_log_failed = False  # Flag to disable after first failure (fail-safe)
+
         if self._log_ticks:
             self._tick_log_dir = Path(os.getenv("TICK_LOG_DIR", "./data/tick_logs"))
             try:
@@ -88,13 +91,10 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                 # Clean up old tick logs (older than TTL)
                 self._cleanup_old_tick_logs()
 
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                self._tick_log_file = self._tick_log_dir / f"finnhub_ticks_{timestamp}.jsonl"
+                # Initialize first tick log file
+                self._rotate_tick_log_file()
 
-                # Test write permissions by creating the file
-                self._tick_log_file.touch(mode=0o644, exist_ok=True)
-
-                logger.info(f"Tick logging ENABLED → {self._tick_log_file}")
+                logger.info(f"Tick logging ENABLED → {self._tick_log_file_path}")
             except Exception as e:
                 logger.error(
                     f"Failed to initialize tick logging: {e}. "
@@ -141,6 +141,48 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
 
         except Exception as e:
             logger.warning(f"Failed to clean up old tick logs: {e}")
+
+    def _rotate_tick_log_file(self) -> None:
+        """
+        Rotate tick log file if date has changed.
+
+        Creates a new tick log file for the current date and closes the old one.
+        This ensures each trading day gets its own log file for long-running bots.
+        """
+        if not self._log_ticks or not self._tick_log_dir:
+            return
+
+        try:
+            current_date = datetime.now().date()
+
+            # Check if we need to rotate (new date or first file)
+            if self._tick_log_current_date != current_date:
+                # Close old file handle if it exists
+                if self._tick_log_file_handle:
+                    try:
+                        self._tick_log_file_handle.close()
+                        logger.info(
+                            f"Closed previous tick log: "
+                            f"{self._tick_log_file_path.name if self._tick_log_file_path else 'unknown'}"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to close old tick log file: {e}")
+
+                # Create new file for current date
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self._tick_log_file_path = self._tick_log_dir / f"finnhub_ticks_{timestamp}.jsonl"
+
+                # Open new file handle in append mode
+                self._tick_log_file_handle = open(self._tick_log_file_path, "a", buffering=1)
+                self._tick_log_current_date = current_date
+
+                if self._tick_log_file_path:
+                    logger.info(f"Rotated to new tick log: {self._tick_log_file_path.name}")
+
+        except Exception as e:
+            logger.error(f"Failed to rotate tick log file: {e}")
+            self._tick_log_failed = True
+            self._log_ticks = False
 
     # WebSocketDataProvider interface implementation
     @property
@@ -351,6 +393,16 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
             await self.ws.close()
             self.ws = None
 
+        # Close tick log file handle if open
+        if self._tick_log_file_handle:
+            try:
+                self._tick_log_file_handle.close()
+                logger.debug(f"Closed tick log file: {self._tick_log_file_path.name if self._tick_log_file_path else 'unknown'}")
+            except Exception as e:
+                logger.warning(f"Failed to close tick log file: {e}")
+            finally:
+                self._tick_log_file_handle = None
+
         logger.info("Disconnected from Finnhub WebSocket")
 
         if self._on_disconnected:
@@ -484,8 +536,14 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
             if isinstance(trades, list):
                 for trade in trades:
                     # Log raw tick to file if enabled (fail-safe: continues trading if logging fails)
-                    if self._log_ticks and self._tick_log_file and not self._tick_log_failed:
+                    if self._log_ticks and self._tick_log_file_handle and not self._tick_log_failed:
                         try:
+                            # Check if we need to rotate to a new file (date changed)
+                            current_date = datetime.now().date()
+                            if self._tick_log_current_date != current_date:
+                                self._rotate_tick_log_file()
+
+                            # Write tick to file handle
                             tick_record = {
                                 "received_at": datetime.now(pytz.UTC).isoformat(),
                                 "symbol": trade.get("s"),
@@ -502,8 +560,9 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                                 "bid_size": trade.get("bs"),
                                 "ask_size": trade.get("as"),
                             }
-                            with open(self._tick_log_file, "a") as f:
-                                f.write(json.dumps(tick_record) + "\n")
+                            self._tick_log_file_handle.write(json.dumps(tick_record) + "\n")
+                            # Flush ensures ticks are written immediately (important for debugging)
+                            self._tick_log_file_handle.flush()
                         except Exception as e:
                             # Fail-safe: Log error once, then disable tick logging for this session
                             # This prevents log spam while continuing normal trading operations
@@ -513,6 +572,12 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                             )
                             self._tick_log_failed = True  # Disable further attempts
                             self._log_ticks = False  # Extra safety
+                            # Close file handle on failure
+                            if self._tick_log_file_handle:
+                                try:
+                                    self._tick_log_file_handle.close()
+                                except:
+                                    pass
 
                     # Process trade callback
                     if self._on_trade:
