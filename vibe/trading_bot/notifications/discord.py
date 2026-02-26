@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, List
 import aiohttp
 
-from vibe.trading_bot.notifications.payloads import OrderNotificationPayload
+from vibe.trading_bot.notifications.payloads import OrderNotificationPayload, SystemStatusPayload
 from vibe.trading_bot.notifications.formatter import DiscordNotificationFormatter
 from vibe.trading_bot.notifications.rate_limiter import TokenBucketRateLimiter
 
@@ -87,6 +87,51 @@ class DiscordNotifier:
             return True
         except asyncio.QueueFull:
             logger.warning(f"Notification queue full, dropped event: {payload.event_type}")
+            return False
+
+    async def send_system_status(self, payload: SystemStatusPayload) -> bool:
+        """Send a system status notification immediately (bypasses queue).
+
+        System status messages are sent immediately rather than queued,
+        as they are infrequent and time-sensitive.
+
+        Args:
+            payload: System status notification payload
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self._session:
+            logger.error("Session not initialized")
+            return False
+
+        try:
+            # Format message using system status formatter
+            message = self.formatter.format_system_status(payload)
+
+            # Apply rate limiting
+            wait_time = await self.rate_limiter.acquire()
+            if wait_time > 0:
+                logger.debug(f"Rate limit: waiting {wait_time:.2f}s before sending")
+
+            # Send directly (bypass queue for time-sensitive status messages)
+            async with self._session.post(
+                self.webhook_url,
+                json=message,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    logger.info(f"System status notification sent: {payload.event_type}")
+                    return True
+                else:
+                    logger.error(
+                        f"Failed to send system status: {response.status} "
+                        f"(text: {await response.text()})"
+                    )
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error sending system status: {e}", exc_info=True)
             return False
 
     async def _worker(self) -> None:

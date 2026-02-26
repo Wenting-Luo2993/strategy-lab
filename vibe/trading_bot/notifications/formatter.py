@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Dict, List, Any
-from vibe.trading_bot.notifications.payloads import OrderNotificationPayload
+from vibe.trading_bot.notifications.payloads import OrderNotificationPayload, SystemStatusPayload
 
 
 class DiscordNotificationFormatter:
@@ -17,6 +17,14 @@ class DiscordNotificationFormatter:
         "ORDER_SENT": 0x3498db,      # Blue
         "ORDER_FILLED": 0x2ecc71,    # Green
         "ORDER_CANCELLED": 0xe74c3c,  # Red
+        "MARKET_START": 0x2ecc71,    # Green
+        "MARKET_CLOSE": 0xf39c12,    # Orange
+    }
+
+    STATUS_COLORS = {
+        "healthy": 0x2ecc71,      # Green
+        "degraded": 0xf39c12,     # Orange
+        "unhealthy": 0xe74c3c,    # Red
     }
 
     def format(self, payload: OrderNotificationPayload) -> Dict[str, Any]:
@@ -207,4 +215,174 @@ class DiscordNotificationFormatter:
             "fields": fields,
             "timestamp": payload.timestamp.isoformat(),
             "footer": {"text": f"Order ID: {payload.order_id}"}
+        }
+
+    def format_system_status(self, payload: SystemStatusPayload) -> Dict[str, Any]:
+        """Format system status payload into Discord webhook message.
+
+        Args:
+            payload: System status notification payload
+
+        Returns:
+            Dictionary with 'embeds' key containing Discord embed data
+        """
+        # Choose color based on overall status
+        color = self.STATUS_COLORS.get(payload.overall_status, 0x95a5a6)
+
+        if payload.event_type == "MARKET_START":
+            embed = self._format_market_start(payload, color)
+        elif payload.event_type == "MARKET_CLOSE":
+            embed = self._format_market_close(payload, color)
+        else:
+            embed = self._format_generic_status(payload, color)
+
+        return {"embeds": [embed]}
+
+    def _format_market_start(
+        self,
+        payload: SystemStatusPayload,
+        color: int
+    ) -> Dict[str, Any]:
+        """Format MARKET_START notification."""
+        # Status emoji
+        status_emoji = {
+            "healthy": "✅",
+            "degraded": "⚠️",
+            "unhealthy": "❌"
+        }.get(payload.overall_status, "❓")
+
+        fields = [
+            {
+                "name": "Overall Status",
+                "value": f"{status_emoji} **{payload.overall_status.upper()}**",
+                "inline": True
+            }
+        ]
+
+        # Warm-up status
+        if payload.warmup_completed is not None:
+            warmup_emoji = "✅" if payload.warmup_completed else "❌"
+            fields.append({
+                "name": "Warm-up Phase",
+                "value": f"{warmup_emoji} {'Completed' if payload.warmup_completed else 'Failed'}",
+                "inline": True
+            })
+
+        # Primary provider
+        if payload.primary_provider_name:
+            provider_status = payload.primary_provider_status or "unknown"
+            provider_emoji = {
+                "connected": "🟢",
+                "disconnected": "🔴",
+                "error": "❌"
+            }.get(provider_status, "❓")
+
+            fields.append({
+                "name": "Primary Data Source",
+                "value": f"{provider_emoji} {payload.primary_provider_name} ({provider_status})",
+                "inline": False
+            })
+
+        # WebSocket ping status
+        if payload.websocket_ping_received is not None:
+            ping_emoji = "✅" if payload.websocket_ping_received else "⚠️"
+            ping_status = "Verified" if payload.websocket_ping_received else "Waiting"
+            fields.append({
+                "name": "WebSocket Ping/Pong",
+                "value": f"{ping_emoji} {ping_status}",
+                "inline": True
+            })
+
+        # Secondary provider (if exists)
+        if payload.secondary_provider_name:
+            secondary_status = payload.secondary_provider_status or "unknown"
+            secondary_emoji = {
+                "connected": "🟢",
+                "disconnected": "🔴",
+                "error": "❌"
+            }.get(secondary_status, "❓")
+
+            fields.append({
+                "name": "Fallback Data Source",
+                "value": f"{secondary_emoji} {payload.secondary_provider_name} ({secondary_status})",
+                "inline": False
+            })
+
+        # Additional details
+        if payload.details:
+            for key, value in payload.details.items():
+                fields.append({
+                    "name": key,
+                    "value": str(value),
+                    "inline": True
+                })
+
+        return {
+            "title": "🔔 Market Open - Trading Bot Ready",
+            "description": "Bot has completed warm-up and is ready for trading",
+            "color": color,
+            "fields": fields,
+            "timestamp": payload.timestamp.isoformat(),
+            "footer": {"text": "Trading Bot Status"}
+        }
+
+    def _format_market_close(
+        self,
+        payload: SystemStatusPayload,
+        color: int
+    ) -> Dict[str, Any]:
+        """Format MARKET_CLOSE notification."""
+        fields = []
+
+        # Add any daily summary info from details
+        if payload.details:
+            for key, value in payload.details.items():
+                fields.append({
+                    "name": key,
+                    "value": str(value),
+                    "inline": True
+                })
+
+        return {
+            "title": "🌙 Market Closed - Cooldown Phase",
+            "description": "Market has closed. Bot entering 5-minute cooldown for final processing.",
+            "color": color,
+            "fields": fields if fields else [{"name": "Status", "value": "Cooldown in progress", "inline": False}],
+            "timestamp": payload.timestamp.isoformat(),
+            "footer": {"text": "Trading Bot Status"}
+        }
+
+    def _format_generic_status(
+        self,
+        payload: SystemStatusPayload,
+        color: int
+    ) -> Dict[str, Any]:
+        """Format generic system status notification."""
+        fields = [
+            {
+                "name": "Event Type",
+                "value": payload.event_type,
+                "inline": True
+            },
+            {
+                "name": "Status",
+                "value": payload.overall_status,
+                "inline": True
+            }
+        ]
+
+        if payload.details:
+            for key, value in payload.details.items():
+                fields.append({
+                    "name": key,
+                    "value": str(value),
+                    "inline": True
+                })
+
+        return {
+            "title": "📊 System Status Update",
+            "color": color,
+            "fields": fields,
+            "timestamp": payload.timestamp.isoformat(),
+            "footer": {"text": "Trading Bot Status"}
         }

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 import json
 
 
@@ -120,3 +120,49 @@ class OrderNotificationPayload:
             return None
 
         return (slippage / (self.order_price * self.filled_quantity)) * 100
+
+
+@dataclass
+class SystemStatusPayload:
+    """Notification payload for system status events (market start/close).
+
+    Supports MARKET_START, MARKET_CLOSE events with health check information.
+    """
+
+    # Required fields
+    event_type: str  # MARKET_START, MARKET_CLOSE
+    timestamp: datetime
+
+    # Health status fields
+    overall_status: str  # healthy, degraded, unhealthy
+    warmup_completed: Optional[bool] = None
+    primary_provider_status: Optional[str] = None  # connected, disconnected, error
+    primary_provider_name: Optional[str] = None
+    secondary_provider_status: Optional[str] = None
+    secondary_provider_name: Optional[str] = None
+    websocket_ping_received: Optional[bool] = None  # For MARKET_START - confirms ping/pong
+
+    # Market status
+    market_status: Optional[str] = None  # open, closed, pre_market, after_hours
+
+    # Additional details
+    details: Optional[Dict[str, Any]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Validate payload."""
+        valid_event_types = {"MARKET_START", "MARKET_CLOSE"}
+        if self.event_type not in valid_event_types:
+            raise ValueError(
+                f"Invalid event_type: {self.event_type}. "
+                f"Must be one of {valid_event_types}"
+            )
+
+    def to_dict(self) -> dict:
+        """Convert payload to dictionary, handling datetime serialization."""
+        data = asdict(self)
+        data["timestamp"] = self.timestamp.isoformat()
+        return data
+
+    def to_json(self) -> str:
+        """Convert payload to JSON string."""
+        return json.dumps(self.to_dict(), default=str)
