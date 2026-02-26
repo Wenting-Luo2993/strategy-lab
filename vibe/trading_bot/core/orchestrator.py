@@ -751,6 +751,21 @@ class TradingOrchestrator:
                         for symbol in self.config.trading.symbols:
                             await self.primary_provider.subscribe(symbol)
                         self.logger.info(f"   [OK] Subscribed to {len(self.config.trading.symbols)} symbols")
+
+                        # Wait for first ping/pong to verify connection is truly healthy
+                        self.logger.info("   [*] Waiting for WebSocket ping/pong verification...")
+                        max_wait = 10  # Wait up to 10 seconds for first pong
+                        waited = 0
+                        while waited < max_wait:
+                            if hasattr(self.primary_provider, 'last_pong_time') and self.primary_provider.last_pong_time:
+                                self.logger.info(f"   [OK] WebSocket ping/pong verified after {waited}s")
+                                break
+                            await asyncio.sleep(0.5)
+                            waited += 0.5
+
+                        if not (hasattr(self.primary_provider, 'last_pong_time') and self.primary_provider.last_pong_time):
+                            self.logger.warning("   [!] WebSocket ping/pong not received within timeout")
+                            self.logger.warning("   [!] Connection may be unstable (continuing anyway)")
                 else:
                     raise Exception("Connection failed - provider not connected")
             else:
@@ -806,12 +821,18 @@ class TradingOrchestrator:
                 # Determine overall status
                 overall_status = "healthy" if warmup_success and all_healthy else "degraded"
 
-                # Get provider status
+                # Get provider status and verify ping/pong
                 primary_provider_status = None
                 primary_provider_name = None
+                websocket_ping_received = False
+
                 if self.primary_provider:
                     primary_provider_name = self.primary_provider.provider_name
                     primary_provider_status = "connected" if self.primary_provider.connected else "disconnected"
+
+                    # Check if WebSocket ping/pong was actually verified
+                    if hasattr(self.primary_provider, 'last_pong_time') and self.primary_provider.last_pong_time:
+                        websocket_ping_received = True
 
                 payload = SystemStatusPayload(
                     event_type="MARKET_START",
@@ -820,6 +841,7 @@ class TradingOrchestrator:
                     warmup_completed=warmup_success,
                     primary_provider_status=primary_provider_status,
                     primary_provider_name=primary_provider_name,
+                    websocket_ping_received=websocket_ping_received,
                     market_status="pre_market",
                     details={
                         "components": health_status,
