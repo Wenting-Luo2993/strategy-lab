@@ -27,6 +27,7 @@ from vibe.common.strategies.orb import ORBStrategyConfig
 from vibe.common.indicators.engine import IncrementalIndicatorEngine
 from vibe.trading_bot.notifications.discord import DiscordNotifier
 from vibe.trading_bot.notifications.payloads import SystemStatusPayload
+from vibe.trading_bot.version import BUILD_VERSION
 
 
 logger = logging.getLogger(__name__)
@@ -844,6 +845,7 @@ class TradingOrchestrator:
                     primary_provider_name=primary_provider_name,
                     websocket_ping_received=websocket_ping_received,
                     market_status="pre_market",
+                    version=BUILD_VERSION,
                     details={
                         "components": health_status,
                         "all_healthy": all_healthy,

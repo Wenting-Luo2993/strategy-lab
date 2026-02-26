@@ -317,13 +317,18 @@ class DiscordNotificationFormatter:
                     "inline": True
                 })
 
+        # Footer with version info
+        footer_text = "Trading Bot Status"
+        if payload.version:
+            footer_text = f"Trading Bot {payload.version}"
+
         return {
             "title": "🔔 Market Open - Trading Bot Ready",
             "description": "Bot has completed warm-up and is ready for trading",
             "color": color,
             "fields": fields,
             "timestamp": payload.timestamp.isoformat(),
-            "footer": {"text": "Trading Bot Status"}
+            "footer": {"text": footer_text}
         }
 
     def _format_market_close(
@@ -343,13 +348,18 @@ class DiscordNotificationFormatter:
                     "inline": True
                 })
 
+        # Footer with version info
+        footer_text = "Trading Bot Status"
+        if payload.version:
+            footer_text = f"Trading Bot {payload.version}"
+
         return {
             "title": "🌙 Market Closed - Cooldown Phase",
             "description": "Market has closed. Bot entering 5-minute cooldown for final processing.",
             "color": color,
             "fields": fields if fields else [{"name": "Status", "value": "Cooldown in progress", "inline": False}],
             "timestamp": payload.timestamp.isoformat(),
-            "footer": {"text": "Trading Bot Status"}
+            "footer": {"text": footer_text}
         }
 
     def _format_generic_status(

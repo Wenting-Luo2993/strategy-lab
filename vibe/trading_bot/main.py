@@ -12,6 +12,7 @@ import click
 from vibe.trading_bot.config.logging_config import setup_logging
 from vibe.trading_bot.config.settings import get_settings
 from vibe.trading_bot.core.orchestrator import TradingOrchestrator
+from vibe.trading_bot.version import BUILD_VERSION, BUILD_INFO
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,12 @@ class TradingBotCLI:
             level=self.settings.log_level,
             environment=self.settings.environment
         )
+
+        # Print version information (helps verify correct build is running)
+        logger.info("=" * 80)
+        logger.info(f"Trading Bot {BUILD_VERSION}")
+        logger.info(f"Commit: {BUILD_INFO['commit']} | Build: {BUILD_INFO['build_time']}")
+        logger.info("=" * 80)
 
         logger.info(f"Starting trading bot (environment={self.settings.environment})")
         logger.info(f"Symbols: {self.settings.trading.symbols}")

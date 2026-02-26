@@ -145,6 +145,9 @@ class SystemStatusPayload:
     # Market status
     market_status: Optional[str] = None  # open, closed, pre_market, after_hours
 
+    # Version information
+    version: Optional[str] = None  # Build version (commit hash + timestamp)
+
     # Additional details
     details: Optional[Dict[str, Any]] = field(default_factory=dict)
 

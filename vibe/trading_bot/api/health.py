@@ -7,6 +7,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from vibe.trading_bot.utils.logger import get_logger
+from vibe.trading_bot.version import BUILD_VERSION, BUILD_INFO
 
 
 logger = get_logger(__name__)
@@ -94,6 +95,7 @@ class LiveResponse(BaseModel):
 
     status: str
     timestamp: str
+    version: str
 
 
 class ReadyResponse(BaseModel):
@@ -101,6 +103,7 @@ class ReadyResponse(BaseModel):
 
     status: str
     timestamp: str
+    version: str
     checks: Dict[str, bool]
 
 
@@ -110,6 +113,7 @@ class MetricsResponse(BaseModel):
     status: str
     timestamp: str
     uptime_seconds: float
+    version: str
     metrics: Dict[str, Any]
 
 
@@ -137,6 +141,7 @@ def create_health_app() -> FastAPI:
         return LiveResponse(
             status="alive",
             timestamp=datetime.utcnow().isoformat(),
+            version=BUILD_VERSION,
         )
 
     @app.get("/health/live", response_model=LiveResponse)
@@ -154,6 +159,7 @@ def create_health_app() -> FastAPI:
         return LiveResponse(
             status="alive",
             timestamp=datetime.utcnow().isoformat(),
+            version=BUILD_VERSION,
         )
 
     @app.get("/health/ready", response_model=ReadyResponse)
@@ -186,6 +192,7 @@ def create_health_app() -> FastAPI:
         return ReadyResponse(
             status="ready",
             timestamp=datetime.utcnow().isoformat(),
+            version=BUILD_VERSION,
             checks=checks,
         )
 
@@ -202,6 +209,7 @@ def create_health_app() -> FastAPI:
             status="ok",
             timestamp=datetime.utcnow().isoformat(),
             uptime_seconds=state.uptime_seconds,
+            version=BUILD_VERSION,
             metrics=state.metrics,
         )
 
