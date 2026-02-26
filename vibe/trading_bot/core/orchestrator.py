@@ -753,18 +753,19 @@ class TradingOrchestrator:
                         self.logger.info(f"   [OK] Subscribed to {len(self.config.trading.symbols)} symbols")
 
                         # Wait for first ping/pong to verify connection is truly healthy
-                        self.logger.info("   [*] Waiting for WebSocket ping/pong verification...")
-                        max_wait = 10  # Wait up to 10 seconds for first pong
+                        # Finnhub sends pings every ~60s, so we need to wait longer
+                        self.logger.info("   [*] Waiting for WebSocket ping/pong verification (up to 70s)...")
+                        max_wait = 70  # Wait up to 70 seconds for first pong (Finnhub pings ~60s)
                         waited = 0
                         while waited < max_wait:
                             if hasattr(self.primary_provider, 'last_pong_time') and self.primary_provider.last_pong_time:
-                                self.logger.info(f"   [OK] WebSocket ping/pong verified after {waited}s")
+                                self.logger.info(f"   [OK] WebSocket ping/pong verified after {waited:.1f}s")
                                 break
-                            await asyncio.sleep(0.5)
-                            waited += 0.5
+                            await asyncio.sleep(1)
+                            waited += 1
 
                         if not (hasattr(self.primary_provider, 'last_pong_time') and self.primary_provider.last_pong_time):
-                            self.logger.warning("   [!] WebSocket ping/pong not received within timeout")
+                            self.logger.warning("   [!] WebSocket ping/pong not received within 70s timeout")
                             self.logger.warning("   [!] Connection may be unstable (continuing anyway)")
                 else:
                     raise Exception("Connection failed - provider not connected")
