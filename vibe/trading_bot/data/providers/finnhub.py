@@ -153,7 +153,8 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
             return
 
         try:
-            current_date = datetime.now().date()
+            # Use UTC for consistency with tick timestamps
+            current_date = datetime.now(pytz.UTC).date()
 
             # Check if we need to rotate (new date or first file)
             if self._tick_log_current_date != current_date:
@@ -539,7 +540,8 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                     if self._log_ticks and self._tick_log_file_handle and not self._tick_log_failed:
                         try:
                             # Check if we need to rotate to a new file (date changed)
-                            current_date = datetime.now().date()
+                            # Use UTC for consistency with tick timestamps
+                            current_date = datetime.now(pytz.UTC).date()
                             if self._tick_log_current_date != current_date:
                                 self._rotate_tick_log_file()
 
