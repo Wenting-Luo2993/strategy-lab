@@ -142,43 +142,39 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
         except Exception as e:
             logger.warning(f"Failed to clean up old tick logs: {e}")
 
-    def _rotate_tick_log_file(self) -> None:
+    def rotate_tick_log_for_new_session(self) -> None:
         """
-        Rotate tick log file if date has changed.
+        Rotate tick log file for a new market session.
 
-        Creates a new tick log file for the current date and closes the old one.
-        This ensures each trading day gets its own log file for long-running bots.
+        Creates a new tick log file and closes the old one.
+        Called during market close cooldown phase to ensure each market session
+        gets its own log file. Much cleaner than checking date on every tick!
         """
         if not self._log_ticks or not self._tick_log_dir:
             return
 
         try:
-            # Use UTC for consistency with tick timestamps
-            current_date = datetime.now(pytz.UTC).date()
+            # Close old file handle if it exists
+            if self._tick_log_file_handle:
+                try:
+                    self._tick_log_file_handle.close()
+                    logger.info(
+                        f"Closed previous tick log: "
+                        f"{self._tick_log_file_path.name if self._tick_log_file_path else 'unknown'}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to close old tick log file: {e}")
 
-            # Check if we need to rotate (new date or first file)
-            if self._tick_log_current_date != current_date:
-                # Close old file handle if it exists
-                if self._tick_log_file_handle:
-                    try:
-                        self._tick_log_file_handle.close()
-                        logger.info(
-                            f"Closed previous tick log: "
-                            f"{self._tick_log_file_path.name if self._tick_log_file_path else 'unknown'}"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to close old tick log file: {e}")
+            # Create new file for next market session
+            timestamp = datetime.now(pytz.UTC).strftime("%Y%m%d_%H%M%S")
+            self._tick_log_file_path = self._tick_log_dir / f"finnhub_ticks_{timestamp}.jsonl"
 
-                # Create new file for current date
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                self._tick_log_file_path = self._tick_log_dir / f"finnhub_ticks_{timestamp}.jsonl"
+            # Open new file handle in append mode
+            self._tick_log_file_handle = open(self._tick_log_file_path, "a", buffering=1)
+            self._tick_log_current_date = datetime.now(pytz.UTC).date()
 
-                # Open new file handle in append mode
-                self._tick_log_file_handle = open(self._tick_log_file_path, "a", buffering=1)
-                self._tick_log_current_date = current_date
-
-                if self._tick_log_file_path:
-                    logger.info(f"Rotated to new tick log: {self._tick_log_file_path.name}")
+            if self._tick_log_file_path:
+                logger.info(f"Rotated to new tick log for next market session: {self._tick_log_file_path.name}")
 
         except Exception as e:
             logger.error(f"Failed to rotate tick log file: {e}")
@@ -539,12 +535,6 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                     # Log raw tick to file if enabled (fail-safe: continues trading if logging fails)
                     if self._log_ticks and self._tick_log_file_handle and not self._tick_log_failed:
                         try:
-                            # Check if we need to rotate to a new file (date changed)
-                            # Use UTC for consistency with tick timestamps
-                            current_date = datetime.now(pytz.UTC).date()
-                            if self._tick_log_current_date != current_date:
-                                self._rotate_tick_log_file()
-
                             # Write tick to file handle
                             tick_record = {
                                 "received_at": datetime.now(pytz.UTC).isoformat(),

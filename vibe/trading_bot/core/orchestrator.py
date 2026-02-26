@@ -25,6 +25,8 @@ from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
 from vibe.common.strategies.orb import ORBStrategyConfig
 from vibe.common.indicators.engine import IncrementalIndicatorEngine
+from vibe.trading_bot.notifications.discord import send_system_status
+from vibe.trading_bot.notifications.payloads import SystemStatusPayload
 
 
 logger = logging.getLogger(__name__)
@@ -794,6 +796,38 @@ class TradingOrchestrator:
             self.logger.warning("WARM-UP COMPLETE - Some issues detected (continuing anyway)")
         self.logger.info("=" * 60)
 
+        # Send Discord notification with system health status
+        try:
+            # Determine overall status
+            overall_status = "healthy" if warmup_success and all_healthy else "degraded"
+
+            # Get provider status
+            primary_provider_status = None
+            primary_provider_name = None
+            if self.primary_provider:
+                primary_provider_name = self.primary_provider.provider_name
+                primary_provider_status = "connected" if self.primary_provider.connected else "disconnected"
+
+            payload = SystemStatusPayload(
+                event_type="MARKET_START",
+                timestamp=datetime.now(),
+                overall_status=overall_status,
+                warmup_completed=warmup_success,
+                primary_provider_status=primary_provider_status,
+                primary_provider_name=primary_provider_name,
+                market_status="pre_market",
+                details={
+                    "components": health_status,
+                    "all_healthy": all_healthy,
+                    "message": "Ready for market open!" if warmup_success and all_healthy
+                               else "Some issues detected (continuing anyway)"
+                }
+            )
+            await send_system_status(payload)
+            self.logger.debug("Warm-up status notification sent to Discord")
+        except Exception as e:
+            self.logger.warning(f"Failed to send warm-up notification to Discord: {e}")
+
         return warmup_success
 
     async def run(self) -> None:
@@ -868,6 +902,14 @@ class TradingOrchestrator:
                                 "COOLDOWN PHASE COMPLETE\n"
                                 "=" * 60
                             )
+
+                            # Rotate tick log file for next market session (if enabled)
+                            if self.active_provider and hasattr(self.active_provider, 'rotate_tick_log_for_new_session'):
+                                try:
+                                    self.active_provider.rotate_tick_log_for_new_session()
+                                    self.logger.info("[OK] Rotated tick log file for next market session")
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to rotate tick log file: {e}")
 
                             # Disconnect from provider after cooldown
                             if self.active_provider and self.active_provider.connected:
