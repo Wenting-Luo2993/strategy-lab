@@ -25,7 +25,7 @@ from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
 from vibe.common.strategies.orb import ORBStrategyConfig
 from vibe.common.indicators.engine import IncrementalIndicatorEngine
-from vibe.trading_bot.notifications.discord import send_system_status
+from vibe.trading_bot.notifications.discord import DiscordNotifier
 from vibe.trading_bot.notifications.payloads import SystemStatusPayload
 
 
@@ -797,36 +797,44 @@ class TradingOrchestrator:
         self.logger.info("=" * 60)
 
         # Send Discord notification with system health status
-        try:
-            # Determine overall status
-            overall_status = "healthy" if warmup_success and all_healthy else "degraded"
+        if self.config.notifications.discord_webhook_url:
+            try:
+                # Create Discord notifier for system status
+                notifier = DiscordNotifier(webhook_url=self.config.notifications.discord_webhook_url)
+                await notifier.start()
 
-            # Get provider status
-            primary_provider_status = None
-            primary_provider_name = None
-            if self.primary_provider:
-                primary_provider_name = self.primary_provider.provider_name
-                primary_provider_status = "connected" if self.primary_provider.connected else "disconnected"
+                # Determine overall status
+                overall_status = "healthy" if warmup_success and all_healthy else "degraded"
 
-            payload = SystemStatusPayload(
-                event_type="MARKET_START",
-                timestamp=datetime.now(),
-                overall_status=overall_status,
-                warmup_completed=warmup_success,
-                primary_provider_status=primary_provider_status,
-                primary_provider_name=primary_provider_name,
-                market_status="pre_market",
-                details={
-                    "components": health_status,
-                    "all_healthy": all_healthy,
-                    "message": "Ready for market open!" if warmup_success and all_healthy
-                               else "Some issues detected (continuing anyway)"
-                }
-            )
-            await send_system_status(payload)
-            self.logger.debug("Warm-up status notification sent to Discord")
-        except Exception as e:
-            self.logger.warning(f"Failed to send warm-up notification to Discord: {e}")
+                # Get provider status
+                primary_provider_status = None
+                primary_provider_name = None
+                if self.primary_provider:
+                    primary_provider_name = self.primary_provider.provider_name
+                    primary_provider_status = "connected" if self.primary_provider.connected else "disconnected"
+
+                payload = SystemStatusPayload(
+                    event_type="MARKET_START",
+                    timestamp=datetime.now(),
+                    overall_status=overall_status,
+                    warmup_completed=warmup_success,
+                    primary_provider_status=primary_provider_status,
+                    primary_provider_name=primary_provider_name,
+                    market_status="pre_market",
+                    details={
+                        "components": health_status,
+                        "all_healthy": all_healthy,
+                        "message": "Ready for market open!" if warmup_success and all_healthy
+                                   else "Some issues detected (continuing anyway)"
+                    }
+                )
+                await notifier.send_system_status(payload)
+                await notifier.stop()
+                self.logger.debug("Warm-up status notification sent to Discord")
+            except Exception as e:
+                self.logger.warning(f"Failed to send warm-up notification to Discord: {e}")
+        else:
+            self.logger.debug("Discord webhook URL not configured, skipping warm-up notification")
 
         return warmup_success
 
