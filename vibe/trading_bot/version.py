@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.0.4"
+VERSION = "1.0.5"
 
 
 def get_build_timestamp() -> str:

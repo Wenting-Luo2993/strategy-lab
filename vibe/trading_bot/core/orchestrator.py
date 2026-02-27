@@ -894,12 +894,21 @@ class TradingOrchestrator:
                     if not self.market_scheduler.should_bot_be_active():
                         now = datetime.now(self.market_scheduler.timezone)
 
-                        # If cooldown already completed, skip cooldown logic and just sleep
-                        if self._market_closed_logged:
+                        # If provider already disconnected, we've completed cooldown - just sleep until morning
+                        if self.active_provider and not self.active_provider.connected:
                             # Calculate sleep time until next warm-up
                             next_warmup = self.market_scheduler.get_warmup_time()
                             next_open = self.market_scheduler.next_market_open()
                             target_time = next_warmup if next_warmup else next_open
+
+                            # Log once
+                            if not self._market_closed_logged:
+                                self.logger.info(
+                                    f"Market closed, sleeping until warm-up at {target_time.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+                                    f"({(target_time - now).total_seconds()/3600:.1f} hours). "
+                                    f"Checking for shutdown every 5 minutes."
+                                )
+                                self._market_closed_logged = True
 
                             try:
                                 sleep_seconds = (target_time - datetime.now(
