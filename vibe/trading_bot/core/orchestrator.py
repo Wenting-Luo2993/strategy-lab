@@ -894,6 +894,25 @@ class TradingOrchestrator:
                     if not self.market_scheduler.should_bot_be_active():
                         now = datetime.now(self.market_scheduler.timezone)
 
+                        # If cooldown already completed, skip cooldown logic and just sleep
+                        if self._market_closed_logged:
+                            # Calculate sleep time until next warm-up
+                            next_warmup = self.market_scheduler.get_warmup_time()
+                            next_open = self.market_scheduler.next_market_open()
+                            target_time = next_warmup if next_warmup else next_open
+
+                            try:
+                                sleep_seconds = (target_time - datetime.now(
+                                    self.market_scheduler.timezone
+                                )).total_seconds()
+                                await asyncio.wait_for(
+                                    self._shutdown_event.wait(),
+                                    timeout=min(sleep_seconds, 300)  # 5 minutes
+                                )
+                            except asyncio.TimeoutError:
+                                pass
+                            continue
+
                         # Check if we're in cooldown phase (5 minutes after market close)
                         if self._cooldown_start_time is None:
                             # Market just closed, start cooldown phase
