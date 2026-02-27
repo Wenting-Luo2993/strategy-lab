@@ -420,7 +420,7 @@ class TradingOrchestrator:
         from datetime import datetime
 
         # Check if notifications enabled
-        if not self.discord_notifier:
+        if not self.config.notifications.discord_webhook_url:
             return
 
         # Use market timezone for date comparison
@@ -443,6 +443,7 @@ class TradingOrchestrator:
         # All ORB levels collected - send notification
         try:
             from vibe.trading_bot.notifications.payloads import ORBLevelsPayload
+            from vibe.trading_bot.notifications.discord import DiscordNotifier
             from vibe.trading_bot.version import BUILD_VERSION
 
             self.logger.info(
@@ -456,7 +457,13 @@ class TradingOrchestrator:
                 version=BUILD_VERSION,
             )
 
-            await self.discord_notifier.send_orb_notification(payload)
+            # Create notifier temporarily (like _send_daily_summary does)
+            notifier = DiscordNotifier(webhook_url=self.config.notifications.discord_webhook_url)
+            await notifier.start()
+
+            await notifier.send_orb_notification(payload)
+
+            await notifier.stop()
 
             self._orb_notification_sent_date = current_date
             self.logger.info("[ORB NOTIFICATION] Discord notification sent successfully")
