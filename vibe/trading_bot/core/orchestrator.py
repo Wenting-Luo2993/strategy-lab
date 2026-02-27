@@ -929,40 +929,41 @@ class TradingOrchestrator:
                             continue
 
                         # Cooldown complete, disconnect and sleep until next day
-                        if not self._market_closed_logged:
+                        # Always log completion (not gated by flag)
+                        self.logger.info(
+                            "=" * 60 + "\n"
+                            "COOLDOWN PHASE COMPLETE\n"
+                            "=" * 60
+                        )
+
+                        # Rotate tick log file for next market session (if enabled)
+                        if self.active_provider and hasattr(self.active_provider, 'rotate_tick_log_for_new_session'):
+                            try:
+                                self.active_provider.rotate_tick_log_for_new_session()
+                                self.logger.info("[OK] Rotated tick log file for next market session")
+                            except Exception as e:
+                                self.logger.warning(f"Failed to rotate tick log file: {e}")
+
+                        # Disconnect from provider after cooldown (idempotent, safe to call multiple times)
+                        if self.active_provider and self.active_provider.connected:
+                            await self.active_provider.disconnect()
+                            self.logger.info(f"[OK] Disconnected from {self.active_provider.provider_name} after {self._cooldown_duration_seconds}s cooldown")
+
+                        # Calculate sleep time until next warm-up (must recalculate each iteration)
+                        next_warmup = self.market_scheduler.get_warmup_time()
+                        next_open = self.market_scheduler.next_market_open()
+                        target_time = next_warmup if next_warmup else next_open
+
+                        sleep_seconds = (target_time - now).total_seconds()
+
+                        # Only log the "sleeping until..." message once (avoid spam)
+                        if sleep_seconds > 0 and not self._market_closed_logged:
                             self.logger.info(
-                                "=" * 60 + "\n"
-                                "COOLDOWN PHASE COMPLETE\n"
-                                "=" * 60
+                                f"Market closed, sleeping until warm-up at {target_time} "
+                                f"({sleep_seconds/3600:.1f} hours). "
+                                f"Checking for shutdown every 5 minutes."
                             )
-
-                            # Rotate tick log file for next market session (if enabled)
-                            if self.active_provider and hasattr(self.active_provider, 'rotate_tick_log_for_new_session'):
-                                try:
-                                    self.active_provider.rotate_tick_log_for_new_session()
-                                    self.logger.info("[OK] Rotated tick log file for next market session")
-                                except Exception as e:
-                                    self.logger.warning(f"Failed to rotate tick log file: {e}")
-
-                            # Disconnect from provider after cooldown
-                            if self.active_provider and self.active_provider.connected:
-                                await self.active_provider.disconnect()
-                                self.logger.info(f"[OK] Disconnected from {self.active_provider.provider_name} after {self._cooldown_duration_seconds}s cooldown")
-
-                            # Calculate sleep time until next warm-up
-                            next_warmup = self.market_scheduler.get_warmup_time()
-                            next_open = self.market_scheduler.next_market_open()
-                            target_time = next_warmup if next_warmup else next_open
-
-                            sleep_seconds = (target_time - now).total_seconds()
-
-                            if sleep_seconds > 0:
-                                self.logger.info(
-                                    f"Market closed, sleeping until warm-up at {target_time} "
-                                    f"({sleep_seconds/3600:.1f} hours). "
-                                    f"Checking for shutdown every 5 minutes."
-                                )
-                                self._market_closed_logged = True
+                            self._market_closed_logged = True
 
                         try:
                             # Check for shutdown every 5 minutes
