@@ -949,9 +949,6 @@ class TradingOrchestrator:
                                 await self.active_provider.disconnect()
                                 self.logger.info(f"[OK] Disconnected from {self.active_provider.provider_name} after {self._cooldown_duration_seconds}s cooldown")
 
-                            # Reset cooldown tracker for next day
-                            self._cooldown_start_time = None
-
                             # Calculate sleep time until next warm-up
                             next_warmup = self.market_scheduler.get_warmup_time()
                             next_open = self.market_scheduler.next_market_open()
