@@ -2,7 +2,11 @@
 
 from datetime import datetime
 from typing import Dict, List, Any
-from vibe.trading_bot.notifications.payloads import OrderNotificationPayload, SystemStatusPayload
+from vibe.trading_bot.notifications.payloads import (
+    OrderNotificationPayload,
+    SystemStatusPayload,
+    ORBLevelsPayload,
+)
 
 
 class DiscordNotificationFormatter:
@@ -19,6 +23,7 @@ class DiscordNotificationFormatter:
         "ORDER_CANCELLED": 0xe74c3c,  # Red
         "MARKET_START": 0x2ecc71,    # Green
         "MARKET_CLOSE": 0xf39c12,    # Orange
+        "ORB_ESTABLISHED": 0x9b59b6,  # Purple
     }
 
     STATUS_COLORS = {
@@ -395,4 +400,64 @@ class DiscordNotificationFormatter:
             "fields": fields,
             "timestamp": payload.timestamp.isoformat(),
             "footer": {"text": "Trading Bot Status"}
+        }
+
+    def format_orb_levels(self, payload: ORBLevelsPayload) -> Dict[str, Any]:
+        """Format ORB levels payload into Discord webhook message.
+
+        Args:
+            payload: ORB levels notification payload
+
+        Returns:
+            Dictionary with 'embeds' key containing Discord embed data
+        """
+        color = self.COLORS.get("ORB_ESTABLISHED", 0x9b59b6)
+
+        # Build description with ORB levels for each symbol
+        description_lines = []
+        fields = []
+
+        for symbol, levels in sorted(payload.symbols.items()):
+            orb_high = levels["high"]
+            orb_low = levels["low"]
+            orb_range = levels["range"]
+            body_pct = levels.get("body_pct", 0)
+
+            # Add field for each symbol
+            range_pct = (orb_range / orb_low * 100) if orb_low > 0 else 0
+
+            field_value = (
+                f"**High**: ${orb_high:.2f}\n"
+                f"**Low**: ${orb_low:.2f}\n"
+                f"**Range**: ${orb_range:.2f} ({range_pct:.2f}%)\n"
+                f"**First Bar Body**: {body_pct:.1f}%"
+            )
+
+            fields.append({
+                "name": f"📊 {symbol}",
+                "value": field_value,
+                "inline": True
+            })
+
+        # Summary description
+        symbol_count = len(payload.symbols)
+        description = (
+            f"Opening Range Breakout levels established for **{symbol_count}** symbol(s).\n"
+            f"Levels calculated from first 5 minutes of trading (9:30-9:35 AM EST)."
+        )
+
+        # Footer with version info
+        footer_text = "ORB Strategy"
+        if payload.version:
+            footer_text = f"Trading Bot {payload.version}"
+
+        return {
+            "embeds": [{
+                "title": "📈 ORB Levels Established",
+                "description": description,
+                "color": color,
+                "fields": fields,
+                "timestamp": payload.timestamp.isoformat(),
+                "footer": {"text": footer_text}
+            }]
         }

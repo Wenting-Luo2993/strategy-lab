@@ -86,6 +86,7 @@ class TradingOrchestrator:
         # Daily statistics tracking for end-of-day summary
         self._daily_stats: Dict[str, Any] = self._initialize_daily_stats()
         self._last_summary_date: Optional[str] = None
+        self._orb_notification_sent_date: Optional[str] = None  # Track ORB Discord notification
 
         # Market closed state tracking (to avoid log spam)
         self._market_closed_logged: bool = False
@@ -368,12 +369,22 @@ class TradingOrchestrator:
         if self._daily_stats["date"] != current_date:
             self._daily_stats = self._initialize_daily_stats()
 
-        # Record ORB levels
+        # Record ORB levels (include body_pct from current bar)
         if "orb_high" in metadata and symbol not in self._daily_stats["orb_levels"]:
+            # Calculate body percentage of current bar if available
+            body_pct = 0.0
+            if "current_bar" in metadata:
+                bar = metadata["current_bar"]
+                if "open" in bar and "close" in bar and "high" in bar and "low" in bar:
+                    total_range = bar["high"] - bar["low"]
+                    if total_range > 0:
+                        body_pct = abs(bar["close"] - bar["open"]) / total_range * 100
+
             self._daily_stats["orb_levels"][symbol] = {
                 "high": metadata["orb_high"],
                 "low": metadata["orb_low"],
                 "range": metadata["orb_range"],
+                "body_pct": body_pct,
             }
 
         # Count breakouts detected
@@ -397,6 +408,62 @@ class TradingOrchestrator:
                 self._daily_stats["signals_by_symbol"][symbol] += 1
             else:
                 self._daily_stats["signals_by_symbol"][symbol] = 1
+
+    async def _check_and_send_orb_notification(self) -> None:
+        """Check if ORB levels are ready and send Discord notification once per day.
+
+        Sends notification when:
+        1. ORB levels collected for all tracked symbols
+        2. Notification not sent yet today
+        3. Discord notifications enabled
+        """
+        from datetime import datetime
+
+        # Check if notifications enabled
+        if not self.discord_notifier:
+            return
+
+        # Use market timezone for date comparison
+        now = datetime.now(self.market_scheduler.timezone)
+        current_date = now.date().isoformat()
+
+        # Only send once per day
+        if self._orb_notification_sent_date == current_date:
+            return
+
+        # Check if we have ORB levels for all symbols
+        orb_levels = self._daily_stats.get("orb_levels", {})
+        expected_symbols = set(self.config.trading.symbols)
+        collected_symbols = set(orb_levels.keys())
+
+        if not collected_symbols or not collected_symbols.issuperset(expected_symbols):
+            # Not all symbols have ORB levels yet
+            return
+
+        # All ORB levels collected - send notification
+        try:
+            from vibe.trading_bot.notifications.payloads import ORBLevelsPayload
+            from vibe.trading_bot.version import BUILD_VERSION
+
+            self.logger.info(
+                f"[ORB NOTIFICATION] Sending Discord notification for {len(orb_levels)} symbols..."
+            )
+
+            payload = ORBLevelsPayload(
+                event_type="ORB_ESTABLISHED",
+                timestamp=now,
+                symbols=orb_levels,
+                version=BUILD_VERSION,
+            )
+
+            await self.discord_notifier.send_orb_notification(payload)
+
+            self._orb_notification_sent_date = current_date
+            self.logger.info("[ORB NOTIFICATION] Discord notification sent successfully")
+
+        except Exception as e:
+            self.logger.error(f"Failed to send ORB Discord notification: {e}", exc_info=True)
+            # Don't set the flag so we can retry
 
     async def _check_and_send_daily_summary(self) -> None:
         """Check if it's time to send daily summary and send if needed."""
@@ -1332,30 +1399,38 @@ class TradingOrchestrator:
 
                     # 2. Calculate technical indicators (ATR required for strategy)
                     try:
-                        # Calculate ATR_14 for the DataFrame
-                        bars_with_indicators = bars.copy()
-                        atr_values = []
+                        # Calculate ATR_14 using the incremental indicator engine
+                        self.logger.debug(f"Calculating indicators for {symbol} ({len(bars)} bars)...")
 
-                        for idx, row in bars.iterrows():
-                            bar_dict = {
-                                'high': row['high'],
-                                'low': row['low'],
-                                'close': row['close'],
-                            }
-                            atr = self.indicator_engine.calculate_atr(
-                                symbol=symbol,
-                                timeframe="5m",
-                                bar=bar_dict,
-                                length=14,
+                        bars = self.indicator_engine.update(
+                            df=bars,
+                            start_idx=0,
+                            indicators=[{"name": "atr", "params": {"length": 14}}],
+                            symbol=symbol,
+                            timeframe="5m",
+                        )
+
+                        if "ATR_14" in bars.columns:
+                            # Count how many bars have valid ATR (non-null)
+                            valid_atr_count = bars["ATR_14"].notna().sum()
+                            self.logger.debug(
+                                f"ATR_14 calculated for {symbol}: {valid_atr_count}/{len(bars)} bars have valid values"
                             )
-                            atr_values.append(atr)
-
-                        bars_with_indicators['ATR_14'] = atr_values
-                        bars = bars_with_indicators
+                        else:
+                            self.logger.error(
+                                f"CRITICAL: ATR_14 column not added to DataFrame for {symbol}! "
+                                f"Strategy evaluation will fail."
+                            )
+                            self.health_monitor.record_error(f"indicators_{symbol}")
 
                     except Exception as e:
-                        self.logger.debug(f"Error calculating indicators for {symbol}: {e}")
-                        # Continue without indicators - strategy will handle missing ATR
+                        # DO NOT CATCH SILENTLY - Log as ERROR with traceback
+                        self.logger.error(
+                            f"CRITICAL: Failed to calculate indicators for {symbol}: {e}",
+                            exc_info=True
+                        )
+                        self.health_monitor.record_error(f"indicators_{symbol}")
+                        # Continue without indicators - strategy will return early with error
 
                     # 3. Generate signals using incremental method (for real-time trading)
                     if bars.empty or len(bars) == 0:
@@ -1372,12 +1447,17 @@ class TradingOrchestrator:
                         df_context=bars,
                     )
 
-                    # Debug: Log strategy response for first few cycles
-                    if self._consecutive_failures < 2:  # Only log for first couple cycles
+                    # Log strategy evaluation issues at INFO level for visibility
+                    reason = signal_metadata.get('reason', None)
+                    if reason == 'insufficient_data':
+                        self.logger.warning(
+                            f"[STRATEGY] {symbol}: Insufficient data - "
+                            f"missing ATR_14 or empty context. Strategy cannot evaluate."
+                        )
+                    elif reason and signal_value == 0:
+                        # Log other no-signal reasons at debug level
                         self.logger.debug(
-                            f"Strategy evaluation for {symbol}: signal={signal_value}, "
-                            f"reason={signal_metadata.get('reason', 'N/A')}, "
-                            f"has_orb={('orb_high' in signal_metadata)}"
+                            f"[STRATEGY] {symbol}: No signal - {reason}"
                         )
 
                     # Smart logging based on metadata
@@ -1414,6 +1494,9 @@ class TradingOrchestrator:
                     else:
                         self.logger.debug(f"Error processing {symbol}: {e}")
                     self.health_monitor.record_error(f"data_{symbol}")
+
+            # Check if ORB notification should be sent (after all symbols evaluated)
+            await self._check_and_send_orb_notification()
 
             # Return success if we got data for at least one symbol
             return successful_fetches > 0

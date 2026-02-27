@@ -6,7 +6,11 @@ from datetime import datetime
 from typing import Optional, List
 import aiohttp
 
-from vibe.trading_bot.notifications.payloads import OrderNotificationPayload, SystemStatusPayload
+from vibe.trading_bot.notifications.payloads import (
+    OrderNotificationPayload,
+    SystemStatusPayload,
+    ORBLevelsPayload,
+)
 from vibe.trading_bot.notifications.formatter import DiscordNotificationFormatter
 from vibe.trading_bot.notifications.rate_limiter import TokenBucketRateLimiter
 
@@ -132,6 +136,51 @@ class DiscordNotifier:
 
         except Exception as e:
             logger.error(f"Error sending system status: {e}", exc_info=True)
+            return False
+
+    async def send_orb_notification(self, payload: ORBLevelsPayload) -> bool:
+        """Send an ORB levels notification immediately (bypasses queue).
+
+        ORB notifications are sent immediately as they are infrequent (once per day)
+        and time-sensitive (market just opened).
+
+        Args:
+            payload: ORB levels notification payload
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self._session:
+            logger.error("Session not initialized")
+            return False
+
+        try:
+            # Format message using ORB formatter
+            message = self.formatter.format_orb_levels(payload)
+
+            # Apply rate limiting
+            wait_time = await self.rate_limiter.acquire()
+            if wait_time > 0:
+                logger.debug(f"Rate limit: waiting {wait_time:.2f}s before sending")
+
+            # Send directly (bypass queue for time-sensitive ORB messages)
+            async with self._session.post(
+                self.webhook_url,
+                json=message,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    logger.info(f"ORB notification sent: {len(payload.symbols)} symbols")
+                    return True
+                else:
+                    logger.error(
+                        f"Failed to send ORB notification: {response.status} "
+                        f"(text: {await response.text()})"
+                    )
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error sending ORB notification: {e}", exc_info=True)
             return False
 
     async def _worker(self) -> None:

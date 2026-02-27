@@ -123,6 +123,53 @@ class OrderNotificationPayload:
 
 
 @dataclass
+class ORBLevelsPayload:
+    """Notification payload for ORB levels establishment.
+
+    Sent once per trading day when ORB levels are calculated (typically 5 minutes
+    after market open at 9:35 AM EST).
+    """
+
+    # Required fields
+    event_type: str  # Always "ORB_ESTABLISHED"
+    timestamp: datetime
+    symbols: Dict[str, Dict[str, float]]  # {symbol: {high, low, range, body_pct}}
+
+    # Optional fields
+    version: Optional[str] = None  # Build version
+
+    def __post_init__(self) -> None:
+        """Validate payload."""
+        if self.event_type != "ORB_ESTABLISHED":
+            raise ValueError(
+                f"Invalid event_type: {self.event_type}. "
+                f"Must be 'ORB_ESTABLISHED'"
+            )
+
+        # Validate symbols dict
+        if not self.symbols:
+            raise ValueError("ORB payload requires at least one symbol")
+
+        for symbol, levels in self.symbols.items():
+            required_keys = {"high", "low", "range"}
+            if not required_keys.issubset(levels.keys()):
+                raise ValueError(
+                    f"Symbol {symbol} missing required keys. "
+                    f"Expected {required_keys}, got {set(levels.keys())}"
+                )
+
+    def to_dict(self) -> dict:
+        """Convert payload to dictionary, handling datetime serialization."""
+        data = asdict(self)
+        data["timestamp"] = self.timestamp.isoformat()
+        return data
+
+    def to_json(self) -> str:
+        """Convert payload to JSON string."""
+        return json.dumps(self.to_dict(), default=str)
+
+
+@dataclass
 class SystemStatusPayload:
     """Notification payload for system status events (market start/close).
 
