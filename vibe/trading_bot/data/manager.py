@@ -226,13 +226,13 @@ class DataManager:
         if not allow_yfinance_fallback:
             # Return existing stale cache if we have it, otherwise empty DataFrame
             if existing_cached_df is not None and not existing_cached_df.empty:
-                logger.warning(
+                logger.debug(
                     f"[NO FALLBACK] {symbol} ({timeframe}): Cache is stale but yfinance fallback disabled (expected during market hours). "
                     f"Returning {len(existing_cached_df)} rows of stale cached data, waiting for real-time Finnhub bars..."
                 )
                 return existing_cached_df
             else:
-                logger.warning(
+                logger.debug(
                     f"[NO FALLBACK] {symbol} ({timeframe}): Cache is stale but yfinance fallback disabled (expected during market hours). "
                     f"No cached data available, returning empty DataFrame, waiting for real-time Finnhub bars..."
                 )

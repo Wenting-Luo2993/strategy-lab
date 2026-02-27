@@ -1407,7 +1407,7 @@ class TradingOrchestrator:
                     # 2. Calculate technical indicators (ATR required for strategy)
                     try:
                         # Calculate ATR_14 using the incremental indicator engine
-                        self.logger.debug(f"Calculating indicators for {symbol} ({len(bars)} bars)...")
+                        self.logger.info(f"Calculating indicators for {symbol} ({len(bars)} bars)...")
 
                         bars = self.indicator_engine.update(
                             df=bars,
@@ -1420,7 +1420,7 @@ class TradingOrchestrator:
                         if "ATR_14" in bars.columns:
                             # Count how many bars have valid ATR (non-null)
                             valid_atr_count = bars["ATR_14"].notna().sum()
-                            self.logger.debug(
+                            self.logger.info(
                                 f"ATR_14 calculated for {symbol}: {valid_atr_count}/{len(bars)} bars have valid values"
                             )
                         else:
