@@ -28,6 +28,7 @@ from vibe.common.indicators.engine import IncrementalIndicatorEngine
 from vibe.trading_bot.notifications.discord import DiscordNotifier
 from vibe.trading_bot.notifications.payloads import SystemStatusPayload
 from vibe.trading_bot.version import BUILD_VERSION
+from vibe.trading_bot.core.phases import WarmupPhaseManager, CooldownPhaseManager
 
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,10 @@ class TradingOrchestrator:
 
         # Polling task for REST providers
         self._polling_task: Optional[asyncio.Task] = None
+
+        # Phase managers (warmup, cooldown)
+        self.warmup_manager: Optional[WarmupPhaseManager] = None
+        self.cooldown_manager: Optional[CooldownPhaseManager] = None
 
     async def initialize(self) -> bool:
         """Initialize all components in correct order.
@@ -303,7 +308,11 @@ class TradingOrchestrator:
             # 7. Register health checks
             self._register_health_checks()
 
-            # 8. Provider connection now handled in warm-up phase (Step 2)
+            # 8. Initialize phase managers
+            self.warmup_manager = WarmupPhaseManager(self)
+            self.cooldown_manager = CooldownPhaseManager(self)
+
+            # 9. Provider connection now handled in warm-up phase (Step 2)
             # Removed old duplicate connection code that was causing rate limiting
 
             # Log data source configuration
@@ -501,7 +510,15 @@ class TradingOrchestrator:
             return
 
         try:
-            from vibe.trading_bot.notifications.discord import DiscordNotifier
+            from vibe.trading_bot.utils.datetime_utils import get_market_now
+            from vibe.trading_bot.notifications.payloads import DailySummaryPayload
+            from vibe.trading_bot.notifications.helper import discord_notification_context
+            from vibe.trading_bot.notifications.formatter import DiscordNotificationFormatter
+            from vibe.trading_bot.version import BUILD_VERSION
+            import aiohttp
+
+            # Get current time in market timezone
+            now = get_market_now(self.market_scheduler)
 
             # Get account equity
             account = await self.exchange.get_account()
@@ -509,60 +526,41 @@ class TradingOrchestrator:
             initial_capital = self.config.trading.initial_capital
             pnl_pct = ((account_value - initial_capital) / initial_capital) * 100
 
-            # Build summary message
-            summary_lines = [
-                f"📊 **Daily Summary - {self._daily_stats['date']}**",
-                f"",
-                f"**Account:**",
-                f"• Equity: ${account_value:,.2f}",
-                f"• P/L: ${account_value - initial_capital:,.2f} ({pnl_pct:+.2f}%)",
-                f"",
-            ]
+            # Build ORB levels dict
+            orb_levels = {}
+            for symbol, levels in self._daily_stats["orb_levels"].items():
+                orb_levels[symbol] = {
+                    "high": levels["high"],
+                    "low": levels["low"],
+                    "range": levels["range"]
+                }
 
-            # ORB levels
-            if self._daily_stats["orb_levels"]:
-                summary_lines.append("**Opening Range Levels:**")
-                for symbol, levels in self._daily_stats["orb_levels"].items():
-                    summary_lines.append(
-                        f"• {symbol}: ${levels['low']:.2f}-${levels['high']:.2f} (range: ${levels['range']:.2f})"
-                    )
-                summary_lines.append("")
+            # Create payload
+            payload = DailySummaryPayload(
+                event_type="DAILY_SUMMARY",
+                timestamp=now,
+                date=self._daily_stats["date"],
+                account_equity=account_value,
+                initial_capital=initial_capital,
+                pnl_pct=pnl_pct,
+                orb_levels=orb_levels,
+                breakouts_detected=self._daily_stats["breakouts_detected"],
+                signals_generated=self._daily_stats["signals_generated"],
+                trades_executed=self._daily_stats["trades_executed"],
+                signals_by_symbol=self._daily_stats["signals_by_symbol"].copy(),
+                breakouts_rejected=self._daily_stats["breakouts_rejected"].copy(),
+                version=BUILD_VERSION
+            )
 
-            # Activity summary
-            summary_lines.extend([
-                f"**Activity:**",
-                f"• Breakouts Detected: {self._daily_stats['breakouts_detected']}",
-                f"• Signals Generated: {self._daily_stats['signals_generated']}",
-                f"• Trades Executed: {self._daily_stats['trades_executed']}",
-            ])
+            # Use formatter to convert payload to webhook format
+            formatter = DiscordNotificationFormatter()
+            webhook_payload = formatter.format_daily_summary(payload)
 
-            # Signals by symbol
-            if self._daily_stats["signals_by_symbol"]:
-                summary_lines.append("")
-                summary_lines.append("**Signals by Symbol:**")
-                for symbol, count in self._daily_stats["signals_by_symbol"].items():
-                    summary_lines.append(f"• {symbol}: {count}")
-
-            # Rejection reasons
-            if self._daily_stats["breakouts_rejected"]:
-                summary_lines.append("")
-                summary_lines.append("**Breakouts Rejected:**")
-                for reason, count in self._daily_stats["breakouts_rejected"].items():
-                    summary_lines.append(f"• {reason}: {count}")
-
-            # No activity message
-            if self._daily_stats["signals_generated"] == 0 and self._daily_stats["breakouts_detected"] == 0:
-                summary_lines.append("")
-                summary_lines.append("_No trading signals or breakouts today._")
-
-            message = "\n".join(summary_lines)
-
-            # Send to Discord (simple text message, not using notification payloads)
-            import aiohttp
+            # Send directly using aiohttp (notifier doesn't have send_daily_summary method yet)
             async with aiohttp.ClientSession() as session:
                 await session.post(
                     self.config.notifications.discord_webhook_url,
-                    json={"content": message},
+                    json=webhook_payload,
                     timeout=aiohttp.ClientTimeout(total=10)
                 )
 
@@ -764,179 +762,6 @@ class TradingOrchestrator:
         if error_type in critical_errors and self.secondary_provider:
             await self._switch_to_secondary_provider()
 
-    async def _pre_market_warmup(self) -> bool:
-        """
-        Pre-market warm-up phase (9:25-9:30 AM EST).
-
-        Prepares the bot for market open by:
-        1. Pre-fetching 2 days of historical data (warm cache)
-        2. Connecting to Finnhub websocket
-        3. Pre-calculating indicators
-        4. Running health checks
-
-        Returns:
-            True if warm-up successful, False if errors occurred
-        """
-        self.logger.info("=" * 60)
-        self.logger.info("PRE-MARKET WARM-UP PHASE")
-        self.logger.info("=" * 60)
-
-        market_open = self.market_scheduler.get_open_time()
-        if market_open:
-            self.logger.info(f"Market opens at: {market_open.strftime('%H:%M:%S %Z')}")
-
-        warmup_success = True
-
-        # Step 1: Pre-fetch historical data (warm cache)
-        self.logger.info("Step 1/4: Warming cache with historical data...")
-        try:
-            for symbol in self.config.trading.symbols:
-                self.logger.info(f"  Pre-fetching 2 days of data for {symbol}...")
-                bars = await self.data_manager.get_data(
-                    symbol=symbol,
-                    timeframe="5m",
-                    days=2,  # Fetch 2 days for indicator context
-                )
-
-                if bars is not None and not bars.empty:
-                    self.logger.info(f"  OK {symbol}: {len(bars)} bars loaded")
-                else:
-                    self.logger.warning(f"  WARNING {symbol}: No data fetched")
-                    warmup_success = False
-
-            self.logger.info("Cache warm-up complete!")
-        except Exception as e:
-            self.logger.error(f"Error during cache warm-up: {e}", exc_info=True)
-            warmup_success = False
-
-        # Step 2: Connect to real-time data provider
-        self.logger.info("Step 2/4: Connecting to real-time data provider...")
-        try:
-            if self.primary_provider:
-                await self.primary_provider.connect()
-
-                if self.primary_provider.connected:
-                    self.logger.info(f"   [OK] Connected to {self.primary_provider.provider_name}")
-
-                    # Update health state
-                    set_health_state(websocket_connected=True, recent_heartbeat=True)
-
-                    # Subscribe if WebSocket
-                    if isinstance(self.primary_provider, WebSocketDataProvider):
-                        for symbol in self.config.trading.symbols:
-                            await self.primary_provider.subscribe(symbol)
-                        self.logger.info(f"   [OK] Subscribed to {len(self.config.trading.symbols)} symbols")
-
-                        # Wait for first ping/pong to verify connection is truly healthy
-                        # Finnhub sends pings every ~60s, so we need to wait longer
-                        self.logger.info("   [*] Waiting for WebSocket ping/pong verification (up to 70s)...")
-                        max_wait = 70  # Wait up to 70 seconds for first pong (Finnhub pings ~60s)
-                        waited = 0
-                        while waited < max_wait:
-                            if hasattr(self.primary_provider, 'last_pong_time') and self.primary_provider.last_pong_time:
-                                self.logger.info(f"   [OK] WebSocket ping/pong verified after {waited:.1f}s")
-                                break
-                            await asyncio.sleep(1)
-                            waited += 1
-
-                        if not (hasattr(self.primary_provider, 'last_pong_time') and self.primary_provider.last_pong_time):
-                            self.logger.warning("   [!] WebSocket ping/pong not received within 70s timeout")
-                            self.logger.warning("   [!] Connection may be unstable (continuing anyway)")
-                else:
-                    raise Exception("Connection failed - provider not connected")
-            else:
-                self.logger.info("No real-time provider configured (will use Yahoo Finance only)")
-        except Exception as e:
-            self.logger.error(f"   ❌ Failed to connect: {e}", exc_info=True)
-            if self.secondary_provider:
-                await self._switch_to_secondary_provider()
-            self.logger.warning("Continuing without Finnhub (Yahoo Finance fallback)")
-            warmup_success = False
-
-        # Step 3: Pre-calculate indicators (optional, for future optimization)
-        self.logger.info("Step 3/4: Pre-calculating indicators...")
-        try:
-            # For now, just verify indicator engine is ready
-            if self.indicator_engine:
-                self.logger.info("Indicator engine ready!")
-            else:
-                self.logger.warning("Indicator engine not initialized")
-        except Exception as e:
-            self.logger.error(f"Error checking indicators: {e}")
-
-        # Step 4: Health checks
-        self.logger.info("Step 4/4: Running health checks...")
-        health_result = self.health_monitor.get_health()
-        health_status = health_result.get("components", {})
-
-        all_healthy = all(comp["status"] == "healthy" for comp in health_status.values())
-
-        if all_healthy:
-            self.logger.info("All systems healthy!")
-        else:
-            self.logger.warning("Some systems unhealthy:")
-            for component, status in health_status.items():
-                if status["status"] != "healthy":
-                    self.logger.warning(f"  {component}: {status['status']}")
-
-        # Summary
-        self.logger.info("=" * 60)
-        if warmup_success and all_healthy:
-            self.logger.info("WARM-UP COMPLETE - Ready for market open!")
-        else:
-            self.logger.warning("WARM-UP COMPLETE - Some issues detected (continuing anyway)")
-        self.logger.info("=" * 60)
-
-        # Send Discord notification with system health status
-        if self.config.notifications.discord_webhook_url:
-            try:
-                # Create Discord notifier for system status
-                notifier = DiscordNotifier(webhook_url=self.config.notifications.discord_webhook_url)
-                await notifier.start()
-
-                # Determine overall status
-                overall_status = "healthy" if warmup_success and all_healthy else "degraded"
-
-                # Get provider status and verify ping/pong
-                primary_provider_status = None
-                primary_provider_name = None
-                websocket_ping_received = False
-
-                if self.primary_provider:
-                    primary_provider_name = self.primary_provider.provider_name
-                    primary_provider_status = "connected" if self.primary_provider.connected else "disconnected"
-
-                    # Check if WebSocket ping/pong was actually verified
-                    if hasattr(self.primary_provider, 'last_pong_time') and self.primary_provider.last_pong_time:
-                        websocket_ping_received = True
-
-                payload = SystemStatusPayload(
-                    event_type="MARKET_START",
-                    timestamp=datetime.now(),
-                    overall_status=overall_status,
-                    warmup_completed=warmup_success,
-                    primary_provider_status=primary_provider_status,
-                    primary_provider_name=primary_provider_name,
-                    websocket_ping_received=websocket_ping_received,
-                    market_status="pre_market",
-                    version=BUILD_VERSION,
-                    details={
-                        "components": health_status,
-                        "all_healthy": all_healthy,
-                        "message": "Ready for market open!" if warmup_success and all_healthy
-                                   else "Some issues detected (continuing anyway)"
-                    }
-                )
-                await notifier.send_system_status(payload)
-                await notifier.stop()
-                self.logger.debug("Warm-up status notification sent to Discord")
-            except Exception as e:
-                self.logger.warning(f"Failed to send warm-up notification to Discord: {e}")
-        else:
-            self.logger.debug("Discord webhook URL not configured, skipping warm-up notification")
-
-        return warmup_success
-
     async def run(self) -> None:
         """Run main trading loop.
 
@@ -996,95 +821,44 @@ class TradingOrchestrator:
                                 pass
                             continue
 
-                        # Check if we're in cooldown phase (5 minutes after market close)
-                        if self._cooldown_start_time is None:
-                            # Market just closed, start cooldown phase
-                            self._cooldown_start_time = now
-                            self.logger.info(
-                                "=" * 60 + "\n"
-                                "MARKET CLOSE COOLDOWN PHASE STARTED\n"
-                                "=" * 60
-                            )
-                            self.logger.info(
-                                f"Market closed at {now.strftime('%H:%M:%S')}. "
-                                f"Entering {self._cooldown_duration_seconds}s cooldown phase for cleanup:"
-                            )
-                            self.logger.info("  - Processing final real-time bars")
-                            self.logger.info("  - Completing pending operations")
-                            self.logger.info("  - Generating daily summaries")
-                            self.logger.info(f"  - Will disconnect from provider at {(now + timedelta(seconds=self._cooldown_duration_seconds)).strftime('%H:%M:%S')}")
+                        # Run cooldown phase (process final data, disconnect provider)
+                        await self.cooldown_manager.execute()
 
-                        # Calculate time remaining in cooldown
-                        cooldown_elapsed = (now - self._cooldown_start_time).total_seconds()
+                        # If cooldown complete, sleep until next warmup
+                        if self.cooldown_manager.is_cooldown_complete():
+                            sleep_seconds = self.cooldown_manager.calculate_sleep_until_warmup()
+                            next_warmup = self.market_scheduler.get_warmup_time()
+                            next_open = self.market_scheduler.next_market_open()
+                            target_time = next_warmup if next_warmup else next_open
 
-                        if cooldown_elapsed < self._cooldown_duration_seconds:
-                            # Still in cooldown - keep provider connected, process final data
-                            remaining = self._cooldown_duration_seconds - cooldown_elapsed
-                            self.logger.info(
-                                f"Cooldown phase: {remaining:.0f}s remaining. "
-                                f"Processing final data..."
-                            )
+                            # Log sleep message once (avoid spam)
+                            if sleep_seconds > 0 and self.cooldown_manager.should_log_sleep_message():
+                                self.logger.info(
+                                    f"Market closed, sleeping until warm-up at {target_time} "
+                                    f"({sleep_seconds/3600:.1f} hours). "
+                                    f"Checking for shutdown every 5 minutes."
+                                )
 
-                            # Continue to process final bars/trades during cooldown
-                            # Sleep briefly then loop again to process any remaining data
-                            await asyncio.sleep(30)  # Check every 30 seconds during cooldown
-                            continue
-
-                        # Cooldown complete, disconnect and sleep until next day
-                        # Always log completion (not gated by flag)
-                        self.logger.info(
-                            "=" * 60 + "\n"
-                            "COOLDOWN PHASE COMPLETE\n"
-                            "=" * 60
-                        )
-
-                        # Rotate tick log file for next market session (if enabled)
-                        if self.active_provider and hasattr(self.active_provider, 'rotate_tick_log_for_new_session'):
                             try:
-                                self.active_provider.rotate_tick_log_for_new_session()
-                                self.logger.info("[OK] Rotated tick log file for next market session")
-                            except Exception as e:
-                                self.logger.warning(f"Failed to rotate tick log file: {e}")
+                                # Check for shutdown every 5 minutes
+                                await asyncio.wait_for(
+                                    self._shutdown_event.wait(),
+                                    timeout=min(sleep_seconds, 300)  # 5 minutes
+                                )
+                            except asyncio.TimeoutError:
+                                pass
 
-                        # Disconnect from provider after cooldown (idempotent, safe to call multiple times)
-                        if self.active_provider and self.active_provider.connected:
-                            await self.active_provider.disconnect()
-                            self.logger.info(f"[OK] Disconnected from {self.active_provider.provider_name} after {self._cooldown_duration_seconds}s cooldown")
-
-                        # Calculate sleep time until next warm-up (must recalculate each iteration)
-                        next_warmup = self.market_scheduler.get_warmup_time()
-                        next_open = self.market_scheduler.next_market_open()
-                        target_time = next_warmup if next_warmup else next_open
-
-                        sleep_seconds = (target_time - now).total_seconds()
-
-                        # Only log the "sleeping until..." message once (avoid spam)
-                        if sleep_seconds > 0 and not self._market_closed_logged:
-                            self.logger.info(
-                                f"Market closed, sleeping until warm-up at {target_time} "
-                                f"({sleep_seconds/3600:.1f} hours). "
-                                f"Checking for shutdown every 5 minutes."
-                            )
-                            self._market_closed_logged = True
-
-                        try:
-                            # Check for shutdown every 5 minutes
-                            sleep_seconds = (target_time - datetime.now(
-                                self.market_scheduler.timezone
-                            )).total_seconds()
-                            await asyncio.wait_for(
-                                self._shutdown_event.wait(),
-                                timeout=min(sleep_seconds, 300)  # 5 minutes
-                            )
-                        except asyncio.TimeoutError:
-                            pass
                         continue
 
                     # Bot is active - check if warm-up phase or trading
                     if self.market_scheduler.is_warmup_phase():
                         # Pre-market warm-up phase (9:25-9:30 AM)
                         self.logger.info("Entering pre-market warm-up phase...")
-                        await self._pre_market_warmup()
+
+                        # Reset cooldown from previous day
+                        self.cooldown_manager.reset()
+
+                        await self.warmup_manager.execute()
 
                         # Sleep until market actually opens
                         market_open = self.market_scheduler.get_open_time()
@@ -1107,6 +881,11 @@ class TradingOrchestrator:
                             self._market_closed_logged = False
                             self._cooldown_start_time = None
                             self.logger.info("Market is now open - starting trading cycle")
+
+                            # Clear stale real-time bars and aggregators from previous trading day
+                            self._realtime_bars.clear()
+                            self.bar_aggregators.clear()
+                            self.logger.info("[CLEANUP] Cleared stale real-time bars and aggregators for new trading day")
 
                         # If bot started during market hours (after warm-up), ensure provider is connected
                         if self.primary_provider and not self.primary_provider.connected:
