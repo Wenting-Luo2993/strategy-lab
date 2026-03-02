@@ -6,6 +6,7 @@ from vibe.trading_bot.notifications.payloads import (
     OrderNotificationPayload,
     SystemStatusPayload,
     ORBLevelsPayload,
+    DailySummaryPayload,
 )
 
 
@@ -455,6 +456,108 @@ class DiscordNotificationFormatter:
             "embeds": [{
                 "title": "📈 ORB Levels Established",
                 "description": description,
+                "color": color,
+                "fields": fields,
+                "timestamp": payload.timestamp.isoformat(),
+                "footer": {"text": footer_text}
+            }]
+        }
+
+    def format_daily_summary(self, payload: DailySummaryPayload) -> Dict[str, Any]:
+        """Format daily summary into Discord embed.
+
+        Args:
+            payload: Daily summary data
+
+        Returns:
+            Discord webhook payload with embed
+        """
+        # Determine color based on P&L
+        if payload.pnl_pct > 0:
+            color = 0x2ecc71  # Green
+        elif payload.pnl_pct < 0:
+            color = 0xe74c3c  # Red
+        else:
+            color = 0x95a5a6  # Gray
+
+        # Build fields
+        fields = [
+            {
+                "name": "📅 Date",
+                "value": payload.date,
+                "inline": True
+            },
+            {
+                "name": "💰 Equity",
+                "value": f"${payload.account_equity:,.2f}",
+                "inline": True
+            },
+            {
+                "name": "📈 P&L",
+                "value": f"${payload.account_equity - payload.initial_capital:+,.2f} ({payload.pnl_pct:+.2f}%)",
+                "inline": True
+            },
+            {
+                "name": "🔔 Breakouts Detected",
+                "value": str(payload.breakouts_detected),
+                "inline": True
+            },
+            {
+                "name": "📊 Signals Generated",
+                "value": str(payload.signals_generated),
+                "inline": True
+            },
+            {
+                "name": "✅ Trades Executed",
+                "value": str(payload.trades_executed),
+                "inline": True
+            }
+        ]
+
+        # Add ORB levels if available
+        if payload.orb_levels:
+            orb_text = "\n".join([
+                f"• **{sym}**: ${levels['low']:.2f}-${levels['high']:.2f} (${levels['range']:.2f})"
+                for sym, levels in payload.orb_levels.items()
+            ])
+            fields.append({
+                "name": "📏 ORB Levels",
+                "value": orb_text,
+                "inline": False
+            })
+
+        # Add signals breakdown if any
+        if payload.signals_by_symbol:
+            signals_text = "\n".join([
+                f"• **{sym}**: {count}"
+                for sym, count in payload.signals_by_symbol.items()
+            ])
+            fields.append({
+                "name": "🎯 Signals by Symbol",
+                "value": signals_text,
+                "inline": False
+            })
+
+        # Add rejected breakouts if any
+        if payload.breakouts_rejected:
+            rejected_text = "\n".join([
+                f"• {reason}: {count}"
+                for reason, count in payload.breakouts_rejected.items()
+            ])
+            fields.append({
+                "name": "❌ Breakouts Rejected",
+                "value": rejected_text,
+                "inline": False
+            })
+
+        footer_text = "Trading Bot"
+        if payload.version:
+            footer_text = f"Trading Bot {payload.version}"
+
+        return {
+            "embeds": [{
+                "title": "📊 Daily Summary",
+                "description": f"Trading activity summary for {payload.date}",
                 "color": color,
                 "fields": fields,
                 "timestamp": payload.timestamp.isoformat(),

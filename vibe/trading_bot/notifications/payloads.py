@@ -216,3 +216,55 @@ class SystemStatusPayload:
     def to_json(self) -> str:
         """Convert payload to JSON string."""
         return json.dumps(self.to_dict(), default=str)
+
+
+@dataclass
+class DailySummaryPayload:
+    """Notification payload for end-of-day trading summary.
+
+    Sent once per trading day after market close with comprehensive daily statistics
+    including P&L, ORB levels, signals, and trading activity.
+    """
+
+    # Required fields
+    event_type: str  # Always "DAILY_SUMMARY"
+    timestamp: datetime
+    date: str  # Trading date (YYYY-MM-DD)
+
+    # Account information
+    account_equity: float
+    initial_capital: float
+    pnl_pct: float
+
+    # ORB levels established during the day
+    orb_levels: Dict[str, Dict[str, float]]  # {symbol: {high, low, range}}
+
+    # Trading activity stats
+    breakouts_detected: int
+    signals_generated: int
+    trades_executed: int
+
+    # Detailed breakdowns
+    signals_by_symbol: Dict[str, int]  # {symbol: count}
+    breakouts_rejected: Dict[str, int]  # {reason: count}
+
+    # Optional fields
+    version: Optional[str] = None  # Build version
+
+    def __post_init__(self) -> None:
+        """Validate payload."""
+        if self.event_type != "DAILY_SUMMARY":
+            raise ValueError(
+                f"Invalid event_type: {self.event_type}. "
+                f"Must be 'DAILY_SUMMARY'"
+            )
+
+    def to_dict(self) -> dict:
+        """Convert payload to dictionary, handling datetime serialization."""
+        data = asdict(self)
+        data["timestamp"] = self.timestamp.isoformat()
+        return data
+
+    def to_json(self) -> str:
+        """Convert payload to JSON string."""
+        return json.dumps(self.to_dict(), default=str)
