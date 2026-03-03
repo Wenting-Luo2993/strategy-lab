@@ -89,10 +89,9 @@ class TradingOrchestrator:
         self._last_summary_date: Optional[str] = None
         self._orb_notification_sent_date: Optional[str] = None  # Track ORB Discord notification
 
-        # Market closed state tracking (to avoid log spam)
+        # Market closed state tracking (to avoid log spam after cooldown completes)
+        # Note: Cooldown manager has its own internal state
         self._market_closed_logged: bool = False
-        self._cooldown_start_time: Optional[datetime] = None
-        self._cooldown_duration_seconds: int = 300  # 5 minutes cooldown after market close
 
         # Real-time data providers (configurable)
         self.primary_provider: Optional[RealtimeDataProvider] = None
@@ -373,9 +372,10 @@ class TradingOrchestrator:
         """Update daily statistics based on strategy evaluation."""
         from datetime import datetime
 
-        # Reset stats if new day
-        current_date = datetime.now().date().isoformat()
+        # Safety check: Reset stats if new day (warmup phase should handle this proactively)
+        current_date = datetime.now(self.market_scheduler.timezone).date().isoformat()
         if self._daily_stats["date"] != current_date:
+            self.logger.debug(f"Late daily stats reset during trading (expected in warmup)")
             self._daily_stats = self._initialize_daily_stats()
 
         # Record ORB levels (include body_pct from current bar)
@@ -876,14 +876,8 @@ class TradingOrchestrator:
                         continue
 
                     elif self.market_scheduler.is_market_open():
-                        # Market is open - reset closed flag and cooldown timer if needed
-                        if self._market_closed_logged:
-                            self._market_closed_logged = False
-                            self._cooldown_start_time = None
-                            self.logger.info("Market is now open - starting trading cycle")
-                            # Note: Warmup phase handles cleanup of stale bars
-
                         # If bot started during market hours, run warmup (without Discord notification)
+                        # Note: Warmup phase handles all state reset (bars, flags, stats, etc.)
                         if self.primary_provider and not self.primary_provider.connected:
                             self.logger.info("Bot started during market hours - running warmup phase...")
                             await self.warmup_manager.execute(send_notification=False)

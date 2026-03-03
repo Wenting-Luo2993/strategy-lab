@@ -91,20 +91,54 @@ class WarmupPhaseManager(BasePhase):
         return warmup_success
 
     def _cleanup_stale_data(self) -> None:
-        """Clear stale real-time bars from previous trading session.
+        """Clear stale data and reset state from previous trading session.
 
-        This ensures we start fresh each day without old bar data.
+        This ensures we start fresh each day:
+        - Clear old real-time bars (but keep bar aggregators with callbacks)
+        - Reset logging state trackers (ORB logs, approach logs)
+        - Reset market closed flags
+        - Reset cooldown state
+        - Reset daily statistics
+
         Note: Bar aggregators are kept alive (they have callbacks registered).
         """
         self.logger.info("Step 0/5: Cleaning up stale data from previous session...")
 
+        # 1. Clear stale real-time bars
         if hasattr(self.orchestrator, '_realtime_bars'):
             bars_count = len(self.orchestrator._realtime_bars)
             self.orchestrator._realtime_bars.clear()
             if bars_count > 0:
                 self.logger.info(f"  Cleared {bars_count} stale bar series")
             else:
-                self.logger.info("  No stale bars to clear (fresh start)")
+                self.logger.info("  No stale bars to clear")
+
+        # 2. Reset logging state trackers (for fresh daily logs)
+        if hasattr(self.orchestrator, '_orb_logged_today'):
+            self.orchestrator._orb_logged_today.clear()
+            self.logger.info("  Reset ORB logging tracker")
+
+        if hasattr(self.orchestrator, '_last_approach_logged'):
+            self.orchestrator._last_approach_logged.clear()
+            self.logger.info("  Reset approach logging tracker")
+
+        # 3. Reset market closed flag (used to avoid log spam after cooldown)
+        if hasattr(self.orchestrator, '_market_closed_logged'):
+            self.orchestrator._market_closed_logged = False
+            self.logger.info("  Reset market closed flag")
+
+        # 4. Reset ORB notification flag for new day
+        if hasattr(self.orchestrator, '_orb_notification_sent_date'):
+            self.orchestrator._orb_notification_sent_date = None
+            self.logger.info("  Reset ORB notification flag")
+
+        # 5. Reset daily statistics (proactive instead of reactive)
+        from datetime import datetime
+        if hasattr(self.orchestrator, '_daily_stats'):
+            current_date = datetime.now(self.market_scheduler.timezone).date().isoformat()
+            if self.orchestrator._daily_stats.get("date") != current_date:
+                self.orchestrator._daily_stats = self.orchestrator._initialize_daily_stats()
+                self.logger.info(f"  Reset daily statistics for {current_date}")
 
         self.logger.info("Cleanup complete!")
 
