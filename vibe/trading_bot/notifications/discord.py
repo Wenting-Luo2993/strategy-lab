@@ -29,6 +29,9 @@ class DiscordNotifier:
     DEFAULT_TOKENS_PER_PERIOD = 5
     DEFAULT_PERIOD_SECONDS = 2.0
 
+    # Discord success status codes (200 OK, 204 No Content)
+    SUCCESS_STATUS_CODES = (200, 204)
+
     def __init__(
         self,
         webhook_url: str,
@@ -125,7 +128,7 @@ class DiscordNotifier:
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
                 # Discord returns 200 or 204 on success
-                if response.status in (200, 204):
+                if response.status in self.SUCCESS_STATUS_CODES:
                     logger.info(f"System status notification sent: {payload.event_type}")
                     return True
                 else:
@@ -171,7 +174,7 @@ class DiscordNotifier:
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
                 # Discord returns 200 or 204 on success
-                if response.status in (200, 204):
+                if response.status in self.SUCCESS_STATUS_CODES:
                     logger.info(f"ORB notification sent: {len(payload.symbols)} symbols")
                     return True
                 else:
@@ -236,7 +239,7 @@ class DiscordNotifier:
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
                 # Discord returns 200 or 204 on success
-                if response.status in (200, 204):
+                if response.status in self.SUCCESS_STATUS_CODES:
                     return True
 
                 # Handle rate limit (429)
