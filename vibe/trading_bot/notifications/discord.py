@@ -124,7 +124,8 @@ class DiscordNotifier:
                 json=message,
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
-                if response.status == 200:
+                # Discord returns 200 or 204 on success
+                if response.status in (200, 204):
                     logger.info(f"System status notification sent: {payload.event_type}")
                     return True
                 else:
@@ -169,7 +170,8 @@ class DiscordNotifier:
                 json=message,
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
-                if response.status == 200:
+                # Discord returns 200 or 204 on success
+                if response.status in (200, 204):
                     logger.info(f"ORB notification sent: {len(payload.symbols)} symbols")
                     return True
                 else:
@@ -233,7 +235,8 @@ class DiscordNotifier:
                 json=message,
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
-                if response.status == 200:
+                # Discord returns 200 or 204 on success
+                if response.status in (200, 204):
                     return True
 
                 # Handle rate limit (429)

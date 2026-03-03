@@ -18,27 +18,38 @@ from vibe.trading_bot.version import BUILD_VERSION
 
 
 class WarmupPhaseManager(BasePhase):
-    """Manages pre-market warm-up phase (9:25-9:30 AM EST).
+    """Manages warm-up phase for provider connection and health verification.
 
-    The warm-up phase prepares the bot for market open by:
+    The warm-up phase prepares the bot for trading by:
     1. Pre-fetching 2 days of historical data (warm cache)
     2. Connecting to real-time data provider (WebSocket or REST)
     3. Verifying WebSocket ping/pong (confirms connection health)
     4. Pre-calculating indicators (currently just verification)
     5. Running health checks on all components
-    6. Sending Discord notification with status
+    6. Sending Discord notification with status (optional, only for pre-market)
+
+    Used for both:
+    - Pre-market warmup (9:25-9:30 AM EST) - sends Discord notification
+    - Intraday restart - skips Discord notification
     """
 
     WEBSOCKET_PING_TIMEOUT = 70  # Finnhub pings ~60s, wait up to 70s
 
-    async def execute(self) -> bool:
+    async def execute(self, send_notification: bool = True) -> bool:
         """Execute warm-up phase: prefetch data, connect provider, verify health.
+
+        Args:
+            send_notification: If True, send Discord notification (for pre-market).
+                             If False, skip notification (for intraday restart).
 
         Returns:
             True if warm-up successful, False if errors occurred
         """
         self.logger.info("=" * 60)
-        self.logger.info("PRE-MARKET WARM-UP PHASE")
+        if send_notification:
+            self.logger.info("PRE-MARKET WARM-UP PHASE")
+        else:
+            self.logger.info("WARM-UP PHASE (Intraday Restart)")
         self.logger.info("=" * 60)
 
         market_open = self.market_scheduler.get_open_time()
@@ -62,13 +73,17 @@ class WarmupPhaseManager(BasePhase):
         # Summary
         self.logger.info("=" * 60)
         if warmup_success and all_healthy:
-            self.logger.info("WARM-UP COMPLETE - Ready for market open!")
+            if send_notification:
+                self.logger.info("WARM-UP COMPLETE - Ready for market open!")
+            else:
+                self.logger.info("WARM-UP COMPLETE - Ready for trading!")
         else:
             self.logger.warning("WARM-UP COMPLETE - Some issues detected (continuing anyway)")
         self.logger.info("=" * 60)
 
-        # Step 5: Send Discord notification
-        await self._send_discord_notification(warmup_success, all_healthy, health_status)
+        # Step 5: Send Discord notification (only for pre-market)
+        if send_notification:
+            await self._send_discord_notification(warmup_success, all_healthy, health_status)
 
         return warmup_success
 
