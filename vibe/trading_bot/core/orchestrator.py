@@ -881,11 +881,7 @@ class TradingOrchestrator:
                             self._market_closed_logged = False
                             self._cooldown_start_time = None
                             self.logger.info("Market is now open - starting trading cycle")
-
-                            # Clear stale real-time bars from previous trading day
-                            # Note: Keep bar_aggregators alive (they have callbacks registered)
-                            self._realtime_bars.clear()
-                            self.logger.info("[CLEANUP] Cleared stale real-time bars for new trading day")
+                            # Note: Warmup phase handles cleanup of stale bars
 
                         # If bot started during market hours, run warmup (without Discord notification)
                         if self.primary_provider and not self.primary_provider.connected:

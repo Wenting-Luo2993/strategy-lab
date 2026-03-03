@@ -58,6 +58,9 @@ class WarmupPhaseManager(BasePhase):
 
         warmup_success = True
 
+        # Step 0: Clear stale data from previous session
+        self._cleanup_stale_data()
+
         # Step 1: Pre-fetch historical data
         warmup_success &= await self._prefetch_historical_data()
 
@@ -87,13 +90,31 @@ class WarmupPhaseManager(BasePhase):
 
         return warmup_success
 
+    def _cleanup_stale_data(self) -> None:
+        """Clear stale real-time bars from previous trading session.
+
+        This ensures we start fresh each day without old bar data.
+        Note: Bar aggregators are kept alive (they have callbacks registered).
+        """
+        self.logger.info("Step 0/5: Cleaning up stale data from previous session...")
+
+        if hasattr(self.orchestrator, '_realtime_bars'):
+            bars_count = len(self.orchestrator._realtime_bars)
+            self.orchestrator._realtime_bars.clear()
+            if bars_count > 0:
+                self.logger.info(f"  Cleared {bars_count} stale bar series")
+            else:
+                self.logger.info("  No stale bars to clear (fresh start)")
+
+        self.logger.info("Cleanup complete!")
+
     async def _prefetch_historical_data(self) -> bool:
         """Warm cache by pre-fetching 2 days of historical data.
 
         Returns:
             True if successful, False if errors occurred
         """
-        self.logger.info("Step 1/4: Warming cache with historical data...")
+        self.logger.info("Step 1/5: Warming cache with historical data...")
 
         try:
             for symbol in self.config.trading.symbols:
@@ -123,7 +144,7 @@ class WarmupPhaseManager(BasePhase):
         Returns:
             True if connected successfully, False otherwise
         """
-        self.logger.info("Step 2/4: Connecting to real-time data provider...")
+        self.logger.info("Step 2/5: Connecting to real-time data provider...")
 
         try:
             if self.primary_provider:
@@ -189,7 +210,7 @@ class WarmupPhaseManager(BasePhase):
         Returns:
             True if successful
         """
-        self.logger.info("Step 3/4: Pre-calculating indicators...")
+        self.logger.info("Step 3/5: Pre-calculating indicators...")
 
         try:
             if self.indicator_engine:
@@ -207,7 +228,7 @@ class WarmupPhaseManager(BasePhase):
         Returns:
             Tuple of (health_status dict, all_healthy bool)
         """
-        self.logger.info("Step 4/4: Running health checks...")
+        self.logger.info("Step 4/5: Running health checks...")
 
         health_result = self.health_monitor.get_health()
         health_status = health_result.get("components", {})
