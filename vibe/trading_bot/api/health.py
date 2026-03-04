@@ -245,7 +245,8 @@ async def run_health_server(
         app=app,
         host=host,
         port=port,
-        log_level="warning",  # Suppress INFO-level access logs (health checks spam logs)
+        log_level="error",  # Suppress WARNING-level logs (invalid HTTP requests from scanners)
+        access_log=False,  # Disable access logs completely (health checks spam)
     )
     server = uvicorn.Server(config)
 

@@ -67,6 +67,9 @@ class WarmupPhaseManager(BasePhase):
         # Step 2: Connect to real-time provider
         warmup_success &= await self._connect_realtime_provider()
 
+        # Step 2.5: Verify and recreate bar aggregators if missing (CRITICAL for real-time bars)
+        warmup_success &= await self._verify_bar_aggregators()
+
         # Step 3: Pre-calculate indicators (optional)
         await self._precalculate_indicators()
 
@@ -240,6 +243,61 @@ class WarmupPhaseManager(BasePhase):
                 self.logger.info(f"Switched to secondary provider: {self.secondary_provider.provider_name}")
         except Exception as e:
             self.logger.error(f"Failed to connect to secondary provider: {e}")
+
+    async def _verify_bar_aggregators(self) -> bool:
+        """Verify bar aggregators exist and recreate if missing.
+
+        Bar aggregators can be destroyed if an exception occurs during
+        provider initialization. This check ensures they're always present
+        after warmup completes, making the system self-healing.
+
+        Returns:
+            True if aggregators are ready, False if errors occurred
+        """
+        self.logger.info("Step 2.5/5: Verifying bar aggregators...")
+
+        try:
+            from vibe.trading_bot.data.aggregator import BarAggregator
+            from vibe.trading_bot.data.providers.types import WebSocketDataProvider
+
+            missing_symbols = []
+
+            # Check if each symbol has an aggregator
+            for symbol in self.config.trading.symbols:
+                if symbol not in self.orchestrator.bar_aggregators:
+                    missing_symbols.append(symbol)
+
+            if missing_symbols:
+                self.logger.warning(f"   [!] Missing bar aggregators for: {missing_symbols}")
+                self.logger.info("   [*] Recreating bar aggregators (self-healing)...")
+
+                # Recreate missing aggregators
+                for symbol in missing_symbols:
+                    aggregator = BarAggregator(
+                        bar_interval="5m",
+                        timezone=str(self.market_scheduler.timezone)
+                    )
+                    # Set up bar completion callback with symbol binding
+                    aggregator.on_bar_complete(
+                        lambda bar_dict, sym=symbol: self.orchestrator._handle_completed_bar(sym, bar_dict)
+                    )
+                    self.orchestrator.bar_aggregators[symbol] = aggregator
+                    self.logger.info(f"   [OK] Recreated aggregator for {symbol}")
+
+                # Re-register trade callback if WebSocket
+                if self.primary_provider and isinstance(self.primary_provider, WebSocketDataProvider):
+                    self.primary_provider.on_trade(self.orchestrator._handle_realtime_trade)
+                    self.logger.info("   [OK] Re-registered trade callback")
+
+                self.logger.info("   [✓] Bar aggregators restored!")
+            else:
+                self.logger.info(f"   [OK] All {len(self.config.trading.symbols)} bar aggregators present")
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"   ❌ Failed to verify bar aggregators: {e}", exc_info=True)
+            return False
 
     async def _precalculate_indicators(self) -> bool:
         """Pre-calculate indicators (optional optimization).
