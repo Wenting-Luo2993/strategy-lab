@@ -107,10 +107,14 @@ class CooldownPhaseManager(BasePhase):
             await asyncio.sleep(30)  # Check every 30 seconds during cooldown
             return
 
-        # Cooldown complete - cleanup
+        # Cooldown complete - cleanup (only once)
         if not self._market_closed_logged:
             await self._complete_cooldown()
             self._market_closed_logged = True
+
+        # IMPORTANT: Return immediately if already completed to prevent tight loop
+        # The orchestrator will handle sleep until next trading day
+        return
 
     def _log_cooldown_start(self, now: datetime) -> None:
         """Log cooldown phase start.

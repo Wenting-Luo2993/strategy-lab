@@ -302,7 +302,10 @@ class TradingOrchestrator:
                 self.secondary_provider = None
                 self.active_provider = None
                 self.finnhub_ws = None
-                self.bar_aggregators = {}
+                # NOTE: Do NOT clear bar_aggregators here!
+                # Bar aggregators have callbacks registered - clearing them destroys callbacks
+                # and prevents real-time bars even if provider reconnects later.
+                # Keep aggregators alive - they'll be reset in warmup phase.
 
             # 7. Register health checks
             self._register_health_checks()

@@ -102,7 +102,7 @@ class WarmupPhaseManager(BasePhase):
 
         Note: Bar aggregators are kept alive (they have callbacks registered).
         """
-        self.logger.info("Step 0/5: Cleaning up stale data from previous session...")
+        self.logger.info("Step 0/6: Cleaning up stale data from previous session...")
 
         # 1. Clear stale real-time bars
         if hasattr(self.orchestrator, '_realtime_bars'):
@@ -139,6 +139,11 @@ class WarmupPhaseManager(BasePhase):
             if self.orchestrator._daily_stats.get("date") != current_date:
                 self.orchestrator._daily_stats = self.orchestrator._initialize_daily_stats()
                 self.logger.info(f"  Reset daily statistics for {current_date}")
+
+        # 6. Reset cooldown manager state from previous day
+        if hasattr(self.orchestrator, 'cooldown_manager'):
+            self.orchestrator.cooldown_manager.reset()
+            self.logger.info("  Reset cooldown manager state")
 
         self.logger.info("Cleanup complete!")
 
