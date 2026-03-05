@@ -124,11 +124,9 @@ class CooldownPhaseManager(BasePhase):
         """
         disconnect_time = now + timedelta(seconds=self.COOLDOWN_DURATION)
 
-        self.logger.info(
-            "=" * 60 + "\n"
-            "MARKET CLOSE COOLDOWN PHASE STARTED\n"
-            "=" * 60
-        )
+        self.logger.info("="*60)
+        self.logger.info("MARKET CLOSED - ENTERING COOLDOWN PHASE")
+        self.logger.info("="*60)
         self.logger.info(
             f"Market closed at {now.strftime('%H:%M:%S')}. "
             f"Entering {self.COOLDOWN_DURATION}s cooldown phase for cleanup:"
