@@ -34,6 +34,7 @@ class CooldownPhaseManager(BasePhase):
         """
         super().__init__(orchestrator)
         self._cooldown_start_time: Optional[datetime] = None
+        self._cooldown_started = False  # Dedicated flag to prevent re-entry
         self._market_closed_logged = False
 
     def should_enter_cooldown(self) -> bool:
@@ -44,7 +45,7 @@ class CooldownPhaseManager(BasePhase):
         """
         return (
             not self.market_scheduler.is_market_open() and
-            self._cooldown_start_time is None and
+            not self._cooldown_started and  # Use dedicated flag, not _cooldown_start_time
             self.active_provider and
             self.active_provider.connected
         )
@@ -78,6 +79,7 @@ class CooldownPhaseManager(BasePhase):
     def reset(self) -> None:
         """Reset cooldown state for next trading day."""
         self._cooldown_start_time = None
+        self._cooldown_started = False
         self._market_closed_logged = False
 
     async def execute(self) -> None:
@@ -94,6 +96,7 @@ class CooldownPhaseManager(BasePhase):
         # Enter cooldown if needed
         if self.should_enter_cooldown():
             self._cooldown_start_time = now
+            self._cooldown_started = True  # Set dedicated flag to prevent re-entry
             self._log_cooldown_start(now)
 
         # Still in cooldown - keep processing

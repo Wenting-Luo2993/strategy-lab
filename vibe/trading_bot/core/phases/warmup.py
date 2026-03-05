@@ -143,10 +143,8 @@ class WarmupPhaseManager(BasePhase):
                 self.orchestrator._daily_stats = self.orchestrator._initialize_daily_stats()
                 self.logger.info(f"  Reset daily statistics for {current_date}")
 
-        # 6. Reset cooldown manager state from previous day
-        if hasattr(self.orchestrator, 'cooldown_manager'):
-            self.orchestrator.cooldown_manager.reset()
-            self.logger.info("  Reset cooldown manager state")
+        # NOTE: Cooldown reset removed from here - only happens in orchestrator
+        # during official pre-market warmup phase (not mid-session reconnects)
 
         self.logger.info("Cleanup complete!")
 
