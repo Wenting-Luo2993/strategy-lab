@@ -41,7 +41,7 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
     MAX_RECONNECT_ATTEMPTS = 5
     RECONNECT_BACKOFF = [1, 2, 4, 8, 16]  # Exponential backoff in seconds
     RATE_LIMIT_BACKOFF = 60  # Wait 60 seconds (1 minute) when rate limited
-    GAP_DETECTION_THRESHOLD = 60  # Gap > 60s triggers backfill request
+    GAP_DETECTION_THRESHOLD = 90  # Gap > 90s triggers reconnection (allows for Finnhub's 60s ping + buffer)
 
     def __init__(self, api_key: str):
         """
@@ -692,8 +692,18 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                     await self._connect_with_retry()
 
                     # Re-subscribe to symbols
-                    for symbol in list(self.subscribed_symbols):
+                    symbols_to_subscribe = list(self.subscribed_symbols)
+                    logger.info(f"Re-subscribing to {len(symbols_to_subscribe)} symbols: {symbols_to_subscribe}")
+
+                    for symbol in symbols_to_subscribe:
                         await self.subscribe(symbol)
+                        logger.info(f"  Re-subscribed to {symbol}")
+
+                    # Verify trade callback is still registered
+                    if self._on_trade:
+                        logger.info("Trade callback is still registered (good!)")
+                    else:
+                        logger.error("WARNING: Trade callback is MISSING after reconnection!")
 
                     logger.info("Successfully reconnected and re-subscribed")
                     return
