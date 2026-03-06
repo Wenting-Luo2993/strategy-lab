@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.2.0"  # Minor bump: scheduler dependency injection for testing
+VERSION = "1.2.1"  # Patch: configurable cooldown duration for testing
 
 
 def get_build_timestamp() -> str:

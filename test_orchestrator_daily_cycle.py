@@ -243,16 +243,16 @@ async def test_orchestrator_daily_cycle_v2():
         # Let orchestrator's run loop iterate and detect market close
         # (with testing_mode, orchestrator wakes every 2s, so this should be quick)
         print("[WAIT] Waiting for orchestrator to detect market close...")
-        await asyncio.sleep(5)  # Wait for orchestrator to detect and enter cooldown
+        await asyncio.sleep(3)  # Wait for orchestrator to detect and enter cooldown
 
-        # Advance time by 6 minutes to complete cooldown (5 min cooldown + 1 min buffer)
-        print("[TIME] Advancing time by 6 minutes to complete cooldown...")
-        mock_scheduler.advance_time(minutes=6)
+        # Advance time by 6 seconds to complete cooldown (5s cooldown + 1s buffer in testing mode)
+        print("[TIME] Advancing time by 6 seconds to complete cooldown...")
+        mock_scheduler.advance_time(seconds=6)
         print(f"[TIME] Now at {mock_scheduler.now().strftime('%H:%M:%S')} EST")
 
         # Wait for orchestrator to complete cooldown and disconnect
         print("[WAIT] Waiting for orchestrator to complete cooldown and disconnect...")
-        cooldown_ok = await harness.wait_for_cooldown_complete(timeout=15)
+        cooldown_ok = await harness.wait_for_cooldown_complete(timeout=10)
 
         if not cooldown_ok:
             print("[WARNING] Provider not disconnected after cooldown")
@@ -344,15 +344,15 @@ async def test_orchestrator_daily_cycle_v2():
 
         # Let orchestrator enter cooldown, then advance time to complete it
         print("[WAIT] Waiting for orchestrator to detect market close...")
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
 
-        # Advance time by 6 minutes to complete cooldown
-        print("[TIME] Advancing time by 6 minutes to complete cooldown...")
-        mock_scheduler.advance_time(minutes=6)
+        # Advance time by 6 seconds to complete cooldown (5s + 1s buffer in testing mode)
+        print("[TIME] Advancing time by 6 seconds to complete cooldown...")
+        mock_scheduler.advance_time(seconds=6)
         print(f"[TIME] Now at {mock_scheduler.now().strftime('%H:%M:%S')} EST")
 
         print("[WAIT] Waiting for Day 2 cooldown and disconnect...")
-        cooldown_ok = await harness.wait_for_cooldown_complete(timeout=15)
+        cooldown_ok = await harness.wait_for_cooldown_complete(timeout=10)
 
         if cooldown_ok:
             print("[OK] Day 2 cooldown completed")
@@ -439,15 +439,15 @@ async def test_orchestrator_daily_cycle_v2():
 
         # Let orchestrator enter cooldown, then advance time to complete it
         print("[WAIT] Waiting for orchestrator to detect market close...")
-        await asyncio.sleep(5)
+        await asyncio.sleep(3)
 
-        # Advance time by 6 minutes to complete cooldown
-        print("[TIME] Advancing time by 6 minutes to complete cooldown...")
-        mock_scheduler.advance_time(minutes=6)
+        # Advance time by 6 seconds to complete cooldown (5s + 1s buffer in testing mode)
+        print("[TIME] Advancing time by 6 seconds to complete cooldown...")
+        mock_scheduler.advance_time(seconds=6)
         print(f"[TIME] Now at {mock_scheduler.now().strftime('%H:%M:%S')} EST")
 
         print("[WAIT] Waiting for Day 3 cooldown to complete...")
-        await asyncio.sleep(10)  # Give orchestrator time to process cooldown completion
+        await asyncio.sleep(5)  # Give orchestrator time to process cooldown completion
         print("[OK] Day 3 cooldown phase completed")
         print()
 

@@ -24,7 +24,8 @@ class CooldownPhaseManager(BasePhase):
     - Calculates sleep time until next warm-up
     """
 
-    COOLDOWN_DURATION = 300  # 5 minutes
+    DEFAULT_COOLDOWN_DURATION = 300  # 5 minutes (production)
+    TESTING_COOLDOWN_DURATION = 5    # 5 seconds (testing)
 
     def __init__(self, orchestrator: 'TradingOrchestrator'):
         """Initialize cooldown manager.
@@ -33,6 +34,13 @@ class CooldownPhaseManager(BasePhase):
             orchestrator: Parent orchestrator
         """
         super().__init__(orchestrator)
+
+        # Use shorter cooldown duration in testing mode for faster tests
+        if orchestrator._testing_mode:
+            self.COOLDOWN_DURATION = self.TESTING_COOLDOWN_DURATION
+        else:
+            self.COOLDOWN_DURATION = self.DEFAULT_COOLDOWN_DURATION
+
         self._cooldown_start_time: Optional[datetime] = None
         self._cooldown_started = False  # Dedicated flag to prevent re-entry
         self._market_closed_logged = False
@@ -143,11 +151,9 @@ class CooldownPhaseManager(BasePhase):
 
     async def _complete_cooldown(self) -> None:
         """Complete cooldown phase: rotate logs, disconnect provider."""
-        self.logger.info(
-            "=" * 60 + "\n"
-            "COOLDOWN PHASE COMPLETE\n"
-            "=" * 60
-        )
+        self.logger.info("=" * 60)
+        self.logger.info("COOLDOWN PHASE COMPLETE")
+        self.logger.info("=" * 60)
 
         # Rotate tick log file for next session
         await self._rotate_tick_logs()
