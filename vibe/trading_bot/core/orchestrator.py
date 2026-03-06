@@ -505,10 +505,10 @@ class TradingOrchestrator:
 
     async def _check_and_send_daily_summary(self) -> None:
         """Check if it's time to send daily summary and send if needed."""
-        from datetime import datetime
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
 
-        # Use market timezone for date comparison (not system timezone!)
-        now = datetime.now(self.market_scheduler.timezone)
+        # Use market scheduler's time (supports both real and mock schedulers)
+        now = get_market_now(self.market_scheduler)
         current_date = now.date().isoformat()
 
         # Only send once per day, after session end
