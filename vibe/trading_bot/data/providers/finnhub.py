@@ -364,6 +364,11 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
         self.last_ping_time = None
         self.last_pong_time = None
 
+        # CRITICAL: Clear subscribed symbols so they can be re-subscribed on next connection
+        # Without this, subscriptions from previous session persist, causing silent failures
+        # where no actual subscription messages are sent to Finnhub on reconnect
+        self.subscribed_symbols.clear()
+
         # Cancel all tasks and wait for them to finish
         tasks_to_cancel = []
         if self._listen_task:
@@ -416,7 +421,7 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
             raise RuntimeError("Not connected to WebSocket")
 
         if symbol in self.subscribed_symbols:
-            logger.debug(f"Already subscribed to {symbol}")
+            logger.info(f"Already subscribed to {symbol} (skipping)")
             return
 
         message = {"type": "subscribe", "symbol": symbol}
