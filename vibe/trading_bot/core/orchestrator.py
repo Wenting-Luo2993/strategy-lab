@@ -41,29 +41,48 @@ class TradingOrchestrator:
     integration for complete trading system lifecycle.
     """
 
-    def __init__(self, config: Optional[AppSettings] = None):
+    def __init__(
+        self,
+        config: Optional[AppSettings] = None,
+        market_scheduler: Optional[BaseMarketScheduler] = None,
+        testing_mode: bool = False,
+    ):
         """Initialize trading orchestrator.
 
         Args:
             config: Application settings (uses get_settings() if None)
+            market_scheduler: Market scheduler (creates default if None)
+            testing_mode: If True, use shorter sleep intervals for faster testing
         """
         self.config = config or get_settings()
         self.logger = logging.getLogger(__name__)
+        self._testing_mode = testing_mode
 
         # Component initialization order matters
-        self.market_scheduler: BaseMarketScheduler = create_scheduler(
-            market_type=self.config.trading.market_type,
-            exchange=self.config.trading.exchange,
-        )
+        # Allow dependency injection for testing (defaults to real scheduler for production)
+        if market_scheduler is None:
+            self.market_scheduler: BaseMarketScheduler = create_scheduler(
+                market_type=self.config.trading.market_type,
+                exchange=self.config.trading.exchange,
+            )
+        else:
+            self.market_scheduler: BaseMarketScheduler = market_scheduler
         self.health_monitor = HealthMonitor()
         self.trade_store = TradeStore(db_path=self.config.database_path)
 
         # Retry/backoff state
         self._consecutive_failures = 0
         self._max_consecutive_failures = 10
-        self._base_cycle_interval = 60  # Base interval: 60 seconds when monitoring positions
-        self._idle_cycle_interval = 300  # Idle interval: 5 minutes when no positions
-        self._max_backoff_seconds = 900  # Max backoff: 15 minutes
+
+        # Sleep intervals: shorter in testing mode for faster test execution
+        if testing_mode:
+            self._base_cycle_interval = 1   # 1 second when monitoring positions (testing)
+            self._idle_cycle_interval = 2   # 2 seconds when no positions (testing)
+            self._max_backoff_seconds = 5   # 5 seconds max backoff (testing)
+        else:
+            self._base_cycle_interval = 60   # 60 seconds when monitoring positions (production)
+            self._idle_cycle_interval = 300  # 5 minutes when no positions (production)
+            self._max_backoff_seconds = 900  # 15 minutes max backoff (production)
         self.data_manager: Optional[DataManager] = None
         self.exchange = MockExchange()
         self.trade_executor: Optional[TradeExecutor] = None

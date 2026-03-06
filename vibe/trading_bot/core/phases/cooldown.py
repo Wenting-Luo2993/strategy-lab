@@ -107,7 +107,9 @@ class CooldownPhaseManager(BasePhase):
                 f"Processing final data..."
             )
             # Sleep briefly to allow final data processing
-            await asyncio.sleep(30)  # Check every 30 seconds during cooldown
+            # Use shorter interval in testing mode for faster tests
+            sleep_interval = 1 if self.orchestrator._testing_mode else 30
+            await asyncio.sleep(sleep_interval)
             return
 
         # Cooldown complete - cleanup (only once)

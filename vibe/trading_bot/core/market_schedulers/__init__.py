@@ -4,6 +4,7 @@ from .base import BaseMarketScheduler, MarketSession
 from .stock import StockMarketScheduler
 from .forex import ForexMarketScheduler
 from .crypto import CryptoMarketScheduler
+from .mock import MockMarketScheduler
 from .factory import create_scheduler
 
 __all__ = [
@@ -12,5 +13,6 @@ __all__ = [
     "StockMarketScheduler",
     "ForexMarketScheduler",
     "CryptoMarketScheduler",
+    "MockMarketScheduler",
     "create_scheduler",
 ]
