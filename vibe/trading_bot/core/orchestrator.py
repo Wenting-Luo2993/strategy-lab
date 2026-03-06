@@ -812,8 +812,10 @@ class TradingOrchestrator:
                     await self._check_and_send_daily_summary()
 
                     # Check if bot should be active (warm-up OR market open)
+                    from vibe.trading_bot.utils.datetime_utils import get_market_now
+
                     if not self.market_scheduler.should_bot_be_active():
-                        now = datetime.now(self.market_scheduler.timezone)
+                        now = get_market_now(self.market_scheduler)
 
                         # If provider already disconnected, we've completed cooldown - just sleep until morning
                         if self.active_provider and not self.active_provider.connected:
@@ -832,12 +834,14 @@ class TradingOrchestrator:
                                 self._market_closed_logged = True
 
                             try:
-                                sleep_seconds = (target_time - datetime.now(
-                                    self.market_scheduler.timezone
+                                sleep_seconds = (target_time - get_market_now(
+                                    self.market_scheduler
                                 )).total_seconds()
+                                # Use shorter sleep in testing mode
+                                max_sleep = 1 if self._testing_mode else 300
                                 await asyncio.wait_for(
                                     self._shutdown_event.wait(),
-                                    timeout=min(sleep_seconds, 300)  # 5 minutes
+                                    timeout=min(sleep_seconds, max_sleep)
                                 )
                             except asyncio.TimeoutError:
                                 pass
@@ -862,10 +866,11 @@ class TradingOrchestrator:
                                 )
 
                             try:
-                                # Check for shutdown every 5 minutes
+                                # Check for shutdown every 5 minutes (or 1s in testing mode)
+                                max_sleep = 1 if self._testing_mode else 300
                                 await asyncio.wait_for(
                                     self._shutdown_event.wait(),
-                                    timeout=min(sleep_seconds, 300)  # 5 minutes
+                                    timeout=min(sleep_seconds, max_sleep)
                                 )
                             except asyncio.TimeoutError:
                                 pass
@@ -885,7 +890,7 @@ class TradingOrchestrator:
                         # Sleep until market actually opens
                         market_open = self.market_scheduler.get_open_time()
                         if market_open:
-                            now = datetime.now(self.market_scheduler.timezone)
+                            now = get_market_now(self.market_scheduler)
                             sleep_until_open = (market_open - now).total_seconds()
 
                             if sleep_until_open > 0:
@@ -893,7 +898,9 @@ class TradingOrchestrator:
                                     f"Warm-up complete. Waiting {sleep_until_open:.0f}s "
                                     f"until market open at {market_open.strftime('%H:%M:%S')}..."
                                 )
-                                await asyncio.sleep(sleep_until_open)
+                                # Use shorter sleep in testing mode
+                                max_sleep = 1 if self._testing_mode else sleep_until_open
+                                await asyncio.sleep(max_sleep)
 
                         continue
 

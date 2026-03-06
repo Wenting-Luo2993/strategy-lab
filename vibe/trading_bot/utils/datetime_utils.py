@@ -18,6 +18,9 @@ def get_market_now(market_scheduler: 'BaseMarketScheduler') -> datetime:
     This is the preferred way to get "now" in trading bot code, as it ensures
     timezone awareness using the market's configured timezone.
 
+    For MockMarketScheduler, this returns the mock time. For real schedulers,
+    this returns the actual current time.
+
     Args:
         market_scheduler: Market scheduler with timezone info
 
@@ -29,6 +32,10 @@ def get_market_now(market_scheduler: 'BaseMarketScheduler') -> datetime:
         >>> now = get_market_now(self.market_scheduler)
         >>> # now is timezone-aware (e.g., 2026-02-28 09:30:00-05:00 EST)
     """
+    # Use scheduler's now() method if available (e.g., MockMarketScheduler)
+    # Otherwise fall back to real time
+    if hasattr(market_scheduler, 'now') and callable(getattr(market_scheduler, 'now')):
+        return market_scheduler.now()
     return datetime.now(market_scheduler.timezone)
 
 

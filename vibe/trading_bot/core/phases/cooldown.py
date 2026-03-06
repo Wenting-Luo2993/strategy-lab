@@ -53,7 +53,7 @@ class CooldownPhaseManager(BasePhase):
         """
         return (
             not self.market_scheduler.is_market_open() and
-            not self._cooldown_started and  # Use dedicated flag, not _cooldown_start_time
+            not self._cooldown_started and
             self.active_provider and
             self.active_provider.connected
         )
