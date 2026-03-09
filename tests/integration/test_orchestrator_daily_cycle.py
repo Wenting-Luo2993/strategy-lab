@@ -115,11 +115,10 @@ async def test_orchestrator_daily_cycle_v2():
     # Check Finnhub API key
     finnhub_key = os.getenv('FINNHUB_API_KEY')
     if not finnhub_key:
-        print("[ERROR] FINNHUB_API_KEY not set!")
-        print("Please set it in your environment:")
-        print('  Windows: $env:FINNHUB_API_KEY="your_key_here"')
-        print('  Linux/Mac: export FINNHUB_API_KEY="your_key_here"')
-        return False
+        # Fallback to hardcoded key for testing
+        finnhub_key = "d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0"
+        os.environ['FINNHUB_API_KEY'] = finnhub_key
+        print("[*] Using hardcoded Finnhub API key for testing")
 
     try:
         # Import after path setup
@@ -240,10 +239,16 @@ async def test_orchestrator_daily_cycle_v2():
         print("[PHASE] Orchestrator detecting market close, entering cooldown...")
         print()
 
-        # Let orchestrator's run loop iterate and detect market close
-        # (with testing_mode, orchestrator wakes every 2s, so this should be quick)
-        print("[WAIT] Waiting for orchestrator to detect market close...")
-        await asyncio.sleep(3)  # Wait for orchestrator to detect and enter cooldown
+        # CRITICAL: Wait for cooldown to START before advancing time
+        # Otherwise we advance time before cooldown records start time
+        print("[WAIT] Waiting for orchestrator to detect and START cooldown...")
+        for i in range(10):  # Max 10 seconds
+            await asyncio.sleep(1)
+            if orchestrator.cooldown_manager._cooldown_start_time is not None:
+                print(f"[OK] Cooldown started after {i+1}s")
+                break
+        else:
+            print("[ERROR] Cooldown never started after 10s!")
 
         # Advance time by 6 seconds to complete cooldown (5s cooldown + 1s buffer in testing mode)
         print("[TIME] Advancing time by 6 seconds to complete cooldown...")
@@ -260,8 +265,10 @@ async def test_orchestrator_daily_cycle_v2():
             print("[OK] Cooldown completed, provider disconnected")
 
         # Brief delay to ensure disconnect() fully completes
+        # Brief delay to ensure disconnect() fully completes
         await asyncio.sleep(0.5)
 
+        # Verify subscriptions cleared
         # Verify subscriptions cleared
         print(f"[CHECK] subscribed_symbols after Day 1 disconnect = {orchestrator.primary_provider.subscribed_symbols}")
 
@@ -342,9 +349,16 @@ async def test_orchestrator_daily_cycle_v2():
         print("[PHASE] Orchestrator entering Day 2 cooldown...")
         print()
 
-        # Let orchestrator enter cooldown, then advance time to complete it
-        print("[WAIT] Waiting for orchestrator to detect market close...")
-        await asyncio.sleep(3)
+        # CRITICAL: Wait for cooldown to START before advancing time
+        # Otherwise we advance time before cooldown records start time
+        print("[WAIT] Waiting for orchestrator to detect and START cooldown...")
+        for i in range(10):  # Max 10 seconds
+            await asyncio.sleep(1)
+            if orchestrator.cooldown_manager._cooldown_start_time is not None:
+                print(f"[OK] Cooldown started after {i+1}s")
+                break
+        else:
+            print("[ERROR] Cooldown never started after 10s!")
 
         # Advance time by 6 seconds to complete cooldown (5s + 1s buffer in testing mode)
         print("[TIME] Advancing time by 6 seconds to complete cooldown...")
@@ -358,8 +372,10 @@ async def test_orchestrator_daily_cycle_v2():
             print("[OK] Day 2 cooldown completed")
 
         # Brief delay to ensure disconnect() fully completes
+        # Brief delay to ensure disconnect() fully completes
         await asyncio.sleep(0.5)
 
+        print(f"[DEBUG] Checking subscribed_symbols after Day 2 disconnect...")
         print(f"[CHECK] subscribed_symbols after Day 2 disconnect = {orchestrator.primary_provider.subscribed_symbols}")
 
         if len(orchestrator.primary_provider.subscribed_symbols) > 0:
@@ -437,9 +453,16 @@ async def test_orchestrator_daily_cycle_v2():
         print("[PHASE] Orchestrator entering Day 3 cooldown...")
         print()
 
-        # Let orchestrator enter cooldown, then advance time to complete it
-        print("[WAIT] Waiting for orchestrator to detect market close...")
-        await asyncio.sleep(3)
+        # CRITICAL: Wait for cooldown to START before advancing time
+        # Otherwise we advance time before cooldown records start time
+        print("[WAIT] Waiting for orchestrator to detect and START cooldown...")
+        for i in range(10):  # Max 10 seconds
+            await asyncio.sleep(1)
+            if orchestrator.cooldown_manager._cooldown_start_time is not None:
+                print(f"[OK] Cooldown started after {i+1}s")
+                break
+        else:
+            print("[ERROR] Cooldown never started after 10s!")
 
         # Advance time by 6 seconds to complete cooldown (5s + 1s buffer in testing mode)
         print("[TIME] Advancing time by 6 seconds to complete cooldown...")
@@ -503,15 +526,13 @@ async def main():
 
     # Check environment
     finnhub_key = os.getenv('FINNHUB_API_KEY')
-    if finnhub_key:
-        print("[OK] FINNHUB_API_KEY is set")
+    if not finnhub_key:
+        # Fallback to hardcoded key for testing
+        finnhub_key = "d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0"
+        os.environ['FINNHUB_API_KEY'] = finnhub_key
+        print("[*] Using hardcoded Finnhub API key for testing")
     else:
-        print("[ERROR] FINNHUB_API_KEY not set!")
-        print()
-        print("Please set your Finnhub API key:")
-        print('  Windows: $env:FINNHUB_API_KEY="your_key_here"')
-        print('  Linux/Mac: export FINNHUB_API_KEY="your_key_here"')
-        return 1
+        print("[OK] FINNHUB_API_KEY is set")
 
     print("[OK] Oracle Cloud should be stopped (Finnhub free tier = 1 connection)")
     print()
