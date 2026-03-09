@@ -274,7 +274,7 @@ class WarmupPhaseManager(BasePhase):
                 # Recreate missing aggregators
                 for symbol in missing_symbols:
                     aggregator = BarAggregator(
-                        bar_interval="5m",
+                        bar_interval=self.orchestrator._bar_interval,
                         timezone=str(self.market_scheduler.timezone)
                     )
                     # Set up bar completion callback with symbol binding

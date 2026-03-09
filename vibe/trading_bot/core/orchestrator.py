@@ -46,6 +46,7 @@ class TradingOrchestrator:
         config: Optional[AppSettings] = None,
         market_scheduler: Optional[BaseMarketScheduler] = None,
         testing_mode: bool = False,
+        bar_interval: str = "5m",
     ):
         """Initialize trading orchestrator.
 
@@ -53,10 +54,13 @@ class TradingOrchestrator:
             config: Application settings (uses get_settings() if None)
             market_scheduler: Market scheduler (creates default if None)
             testing_mode: If True, use shorter sleep intervals for faster testing
+            bar_interval: Bar aggregation interval (e.g., "1m", "5m"). Default "5m" for production.
+                         Use "1m" for integration testing to see bars complete faster.
         """
         self.config = config or get_settings()
         self.logger = logging.getLogger(__name__)
         self._testing_mode = testing_mode
+        self._bar_interval = bar_interval
 
         # Component initialization order matters
         # Allow dependency injection for testing (defaults to real scheduler for production)
@@ -153,7 +157,8 @@ class TradingOrchestrator:
                 cache_dir.mkdir(parents=True, exist_ok=True)
 
                 # Create aggregator for real-time data
-                aggregator = BarAggregator(bar_interval="5m")
+                # Use configured interval (default 5m, but 1m for integration testing)
+                aggregator = BarAggregator(bar_interval=self._bar_interval)
 
                 # Initialize data manager
                 self.data_manager = DataManager(
@@ -285,7 +290,7 @@ class TradingOrchestrator:
                 # Create bar aggregators for all symbols
                 for symbol in self.config.trading.symbols:
                     aggregator = BarAggregator(
-                        bar_interval="5m",
+                        bar_interval=self._bar_interval,
                         timezone=str(self.market_scheduler.timezone)
                     )
                     # Set up bar completion callback with symbol binding

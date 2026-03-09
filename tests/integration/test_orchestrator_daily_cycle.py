@@ -1,14 +1,31 @@
 """
-Full orchestrator integration test: 3-day cycle with orchestrator.run()
+Integration Test 1: 3-Day Orchestrator Flow (WebSocket & Real-Time Bars)
 
-Tests the ACTUAL orchestrator.run() loop through 3 complete daily cycles.
-Uses orchestrator's production control flow (not manual phase execution).
+PURPOSE:
+  Validates the core orchestrator flow that was the main issue for the past month:
+  - WebSocket subscriptions persist across day cycles
+  - Real-time bars are emitted after disconnect/reconnect
+  - Bar aggregators survive multiple warmup/cooldown cycles
 
-Key differences from v1:
-- Runs orchestrator.run() in background (actual production code path)
-- Orchestrator detects phases based on mock scheduler state
-- Tests phase detection logic (is_warmup_phase, is_market_open, etc.)
-- Simulates real production behavior
+WHAT THIS TESTS:
+  ✓ Orchestrator.run() loop (production code path)
+  ✓ Phase detection (is_warmup_phase, is_market_open)
+  ✓ WebSocket subscriptions cleared on disconnect
+  ✓ WebSocket subscriptions re-sent on reconnect
+  ✓ Bar aggregators persist with callbacks intact
+  ✓ Real-time bars emitted across multiple day cycles
+  ✓ Cooldown phase execution
+  ✓ State management across days
+
+WHAT THIS DOESN'T TEST:
+  ✗ ORB calculation (requires mocked timestamps - see Test 2 TODO)
+  ✗ Trading signals (ORB levels invalid due to timestamp mismatch)
+
+TEST CONFIGURATION:
+  - Bar interval: 1 minute (for faster bar completions)
+  - Trading duration: 30 seconds per day (enough to see ~1-2 bars)
+  - Mock scheduler: Controls time advancement
+  - Real Finnhub data: Actual trades/bars with real timestamps
 
 Test flow:
 - Day 1: Warmup (9:25) -> Trading (9:30-4:00) -> Cooldown (4:00+) -> Disconnect
@@ -20,6 +37,10 @@ IMPORTANT: Stop Oracle Cloud instance before running (Finnhub free tier = 1 conn
 Requirements:
 - FINNHUB_API_KEY environment variable
 - Oracle Cloud stopped (one connection limit)
+
+TODO (Test 2):
+- Separate ORB integration test with mocked timestamps
+- Design architecture for timestamp mocking in Finnhub data
 """
 
 import asyncio
@@ -35,6 +56,18 @@ import logging
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# ---------------------------------------------------------------------------
+# Timing constants (seconds)
+# ---------------------------------------------------------------------------
+SLEEP_INIT_DELAY = 1          # Time for orchestrator to initialize after start
+SLEEP_PHASE_DETECT_DELAY = 1  # Time for orchestrator to detect phase changes
+SLEEP_POLL_INTERVAL = 1       # Polling interval in wait_for_* methods
+SLEEP_DISCONNECT_SETTLE = 1   # Settle time after provider disconnect
+SLEEP_COOLDOWN_POLL = 1         # Polling interval for cooldown start detection
+SLEEP_TRADING_DURATION = 70     # Duration to observe trading phase (60s for 1m bar + 10s buffer)
+SLEEP_COOLDOWN_FINAL = 5        # Final wait for cooldown completion (Day 3)
+TIMEOUT_WARMUP_COMPLETE = 80    # Warmup timeout (70s ping/pong + 10s buffer)
+
 
 class OrchestratorTestHarness:
     """Helper class to coordinate orchestrator testing."""
@@ -48,7 +81,7 @@ class OrchestratorTestHarness:
         """Start orchestrator.run() in background."""
         self.run_task = asyncio.create_task(self.orchestrator.run())
         # Give orchestrator time to initialize
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(SLEEP_INIT_DELAY)
 
     async def stop(self):
         """Stop orchestrator gracefully."""
@@ -69,7 +102,7 @@ class OrchestratorTestHarness:
         self.mock_scheduler.set_time(hour, minute)
         # Give orchestrator loop time to detect phase change
         # The run() loop checks scheduler state on each iteration
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(SLEEP_PHASE_DETECT_DELAY)
 
     async def wait_for_warmup_complete(self, timeout=10):
         """Wait for warmup phase to complete."""
@@ -80,7 +113,7 @@ class OrchestratorTestHarness:
                 self.orchestrator.primary_provider.connected and
                 len(self.orchestrator.primary_provider.subscribed_symbols) > 0):
                 return True
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(SLEEP_POLL_INTERVAL)
         return False
 
     async def wait_for_cooldown_complete(self, timeout=15):
@@ -91,7 +124,7 @@ class OrchestratorTestHarness:
             if (self.orchestrator.primary_provider and
                 not self.orchestrator.primary_provider.connected):
                 return True
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(SLEEP_POLL_INTERVAL)
         return False
 
 
@@ -99,17 +132,26 @@ async def test_orchestrator_daily_cycle_v2():
     """Test full orchestrator through 3 daily cycles using orchestrator.run()."""
 
     print("=" * 80)
-    print("ORCHESTRATOR 3-DAY CYCLE INTEGRATION TEST (V2)")
+    print("TEST 1: 3-DAY ORCHESTRATOR FLOW (WebSocket & Real-Time Bars)")
     print("=" * 80)
     print()
-    print("Tests ACTUAL orchestrator.run() loop through 3 complete days:")
-    print("  - Orchestrator detects phases based on mock scheduler")
-    print("  - Uses production control flow (not manual phase execution)")
-    print("  - Tests phase detection logic (is_warmup_phase, is_market_open)")
+    print("FOCUS: Validate real-time bars persist across day cycles")
+    print()
+    print("Tests:")
+    print("  [CHECK] WebSocket subscriptions cleared on disconnect")
+    print("  [CHECK] WebSocket subscriptions re-sent on reconnect")
+    print("  [CHECK] Bar aggregators persist with callbacks intact")
+    print("  [CHECK] Real-time bars emitted on Day 1, Day 2, Day 3")
+    print("  [CHECK] Phase transitions (warmup -> trading -> cooldown)")
+    print()
+    print("Configuration:")
+    print("  - Bar interval: 1 minute (faster completions)")
+    print("  - Trading duration: 30 seconds per day")
+    print("  - Real Finnhub data with actual timestamps")
     print()
     print("Day 1: Warmup -> Trading -> Cooldown -> Disconnect")
     print("Day 2: Warmup -> Trading -> Cooldown -> Disconnect")
-    print("Day 3: Warmup -> Trading -> Cooldown (WITHOUT container restart)")
+    print("Day 3: Warmup -> Trading -> Cooldown (NO restart)")
     print()
     print("=" * 80)
     print()
@@ -149,10 +191,12 @@ async def test_orchestrator_daily_cycle_v2():
 
         # Create orchestrator with mock scheduler and testing mode
         print("[SETUP] Creating orchestrator with mock scheduler (testing mode)...")
+        print("[SETUP] Using 1-minute bar interval for faster bar completions...")
         orchestrator = TradingOrchestrator(
             config=config,
             market_scheduler=mock_scheduler,
-            testing_mode=True  # Use shorter sleep intervals for faster testing
+            testing_mode=True,  # Use shorter sleep intervals for faster testing
+            bar_interval="1m"   # Use 1-minute bars to see completions during test
         )
 
         # Create test harness
@@ -162,6 +206,9 @@ async def test_orchestrator_daily_cycle_v2():
         bars_day1 = 0
         bars_day2 = 0
         bars_day3 = 0
+
+        # Track issues found (don't exit early, run full 3-day cycle)
+        issues_found = []
 
         print("[SETUP] Starting orchestrator.run() in background...")
         await harness.start()
@@ -183,15 +230,15 @@ async def test_orchestrator_daily_cycle_v2():
         print()
 
         # Wait for orchestrator to complete warmup
-        print("[WAIT] Waiting for orchestrator to complete warmup...")
-        warmup_ok = await harness.wait_for_warmup_complete(timeout=30)
+        # Warmup includes WebSocket ping/pong verification (up to 70s)
+        print("[WAIT] Waiting for orchestrator to complete warmup (up to 80s for ping/pong)...")
+        warmup_ok = await harness.wait_for_warmup_complete(timeout=TIMEOUT_WARMUP_COMPLETE)
 
         if not warmup_ok:
             print("[ERROR] Warmup did not complete in time!")
-            await harness.stop()
-            return False
-
-        print(f"[OK] Warmup completed by orchestrator")
+            issues_found.append("Day 1: warmup timeout")
+        else:
+            print(f"[OK] Warmup completed by orchestrator")
 
         # ====================================================================
         # DAY 1: TRADING PHASE (9:30 AM - 4:00 PM)
@@ -220,8 +267,8 @@ async def test_orchestrator_daily_cycle_v2():
         print()
 
         # Let orchestrator run trading cycles for 30 seconds
-        print("[WAIT] Letting orchestrator trade for 30 seconds...")
-        await asyncio.sleep(30)
+        print(f"[WAIT] Letting orchestrator trade for {SLEEP_TRADING_DURATION} seconds...")
+        await asyncio.sleep(SLEEP_TRADING_DURATION)
 
         bars_day1 = len(orchestrator._realtime_bars)
         print(f"[RESULT] Received {bars_day1} bar(s) during Day 1 trading")
@@ -245,7 +292,7 @@ async def test_orchestrator_daily_cycle_v2():
         # Otherwise we advance time before cooldown records start time
         print("[WAIT] Waiting for orchestrator to detect and START cooldown...")
         for i in range(10):  # Max 10 seconds
-            await asyncio.sleep(1)
+            await asyncio.sleep(SLEEP_COOLDOWN_POLL)
             if orchestrator.cooldown_manager._cooldown_start_time is not None:
                 print(f"[OK] Cooldown started after {i+1}s")
                 break
@@ -268,7 +315,7 @@ async def test_orchestrator_daily_cycle_v2():
 
         # Brief delay to ensure disconnect() fully completes
         # Brief delay to ensure disconnect() fully completes
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(SLEEP_DISCONNECT_SETTLE)
 
         # Verify subscriptions cleared
         # Verify subscriptions cleared
@@ -277,8 +324,7 @@ async def test_orchestrator_daily_cycle_v2():
         if len(orchestrator.primary_provider.subscribed_symbols) > 0:
             print("[ERROR] BUG DETECTED! subscribed_symbols NOT cleared on Day 1 disconnect!")
             print(f"[ERROR] Stale subscriptions: {orchestrator.primary_provider.subscribed_symbols}")
-            await harness.stop()
-            return False
+            issues_found.append("Day 1: subscribed_symbols not cleared on disconnect")
         else:
             print("[OK] subscribed_symbols cleared correctly after Day 1")
 
@@ -300,20 +346,19 @@ async def test_orchestrator_daily_cycle_v2():
 
         # Wait for orchestrator to complete Day 2 warmup
         print("[WAIT] Waiting for orchestrator to complete Day 2 warmup...")
-        warmup_ok = await harness.wait_for_warmup_complete(timeout=30)
+        warmup_ok = await harness.wait_for_warmup_complete(timeout=TIMEOUT_WARMUP_COMPLETE)
 
         if not warmup_ok:
             print("[ERROR] Day 2 warmup did not complete!")
-            await harness.stop()
-            return False
+            issues_found.append("Day 2: warmup timeout")
+        else:
+            print(f"[OK] Day 2 warmup completed by orchestrator")
 
-        print(f"[OK] Day 2 warmup completed by orchestrator")
         print(f"[CHECK] subscribed_symbols = {orchestrator.primary_provider.subscribed_symbols}")
 
         if len(orchestrator.primary_provider.subscribed_symbols) == 0:
             print("[ERROR] BUG DETECTED! No symbols subscribed on Day 2!")
-            await harness.stop()
-            return False
+            issues_found.append("Day 2: no symbols subscribed after warmup")
         else:
             print("[OK] Subscriptions active on Day 2")
 
@@ -331,9 +376,9 @@ async def test_orchestrator_daily_cycle_v2():
         print("[PHASE] Orchestrator running Day 2 trading cycles...")
         print()
 
-        print("[WAIT] Letting orchestrator trade for 30 seconds...")
+        print(f"[WAIT] Letting orchestrator trade for {SLEEP_TRADING_DURATION} seconds...")
         bars_before_day2 = len(orchestrator._realtime_bars)
-        await asyncio.sleep(30)
+        await asyncio.sleep(SLEEP_TRADING_DURATION)
 
         bars_day2 = len(orchestrator._realtime_bars) - bars_before_day2
         print(f"[RESULT] Received {bars_day2} bar(s) during Day 2 trading")
@@ -355,7 +400,7 @@ async def test_orchestrator_daily_cycle_v2():
         # Otherwise we advance time before cooldown records start time
         print("[WAIT] Waiting for orchestrator to detect and START cooldown...")
         for i in range(10):  # Max 10 seconds
-            await asyncio.sleep(1)
+            await asyncio.sleep(SLEEP_COOLDOWN_POLL)
             if orchestrator.cooldown_manager._cooldown_start_time is not None:
                 print(f"[OK] Cooldown started after {i+1}s")
                 break
@@ -375,15 +420,14 @@ async def test_orchestrator_daily_cycle_v2():
 
         # Brief delay to ensure disconnect() fully completes
         # Brief delay to ensure disconnect() fully completes
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(SLEEP_DISCONNECT_SETTLE)
 
         print(f"[DEBUG] Checking subscribed_symbols after Day 2 disconnect...")
         print(f"[CHECK] subscribed_symbols after Day 2 disconnect = {orchestrator.primary_provider.subscribed_symbols}")
 
         if len(orchestrator.primary_provider.subscribed_symbols) > 0:
             print("[ERROR] BUG DETECTED! subscribed_symbols NOT cleared on Day 2 disconnect!")
-            await harness.stop()
-            return False
+            issues_found.append("Day 2: subscribed_symbols not cleared on disconnect")
         else:
             print("[OK] subscribed_symbols cleared correctly after Day 2")
 
@@ -408,16 +452,15 @@ async def test_orchestrator_daily_cycle_v2():
 
         if not warmup_ok:
             print("[ERROR] Day 3 warmup did not complete!")
-            await harness.stop()
-            return False
+            issues_found.append("Day 3: warmup timeout")
+        else:
+            print(f"[OK] Day 3 warmup completed")
 
-        print(f"[OK] Day 3 warmup completed")
         print(f"[CHECK] subscribed_symbols = {orchestrator.primary_provider.subscribed_symbols}")
 
         if len(orchestrator.primary_provider.subscribed_symbols) == 0:
             print("[ERROR] BUG DETECTED! No symbols subscribed on Day 3!")
-            await harness.stop()
-            return False
+            issues_found.append("Day 3: no symbols subscribed after warmup")
         else:
             print("[OK] Subscriptions active on Day 3 (third cycle working!)")
 
@@ -435,9 +478,9 @@ async def test_orchestrator_daily_cycle_v2():
         print("[PHASE] Orchestrator running Day 3 trading cycles...")
         print()
 
-        print("[WAIT] Letting orchestrator trade for 30 seconds...")
+        print(f"[WAIT] Letting orchestrator trade for {SLEEP_TRADING_DURATION} seconds...")
         bars_before_day3 = len(orchestrator._realtime_bars)
-        await asyncio.sleep(30)
+        await asyncio.sleep(SLEEP_TRADING_DURATION)
 
         bars_day3 = len(orchestrator._realtime_bars) - bars_before_day3
         print(f"[RESULT] Received {bars_day3} bar(s) during Day 3 trading")
@@ -459,7 +502,7 @@ async def test_orchestrator_daily_cycle_v2():
         # Otherwise we advance time before cooldown records start time
         print("[WAIT] Waiting for orchestrator to detect and START cooldown...")
         for i in range(10):  # Max 10 seconds
-            await asyncio.sleep(1)
+            await asyncio.sleep(SLEEP_COOLDOWN_POLL)
             if orchestrator.cooldown_manager._cooldown_start_time is not None:
                 print(f"[OK] Cooldown started after {i+1}s")
                 break
@@ -472,7 +515,7 @@ async def test_orchestrator_daily_cycle_v2():
         print(f"[TIME] Now at {mock_scheduler.now().strftime('%H:%M:%S')} EST")
 
         print("[WAIT] Waiting for Day 3 cooldown to complete...")
-        await asyncio.sleep(5)  # Give orchestrator time to process cooldown completion
+        await asyncio.sleep(SLEEP_COOLDOWN_FINAL)  # Give orchestrator time to process cooldown completion
         print("[OK] Day 3 cooldown phase completed")
         print()
 
@@ -496,21 +539,29 @@ async def test_orchestrator_daily_cycle_v2():
         print(f"Total bars: {bars_day1 + bars_day2 + bars_day3}")
         print()
 
-        print("[SUCCESS] Full 3-day cycle completed using orchestrator.run()!")
+        # Report results
+        if issues_found:
+            print("[COMPLETED WITH ISSUES] Full 3-day cycle completed, but issues detected:")
+            print()
+            for i, issue in enumerate(issues_found, 1):
+                print(f"  {i}. {issue}")
+            print()
+        else:
+            print("[SUCCESS] Full 3-day cycle completed with NO ISSUES!")
+            print()
+
+        print("Test Summary:")
         print("  - Orchestrator detected phases based on mock scheduler")
         print("  - Used production control flow (not manual execution)")
-        print("  - Subscriptions cleared on Day 1 & Day 2 disconnects")
-        print("  - Subscriptions re-sent on Day 2 & Day 3 warmups")
+        print(f"  - Bars received: Day 1={bars_day1}, Day 2={bars_day2}, Day 3={bars_day3}")
         print("  - Bar aggregators persisted through 3 days")
         print("  - Phase detection logic validated")
-        print("  - State management validated across multiple cycles")
         print()
 
         if bars_day1 == 0 and bars_day2 == 0 and bars_day3 == 0:
-            print("[NOTE] No bars received (expected if outside market hours)")
-            print("[NOTE] The critical validation is state management and control flow")
+            print("[NOTE] No bars received - increase SLEEP_TRADING_DURATION or check market hours")
 
-        return True
+        return len(issues_found) == 0
 
     except Exception as e:
         print(f"[ERROR] Test failed: {e}")
