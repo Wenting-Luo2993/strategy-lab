@@ -154,8 +154,9 @@ class ORBStrategy(StrategyBase):
         if bar_time >= self.entry_cutoff:
             return 0, {"reason": "after_entry_cutoff_time"}
 
-        # Calculate ORB levels from context
-        levels = self.orb_calculator.calculate(df_context)
+        # Calculate ORB levels from context, passing current trading date explicitly
+        # This ensures we calculate ORB for the current bar's date, not historical data
+        levels = self.orb_calculator.calculate(df_context, trading_date=current_time)
 
         if not levels.valid:
             return 0, {"reason": "invalid_orb_levels", "reason_detail": levels.reason}

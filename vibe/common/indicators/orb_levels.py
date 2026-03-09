@@ -106,13 +106,16 @@ class ORBCalculator:
         body_pct = self._calculate_body_percentage(open_, close, high, low)
         return body_pct >= self.body_pct_filter
 
-    def calculate(self, df: pd.DataFrame) -> ORBLevels:
+    def calculate(self, df: pd.DataFrame, trading_date: Optional[datetime] = None) -> ORBLevels:
         """
         Calculate ORB levels from DataFrame.
 
         Args:
             df: DataFrame with columns: timestamp, open, high, low, close, volume
                 timestamp should be datetime
+            trading_date: Current trading date (optional). If provided, only bars from this
+                         date will be used for ORB calculation. If not provided, will use
+                         the last bar's date.
 
         Returns:
             ORBLevels object with high, low, range, and validity
@@ -126,9 +129,14 @@ class ORBCalculator:
                 reason="Empty dataframe",
             )
 
-        # Check if data is for new day - use LAST bar's date (most recent trading day)
-        # This handles DataFrames with multiple days of historical + today's real-time bars
-        current_date = df.iloc[-1]["timestamp"].date()
+        # Determine current trading date
+        if trading_date is not None:
+            # Use explicitly provided trading date (preferred)
+            current_date = trading_date.date() if hasattr(trading_date, 'date') else trading_date
+        else:
+            # Fall back to inferring from DataFrame (use last bar's date)
+            current_date = df.iloc[-1]["timestamp"].date()
+
         current_date_str = str(current_date)
 
         # If we have cached levels for a different day, invalidate
