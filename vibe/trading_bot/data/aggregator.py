@@ -277,6 +277,61 @@ class BarAggregator:
 
         return completed_bar
 
+    def flush_if_elapsed(self, current_time: datetime) -> Optional[dict]:
+        """
+        Flush current bar if we've crossed a time boundary.
+
+        This handles quiet markets where no trades arrive to trigger completion.
+        Should be called periodically (e.g., every 5-60 seconds) from orchestrator.
+
+        This is a HYBRID approach:
+        - Trade-triggered completion (existing): Fast, immediate when trade arrives
+        - Time-triggered completion (this method): Safety net for quiet markets
+
+        Args:
+            current_time: Current time to check against (timezone-aware)
+
+        Returns:
+            Completed bar dict if boundary crossed, None otherwise
+
+        Example:
+            current_time = 9:33:15 AM
+            current_bar_start_time = 9:32:00 AM (still building this bar)
+            expected_bar_start = 9:33:00 AM (should be building this bar now)
+            → 9:33:00 > 9:32:00 → Complete 9:32:00 bar (we've fallen behind)
+        """
+        if self.current_bar is None or self.current_bar.trade_count == 0:
+            return None
+
+        # Calculate which bar we SHOULD be building right now
+        expected_bar_start = self._get_bar_start_time(current_time)
+
+        # Check if we've crossed into a new bar period
+        if expected_bar_start > self.current_bar_start_time:
+            # We've crossed into next minute/period but current bar is still old
+            # Complete the old bar (quiet market - no trades triggered completion)
+            completed_bar = self.current_bar.to_dict()
+
+            # Store for late trades
+            self.previous_bar = self.current_bar
+
+            # Reset current bar to None (will be created on next trade)
+            self.current_bar = None
+            self.current_bar_start_time = None
+
+            # Call completion callback
+            if self._on_bar_complete:
+                self._on_bar_complete(completed_bar)
+
+            logger.debug(
+                f"Time-triggered bar completion: {completed_bar['timestamp']} "
+                f"(current_time={current_time}, no trades in new period)"
+            )
+
+            return completed_bar
+
+        return None
+
     def get_stats(self) -> dict:
         """
         Get aggregator statistics.

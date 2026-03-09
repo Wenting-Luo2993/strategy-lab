@@ -665,6 +665,41 @@ class TradingOrchestrator:
         except Exception as e:
             self.logger.error(f"Error handling completed bar for {symbol}: {e}", exc_info=True)
 
+    async def _flush_elapsed_bars(self) -> None:
+        """
+        Flush bars that have crossed time boundaries (quiet market handling).
+
+        This is the TIME-TRIGGERED completion path that complements the existing
+        TRADE-TRIGGERED completion. Called periodically from trading loop.
+
+        Why needed:
+        - Trade-triggered: Bar completes when first trade of NEXT minute arrives (fast)
+        - Time-triggered: Bar completes after time boundary even if no trades (safety net)
+
+        Example scenario:
+        - 9:32:00 bar is building with trades at 9:32:05, 9:32:15, 9:32:30
+        - Market goes quiet - NO trades arrive at 9:33:00+
+        - Without this method: 9:32:00 bar never completes!
+        - With this method: 9:32:00 bar completes within 1-60 seconds (guaranteed)
+
+        Called every iteration of trading loop (1-60 seconds depending on mode).
+        """
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        try:
+            current_time = get_market_now(self.market_scheduler)
+
+            for symbol, aggregator in self.bar_aggregators.items():
+                # Check if this aggregator has a bar that crossed time boundary
+                completed_bar = aggregator.flush_if_elapsed(current_time)
+                if completed_bar:
+                    # Bar completed due to time boundary (not trade-triggered)
+                    # Handle same as trade-triggered bars
+                    self._handle_completed_bar(symbol, completed_bar)
+
+        except Exception as e:
+            self.logger.error(f"Error flushing elapsed bars: {e}", exc_info=True)
+
     # Old Finnhub connection methods removed - now handled by provider system in warm-up phase
 
     async def _start_rest_polling(self):
@@ -1293,6 +1328,10 @@ class TradingOrchestrator:
 
             # Check if ORB notification should be sent (after all symbols evaluated)
             await self._check_and_send_orb_notification()
+
+            # Flush any bars that crossed time boundaries (quiet market handling)
+            # This is the TIME-TRIGGERED completion path (complements trade-triggered)
+            await self._flush_elapsed_bars()
 
             # Return success if we got data for at least one symbol
             return successful_fetches > 0

@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.2.3"  # Patch: pass trading date explicitly to ORB calculator (better design)
+VERSION = "1.2.4"  # Patch: hybrid bar completion (trade-triggered + time-triggered for quiet markets)
 
 
 def get_build_timestamp() -> str:
