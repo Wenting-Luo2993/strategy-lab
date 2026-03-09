@@ -860,15 +860,17 @@ class TradingOrchestrator:
                         # If provider already disconnected, we've completed cooldown - just sleep until morning
                         if self.active_provider and not self.active_provider.connected:
                             # Calculate sleep time until next warm-up
-                            next_warmup = self.market_scheduler.get_warmup_time()
+                            # Use next_market_open() and subtract 5 min to ensure FUTURE time
                             next_open = self.market_scheduler.next_market_open()
-                            target_time = next_warmup if next_warmup else next_open
+                            target_time = next_open - timedelta(minutes=5)  # Warmup is 5 min before open
 
                             # Log once
                             if not self._market_closed_logged:
+                                current_time = get_market_now(self.market_scheduler)
+                                hours_until_warmup = (target_time - current_time).total_seconds() / 3600
                                 self.logger.info(
                                     f"Market closed, sleeping until warm-up at {target_time.strftime('%Y-%m-%d %H:%M:%S %Z')} "
-                                    f"({(target_time - now).total_seconds()/3600:.1f} hours). "
+                                    f"({hours_until_warmup:.1f} hours). "
                                     f"Checking for shutdown every 5 minutes."
                                 )
                                 self._market_closed_logged = True
@@ -893,14 +895,14 @@ class TradingOrchestrator:
                         # If cooldown complete, sleep until next warmup
                         if self.cooldown_manager.is_cooldown_complete():
                             sleep_seconds = self.cooldown_manager.calculate_sleep_until_warmup()
-                            next_warmup = self.market_scheduler.get_warmup_time()
+                            # Use next_market_open() and subtract 5 min to ensure FUTURE time
                             next_open = self.market_scheduler.next_market_open()
-                            target_time = next_warmup if next_warmup else next_open
+                            target_time = next_open - timedelta(minutes=5)  # Warmup is 5 min before open
 
                             # Log sleep message once (avoid spam)
                             if sleep_seconds > 0 and self.cooldown_manager.should_log_sleep_message():
                                 self.logger.info(
-                                    f"Market closed, sleeping until warm-up at {target_time} "
+                                    f"Market closed, sleeping until warm-up at {target_time.strftime('%Y-%m-%d %H:%M:%S %Z')} "
                                     f"({sleep_seconds/3600:.1f} hours). "
                                     f"Checking for shutdown every 5 minutes."
                                 )

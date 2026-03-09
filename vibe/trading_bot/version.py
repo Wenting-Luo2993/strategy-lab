@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.2.4"  # Patch: hybrid bar completion (trade-triggered + time-triggered for quiet markets)
+VERSION = "1.2.5"  # Patch: fix negative sleep time calculation (use next_market_open for warmup time)
 
 
 def get_build_timestamp() -> str:
