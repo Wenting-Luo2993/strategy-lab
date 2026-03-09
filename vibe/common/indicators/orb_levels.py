@@ -126,22 +126,35 @@ class ORBCalculator:
                 reason="Empty dataframe",
             )
 
-        # Check if data is for new day - use FIRST bar's date, not last
-        first_date = df.iloc[0]["timestamp"].date()
-        first_date_str = str(first_date)
+        # Check if data is for new day - use LAST bar's date (most recent trading day)
+        # This handles DataFrames with multiple days of historical + today's real-time bars
+        current_date = df.iloc[-1]["timestamp"].date()
+        current_date_str = str(current_date)
 
         # If we have cached levels for a different day, invalidate
-        if self._current_date != first_date_str:
+        if self._current_date != current_date_str:
             self._current_date = None
             self._current_levels = None
 
         # Check cache
-        if self._current_date == first_date_str and self._current_levels:
+        if self._current_date == current_date_str and self._current_levels:
             return self._current_levels
+
+        # Filter bars from current trading day only, then find bars in opening window
+        current_day_df = df[df["timestamp"].dt.date == current_date].copy()
+
+        if current_day_df.empty:
+            return ORBLevels(
+                high=0.0,
+                low=0.0,
+                range=0.0,
+                valid=False,
+                reason=f"No bars for current trading day ({current_date})",
+            )
 
         # Filter bars in opening window
         opening_bars = []
-        for idx, row in df.iterrows():
+        for idx, row in current_day_df.iterrows():
             if self._is_in_opening_window(row["timestamp"]):
                 opening_bars.append(row)
             elif len(opening_bars) > 0:
@@ -193,7 +206,7 @@ class ORBCalculator:
         )
 
         # Cache for current day
-        self._current_date = first_date_str
+        self._current_date = current_date_str
         self._current_levels = levels
 
         return levels

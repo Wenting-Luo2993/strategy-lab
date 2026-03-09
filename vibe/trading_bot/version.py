@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.2.1"  # Patch: configurable cooldown duration for testing
+VERSION = "1.2.2"  # Patch: fix ORB calculator to use current trading day (not historical)
 
 
 def get_build_timestamp() -> str:
