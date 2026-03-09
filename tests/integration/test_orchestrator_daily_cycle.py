@@ -30,7 +30,9 @@ from datetime import datetime
 import logging
 
 # Add project root to path
-project_root = Path(__file__).parent
+# File is at: tests/integration/test_orchestrator_daily_cycle.py
+# Need to go up 2 levels to reach project root
+project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 
