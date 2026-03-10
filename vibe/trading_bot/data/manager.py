@@ -277,7 +277,7 @@ class DataManager:
                         logger.warning(
                             f"[DTYPE FIX] {symbol} ({timeframe}): timestamp column is {combined_df['timestamp'].dtype}, converting to datetime"
                         )
-                        combined_df["timestamp"] = pd.to_datetime(combined_df["timestamp"])
+                        combined_df["timestamp"] = pd.to_datetime(combined_df["timestamp"], utc=True)
 
                 logger.info(
                     f"[MERGE] {symbol} ({timeframe}): "

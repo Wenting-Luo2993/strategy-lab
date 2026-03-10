@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.2.6"  # Patch: timestamp dtype enforcement + fix duplicate bar completion (hybrid bar race condition)
+VERSION = "1.2.7"  # Hotfix: add utc=True to pd.to_datetime() for timezone-aware timestamps
 
 
 def get_build_timestamp() -> str:

@@ -146,7 +146,7 @@ class ORBCalculator:
             )
             try:
                 df = df.copy()
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
+                df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
             except Exception as e:
                 logger.error(f"ORB Calculator: Failed to convert timestamp to datetime: {e}")
                 return ORBLevels(

@@ -1225,7 +1225,7 @@ class TradingOrchestrator:
                                 self.logger.warning(
                                     f"[DTYPE FIX] {symbol}: timestamp column is {bars['timestamp'].dtype}, converting to datetime"
                                 )
-                                bars["timestamp"] = pd.to_datetime(bars["timestamp"])
+                                bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True)
 
                         self.logger.info(
                             f"[HYBRID DATA] {symbol}: Combined {len(bars) - len(realtime_bars)} "
