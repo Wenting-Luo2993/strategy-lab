@@ -129,6 +129,34 @@ class ORBCalculator:
                 reason="Empty dataframe",
             )
 
+        # Defensive check: Ensure timestamp column is datetime
+        if "timestamp" not in df.columns:
+            return ORBLevels(
+                high=0.0,
+                low=0.0,
+                range=0.0,
+                valid=False,
+                reason="Missing timestamp column",
+            )
+
+        if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+            # Try to convert to datetime
+            logger.warning(
+                f"ORB Calculator: timestamp column is {df['timestamp'].dtype}, attempting to convert to datetime"
+            )
+            try:
+                df = df.copy()
+                df["timestamp"] = pd.to_datetime(df["timestamp"])
+            except Exception as e:
+                logger.error(f"ORB Calculator: Failed to convert timestamp to datetime: {e}")
+                return ORBLevels(
+                    high=0.0,
+                    low=0.0,
+                    range=0.0,
+                    valid=False,
+                    reason=f"Invalid timestamp dtype: {df['timestamp'].dtype}",
+                )
+
         # Determine current trading date
         if trading_date is not None:
             # Use explicitly provided trading date (preferred)

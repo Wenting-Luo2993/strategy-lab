@@ -691,11 +691,9 @@ class TradingOrchestrator:
 
             for symbol, aggregator in self.bar_aggregators.items():
                 # Check if this aggregator has a bar that crossed time boundary
-                completed_bar = aggregator.flush_if_elapsed(current_time)
-                if completed_bar:
-                    # Bar completed due to time boundary (not trade-triggered)
-                    # Handle same as trade-triggered bars
-                    self._handle_completed_bar(symbol, completed_bar)
+                # NOTE: flush_if_elapsed() already calls the callback if bar completes,
+                # so we don't need to call _handle_completed_bar() here
+                aggregator.flush_if_elapsed(current_time)
 
         except Exception as e:
             self.logger.error(f"Error flushing elapsed bars: {e}", exc_info=True)
@@ -1221,6 +1219,13 @@ class TradingOrchestrator:
                         if "timestamp" in bars.columns:
                             bars = bars.drop_duplicates(subset=["timestamp"], keep="last")
                             bars = bars.sort_values("timestamp").reset_index(drop=True)
+
+                            # CRITICAL: Ensure timestamp is datetime (fixes dtype issues from stale cache)
+                            if not pd.api.types.is_datetime64_any_dtype(bars["timestamp"]):
+                                self.logger.warning(
+                                    f"[DTYPE FIX] {symbol}: timestamp column is {bars['timestamp'].dtype}, converting to datetime"
+                                )
+                                bars["timestamp"] = pd.to_datetime(bars["timestamp"])
 
                         self.logger.info(
                             f"[HYBRID DATA] {symbol}: Combined {len(bars) - len(realtime_bars)} "

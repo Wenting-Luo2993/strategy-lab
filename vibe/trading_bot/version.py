@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.2.5"  # Patch: fix negative sleep time calculation (use next_market_open for warmup time)
+VERSION = "1.2.6"  # Patch: timestamp dtype enforcement + fix duplicate bar completion (hybrid bar race condition)
 
 
 def get_build_timestamp() -> str:

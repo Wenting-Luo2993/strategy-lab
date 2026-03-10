@@ -251,6 +251,7 @@ class BarAggregator:
 
                 # Call completion callback
                 if self._on_bar_complete:
+                    logger.info(f"[TRADE-TRIGGERED] Completing bar {completed_bar['timestamp']}")
                     self._on_bar_complete(completed_bar)
 
                 return completed_bar
@@ -273,6 +274,7 @@ class BarAggregator:
         self.current_bar_start_time = None
 
         if self._on_bar_complete:
+            logger.info(f"[MANUAL-FLUSH] Completing bar {completed_bar['timestamp']}")
             self._on_bar_complete(completed_bar)
 
         return completed_bar
@@ -315,12 +317,14 @@ class BarAggregator:
             # Store for late trades
             self.previous_bar = self.current_bar
 
-            # Reset current bar to None (will be created on next trade)
-            self.current_bar = None
-            self.current_bar_start_time = None
+            # Start new bar for the current period (same as add_trade does)
+            # This prevents duplicate completions when trades arrive later in the same minute
+            self.current_bar = Bar(expected_bar_start)
+            self.current_bar_start_time = expected_bar_start
 
             # Call completion callback
             if self._on_bar_complete:
+                logger.info(f"[TIME-TRIGGERED] Completing bar {completed_bar['timestamp']}")
                 self._on_bar_complete(completed_bar)
 
             logger.debug(

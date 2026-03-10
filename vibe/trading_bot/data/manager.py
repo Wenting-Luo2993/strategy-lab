@@ -272,6 +272,13 @@ class DataManager:
                     combined_df = combined_df.drop_duplicates(subset=["timestamp"], keep="last")
                     combined_df = combined_df.sort_values("timestamp").reset_index(drop=True)
 
+                    # CRITICAL: Ensure timestamp is datetime (fixes dtype issues from stale cache)
+                    if not pd.api.types.is_datetime64_any_dtype(combined_df["timestamp"]):
+                        logger.warning(
+                            f"[DTYPE FIX] {symbol} ({timeframe}): timestamp column is {combined_df['timestamp'].dtype}, converting to datetime"
+                        )
+                        combined_df["timestamp"] = pd.to_datetime(combined_df["timestamp"])
+
                 logger.info(
                     f"[MERGE] {symbol} ({timeframe}): "
                     f"Merged {len(existing_cached_df)} cached + {len(df)} new = {len(combined_df)} total rows"
