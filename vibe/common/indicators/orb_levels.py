@@ -179,7 +179,25 @@ class ORBCalculator:
         # Filter bars from current trading day only, then find bars in opening window
         current_day_df = df[df["timestamp"].dt.date == current_date].copy()
 
+        # DEBUG: Log filtering details
+        logger.info(
+            f"ORB Calculate: trading_date={current_date}, total_bars={len(df)}, "
+            f"current_day_bars={len(current_day_df)}"
+        )
+        if not current_day_df.empty:
+            logger.info(
+                f"ORB Calculate: current_day bars timestamps: "
+                f"{current_day_df['timestamp'].tolist()}"
+            )
+
         if current_day_df.empty:
+            # DEBUG: Show why no bars matched
+            if not df.empty:
+                bar_dates = df['timestamp'].dt.date.unique()
+                logger.warning(
+                    f"ORB Calculate: No bars for {current_date}. "
+                    f"Available dates in DataFrame: {bar_dates.tolist()}"
+                )
             return ORBLevels(
                 high=0.0,
                 low=0.0,
@@ -196,6 +214,15 @@ class ORBCalculator:
             elif len(opening_bars) > 0:
                 # Stop once we exit the opening window
                 break
+
+        # DEBUG: Log opening window filtering
+        logger.info(
+            f"ORB Calculate: opening_window={self.start_time}-{self.start_time.hour}:{self.start_time.minute + self.duration_minutes:02d}, "
+            f"bars_in_window={len(opening_bars)}"
+        )
+        if opening_bars:
+            opening_timestamps = [row['timestamp'] for row in opening_bars]
+            logger.info(f"ORB Calculate: opening_bars timestamps: {opening_timestamps}")
 
         if not opening_bars:
             return ORBLevels(
