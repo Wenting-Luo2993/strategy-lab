@@ -195,6 +195,14 @@ class ORBStrategy(StrategyBase):
 
         # Long breakout
         if self.orb_calculator.is_long_breakout(current_price, levels):
+            # Check body percentage filter for breakout bar
+            body_pct = self._calculate_body_percentage(current_bar)
+            if body_pct < self.config.orb_body_pct_filter:
+                return 0, {
+                    "reason": "weak_breakout_candle",
+                    "reason_detail": f"Body {body_pct:.1%} < {self.config.orb_body_pct_filter:.1%} threshold"
+                }
+
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
             tp = self.orb_calculator.get_long_exit_level(
@@ -215,6 +223,14 @@ class ORBStrategy(StrategyBase):
 
         # Short breakout
         elif self.orb_calculator.is_short_breakout(current_price, levels):
+            # Check body percentage filter for breakout bar
+            body_pct = self._calculate_body_percentage(current_bar)
+            if body_pct < self.config.orb_body_pct_filter:
+                return 0, {
+                    "reason": "weak_breakout_candle",
+                    "reason_detail": f"Body {body_pct:.1%} < {self.config.orb_body_pct_filter:.1%} threshold"
+                }
+
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
             tp = self.orb_calculator.get_short_exit_level(
@@ -234,6 +250,30 @@ class ORBStrategy(StrategyBase):
             return -1, metadata
 
         return 0, {"reason": "no_breakout"}
+
+    def _calculate_body_percentage(self, bar: dict) -> float:
+        """
+        Calculate body percentage of a candle.
+
+        Body percentage = |close - open| / (high - low)
+
+        Args:
+            bar: Bar dict with open, high, low, close
+
+        Returns:
+            Body percentage (0.0 to 1.0)
+        """
+        open_price = bar.get("open", 0)
+        close_price = bar.get("close", 0)
+        high_price = bar.get("high", 0)
+        low_price = bar.get("low", 0)
+
+        total_range = high_price - low_price
+        if total_range == 0:
+            return 0.0
+
+        body_size = abs(close_price - open_price)
+        return body_size / total_range
 
     def _check_volume_filter(self, daily_df: pd.DataFrame, current_idx: int) -> bool:
         """Check if current bar has sufficient volume."""

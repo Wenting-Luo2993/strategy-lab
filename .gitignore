@@ -77,3 +77,6 @@ vibe/backtester/logs/
 .coverage
 **/tests/__snapshots__/html/
 .testmondata**
+
+# Backtest outputs
+backtest_charts/

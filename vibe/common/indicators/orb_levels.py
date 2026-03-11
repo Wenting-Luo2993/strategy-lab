@@ -241,31 +241,15 @@ class ORBCalculator:
         orb_low = min(lows)
         orb_range = orb_high - orb_low
 
-        # Check if first candle is a valid breakout candle
-        first_bar = opening_bars[0]
-        valid = self._is_valid_breakout_candle(
-            first_bar["open"],
-            first_bar["close"],
-            first_bar["high"],
-            first_bar["low"],
-        )
-
-        reason = ""
-        if not valid:
-            body_pct = self._calculate_body_percentage(
-                first_bar["open"],
-                first_bar["close"],
-                first_bar["high"],
-                first_bar["low"],
-            )
-            reason = f"First candle body {body_pct:.1%} < {self.body_pct_filter:.1%} threshold"
-
+        # ORB levels are always valid if we have bars in the opening window
+        # Body percentage filter should be applied to BREAKOUT bars, not ORB bars
+        # (The ORB bar just establishes the range - body size is irrelevant)
         levels = ORBLevels(
             high=orb_high,
             low=orb_low,
             range=orb_range,
-            valid=valid,
-            reason=reason,
+            valid=True,  # Always valid if bars exist in opening window
+            reason="",
         )
 
         # Cache for current day
