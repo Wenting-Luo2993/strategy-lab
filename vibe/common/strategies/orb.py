@@ -148,12 +148,23 @@ class ORBStrategy(StrategyBase):
 
             current_time = datetime.fromisoformat(current_time)
 
-        bar_time = current_time.time()
+        # CRITICAL FIX: Convert to market timezone (EDT/EST) before extracting time
+        # This ensures we compare market hours correctly regardless of input timezone
+        import pytz
+        market_tz = pytz.timezone("America/New_York")
+
+        # Ensure timezone-aware
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=pytz.UTC)
+
+        # Convert to market timezone
+        current_time_local = current_time.astimezone(market_tz)
+        bar_time = current_time_local.time()
 
         # DEBUG: Log timestamp comparison details (using INFO level to ensure visibility)
         logger.info(
             f"[TIMESTAMP CHECK] {symbol}: "
-            f"current_time={current_time}, "
+            f"current_time={current_time} → market_time={current_time_local}, "
             f"bar_time={bar_time}, "
             f"entry_cutoff={self.entry_cutoff}, "
             f"is_after_cutoff={bar_time >= self.entry_cutoff}"
