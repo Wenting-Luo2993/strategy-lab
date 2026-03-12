@@ -150,16 +150,25 @@ class ORBStrategy(StrategyBase):
 
         bar_time = current_time.time()
 
-        # Check time filter
-        if bar_time >= self.entry_cutoff:
-            return 0, {"reason": "after_entry_cutoff_time"}
-
         # Calculate ORB levels from context, passing current trading date explicitly
         # This ensures we calculate ORB for the current bar's date, not historical data
+        # NOTE: Calculate BEFORE checking entry cutoff so ORB levels get stored for notification
         levels = self.orb_calculator.calculate(df_context, trading_date=current_time)
 
         if not levels.valid:
             return 0, {"reason": "invalid_orb_levels", "reason_detail": levels.reason}
+
+        # Check time filter AFTER calculating ORB (so levels get stored)
+        if bar_time >= self.entry_cutoff:
+            # Return with ORB levels in metadata (for notification)
+            return 0, {
+                "reason": "after_entry_cutoff_time",
+                "orb_high": levels.high,
+                "orb_low": levels.low,
+                "orb_range": levels.range,
+                "current_price": current_bar["close"],
+                "price_position": "n/a",
+            }
 
         # Check volume filter
         if self.config.use_volume_filter:
@@ -198,10 +207,12 @@ class ORBStrategy(StrategyBase):
             # Check body percentage filter for breakout bar
             body_pct = self._calculate_body_percentage(current_bar)
             if body_pct < self.config.orb_body_pct_filter:
-                return 0, {
+                # Return full metadata (includes ORB levels) even when rejecting signal
+                metadata.update({
                     "reason": "weak_breakout_candle",
                     "reason_detail": f"Body {body_pct:.1%} < {self.config.orb_body_pct_filter:.1%} threshold"
-                }
+                })
+                return 0, metadata
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
@@ -226,10 +237,12 @@ class ORBStrategy(StrategyBase):
             # Check body percentage filter for breakout bar
             body_pct = self._calculate_body_percentage(current_bar)
             if body_pct < self.config.orb_body_pct_filter:
-                return 0, {
+                # Return full metadata (includes ORB levels) even when rejecting signal
+                metadata.update({
                     "reason": "weak_breakout_candle",
                     "reason_detail": f"Body {body_pct:.1%} < {self.config.orb_body_pct_filter:.1%} threshold"
-                }
+                })
+                return 0, metadata
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
@@ -249,7 +262,9 @@ class ORBStrategy(StrategyBase):
 
             return -1, metadata
 
-        return 0, {"reason": "no_breakout"}
+        # No breakout - return full metadata (includes ORB levels for notification)
+        metadata.update({"reason": "no_breakout"})
+        return 0, metadata
 
     def _calculate_body_percentage(self, bar: dict) -> float:
         """
