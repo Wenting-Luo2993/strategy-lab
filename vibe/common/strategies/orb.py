@@ -150,8 +150,8 @@ class ORBStrategy(StrategyBase):
 
         bar_time = current_time.time()
 
-        # DEBUG: Log timestamp comparison details
-        logger.debug(
+        # DEBUG: Log timestamp comparison details (using INFO level to ensure visibility)
+        logger.info(
             f"[TIMESTAMP CHECK] {symbol}: "
             f"current_time={current_time}, "
             f"bar_time={bar_time}, "
