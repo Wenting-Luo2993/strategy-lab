@@ -150,6 +150,15 @@ class ORBStrategy(StrategyBase):
 
         bar_time = current_time.time()
 
+        # DEBUG: Log timestamp comparison details
+        logger.debug(
+            f"[TIMESTAMP CHECK] {symbol}: "
+            f"current_time={current_time}, "
+            f"bar_time={bar_time}, "
+            f"entry_cutoff={self.entry_cutoff}, "
+            f"is_after_cutoff={bar_time >= self.entry_cutoff}"
+        )
+
         # Calculate ORB levels from context, passing current trading date explicitly
         # This ensures we calculate ORB for the current bar's date, not historical data
         # NOTE: Calculate BEFORE checking entry cutoff so ORB levels get stored for notification
