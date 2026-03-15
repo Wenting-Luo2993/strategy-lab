@@ -1,6 +1,7 @@
 # Trading Bot - Code Patterns & Architecture
 
 This document defines standard patterns for trading bot development.
+For accumulated lessons learned and production incident fixes, also read: **`CLAUDE_MEMORY.md`**
 
 **Version:** 1.1.0
 **Last Updated:** 2026-02-28
