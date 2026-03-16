@@ -72,7 +72,16 @@ class ORBCalculator:
         return time(hour, minute)
 
     def _get_time_from_timestamp(self, ts: datetime) -> time:
-        """Extract time from datetime."""
+        """Extract time from datetime in Eastern (market) timezone.
+
+        CRITICAL: Always convert to Eastern timezone before extracting time.
+        Timestamps may be UTC (from yfinance/Finnhub), and comparing UTC times
+        directly to market-hour boundaries (e.g., 09:30) would be wrong.
+        """
+        import pytz
+        market_tz = pytz.timezone("America/New_York")
+        if hasattr(ts, 'tzinfo') and ts.tzinfo is not None:
+            ts = ts.astimezone(market_tz)
         return ts.time()
 
     def _is_in_opening_window(self, ts: datetime) -> bool:
