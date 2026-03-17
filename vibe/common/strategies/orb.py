@@ -59,6 +59,16 @@ class ORBStrategy(StrategyBase):
         super().__init__(config)
 
         self.config: ORBStrategyConfig = config
+        # Per-symbol ORB calculators - ORBCalculator caches by date only,
+        # so a single shared instance would return the first symbol's levels for all symbols.
+        self._orb_calculators: Dict[str, ORBCalculator] = {}
+        self._orb_calculator_config = {
+            "start_time": config.orb_start_time,
+            "duration_minutes": config.orb_duration_minutes,
+            "body_pct_filter": config.orb_body_pct_filter,
+        }
+
+        # Keep a default calculator for batch generate_signals (operates per-date, no caching issue)
         self.orb_calculator = ORBCalculator(
             start_time=config.orb_start_time,
             duration_minutes=config.orb_duration_minutes,
@@ -113,6 +123,12 @@ class ORBStrategy(StrategyBase):
                     signals.loc[_] = -1
 
         return signals
+
+    def _get_orb_calculator(self, symbol: str) -> ORBCalculator:
+        """Get or create a per-symbol ORBCalculator instance."""
+        if symbol not in self._orb_calculators:
+            self._orb_calculators[symbol] = ORBCalculator(**self._orb_calculator_config)
+        return self._orb_calculators[symbol]
 
     def generate_signal_incremental(
         self,
@@ -173,7 +189,9 @@ class ORBStrategy(StrategyBase):
         # Calculate ORB levels from context, passing current trading date explicitly
         # This ensures we calculate ORB for the current bar's date, not historical data
         # NOTE: Calculate BEFORE checking entry cutoff so ORB levels get stored for notification
-        levels = self.orb_calculator.calculate(df_context, trading_date=current_time)
+        # Use per-symbol calculator to avoid cache collision across symbols
+        orb_calc = self._get_orb_calculator(symbol)
+        levels = orb_calc.calculate(df_context, trading_date=current_time)
 
         if not levels.valid:
             return 0, {"reason": "invalid_orb_levels", "reason_detail": levels.reason}
@@ -223,7 +241,7 @@ class ORBStrategy(StrategyBase):
         }
 
         # Long breakout
-        if self.orb_calculator.is_long_breakout(current_price, levels):
+        if orb_calc.is_long_breakout(current_price, levels):
             # Check body percentage filter for breakout bar
             body_pct = self._calculate_body_percentage(current_bar)
             if body_pct < self.config.orb_body_pct_filter:
@@ -236,7 +254,7 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = self.orb_calculator.get_long_exit_level(
+            tp = orb_calc.get_long_exit_level(
                 levels,
                 atr,
                 multiplier=self.config.take_profit_multiplier,
@@ -253,7 +271,7 @@ class ORBStrategy(StrategyBase):
             return 1, metadata
 
         # Short breakout
-        elif self.orb_calculator.is_short_breakout(current_price, levels):
+        elif orb_calc.is_short_breakout(current_price, levels):
             # Check body percentage filter for breakout bar
             body_pct = self._calculate_body_percentage(current_bar)
             if body_pct < self.config.orb_body_pct_filter:
@@ -266,7 +284,7 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = self.orb_calculator.get_short_exit_level(
+            tp = orb_calc.get_short_exit_level(
                 levels,
                 atr,
                 multiplier=self.config.take_profit_multiplier,
