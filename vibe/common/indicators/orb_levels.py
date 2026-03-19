@@ -167,12 +167,32 @@ class ORBCalculator:
                 )
 
         # Determine current trading date
+        # CRITICAL: Always compute the trading date in Eastern (market) timezone.
+        # df["timestamp"].dt.date returns dates in the timezone of stored timestamps.
+        # yfinance and BarAggregator both store timestamps in America/New_York (Eastern).
+        # If trading_date is in UTC (e.g., from Finnhub bars), trading_date.date() returns
+        # a UTC date which may differ from the Eastern date stored in df["timestamp"].dt.date
+        # when the DataFrame timestamps did NOT get converted to UTC by pd.concat.
+        # By converting trading_date to Eastern before extracting .date(), we ensure
+        # current_date always uses the same timezone as df["timestamp"].dt.date.
+        import pytz
+        _market_tz = pytz.timezone("America/New_York")
         if trading_date is not None:
-            # Use explicitly provided trading date (preferred)
-            current_date = trading_date.date() if hasattr(trading_date, 'date') else trading_date
+            # Convert to Eastern timezone before extracting the date
+            if hasattr(trading_date, 'tzinfo') and trading_date.tzinfo is not None:
+                trading_date_local = trading_date.astimezone(_market_tz)
+            elif hasattr(trading_date, 'tzinfo') and trading_date.tzinfo is None:
+                # Naive datetime - assume UTC for safety
+                trading_date_local = pytz.utc.localize(trading_date).astimezone(_market_tz)
+            else:
+                trading_date_local = trading_date
+            current_date = trading_date_local.date() if hasattr(trading_date_local, 'date') else trading_date_local
         else:
-            # Fall back to inferring from DataFrame (use last bar's date)
-            current_date = df.iloc[-1]["timestamp"].date()
+            # Fall back to inferring from DataFrame (use last bar's date in Eastern tz)
+            last_ts = df.iloc[-1]["timestamp"]
+            if hasattr(last_ts, 'tzinfo') and last_ts.tzinfo is not None:
+                last_ts = last_ts.astimezone(_market_tz)
+            current_date = last_ts.date()
 
         current_date_str = str(current_date)
 
@@ -183,10 +203,34 @@ class ORBCalculator:
 
         # Check cache
         if self._current_date == current_date_str and self._current_levels:
+            logger.info(
+                f"ORB Calculate: cache HIT for {current_date_str}, "
+                f"returning cached high=${self._current_levels.high:.2f}, low=${self._current_levels.low:.2f}"
+            )
             return self._current_levels
 
-        # Filter bars from current trading day only, then find bars in opening window
-        current_day_df = df[df["timestamp"].dt.date == current_date].copy()
+        # Filter bars from current trading day only, then find bars in opening window.
+        # CRITICAL: Normalize timestamps to Eastern timezone before comparing dates.
+        # Timestamps in df may be in any timezone (UTC from Finnhub, Eastern from yfinance,
+        # or object dtype with mixed timezones). Computing dt.date on UTC timestamps returns
+        # UTC dates, while current_date is in Eastern. For market hours bars these dates are
+        # the same calendar day, but to be safe we always compare in Eastern timezone.
+        try:
+            ts_dtype = df["timestamp"].dtype
+            ts_is_tz_aware = (
+                hasattr(ts_dtype, 'tz') and ts_dtype.tz is not None
+            )
+            if ts_is_tz_aware:
+                # tz-aware datetime64: convert to Eastern and extract date
+                ts_eastern = df["timestamp"].dt.tz_convert(_market_tz)
+                current_day_df = df[ts_eastern.dt.date == current_date].copy()
+            else:
+                # tz-naive datetime64 or object dtype: fall back to direct comparison
+                # (object dtype was already caught by the DTYPE FIX earlier in this method)
+                current_day_df = df[df["timestamp"].dt.date == current_date].copy()
+        except Exception as e:
+            logger.warning(f"ORB Calculate: date filter failed ({e}), falling back to direct comparison")
+            current_day_df = df[df["timestamp"].dt.date == current_date].copy()
 
         # DEBUG: Log filtering details
         logger.info(
@@ -249,6 +293,11 @@ class ORBCalculator:
         orb_high = max(highs)
         orb_low = min(lows)
         orb_range = orb_high - orb_low
+
+        logger.info(
+            f"ORB Calculate: RESULT high=${orb_high:.2f}, low=${orb_low:.2f}, "
+            f"range=${orb_range:.2f} (from {len(opening_bars)} opening bar(s))"
+        )
 
         # ORB levels are always valid if we have bars in the opening window
         # Body percentage filter should be applied to BREAKOUT bars, not ORB bars

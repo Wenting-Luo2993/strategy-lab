@@ -191,7 +191,13 @@ class ORBStrategy(StrategyBase):
         # NOTE: Calculate BEFORE checking entry cutoff so ORB levels get stored for notification
         # Use per-symbol calculator to avoid cache collision across symbols
         orb_calc = self._get_orb_calculator(symbol)
-        levels = orb_calc.calculate(df_context, trading_date=current_time)
+        # CRITICAL: Pass current_time_local (Eastern) as trading_date, NOT current_time (UTC).
+        # orb_levels.py uses trading_date.date() to filter bars by date, and df["timestamp"].dt.date
+        # returns dates in the stored timezone (Eastern for yfinance/Finnhub bars). Passing UTC here
+        # causes a mismatch when pd.concat does NOT convert to UTC (e.g., same-tz concat stays Eastern).
+        logger.info(f"[ORB CALC] {symbol}: calling calculate() with {len(df_context)} bars, trading_date={current_time_local}")
+        levels = orb_calc.calculate(df_context, trading_date=current_time_local)
+        logger.info(f"[ORB CALC] {symbol}: result valid={levels.valid}, high=${levels.high:.2f}, low=${levels.low:.2f}")
 
         if not levels.valid:
             return 0, {"reason": "invalid_orb_levels", "reason_detail": levels.reason}
