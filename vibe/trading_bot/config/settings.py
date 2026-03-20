@@ -100,6 +100,10 @@ class AppSettings(BaseSettings):
     health_check_port: int = Field(default=8080, description="Health check server port")
     shutdown_timeout_seconds: int = Field(default=30, description="Graceful shutdown timeout")
     database_path: str = Field(default="./data/trades.db", description="SQLite database path")
+    active_ruleset: str = Field(
+        default="orb_conservative",
+        description="Name of the active ruleset file under vibe/rulesets/ (without .yaml)"
+    )
 
     trading: TradingSettings = Field(default_factory=TradingSettings)
     data: DataSettings = Field(default_factory=DataSettings)

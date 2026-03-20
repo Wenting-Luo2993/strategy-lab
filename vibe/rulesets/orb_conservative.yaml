@@ -1,0 +1,54 @@
+name: orb_conservative
+version: "1.0"
+description: "ORB strategy — conservative parameters with tight filters"
+
+instruments:
+  symbols: [QQQ, SPY]
+  timeframe: 5m
+
+strategy:
+  type: orb
+  orb_start_time: "09:30"
+  orb_duration_minutes: 5
+  orb_body_pct_filter: 0.5
+  entry_cutoff_time: "15:00"
+  entry_mode: no_validation_simple
+  one_trade_per_day: true
+  cancel_other_side: true
+  allow_reentry: false
+
+position_size:
+  method: max_loss_pct
+  value: 0.01
+  max_shares: 500
+
+exit:
+  eod: true
+  eod_time: "15:55"
+
+  take_profit:
+    method: orb_range_multiple
+    multiplier: 2.0
+
+  stop_loss:
+    method: orb_level
+
+  trailing_stop:
+    method: stepped_r_multiple
+    steps:
+      - at: 2.0
+        move_stop_to: 1.0
+      - at: 3.0
+        move_stop_to: 2.0
+      - at: 4.0
+        move_stop_to: 2.5
+
+trade_filter:
+  vix_max: 30
+  volume_confirmation: false
+  volume_threshold: 1.5
+
+mtf_validation:
+  enabled: false
+  timeframe: 30m
+  condition: trend_aligned

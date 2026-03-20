@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.2.7"  # Hotfix: add utc=True to pd.to_datetime() for timezone-aware timestamps
+VERSION = "1.3.0"  # feat: ruleset architecture — StrategyRuleSet models, YAML loader, orb_production ruleset
 
 
 def get_build_timestamp() -> str:

@@ -29,6 +29,7 @@ from vibe.trading_bot.notifications.discord import DiscordNotifier
 from vibe.trading_bot.notifications.payloads import SystemStatusPayload
 from vibe.trading_bot.version import BUILD_VERSION
 from vibe.trading_bot.core.phases import WarmupPhaseManager, CooldownPhaseManager
+from vibe.common.ruleset import StrategyRuleSet, RuleSetLoader
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class TradingOrchestrator:
     def __init__(
         self,
         config: Optional[AppSettings] = None,
+        ruleset: Optional[StrategyRuleSet] = None,
         market_scheduler: Optional[BaseMarketScheduler] = None,
         testing_mode: bool = False,
         bar_interval: str = "5m",
@@ -52,6 +54,7 @@ class TradingOrchestrator:
 
         Args:
             config: Application settings (uses get_settings() if None)
+            ruleset: Strategy ruleset (loads from config.active_ruleset if None)
             market_scheduler: Market scheduler (creates default if None)
             testing_mode: If True, use shorter sleep intervals for faster testing
             bar_interval: Bar aggregation interval (e.g., "1m", "5m"). Default "5m" for production.
@@ -61,6 +64,15 @@ class TradingOrchestrator:
         self.logger = logging.getLogger(__name__)
         self._testing_mode = testing_mode
         self._bar_interval = bar_interval
+
+        # Load ruleset if not provided
+        if ruleset is None:
+            try:
+                ruleset = RuleSetLoader.from_name(self.config.active_ruleset)
+            except Exception as e:
+                self.logger.error(f"Failed to load ruleset '{self.config.active_ruleset}': {e}")
+                raise
+        self.ruleset = ruleset
 
         # Component initialization order matters
         # Allow dependency injection for testing (defaults to real scheduler for production)
@@ -134,6 +146,13 @@ class TradingOrchestrator:
         # Phase managers (warmup, cooldown)
         self.warmup_manager: Optional[WarmupPhaseManager] = None
         self.cooldown_manager: Optional[CooldownPhaseManager] = None
+
+        # Log active ruleset at initialization
+        self.logger.info(
+            f"Active ruleset: {self.ruleset.name} (v{self.ruleset.version}) — "
+            f"Symbols: {', '.join(self.ruleset.instruments.symbols)} | "
+            f"Timeframe: {self.ruleset.instruments.timeframe}"
+        )
 
     async def initialize(self) -> bool:
         """Initialize all components in correct order.
@@ -422,6 +441,10 @@ class TradingOrchestrator:
                 "range": metadata["orb_range"],
                 "body_pct": body_pct,
             }
+            self.logger.info(
+                f"[ORB STORED] {symbol}: High=${metadata['orb_high']:.2f}, "
+                f"Low=${metadata['orb_low']:.2f}, Range=${metadata['orb_range']:.2f}"
+            )
 
         # Count breakouts detected
         price_position = metadata.get("price_position", "")

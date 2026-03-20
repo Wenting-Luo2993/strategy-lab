@@ -1,0 +1,32 @@
+name: orb_production
+version: "1.0.0"
+description: "Production ORB strategy — QQQ, structure-based stop, EOD exit, 1% risk"
+
+instruments:
+  symbols: [QQQ]
+  timeframe: 5m
+
+strategy:
+  type: orb
+  orb_start_time: "09:30"
+  orb_duration_minutes: 5
+  entry_cutoff_time: "15:00"
+
+position_size:
+  method: max_loss_pct
+  value: 0.01
+
+exit:
+  eod: true
+  eod_time: "15:55"
+  stop_loss:
+    method: orb_level
+
+trade_filter:
+  volume_confirmation: false
+  volume_threshold: 1.5
+
+mtf_validation:
+  enabled: false
+  timeframe: 30m
+  condition: trend_aligned
