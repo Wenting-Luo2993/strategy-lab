@@ -17,6 +17,7 @@ services:
       - TICK_LOG_TTL_DAYS=3
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - ACTIVE_RULESET=${ACTIVE_RULESET:-orb_production}
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
