@@ -159,7 +159,7 @@ class WarmupPhaseManager(BasePhase):
         self.logger.info("Step 1/5: Warming cache with historical data...")
 
         try:
-            for symbol in self.config.trading.symbols:
+            for symbol in self.orchestrator.active_symbols:
                 self.logger.info(f"  Pre-fetching 2 days of data for {symbol}...")
                 bars = await self.data_manager.get_data(
                     symbol=symbol,
@@ -200,9 +200,9 @@ class WarmupPhaseManager(BasePhase):
 
                     # Subscribe if WebSocket
                     if isinstance(self.primary_provider, WebSocketDataProvider):
-                        for symbol in self.config.trading.symbols:
+                        for symbol in self.orchestrator.active_symbols:
                             await self.primary_provider.subscribe(symbol)
-                        self.logger.info(f"   [OK] Subscribed to {len(self.config.trading.symbols)} symbols")
+                        self.logger.info(f"   [OK] Subscribed to {len(self.orchestrator.active_symbols)} symbols")
 
                         # Wait for first ping/pong to verify connection is truly healthy
                         # Finnhub sends pings every ~60s, so we need to wait longer
@@ -263,7 +263,7 @@ class WarmupPhaseManager(BasePhase):
             missing_symbols = []
 
             # Check if each symbol has an aggregator
-            for symbol in self.config.trading.symbols:
+            for symbol in self.orchestrator.active_symbols:
                 if symbol not in self.orchestrator.bar_aggregators:
                     missing_symbols.append(symbol)
 
@@ -291,7 +291,7 @@ class WarmupPhaseManager(BasePhase):
 
                 self.logger.info("   [✓] Bar aggregators restored!")
             else:
-                self.logger.info(f"   [OK] All {len(self.config.trading.symbols)} bar aggregators present")
+                self.logger.info(f"   [OK] All {len(self.orchestrator.active_symbols)} bar aggregators present")
 
             return True
 

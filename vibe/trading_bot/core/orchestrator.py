@@ -29,7 +29,7 @@ from vibe.trading_bot.notifications.discord import DiscordNotifier
 from vibe.trading_bot.notifications.payloads import SystemStatusPayload
 from vibe.trading_bot.version import BUILD_VERSION
 from vibe.trading_bot.core.phases import WarmupPhaseManager, CooldownPhaseManager
-from vibe.common.ruleset import StrategyRuleSet, RuleSetLoader
+from vibe.common.ruleset import StrategyRuleSet, RuleSetLoader, OrbLevelStopLoss, OrbRangeMultipleTakeProfit
 
 
 logger = logging.getLogger(__name__)
@@ -154,6 +154,13 @@ class TradingOrchestrator:
             f"Timeframe: {self.ruleset.instruments.timeframe}"
         )
 
+    @property
+    def active_symbols(self) -> List[str]:
+        """Trading symbols driven by ruleset if available, else fall back to config."""
+        if self.ruleset and self.ruleset.instruments.symbols:
+            return list(self.ruleset.instruments.symbols)
+        return list(self.config.trading.symbols)
+
     async def initialize(self) -> bool:
         """Initialize all components in correct order.
 
@@ -203,9 +210,11 @@ class TradingOrchestrator:
             try:
                 # Create position sizer with percentage-based risk
                 # Risk amount is calculated dynamically based on current account value
-                position_sizer = PositionSizer(
-                    risk_pct=0.01,  # 1% risk per trade (scales with account growth)
-                )
+                # Risk pct driven by ruleset if available, else default 1%
+                risk_pct = 0.01
+                if self.ruleset and self.ruleset.position_size.method == "max_loss_pct":
+                    risk_pct = self.ruleset.position_size.value
+                position_sizer = PositionSizer(risk_pct=risk_pct)
 
                 # Create order manager with retry policy
                 retry_policy = OrderRetryPolicy(
@@ -238,26 +247,53 @@ class TradingOrchestrator:
                 self.logger.error(f"Failed to initialize indicator engine: {e}")
                 raise
 
-            # 5. Initialize strategy
+            # 5. Initialize strategy — driven by ruleset if available, else fall back to .env
             try:
-                # Create strategy config from settings
-                strategy_config = ORBStrategyConfig(
-                    name="ORB",
-                    orb_start_time=self.config.strategy.orb_start_time,
-                    orb_duration_minutes=self.config.strategy.orb_duration_minutes,
-                    orb_body_pct_filter=self.config.strategy.orb_body_pct_filter,
-                    entry_cutoff_time=self.config.strategy.entry_cutoff_time,
-                    take_profit_multiplier=self.config.strategy.take_profit_multiplier,
-                    stop_loss_at_level=self.config.strategy.stop_loss_at_level,
-                    use_volume_filter=self.config.strategy.use_volume_filter,
-                    volume_threshold=self.config.strategy.volume_threshold,
-                    market_close_time=self.config.strategy.market_close_time,
-                )
+                if self.ruleset:
+                    orb_params = self.ruleset.strategy
+                    # Take profit multiplier: 0.0 means disabled (no TP target)
+                    tp_multiplier = 0.0
+                    if self.ruleset.exit.take_profit is not None:
+                        tp_multiplier = getattr(self.ruleset.exit.take_profit, "multiplier", 0.0)
+                    # Stop loss: True if ORB level stop, False if ATR-based
+                    stop_at_level = isinstance(self.ruleset.exit.stop_loss, OrbLevelStopLoss)
+                    strategy_config = ORBStrategyConfig(
+                        name="ORB",
+                        orb_start_time=orb_params.orb_start_time,
+                        orb_duration_minutes=orb_params.orb_duration_minutes,
+                        orb_body_pct_filter=orb_params.orb_body_pct_filter,
+                        entry_cutoff_time=orb_params.entry_cutoff_time,
+                        take_profit_multiplier=tp_multiplier,
+                        stop_loss_at_level=stop_at_level,
+                        use_volume_filter=self.ruleset.trade_filter.volume_confirmation,
+                        volume_threshold=self.ruleset.trade_filter.volume_threshold,
+                        market_close_time=self.config.strategy.market_close_time,
+                    )
+                    self.logger.info(
+                        f"Strategy config from ruleset '{self.ruleset.name}': "
+                        f"ORB {orb_params.orb_start_time}+{orb_params.orb_duration_minutes}m, "
+                        f"body_filter={orb_params.orb_body_pct_filter:.0%}, "
+                        f"tp={'disabled' if tp_multiplier == 0 else f'{tp_multiplier}x'}, "
+                        f"sl={'orb_level' if stop_at_level else 'atr'}"
+                    )
+                else:
+                    strategy_config = ORBStrategyConfig(
+                        name="ORB",
+                        orb_start_time=self.config.strategy.orb_start_time,
+                        orb_duration_minutes=self.config.strategy.orb_duration_minutes,
+                        orb_body_pct_filter=self.config.strategy.orb_body_pct_filter,
+                        entry_cutoff_time=self.config.strategy.entry_cutoff_time,
+                        take_profit_multiplier=self.config.strategy.take_profit_multiplier,
+                        stop_loss_at_level=self.config.strategy.stop_loss_at_level,
+                        use_volume_filter=self.config.strategy.use_volume_filter,
+                        volume_threshold=self.config.strategy.volume_threshold,
+                        market_close_time=self.config.strategy.market_close_time,
+                    )
+                    self.logger.info(
+                        f"Strategy config from .env: ORB window={self.config.strategy.orb_start_time} "
+                        f"duration={self.config.strategy.orb_duration_minutes}m"
+                    )
                 self.strategy = ORBStrategy(config=strategy_config)
-                self.logger.info(
-                    f"Strategy initialized: ORB window={self.config.strategy.orb_start_time} "
-                    f"duration={self.config.strategy.orb_duration_minutes}m"
-                )
             except Exception as e:
                 self.logger.error(f"Failed to initialize strategy: {e}")
                 raise
@@ -306,8 +342,8 @@ class TradingOrchestrator:
                         self.logger.warning(f"Failed to create secondary provider: {e}")
                         self.secondary_provider = None
 
-                # Create bar aggregators for all symbols
-                for symbol in self.config.trading.symbols:
+                # Create bar aggregators for all active symbols (driven by ruleset)
+                for symbol in self.active_symbols:
                     aggregator = BarAggregator(
                         bar_interval=self._bar_interval,
                         timezone=str(self.market_scheduler.timezone)
@@ -492,7 +528,7 @@ class TradingOrchestrator:
 
         # Check if we have ORB levels for all symbols
         orb_levels = self._daily_stats.get("orb_levels", {})
-        expected_symbols = set(self.config.trading.symbols)
+        expected_symbols = set(self.active_symbols)
         collected_symbols = set(orb_levels.keys())
 
         if not collected_symbols or not collected_symbols.issuperset(expected_symbols):
@@ -753,7 +789,7 @@ class TradingOrchestrator:
 
                     # Fetch latest bars for all symbols
                     bars = await self.active_provider.get_multiple_latest_bars(
-                        symbols=self.config.trading.symbols,
+                        symbols=self.active_symbols,
                         timeframe="5"  # 5-minute bars (Massive free tier supports 5min, not 1min)
                     )
 
@@ -819,7 +855,7 @@ class TradingOrchestrator:
 
                 # If WebSocket, subscribe to symbols
                 if isinstance(self.active_provider, WebSocketDataProvider):
-                    for symbol in self.config.trading.symbols:
+                    for symbol in self.active_symbols:
                         await self.active_provider.subscribe(symbol)
                     self.active_provider.on_trade(self._handle_realtime_trade)
                     self.active_provider.on_error(self._handle_provider_error)
@@ -1105,6 +1141,7 @@ class TradingOrchestrator:
                 "after_entry_cutoff_time",
                 "insufficient_volume",
                 "position_already_open",
+                "weak_breakout_candle",
             }
 
             if reason in interesting_reasons:
@@ -1189,7 +1226,7 @@ class TradingOrchestrator:
                     f"Market is open and Finnhub is active - relying solely on websocket data"
                 )
 
-            for symbol in self.config.trading.symbols:
+            for symbol in self.active_symbols:
                 try:
                     # Fetch historical data from Yahoo (includes yesterday + today with staleness check)
                     # During market hours with Finnhub websocket, disable yfinance fallback
@@ -1329,11 +1366,13 @@ class TradingOrchestrator:
 
                     # 4. Execute trade if we have a signal
                     if signal_value != 0:  # 1=long, -1=short, 0=no signal
+                        tp = signal_metadata.get('take_profit')
+                        tp_str = f"${tp:.2f}" if tp is not None else "none"
                         self.logger.info(
                             f"[SIGNAL] {symbol}: {signal_metadata.get('signal', 'unknown').upper()} at "
                             f"${signal_metadata.get('current_price', 0):.2f} "
                             f"(ORB: ${signal_metadata.get('orb_low', 0):.2f}-${signal_metadata.get('orb_high', 0):.2f}, "
-                            f"TP: ${signal_metadata.get('take_profit', 0):.2f}, "
+                            f"TP: {tp_str}, "
                             f"SL: ${signal_metadata.get('stop_loss', 0):.2f}, "
                             f"R/R: {signal_metadata.get('risk_reward', 0):.1f})"
                         )

@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.3.0"  # feat: ruleset architecture — StrategyRuleSet models, YAML loader, orb_production ruleset
+VERSION = "1.3.1"  # feat: ruleset phase 2 — wire symbols, strategy config, position size from ruleset
 
 
 def get_build_timestamp() -> str:

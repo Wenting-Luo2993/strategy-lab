@@ -260,18 +260,21 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = orb_calc.get_long_exit_level(
-                levels,
-                atr,
-                multiplier=self.config.take_profit_multiplier,
-            )
+            # take_profit_multiplier=0 means no TP target (EOD exit only)
+            tp = None
+            if self.config.take_profit_multiplier > 0:
+                tp = orb_calc.get_long_exit_level(
+                    levels,
+                    atr,
+                    multiplier=self.config.take_profit_multiplier,
+                )
             sl = levels.low if self.config.stop_loss_at_level else current_price - atr
 
             metadata.update({
                 "signal": "long_breakout",
                 "take_profit": tp,
                 "stop_loss": sl,
-                "risk_reward": (tp - current_price) / (current_price - sl) if current_price > sl else 0,
+                "risk_reward": ((tp - current_price) / (current_price - sl) if tp is not None else None) if current_price > sl else 0,
             })
 
             return 1, metadata
@@ -290,18 +293,21 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = orb_calc.get_short_exit_level(
-                levels,
-                atr,
-                multiplier=self.config.take_profit_multiplier,
-            )
+            # take_profit_multiplier=0 means no TP target (EOD exit only)
+            tp = None
+            if self.config.take_profit_multiplier > 0:
+                tp = orb_calc.get_short_exit_level(
+                    levels,
+                    atr,
+                    multiplier=self.config.take_profit_multiplier,
+                )
             sl = levels.high if self.config.stop_loss_at_level else current_price + atr
 
             metadata.update({
                 "signal": "short_breakout",
                 "take_profit": tp,
                 "stop_loss": sl,
-                "risk_reward": (current_price - tp) / (sl - current_price) if sl > current_price else 0,
+                "risk_reward": ((current_price - tp) / (sl - current_price) if tp is not None else None) if sl > current_price else 0,
             })
 
             return -1, metadata

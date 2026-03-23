@@ -214,8 +214,8 @@ class ORBStrategyParams(BaseModel):
     orb_start_time: str = Field(default="09:30", description="ORB window start time (HH:MM)")
     orb_duration_minutes: int = Field(default=5, description="ORB window duration in minutes")
     orb_body_pct_filter: float = Field(
-        default=0.5,
-        description="Minimum body percentage for valid breakout candle",
+        default=0.0,
+        description="Minimum body percentage for valid breakout candle (0.0 = no filter)",
     )
     entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
     entry_mode: str = Field(
