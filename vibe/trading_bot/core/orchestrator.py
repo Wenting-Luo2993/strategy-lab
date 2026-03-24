@@ -1367,14 +1367,16 @@ class TradingOrchestrator:
                     # 4. Execute trade if we have a signal
                     if signal_value != 0:  # 1=long, -1=short, 0=no signal
                         tp = signal_metadata.get('take_profit')
+                        rr = signal_metadata.get('risk_reward')
                         tp_str = f"${tp:.2f}" if tp is not None else "none"
+                        rr_str = f"{rr:.1f}" if rr is not None else "n/a"
                         self.logger.info(
                             f"[SIGNAL] {symbol}: {signal_metadata.get('signal', 'unknown').upper()} at "
                             f"${signal_metadata.get('current_price', 0):.2f} "
                             f"(ORB: ${signal_metadata.get('orb_low', 0):.2f}-${signal_metadata.get('orb_high', 0):.2f}, "
                             f"TP: {tp_str}, "
                             f"SL: ${signal_metadata.get('stop_loss', 0):.2f}, "
-                            f"R/R: {signal_metadata.get('risk_reward', 0):.1f})"
+                            f"R/R: {rr_str})"
                         )
                         # TODO: Convert signal to proper Signal object and execute
                         # For now, just log it

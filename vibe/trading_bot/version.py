@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.3.1"  # feat: ruleset phase 2 — wire symbols, strategy config, position size from ruleset
+VERSION = "1.3.2"  # fix: handle None take_profit/risk_reward in signal log to prevent crash on breakout
 
 
 def get_build_timestamp() -> str:

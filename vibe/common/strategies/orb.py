@@ -274,7 +274,7 @@ class ORBStrategy(StrategyBase):
                 "signal": "long_breakout",
                 "take_profit": tp,
                 "stop_loss": sl,
-                "risk_reward": ((tp - current_price) / (current_price - sl) if tp is not None else None) if current_price > sl else 0,
+                "risk_reward": ((tp - current_price) / (current_price - sl)) if (tp is not None and current_price > sl) else None,
             })
 
             return 1, metadata
@@ -307,7 +307,7 @@ class ORBStrategy(StrategyBase):
                 "signal": "short_breakout",
                 "take_profit": tp,
                 "stop_loss": sl,
-                "risk_reward": ((current_price - tp) / (sl - current_price) if tp is not None else None) if sl > current_price else 0,
+                "risk_reward": ((current_price - tp) / (sl - current_price)) if (tp is not None and sl > current_price) else None,
             })
 
             return -1, metadata
