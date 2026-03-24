@@ -83,6 +83,10 @@ class ORBStrategy(StrategyBase):
         hour, minute = map(int, config.market_close_time.split(":"))
         self.market_close = time(hour, minute)
 
+        # One-trade-per-day tracking: symbol -> date of last trade signal
+        # Resets automatically when trading_date differs from stored date
+        self._traded_today: Dict[str, Any] = {}  # symbol -> date
+
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
         """
         Generate ORB signals for entire DataFrame.
@@ -234,6 +238,18 @@ class ORBStrategy(StrategyBase):
         else:
             price_position = "within_range"
 
+        # One-trade-per-day gate (ORB-specific: only one breakout entry per symbol per day)
+        trading_date = current_time_local.date()
+        if self._traded_today.get(symbol) == trading_date:
+            return 0, {
+                "reason": "already_traded_today",
+                "orb_high": levels.high,
+                "orb_low": levels.low,
+                "orb_range": levels.range,
+                "current_price": current_price,
+                "price_position": price_position,
+            }
+
         metadata = {
             "orb_high": levels.high,
             "orb_low": levels.low,
@@ -277,6 +293,7 @@ class ORBStrategy(StrategyBase):
                 "risk_reward": ((tp - current_price) / (current_price - sl)) if (tp is not None and current_price > sl) else None,
             })
 
+            self._traded_today[symbol] = trading_date
             return 1, metadata
 
         # Short breakout
@@ -310,6 +327,7 @@ class ORBStrategy(StrategyBase):
                 "risk_reward": ((current_price - tp) / (sl - current_price)) if (tp is not None and sl > current_price) else None,
             })
 
+            self._traded_today[symbol] = trading_date
             return -1, metadata
 
         # No breakout - return full metadata (includes ORB levels for notification)

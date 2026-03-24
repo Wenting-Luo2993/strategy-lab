@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.3.2"  # fix: handle None take_profit/risk_reward in signal log to prevent crash on breakout
+VERSION = "1.3.3"  # feat: one-trade-per-day gate in ORBStrategy (strategy-specific, not orchestrator)
 
 
 def get_build_timestamp() -> str:
