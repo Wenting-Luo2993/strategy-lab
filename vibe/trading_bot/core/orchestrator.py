@@ -1378,10 +1378,54 @@ class TradingOrchestrator:
                             f"SL: ${signal_metadata.get('stop_loss', 0):.2f}, "
                             f"R/R: {rr_str})"
                         )
-                        # TODO: Convert signal to proper Signal object and execute
-                        # For now, just log it
+                        # Execute trade via TradeExecutor
                         try:
-                            pass  # Placeholder for execution logic
+                            entry_price = signal_metadata.get('current_price', 0.0)
+                            stop_price = signal_metadata.get('stop_loss', 0.0)
+                            result = await self.trade_executor.execute_signal(
+                                symbol=symbol,
+                                signal=signal_value,
+                                entry_price=entry_price,
+                                stop_price=stop_price,
+                                take_profit=signal_metadata.get('take_profit'),
+                                strategy_name=self.strategy.config.name,
+                            )
+
+                            if result.success:
+                                self.logger.info(
+                                    f"[TRADE] {symbol}: {result.reason} "
+                                    f"({int(result.position_size)} shares @ ${entry_price:.2f})"
+                                )
+                                self._daily_stats["trades_executed"] += 1
+
+                                # Send Discord ORDER_SENT notification
+                                if self.config.notifications.discord_webhook_url:
+                                    from vibe.trading_bot.notifications.payloads import OrderNotificationPayload
+                                    from vibe.trading_bot.notifications.helper import discord_notification_context
+                                    from vibe.trading_bot.utils.datetime_utils import get_market_now
+                                    side = "buy" if signal_value == 1 else "sell"
+                                    payload = OrderNotificationPayload(
+                                        event_type="ORDER_SENT",
+                                        timestamp=get_market_now(self.market_scheduler),
+                                        order_id=result.order_id or "unknown",
+                                        symbol=symbol,
+                                        side=side,
+                                        order_type="market",
+                                        quantity=result.position_size,
+                                        strategy_name=self.strategy.config.name,
+                                        signal_reason=signal_metadata.get('signal'),
+                                        order_price=entry_price,
+                                        exchange="PAPER",
+                                    )
+                                    async with discord_notification_context(
+                                        self.config.notifications.discord_webhook_url
+                                    ) as notifier:
+                                        await notifier.send_order_event(payload)
+                            else:
+                                self.logger.warning(
+                                    f"[TRADE] {symbol}: Execution failed — {result.reason}"
+                                )
+
                         except Exception as e:
                             self.logger.error(
                                 f"Failed to execute signal for {symbol}: {e}",
