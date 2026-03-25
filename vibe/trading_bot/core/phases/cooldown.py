@@ -150,13 +150,14 @@ class CooldownPhaseManager(BasePhase):
         self.logger.info(f"  - Will disconnect from provider at {disconnect_time.strftime('%H:%M:%S')}")
 
     async def _complete_cooldown(self) -> None:
-        """Complete cooldown phase: close positions, rotate logs, disconnect provider."""
+        """Complete cooldown phase: rotate logs, disconnect provider."""
         self.logger.info("=" * 60)
         self.logger.info("COOLDOWN PHASE COMPLETE")
         self.logger.info("=" * 60)
 
-        # Force-close any positions that weren't closed by EOD exit logic
-        await self._close_remaining_positions()
+        # Warn if any positions are still open — EOD exit at 15:55 should have closed them
+        # We cannot execute trades after market close; this is a signal that EOD exit missed something
+        self._warn_open_positions()
 
         # Rotate tick log file for next session
         await self._rotate_tick_logs()
@@ -164,12 +165,30 @@ class CooldownPhaseManager(BasePhase):
         # Disconnect from provider
         await self._disconnect_provider()
 
-    async def _close_remaining_positions(self) -> None:
-        """Force-close any positions still open at end of cooldown."""
+    def _warn_open_positions(self) -> None:
+        """Log a warning if any positions are still open at market close.
+
+        EOD exit logic (at ruleset eod_time, e.g. 15:55) should have closed all positions
+        before market close. If positions are still open here, that is a bug.
+        """
         try:
-            await self.orchestrator._close_all_positions(exit_reason="cooldown_forced")
+            strategy = self.orchestrator.strategy
+            if strategy and strategy.positions:
+                symbols = list(strategy.positions.keys())
+                self.logger.error(
+                    f"[UNCLOSED POSITIONS] {len(symbols)} position(s) still open at market close: "
+                    f"{symbols}. EOD exit at ruleset eod_time should have closed these. "
+                    f"These positions will carry over as stale state — restart the bot to clear."
+                )
+                for symbol in symbols:
+                    pos = strategy.get_position(symbol)
+                    if pos:
+                        self.logger.error(
+                            f"  {symbol}: {pos['side']} @ ${pos['entry_price']:.2f}, "
+                            f"SL=${pos['stop_loss']:.2f}"
+                        )
         except Exception as e:
-            self.logger.error(f"Failed to close positions during cooldown: {e}", exc_info=True)
+            self.logger.error(f"Error checking open positions at cooldown: {e}", exc_info=True)
 
     async def _rotate_tick_logs(self) -> None:
         """Rotate tick log file for next market session."""

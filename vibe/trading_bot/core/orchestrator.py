@@ -1590,20 +1590,6 @@ class TradingOrchestrator:
             except Exception as e:
                 self.logger.error(f"Failed to send exit notification: {e}", exc_info=True)
 
-    async def _close_all_positions(self, exit_reason: str = "eod_forced") -> None:
-        """Force-close all open positions (used for EOD and cooldown cleanup)."""
-        if not self.strategy or not self.strategy.positions:
-            return
-
-        symbols = list(self.strategy.positions.keys())
-        self.logger.info(f"[FORCE CLOSE] Closing {len(symbols)} open position(s): {symbols} — reason: {exit_reason}")
-
-        for symbol in symbols:
-            pos = self.strategy.get_position(symbol)
-            current_price = self._latest_bar_prices.get(symbol, pos["entry_price"] if pos else 0.0)
-            if pos:
-                await self._close_position_with_notification(symbol, pos, current_price, exit_reason)
-
     async def _execute_signal(self, signal: Any) -> None:
         """Execute a single trade signal.
 

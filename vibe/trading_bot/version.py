@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.3.5"  # feat: complete E2E paper trading — position monitoring, stop/TP/EOD exit, cooldown close, strategy tracking
+VERSION = "1.3.6"  # fix: EOD exit at 15:55 in trading loop is the correct mechanism; cooldown only warns if positions unclosed
 
 
 def get_build_timestamp() -> str:
