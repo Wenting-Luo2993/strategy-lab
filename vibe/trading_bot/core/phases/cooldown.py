@@ -150,16 +150,26 @@ class CooldownPhaseManager(BasePhase):
         self.logger.info(f"  - Will disconnect from provider at {disconnect_time.strftime('%H:%M:%S')}")
 
     async def _complete_cooldown(self) -> None:
-        """Complete cooldown phase: rotate logs, disconnect provider."""
+        """Complete cooldown phase: close positions, rotate logs, disconnect provider."""
         self.logger.info("=" * 60)
         self.logger.info("COOLDOWN PHASE COMPLETE")
         self.logger.info("=" * 60)
+
+        # Force-close any positions that weren't closed by EOD exit logic
+        await self._close_remaining_positions()
 
         # Rotate tick log file for next session
         await self._rotate_tick_logs()
 
         # Disconnect from provider
         await self._disconnect_provider()
+
+    async def _close_remaining_positions(self) -> None:
+        """Force-close any positions still open at end of cooldown."""
+        try:
+            await self.orchestrator._close_all_positions(exit_reason="cooldown_forced")
+        except Exception as e:
+            self.logger.error(f"Failed to close positions during cooldown: {e}", exc_info=True)
 
     async def _rotate_tick_logs(self) -> None:
         """Rotate tick log file for next market session."""

@@ -140,6 +140,9 @@ class TradingOrchestrator:
         # Real-time bars storage (symbol -> DataFrame with today's bars)
         self._realtime_bars: Dict[str, pd.DataFrame] = {}
 
+        # Latest close price per symbol (updated each trading cycle for position monitoring)
+        self._latest_bar_prices: Dict[str, float] = {}
+
         # Polling task for REST providers
         self._polling_task: Optional[asyncio.Task] = None
 
@@ -1337,6 +1340,7 @@ class TradingOrchestrator:
 
                     # Get the latest bar for incremental signal generation
                     current_bar = bars.iloc[-1].to_dict()
+                    self._latest_bar_prices[symbol] = float(current_bar.get("close", 0.0))
 
                     # Generate signal for current bar with historical context
                     signal_value, signal_metadata = self.strategy.generate_signal_incremental(
@@ -1398,6 +1402,19 @@ class TradingOrchestrator:
                                 )
                                 self._daily_stats["trades_executed"] += 1
 
+                                # Wire position into strategy tracking so has_position() works
+                                # and check_exit_conditions() can evaluate stop/TP per bar
+                                from vibe.trading_bot.utils.datetime_utils import get_market_now
+                                trade_side = "buy" if signal_value == 1 else "sell"
+                                self.strategy.track_position(
+                                    symbol=symbol,
+                                    side=trade_side,
+                                    entry_price=entry_price,
+                                    take_profit=signal_metadata.get("take_profit"),
+                                    stop_loss=stop_price,
+                                    timestamp=get_market_now(self.market_scheduler),
+                                )
+
                                 # Send Discord ORDER_SENT notification
                                 if self.config.notifications.discord_webhook_url:
                                     from vibe.trading_bot.notifications.payloads import OrderNotificationPayload
@@ -1441,6 +1458,9 @@ class TradingOrchestrator:
                         self.logger.debug(f"Error processing {symbol}: {e}")
                     self.health_monitor.record_error(f"data_{symbol}")
 
+            # Monitor open positions for stop-loss, take-profit, and EOD exits
+            await self._monitor_open_positions()
+
             # Check if ORB notification should be sent (after all symbols evaluated)
             await self._check_and_send_orb_notification()
 
@@ -1454,6 +1474,135 @@ class TradingOrchestrator:
         except Exception as e:
             self.logger.error(f"Trading cycle error: {e}", exc_info=True)
             return False
+
+    async def _monitor_open_positions(self) -> None:
+        """Check all open positions for stop-loss, take-profit, and EOD exit triggers.
+
+        Called every trading cycle. Uses current bar prices captured during the cycle.
+        """
+        if not self.strategy or not self.strategy.positions:
+            return
+
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        now = get_market_now(self.market_scheduler)
+        bar_time_str = now.strftime("%H:%M")
+
+        # Get EOD exit time from ruleset (default 15:55)
+        eod_time_str = "15:55"
+        if self.ruleset and self.ruleset.exit.eod_time:
+            eod_time_str = self.ruleset.exit.eod_time
+
+        for symbol in list(self.strategy.positions.keys()):
+            current_price = self._latest_bar_prices.get(symbol)
+            if not current_price:
+                continue
+
+            pos = self.strategy.get_position(symbol)
+            if pos is None:
+                continue
+
+            exit_signal = self.strategy.check_exit_conditions(
+                symbol=symbol,
+                current_price=current_price,
+                current_time=bar_time_str,
+                market_close=eod_time_str,
+            )
+
+            if exit_signal is None:
+                # Log position status
+                entry = pos["entry_price"]
+                pnl_pct = ((current_price - entry) / entry * 100) if pos["side"] == "buy" \
+                    else ((entry - current_price) / entry * 100)
+                self.logger.info(
+                    f"[POSITION] {symbol} {pos['side'].upper()} @ ${entry:.2f} | "
+                    f"Current: ${current_price:.2f} | P&L: {pnl_pct:+.2f}% | "
+                    f"SL: ${pos['stop_loss']:.2f}"
+                    + (f" | TP: ${pos['take_profit']:.2f}" if pos.get("take_profit") else " | TP: EOD")
+                )
+                continue
+
+            self.logger.info(
+                f"[EXIT TRIGGERED] {symbol}: {exit_signal.exit_type.upper()} — {exit_signal.reason}"
+            )
+            await self._close_position_with_notification(symbol, pos, current_price, exit_signal.exit_type)
+
+    async def _close_position_with_notification(
+        self,
+        symbol: str,
+        pos: dict,
+        current_price: float,
+        exit_reason: str,
+    ) -> None:
+        """Close a position and send Discord ORDER_FILLED notification."""
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        close_result = await self.trade_executor._close_position(symbol)
+
+        if not close_result.success:
+            self.logger.warning(f"[EXIT FAILED] {symbol}: {close_result.reason}")
+            return
+
+        entry_price = pos["entry_price"]
+        quantity = abs(int(close_result.position_size)) if close_result.position_size else 0
+        pnl_per_share = (current_price - entry_price) if pos["side"] == "buy" \
+            else (entry_price - current_price)
+        pnl_total = pnl_per_share * quantity
+        pnl_pct = (pnl_per_share / entry_price) * 100
+
+        self.logger.info(
+            f"[TRADE CLOSED] {symbol}: {exit_reason} @ ${current_price:.2f} | "
+            f"Entry: ${entry_price:.2f} | {quantity} shares | "
+            f"P&L: ${pnl_total:+.2f} ({pnl_pct:+.2f}%)"
+        )
+
+        # Remove from strategy position tracking
+        self.strategy.close_position(symbol)
+
+        # Send Discord ORDER_FILLED notification
+        if self.config.notifications.discord_webhook_url:
+            from vibe.trading_bot.notifications.payloads import OrderNotificationPayload
+            from vibe.trading_bot.notifications.helper import discord_notification_context
+            now = get_market_now(self.market_scheduler)
+            close_side = "sell" if pos["side"] == "buy" else "buy"
+            payload = OrderNotificationPayload(
+                event_type="ORDER_FILLED",
+                timestamp=now,
+                order_id=close_result.order_id or "unknown",
+                symbol=symbol,
+                side=close_side,
+                order_type="market",
+                quantity=quantity,
+                strategy_name=self.strategy.config.name,
+                signal_reason=exit_reason,
+                fill_price=current_price,
+                filled_quantity=quantity,
+                realized_pnl=pnl_total,
+                realized_pnl_pct=pnl_pct,
+                order_price=current_price,
+                exchange="PAPER",
+            )
+            try:
+                async with discord_notification_context(
+                    self.config.notifications.discord_webhook_url
+                ) as notifier:
+                    await notifier.send_order_event(payload)
+            except Exception as e:
+                self.logger.error(f"Failed to send exit notification: {e}", exc_info=True)
+
+    async def _close_all_positions(self, exit_reason: str = "eod_forced") -> None:
+        """Force-close all open positions (used for EOD and cooldown cleanup)."""
+        if not self.strategy or not self.strategy.positions:
+            return
+
+        symbols = list(self.strategy.positions.keys())
+        self.logger.info(f"[FORCE CLOSE] Closing {len(symbols)} open position(s): {symbols} — reason: {exit_reason}")
+
+        for symbol in symbols:
+            pos = self.strategy.get_position(symbol)
+            current_price = self._latest_bar_prices.get(symbol, pos["entry_price"] if pos else 0.0)
+            if pos:
+                await self._close_position_with_notification(symbol, pos, current_price, exit_reason)
 
     async def _execute_signal(self, signal: Any) -> None:
         """Execute a single trade signal.

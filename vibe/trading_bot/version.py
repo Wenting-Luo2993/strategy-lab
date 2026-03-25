@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.3.4"  # feat: wire paper trade execution — replace pass with TradeExecutor.execute_signal + Discord ORDER_SENT
+VERSION = "1.3.5"  # feat: complete E2E paper trading — position monitoring, stop/TP/EOD exit, cooldown close, strategy tracking
 
 
 def get_build_timestamp() -> str:

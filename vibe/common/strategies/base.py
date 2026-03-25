@@ -209,20 +209,22 @@ class StrategyBase(ABC):
 
         pos = self.positions[symbol]
 
-        # Check take-profit
-        if pos["side"] == "buy" and current_price >= pos["take_profit"]:
-            return ExitSignal(
-                exit_type="take_profit",
-                reason=f"Take-profit reached at {current_price:.2f}",
-                level=pos["take_profit"],
-            )
+        # Check take-profit (only if TP is set — None means EOD-only exit)
+        tp = pos.get("take_profit")
+        if tp is not None:
+            if pos["side"] == "buy" and current_price >= tp:
+                return ExitSignal(
+                    exit_type="take_profit",
+                    reason=f"Take-profit reached at {current_price:.2f}",
+                    level=tp,
+                )
 
-        if pos["side"] == "sell" and current_price <= pos["take_profit"]:
-            return ExitSignal(
-                exit_type="take_profit",
-                reason=f"Take-profit reached at {current_price:.2f}",
-                level=pos["take_profit"],
-            )
+            if pos["side"] == "sell" and current_price <= tp:
+                return ExitSignal(
+                    exit_type="take_profit",
+                    reason=f"Take-profit reached at {current_price:.2f}",
+                    level=tp,
+                )
 
         # Check stop-loss
         if pos["side"] == "buy" and current_price <= pos["stop_loss"]:
@@ -280,7 +282,7 @@ class StrategyBase(ABC):
         symbol: str,
         side: str,
         entry_price: float,
-        take_profit: float,
+        take_profit: Optional[float],
         stop_loss: float,
         timestamp: Any,
     ) -> None:
