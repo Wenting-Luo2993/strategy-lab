@@ -697,7 +697,9 @@ class FinnhubWebSocketClient(WebSocketDataProvider):
                     await self._connect_with_retry()
 
                     # Re-subscribe to symbols
+                    # Clear the set first so subscribe() actually sends the message to Finnhub
                     symbols_to_subscribe = list(self.subscribed_symbols)
+                    self.subscribed_symbols.clear()
                     logger.info(f"Re-subscribing to {len(symbols_to_subscribe)} symbols: {symbols_to_subscribe}")
 
                     for symbol in symbols_to_subscribe:

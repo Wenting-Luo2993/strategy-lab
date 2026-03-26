@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.3.7"  # fix: MockExchange market orders use passed price instead of requiring set_price() pre-call
+VERSION = "1.3.8"  # fix: FinnhubWebSocketClient clears subscribed_symbols before re-subscribing after reconnect
 
 
 def get_build_timestamp() -> str:
