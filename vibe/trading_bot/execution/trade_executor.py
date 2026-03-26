@@ -292,11 +292,31 @@ class TradeExecutor:
                 price=entry_price,
             )
 
+            actual_filled = response.filled_qty or 0
+
+            if actual_filled == 0:
+                result = ExecutionResult(
+                    success=False,
+                    order_id=response.order_id,
+                    reason=f"Order not filled (status={response.status}): {response.order_id}",
+                )
+                if self._on_execution:
+                    self._on_execution(result)
+                logger.warning(f"Order submitted but not filled: {response.order_id}")
+                return result
+
+            if actual_filled < int(size_result.size):
+                logger.warning(
+                    f"Partial fill: {symbol} {actual_filled}/{int(size_result.size)} shares "
+                    f"@ {entry_price}. OrderManager will retry remaining "
+                    f"{int(size_result.size) - actual_filled} shares."
+                )
+
             result = ExecutionResult(
                 success=True,
                 order_id=response.order_id,
                 reason=f"Order submitted: {response.order_id}",
-                position_size=size_result.size,
+                position_size=actual_filled,
             )
 
             self._open_trades[symbol] = result
@@ -307,7 +327,7 @@ class TradeExecutor:
 
             logger.info(
                 f"Trade executed: {symbol} {side} "
-                f"{size_result.size} shares @ {entry_price}"
+                f"{actual_filled} shares @ {entry_price}"
             )
 
             return result

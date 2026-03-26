@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.3.8"  # fix: FinnhubWebSocketClient clears subscribed_symbols before re-subscribing after reconnect
+VERSION = "1.3.9"  # fix: TradeExecutor reports actual filled qty (not intended size) on partial fills
 
 
 def get_build_timestamp() -> str:
