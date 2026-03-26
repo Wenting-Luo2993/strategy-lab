@@ -51,7 +51,7 @@ SYMBOL = "QQQ"
 INITIAL_CAPITAL = 50_000.0
 STOP_DISTANCE = 1.00   # $1.00 below entry
 TP_DISTANCE = 2.00     # $2.00 above entry
-EOD_TIME = "16:00"     # use actual close as safety net in test
+EOD_OFFSET_MINUTES = 45  # EOD exit fires 45 min after test start
 MARKET_TZ = pytz.timezone("America/New_York")
 
 
@@ -127,6 +127,13 @@ class E2EPaperTradingTest:
             position_sizer=sizer,
         )
         self.strategy = AlwaysFireStrategy()
+
+        # EOD time = 45 min after test start (guarantees EOD exit fires)
+        from datetime import timedelta
+        start_et = datetime.now(MARKET_TZ)
+        eod_dt = start_et + timedelta(minutes=EOD_OFFSET_MINUTES)
+        self._eod_time = eod_dt.strftime("%H:%M")
+        logger.info(f"EOD exit time set to {self._eod_time} ET ({EOD_OFFSET_MINUTES} min from now)")
 
         # Bar tracking
         self._latest_bar: Optional[Dict] = None
@@ -230,7 +237,7 @@ class E2EPaperTradingTest:
             symbol=SYMBOL,
             current_price=current_price,
             current_time=bar_time_str,
-            market_close=EOD_TIME,
+            market_close=self._eod_time,
         )
 
         if exit_signal is None:
@@ -361,7 +368,7 @@ class E2EPaperTradingTest:
         logger.info(f"Subscribed to {SYMBOL}. Waiting for bars...")
 
         try:
-            max_bars = 10  # run for up to 10 bars (~50 min)
+            max_bars = 20  # run for up to 20 bars (~100 min), EOD fires at 45 min
             bars_processed = 0
 
             while bars_processed < max_bars:
