@@ -165,11 +165,16 @@ class MockExchange(ExecutionEngine):
         if side not in ("buy", "sell"):
             raise ValueError("side must be 'buy' or 'sell'")
 
-        # Get current price for validation
-        if symbol not in self._prices:
-            raise ValueError(f"No price set for {symbol}")
+        # Resolve current price: use provided price (market orders pass entry_price),
+        # fall back to tracked price (limit/stop orders rely on previously set price).
+        # Real exchanges know the market price internally; we mirror that by accepting
+        # the price from the caller and keeping our tracking up to date.
+        current_price = price if (price is not None and price > 0) else self._prices.get(symbol)
+        if current_price is None:
+            raise ValueError(f"No price available for {symbol} — pass price= for market orders")
 
-        current_price = self._prices[symbol]
+        # Keep price tracking current for account equity calculations
+        self._prices[symbol] = current_price
 
         # Create order
         order_id = f"ord_{uuid.uuid4().hex[:8]}"

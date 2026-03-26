@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.3.6"  # fix: EOD exit at 15:55 in trading loop is the correct mechanism; cooldown only warns if positions unclosed
+VERSION = "1.3.7"  # fix: MockExchange market orders use passed price instead of requiring set_price() pre-call
 
 
 def get_build_timestamp() -> str:
