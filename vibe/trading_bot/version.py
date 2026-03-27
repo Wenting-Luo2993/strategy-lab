@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.0"  # fix: _close_position uses position.side to determine close direction (not quantity)
+VERSION = "1.4.1"  # fix: discord notifier flushes queue before stop so ORDER_SENT/FILLED notifications are not dropped
 
 
 def get_build_timestamp() -> str:

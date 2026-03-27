@@ -68,6 +68,13 @@ class DiscordNotifier:
 
     async def stop(self) -> None:
         """Stop the notification worker and cleanup."""
+        # Drain the queue before cancelling the worker so queued notifications are sent
+        if self._worker_task and not self.queue.empty():
+            try:
+                await asyncio.wait_for(self.queue.join(), timeout=15.0)
+            except asyncio.TimeoutError:
+                logger.warning("Notification queue flush timed out — some notifications may be lost")
+
         if self._worker_task:
             self._worker_task.cancel()
             try:
