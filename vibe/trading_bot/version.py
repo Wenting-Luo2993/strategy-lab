@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.3.9"  # fix: TradeExecutor reports actual filled qty (not intended size) on partial fills
+VERSION = "1.4.0"  # fix: _close_position uses position.side to determine close direction (not quantity)
 
 
 def get_build_timestamp() -> str:

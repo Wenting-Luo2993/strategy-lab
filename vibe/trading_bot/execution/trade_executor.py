@@ -363,11 +363,9 @@ class TradeExecutor:
                 reason=f"No open position in {symbol}",
             )
 
-        # Determine close side (opposite of position)
-        if position.quantity > 0:
-            close_side = "sell"
-        else:
-            close_side = "buy"
+        # Determine close side (opposite of position side)
+        # NOTE: position.quantity is always positive — use position.side, not quantity
+        close_side = "sell" if position.side == "long" else "buy"
 
         # Get current price
         if symbol not in self.exchange._prices:
