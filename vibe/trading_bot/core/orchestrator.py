@@ -1422,15 +1422,15 @@ class TradingOrchestrator:
                                     timestamp=get_market_now(self.market_scheduler),
                                 )
 
-                                # Send Discord ORDER_SENT notification
+                                # Send Discord ORDER_SENT then ORDER_FILLED for entry
                                 if self.config.notifications.discord_webhook_url:
                                     from vibe.trading_bot.notifications.payloads import OrderNotificationPayload
                                     from vibe.trading_bot.notifications.helper import discord_notification_context
                                     from vibe.trading_bot.utils.datetime_utils import get_market_now
                                     side = "buy" if signal_value == 1 else "sell"
-                                    payload = OrderNotificationPayload(
-                                        event_type="ORDER_SENT",
-                                        timestamp=get_market_now(self.market_scheduler),
+                                    now = get_market_now(self.market_scheduler)
+                                    common = dict(
+                                        timestamp=now,
                                         order_id=result.order_id or "unknown",
                                         symbol=symbol,
                                         side=side,
@@ -1444,7 +1444,17 @@ class TradingOrchestrator:
                                     async with discord_notification_context(
                                         self.config.notifications.discord_webhook_url
                                     ) as notifier:
-                                        await notifier.send_order_event(payload)
+                                        await notifier.send_order_event(
+                                            OrderNotificationPayload(event_type="ORDER_SENT", **common)
+                                        )
+                                        await notifier.send_order_event(
+                                            OrderNotificationPayload(
+                                                event_type="ORDER_FILLED",
+                                                fill_price=entry_price,
+                                                filled_quantity=result.position_size,
+                                                **common,
+                                            )
+                                        )
                             else:
                                 self.logger.warning(
                                     f"[TRADE] {symbol}: Execution failed — {result.reason}"
@@ -1566,14 +1576,13 @@ class TradingOrchestrator:
         # Remove from strategy position tracking
         self.strategy.close_position(symbol)
 
-        # Send Discord ORDER_FILLED notification
+        # Send Discord ORDER_SENT then ORDER_FILLED for exit
         if self.config.notifications.discord_webhook_url:
             from vibe.trading_bot.notifications.payloads import OrderNotificationPayload
             from vibe.trading_bot.notifications.helper import discord_notification_context
             now = get_market_now(self.market_scheduler)
             close_side = "sell" if pos["side"] == "buy" else "buy"
-            payload = OrderNotificationPayload(
-                event_type="ORDER_FILLED",
+            common = dict(
                 timestamp=now,
                 order_id=close_result.order_id or "unknown",
                 symbol=symbol,
@@ -1582,10 +1591,6 @@ class TradingOrchestrator:
                 quantity=quantity,
                 strategy_name=self.strategy.config.name,
                 signal_reason=exit_reason,
-                fill_price=current_price,
-                filled_quantity=quantity,
-                realized_pnl=pnl_total,
-                realized_pnl_pct=pnl_pct,
                 order_price=current_price,
                 exchange="PAPER",
             )
@@ -1593,7 +1598,19 @@ class TradingOrchestrator:
                 async with discord_notification_context(
                     self.config.notifications.discord_webhook_url
                 ) as notifier:
-                    await notifier.send_order_event(payload)
+                    await notifier.send_order_event(
+                        OrderNotificationPayload(event_type="ORDER_SENT", **common)
+                    )
+                    await notifier.send_order_event(
+                        OrderNotificationPayload(
+                            event_type="ORDER_FILLED",
+                            fill_price=current_price,
+                            filled_quantity=quantity,
+                            realized_pnl=pnl_total,
+                            realized_pnl_pct=pnl_pct,
+                            **common,
+                        )
+                    )
             except Exception as e:
                 self.logger.error(f"Failed to send exit notification: {e}", exc_info=True)
 

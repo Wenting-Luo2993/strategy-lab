@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.2"  # fix: order retry cascade (negative cash); daily summary resilient; tick log rotates after disconnect
+VERSION = "1.4.3"  # fix: send both ORDER_SENT+ORDER_FILLED for entry orders; ORDER_SENT+ORDER_FILLED for exit orders
 
 
 def get_build_timestamp() -> str:
