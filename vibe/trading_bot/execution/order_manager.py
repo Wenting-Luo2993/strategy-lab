@@ -276,14 +276,23 @@ class OrderManager:
                 # Resubmit for remaining quantity
                 remaining = order.quantity - current_filled
                 try:
-                    response = await self.exchange.submit_order(
+                    # Cancel the original partial order to prevent background
+                    # fills from accumulating (would cause duplicate cash debits)
+                    try:
+                        await self.exchange.cancel_order(order_id)
+                    except Exception:
+                        pass  # Already cancelled or fully filled
+
+                    # Submit via OrderManager (proper tracking + new monitoring task)
+                    await self.submit_order(
                         symbol=order.symbol,
                         side=order.side,
                         quantity=remaining,
                         order_type=order.order_type,
                         price=order.price,
                     )
-                    # Continue monitoring
+                    # Break — new order has its own monitoring task
+                    break
                 except Exception as e:
                     logger.error(f"Error retrying order: {e}")
                     break

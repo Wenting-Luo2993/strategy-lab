@@ -159,11 +159,12 @@ class CooldownPhaseManager(BasePhase):
         # We cannot execute trades after market close; this is a signal that EOD exit missed something
         self._warn_open_positions()
 
-        # Rotate tick log file for next session
-        await self._rotate_tick_logs()
-
-        # Disconnect from provider
+        # Disconnect from provider first (closes current tick log handle cleanly)
         await self._disconnect_provider()
+
+        # Rotate tick log AFTER disconnect so the new file handle is not
+        # immediately closed by disconnect()
+        await self._rotate_tick_logs()
 
     def _warn_open_positions(self) -> None:
         """Log a warning if any positions are still open at market close.

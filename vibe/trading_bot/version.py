@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.1"  # fix: discord notifier flushes queue before stop so ORDER_SENT/FILLED notifications are not dropped
+VERSION = "1.4.2"  # fix: order retry cascade (negative cash); daily summary resilient; tick log rotates after disconnect
 
 
 def get_build_timestamp() -> str:

@@ -609,10 +609,17 @@ class TradingOrchestrator:
             # Get current time in market timezone
             now = get_market_now(self.market_scheduler)
 
-            # Get account equity
-            account = await self.exchange.get_account()
-            account_value = account.equity
+            # Get account equity (guard against corrupted state e.g. negative cash)
             initial_capital = self.config.trading.initial_capital
+            try:
+                account = await self.exchange.get_account()
+                account_value = account.equity
+            except Exception as acct_err:
+                self.logger.warning(
+                    f"Could not read account state for daily summary "
+                    f"(using initial capital as fallback): {acct_err}"
+                )
+                account_value = initial_capital
             pnl_pct = ((account_value - initial_capital) / initial_capital) * 100
 
             # Build ORB levels dict
