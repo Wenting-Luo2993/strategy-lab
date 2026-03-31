@@ -7,7 +7,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 
 from vibe.common.execution.base import ExecutionEngine, OrderResponse
 from vibe.common.models import Order, OrderStatus
@@ -119,9 +119,9 @@ class OrderManager:
         self,
         exchange: ExecutionEngine,
         retry_policy: Optional[OrderRetryPolicy] = None,
-        on_order_created: Optional[Callable[[str], None]] = None,
-        on_order_filled: Optional[Callable[[str], None]] = None,
-        on_order_cancelled: Optional[Callable[[str], None]] = None,
+        on_order_created: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_order_filled: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_order_cancelled: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         """
         Initialize order manager.
@@ -190,15 +190,21 @@ class OrderManager:
 
         # Emit creation event
         if self._on_order_created:
-            self._on_order_created(response.order_id)
+            asyncio.create_task(self._on_order_created(response.order_id))
 
         logger.info(
             f"Order submitted: {response.order_id} "
             f"{side} {quantity} {symbol}"
         )
 
-        # Start monitoring task if not fully filled
-        if response.status != OrderStatus.FILLED:
+        # For immediately-filled orders (e.g. MockExchange market orders), fire
+        # on_order_filled here since _monitor_order never starts for them.
+        if response.status == OrderStatus.FILLED:
+            managed.completed_at = datetime.now()
+            managed.terminal_status = OrderStatus.FILLED
+            if self._on_order_filled:
+                asyncio.create_task(self._on_order_filled(response.order_id))
+        else:
             task = asyncio.create_task(
                 self._monitor_order(response.order_id)
             )
@@ -236,7 +242,7 @@ class OrderManager:
                 managed.terminal_status = OrderStatus.FILLED
 
                 if self._on_order_filled:
-                    self._on_order_filled(order_id)
+                    asyncio.create_task(self._on_order_filled(order_id))
 
                 logger.info(f"Order filled: {order_id}")
                 break
@@ -251,7 +257,7 @@ class OrderManager:
                 managed.terminal_status = OrderStatus.CANCELLED
 
                 if self._on_order_cancelled:
-                    self._on_order_cancelled(order_id)
+                    asyncio.create_task(self._on_order_cancelled(order_id))
 
                 logger.info(
                     f"Order cancelled after timeout: {order_id}"

@@ -46,6 +46,9 @@ class ExecutionResult:
     position_size: float = 0.0
     """Position size used."""
 
+    avg_price: float = 0.0
+    """Actual average fill price from exchange (includes slippage)."""
+
 
 class SimpleRiskManager:
     """
@@ -317,6 +320,7 @@ class TradeExecutor:
                 order_id=response.order_id,
                 reason=f"Order submitted: {response.order_id}",
                 position_size=actual_filled,
+                avg_price=response.avg_price,
             )
 
             self._open_trades[symbol] = result
@@ -391,6 +395,7 @@ class TradeExecutor:
                 order_id=response.order_id,
                 reason=f"Position closed: {response.order_id}",
                 position_size=position.quantity,
+                avg_price=response.avg_price,
             )
 
             if symbol in self._open_trades:

@@ -8,6 +8,7 @@ import aiohttp
 
 from vibe.trading_bot.notifications.payloads import (
     OrderNotificationPayload,
+    TradeClosedPayload,
     SystemStatusPayload,
     ORBLevelsPayload,
 )
@@ -147,6 +148,48 @@ class DiscordNotifier:
 
         except Exception as e:
             logger.error(f"Error sending system status: {e}", exc_info=True)
+            return False
+
+    async def send_trade_closed(self, payload: TradeClosedPayload) -> bool:
+        """Send a TRADE_CLOSED notification immediately (bypasses queue).
+
+        Trade-closed events are infrequent and carry P&L context so they
+        are sent directly rather than queued.
+
+        Args:
+            payload: Trade closed notification payload
+
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        if not self._session:
+            logger.error("Session not initialized")
+            return False
+
+        try:
+            message = self.formatter.format_trade_closed(payload)
+
+            wait_time = await self.rate_limiter.acquire()
+            if wait_time > 0:
+                logger.debug(f"Rate limit: waiting {wait_time:.2f}s before sending")
+
+            async with self._session.post(
+                self.webhook_url,
+                json=message,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status in self.SUCCESS_STATUS_CODES:
+                    logger.info(f"Trade closed notification sent: {payload.symbol} {payload.pnl_total:+.2f}")
+                    return True
+                else:
+                    logger.error(
+                        f"Failed to send trade closed notification: {response.status} "
+                        f"(text: {await response.text()})"
+                    )
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error sending trade closed notification: {e}", exc_info=True)
             return False
 
     async def send_orb_notification(self, payload: ORBLevelsPayload) -> bool:

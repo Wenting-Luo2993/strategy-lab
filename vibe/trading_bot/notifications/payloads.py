@@ -32,11 +32,6 @@ class OrderNotificationPayload:
     filled_quantity: Optional[float] = None
     remaining_quantity: Optional[float] = None
 
-    # ORDER_FILLED P&L fields (for closing trades)
-    realized_pnl: Optional[float] = None
-    realized_pnl_pct: Optional[float] = None
-    position_size: Optional[float] = None  # Position size after fill (0 if closed)
-
     # ORDER_CANCELLED specific field
     cancel_reason: Optional[str] = None
 
@@ -120,6 +115,45 @@ class OrderNotificationPayload:
             return None
 
         return (slippage / (self.order_price * self.filled_quantity)) * 100
+
+
+@dataclass
+class TradeClosedPayload:
+    """Notification payload for a fully closed trade (position-level event).
+
+    Sent by the orchestrator when a position is closed, carrying P&L, entry/exit
+    price, and exit reason. Distinct from ORDER_FILLED (which is order-level).
+    """
+
+    event_type: str  # Always "TRADE_CLOSED"
+    timestamp: datetime
+    symbol: str
+    strategy_name: str
+    side: str  # buy or sell (position side — not close side)
+    entry_price: float
+    exit_price: float
+    quantity: float
+    pnl_total: float
+    pnl_pct: float
+    exit_reason: str  # stop_loss, take_profit, eod, manual
+
+    version: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.event_type != "TRADE_CLOSED":
+            raise ValueError(
+                f"Invalid event_type: {self.event_type}. Must be 'TRADE_CLOSED'"
+            )
+        if self.side not in ("buy", "sell"):
+            raise ValueError(f"Invalid side: {self.side}. Must be 'buy' or 'sell'")
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["timestamp"] = self.timestamp.isoformat()
+        return data
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), default=str)
 
 
 @dataclass

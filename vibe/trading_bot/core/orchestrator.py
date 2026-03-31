@@ -26,7 +26,12 @@ from vibe.common.strategies import ORBStrategy
 from vibe.common.strategies.orb import ORBStrategyConfig
 from vibe.common.indicators.engine import IncrementalIndicatorEngine
 from vibe.trading_bot.notifications.discord import DiscordNotifier
-from vibe.trading_bot.notifications.payloads import SystemStatusPayload
+from vibe.trading_bot.notifications.payloads import (
+    OrderNotificationPayload,
+    TradeClosedPayload,
+    SystemStatusPayload,
+)
+from vibe.trading_bot.notifications.helper import discord_notification_context
 from vibe.trading_bot.version import BUILD_VERSION
 from vibe.trading_bot.core.phases import WarmupPhaseManager, CooldownPhaseManager
 from vibe.common.ruleset import StrategyRuleSet, RuleSetLoader, OrbLevelStopLoss, OrbRangeMultipleTakeProfit
@@ -228,6 +233,8 @@ class TradingOrchestrator:
                 order_manager = OrderManager(
                     exchange=self.exchange,
                     retry_policy=retry_policy,
+                    on_order_created=self._on_order_created_notification,
+                    on_order_filled=self._on_order_filled_notification,
                 )
 
                 # Create trade executor
@@ -1393,6 +1400,17 @@ class TradingOrchestrator:
                         try:
                             entry_price = signal_metadata.get('current_price', 0.0)
                             stop_price = signal_metadata.get('stop_loss', 0.0)
+                            stop_distance = abs(entry_price - stop_price) if stop_price else 0
+                            risk_pct = 0.01
+                            if self.ruleset and self.ruleset.position_size:
+                                risk_pct = self.ruleset.position_size.value
+                            risk_amount = self.config.trading.initial_capital * risk_pct
+                            est_shares = int(risk_amount / stop_distance) if stop_distance > 0 else 0
+                            self.logger.info(
+                                f"[SIZING] {symbol}: risk={risk_pct*100:.1f}% (${risk_amount:.0f}), "
+                                f"stop_distance=${stop_distance:.2f}, est_shares={est_shares}, "
+                                f"est_cost=${est_shares * entry_price:.0f}"
+                            )
                             result = await self.trade_executor.execute_signal(
                                 symbol=symbol,
                                 signal=signal_value,
@@ -1403,58 +1421,43 @@ class TradingOrchestrator:
                             )
 
                             if result.success:
+                                # Use actual fill price from exchange (includes slippage).
+                                # Falls back to bar close price if avg_price unavailable.
+                                actual_fill_price = result.avg_price if result.avg_price > 0 else entry_price
+                                slippage_dollars = (actual_fill_price - entry_price) * int(result.position_size)
+                                commission_est = actual_fill_price * int(result.position_size) * 0.001
+                                position_cost = actual_fill_price * int(result.position_size)
                                 self.logger.info(
-                                    f"[TRADE] {symbol}: {result.reason} "
-                                    f"({int(result.position_size)} shares @ ${entry_price:.2f})"
+                                    f"[TRADE ENTRY] {symbol}: {int(result.position_size)} shares | "
+                                    f"Bar: ${entry_price:.2f} | Fill: ${actual_fill_price:.2f} | "
+                                    f"Slippage: ${slippage_dollars:+.2f} | Commission: ~${commission_est:.2f} | "
+                                    f"Position cost: ${position_cost:.2f}"
                                 )
                                 self._daily_stats["trades_executed"] += 1
 
-                                # Wire position into strategy tracking so has_position() works
-                                # and check_exit_conditions() can evaluate stop/TP per bar
+                                # Log account state after fill to track cash/equity impact
+                                try:
+                                    _acct = await self.exchange.get_account()
+                                    self.logger.info(
+                                        f"[ACCOUNT] After entry: Cash=${_acct.cash:.2f} | "
+                                        f"Equity=${_acct.equity:.2f} | "
+                                        f"P&L vs start: ${_acct.equity - self.config.trading.initial_capital:+.2f}"
+                                    )
+                                except Exception as _acct_err:
+                                    self.logger.warning(f"Could not read account state after entry: {_acct_err}")
+
+                                # Wire position into strategy tracking using actual fill price
                                 from vibe.trading_bot.utils.datetime_utils import get_market_now
                                 trade_side = "buy" if signal_value == 1 else "sell"
                                 self.strategy.track_position(
                                     symbol=symbol,
                                     side=trade_side,
-                                    entry_price=entry_price,
+                                    entry_price=actual_fill_price,
                                     take_profit=signal_metadata.get("take_profit"),
                                     stop_loss=stop_price,
                                     timestamp=get_market_now(self.market_scheduler),
                                 )
 
-                                # Send Discord ORDER_SENT then ORDER_FILLED for entry
-                                if self.config.notifications.discord_webhook_url:
-                                    from vibe.trading_bot.notifications.payloads import OrderNotificationPayload
-                                    from vibe.trading_bot.notifications.helper import discord_notification_context
-                                    from vibe.trading_bot.utils.datetime_utils import get_market_now
-                                    side = "buy" if signal_value == 1 else "sell"
-                                    now = get_market_now(self.market_scheduler)
-                                    common = dict(
-                                        timestamp=now,
-                                        order_id=result.order_id or "unknown",
-                                        symbol=symbol,
-                                        side=side,
-                                        order_type="market",
-                                        quantity=result.position_size,
-                                        strategy_name=self.strategy.config.name,
-                                        signal_reason=signal_metadata.get('signal'),
-                                        order_price=entry_price,
-                                        exchange="PAPER",
-                                    )
-                                    async with discord_notification_context(
-                                        self.config.notifications.discord_webhook_url
-                                    ) as notifier:
-                                        await notifier.send_order_event(
-                                            OrderNotificationPayload(event_type="ORDER_SENT", **common)
-                                        )
-                                        await notifier.send_order_event(
-                                            OrderNotificationPayload(
-                                                event_type="ORDER_FILLED",
-                                                fill_price=entry_price,
-                                                filled_quantity=result.position_size,
-                                                **common,
-                                            )
-                                        )
                             else:
                                 self.logger.warning(
                                     f"[TRADE] {symbol}: Execution failed — {result.reason}"
@@ -1544,6 +1547,64 @@ class TradingOrchestrator:
             )
             await self._close_position_with_notification(symbol, pos, current_price, exit_signal.exit_type)
 
+    async def _on_order_created_notification(self, order_id: str) -> None:
+        """Send ORDER_SENT Discord notification when OrderManager submits an order."""
+        if not self.config.notifications.discord_webhook_url:
+            return
+        try:
+            from vibe.trading_bot.utils.datetime_utils import get_market_now
+            order = await self.exchange.get_order(order_id)
+            if order is None:
+                return
+            payload = OrderNotificationPayload(
+                event_type="ORDER_SENT",
+                timestamp=get_market_now(self.market_scheduler),
+                order_id=order_id,
+                symbol=order.symbol,
+                side=order.side,
+                order_type=order.order_type,
+                quantity=order.quantity,
+                strategy_name=self.strategy.config.name if self.strategy else "unknown",
+                order_price=order.price,
+                exchange="PAPER",
+            )
+            async with discord_notification_context(
+                self.config.notifications.discord_webhook_url
+            ) as notifier:
+                await notifier.send_order_event(payload)
+        except Exception as e:
+            self.logger.error(f"Failed to send ORDER_SENT notification: {e}", exc_info=True)
+
+    async def _on_order_filled_notification(self, order_id: str) -> None:
+        """Send ORDER_FILLED Discord notification when OrderManager detects a fill."""
+        if not self.config.notifications.discord_webhook_url:
+            return
+        try:
+            from vibe.trading_bot.utils.datetime_utils import get_market_now
+            order = await self.exchange.get_order(order_id)
+            if order is None:
+                return
+            payload = OrderNotificationPayload(
+                event_type="ORDER_FILLED",
+                timestamp=get_market_now(self.market_scheduler),
+                order_id=order_id,
+                symbol=order.symbol,
+                side=order.side,
+                order_type=order.order_type,
+                quantity=order.quantity,
+                strategy_name=self.strategy.config.name if self.strategy else "unknown",
+                fill_price=order.avg_price if order.avg_price > 0 else order.price,
+                filled_quantity=order.filled_qty if order.filled_qty > 0 else order.quantity,
+                order_price=order.price,
+                exchange="PAPER",
+            )
+            async with discord_notification_context(
+                self.config.notifications.discord_webhook_url
+            ) as notifier:
+                await notifier.send_order_event(payload)
+        except Exception as e:
+            self.logger.error(f"Failed to send ORDER_FILLED notification: {e}", exc_info=True)
+
     async def _close_position_with_notification(
         self,
         symbol: str,
@@ -1551,7 +1612,7 @@ class TradingOrchestrator:
         current_price: float,
         exit_reason: str,
     ) -> None:
-        """Close a position and send Discord ORDER_FILLED notification."""
+        """Close a position and send TRADE_CLOSED Discord notification."""
         from vibe.trading_bot.utils.datetime_utils import get_market_now
 
         close_result = await self.trade_executor._close_position(symbol)
@@ -1560,59 +1621,67 @@ class TradingOrchestrator:
             self.logger.warning(f"[EXIT FAILED] {symbol}: {close_result.reason}")
             return
 
-        entry_price = pos["entry_price"]
+        entry_price = pos["entry_price"]  # actual fill price (set by track_position since v1.4.5)
         quantity = abs(int(close_result.position_size)) if close_result.position_size else 0
-        pnl_per_share = (current_price - entry_price) if pos["side"] == "buy" \
-            else (entry_price - current_price)
+
+        # Use actual exit fill price from exchange (includes slippage).
+        # Falls back to bar close price if unavailable.
+        actual_exit_price = close_result.avg_price if close_result.avg_price > 0 else current_price
+        slippage_dollars_exit = (current_price - actual_exit_price) * quantity  # positive = slipped against us
+        commission_est_exit = actual_exit_price * quantity * 0.001
+
+        pnl_per_share = (actual_exit_price - entry_price) if pos["side"] == "buy" \
+            else (entry_price - actual_exit_price)
         pnl_total = pnl_per_share * quantity
-        pnl_pct = (pnl_per_share / entry_price) * 100
+        pnl_pct = (pnl_per_share / entry_price) * 100 if entry_price > 0 else 0.0
 
         self.logger.info(
-            f"[TRADE CLOSED] {symbol}: {exit_reason} @ ${current_price:.2f} | "
-            f"Entry: ${entry_price:.2f} | {quantity} shares | "
-            f"P&L: ${pnl_total:+.2f} ({pnl_pct:+.2f}%)"
+            f"[TRADE CLOSED] {symbol}: {exit_reason} | "
+            f"Bar: ${current_price:.2f} | Fill: ${actual_exit_price:.2f} | "
+            f"Entry (fill): ${entry_price:.2f} | {quantity} shares | "
+            f"Slippage: ${slippage_dollars_exit:+.2f} | Commission: ~${commission_est_exit:.2f} | "
+            f"P&L (fills): ${pnl_total:+.2f} ({pnl_pct:+.2f}%)"
         )
+
+        # Log account state immediately after exit for full audit trail
+        try:
+            _acct = await self.exchange.get_account()
+            self.logger.info(
+                f"[ACCOUNT] After exit: Cash=${_acct.cash:.2f} | "
+                f"Equity=${_acct.equity:.2f} | "
+                f"P&L vs start: ${_acct.equity - self.config.trading.initial_capital:+.2f}"
+            )
+        except Exception as _acct_err:
+            self.logger.warning(f"Could not read account state after exit: {_acct_err}")
 
         # Remove from strategy position tracking
         self.strategy.close_position(symbol)
 
-        # Send Discord ORDER_SENT then ORDER_FILLED for exit
+        # Send TRADE_CLOSED notification with actual fill-based P&L
         if self.config.notifications.discord_webhook_url:
-            from vibe.trading_bot.notifications.payloads import OrderNotificationPayload
-            from vibe.trading_bot.notifications.helper import discord_notification_context
             now = get_market_now(self.market_scheduler)
-            close_side = "sell" if pos["side"] == "buy" else "buy"
-            common = dict(
-                timestamp=now,
-                order_id=close_result.order_id or "unknown",
-                symbol=symbol,
-                side=close_side,
-                order_type="market",
-                quantity=quantity,
-                strategy_name=self.strategy.config.name,
-                signal_reason=exit_reason,
-                order_price=current_price,
-                exchange="PAPER",
-            )
             try:
                 async with discord_notification_context(
                     self.config.notifications.discord_webhook_url
                 ) as notifier:
-                    await notifier.send_order_event(
-                        OrderNotificationPayload(event_type="ORDER_SENT", **common)
-                    )
-                    await notifier.send_order_event(
-                        OrderNotificationPayload(
-                            event_type="ORDER_FILLED",
-                            fill_price=current_price,
-                            filled_quantity=quantity,
-                            realized_pnl=pnl_total,
-                            realized_pnl_pct=pnl_pct,
-                            **common,
+                    await notifier.send_trade_closed(
+                        TradeClosedPayload(
+                            event_type="TRADE_CLOSED",
+                            timestamp=now,
+                            symbol=symbol,
+                            strategy_name=self.strategy.config.name,
+                            side=pos["side"],
+                            entry_price=entry_price,
+                            exit_price=actual_exit_price,
+                            quantity=quantity,
+                            pnl_total=pnl_total,
+                            pnl_pct=pnl_pct,
+                            exit_reason=exit_reason,
+                            version=BUILD_VERSION,
                         )
                     )
             except Exception as e:
-                self.logger.error(f"Failed to send exit notification: {e}", exc_info=True)
+                self.logger.error(f"Failed to send TRADE_CLOSED notification: {e}", exc_info=True)
 
     async def _execute_signal(self, signal: Any) -> None:
         """Execute a single trade signal.

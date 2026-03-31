@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Dict, List, Any
 from vibe.trading_bot.notifications.payloads import (
     OrderNotificationPayload,
+    TradeClosedPayload,
     SystemStatusPayload,
     ORBLevelsPayload,
     DailySummaryPayload,
@@ -22,6 +23,9 @@ class DiscordNotificationFormatter:
         "ORDER_SENT": 0x3498db,      # Blue
         "ORDER_FILLED": 0x2ecc71,    # Green
         "ORDER_CANCELLED": 0xe74c3c,  # Red
+        "TRADE_CLOSED_PROFIT": 0x2ecc71,  # Green
+        "TRADE_CLOSED_LOSS": 0xe74c3c,    # Red
+        "TRADE_CLOSED_FLAT": 0x95a5a6,    # Gray
         "MARKET_START": 0x2ecc71,    # Green
         "MARKET_CLOSE": 0xf39c12,    # Orange
         "ORB_ESTABLISHED": 0x9b59b6,  # Purple
@@ -124,26 +128,6 @@ class DiscordNotificationFormatter:
                     "value": slippage_str,
                     "inline": True
                 })
-
-        # Add P&L if available (closing trade)
-        if payload.realized_pnl is not None and payload.position_size == 0:
-            pnl_value = f"${payload.realized_pnl:+.2f}"
-            if payload.realized_pnl_pct is not None:
-                pnl_value += f" ({payload.realized_pnl_pct:+.1f}%)"
-
-            fields.append({
-                "name": "P&L (Closed)",
-                "value": pnl_value,
-                "inline": True
-            })
-
-        # Add remaining position if open
-        if payload.position_size is not None and payload.position_size > 0:
-            fields.append({
-                "name": "Remaining Position",
-                "value": f"{payload.position_size:,.0f}",
-                "inline": True
-            })
 
         if payload.signal_reason:
             fields.append({
@@ -456,6 +440,51 @@ class DiscordNotificationFormatter:
             "embeds": [{
                 "title": "📈 ORB Levels Established",
                 "description": description,
+                "color": color,
+                "fields": fields,
+                "timestamp": payload.timestamp.isoformat(),
+                "footer": {"text": footer_text}
+            }]
+        }
+
+    def format_trade_closed(self, payload: TradeClosedPayload) -> Dict[str, Any]:
+        """Format TRADE_CLOSED payload into Discord webhook message.
+
+        Args:
+            payload: Trade closed payload with P&L details
+
+        Returns:
+            Dictionary with 'embeds' key containing Discord embed data
+        """
+        if payload.pnl_total > 0:
+            color = self.COLORS["TRADE_CLOSED_PROFIT"]
+            result_emoji = "🟢"
+        elif payload.pnl_total < 0:
+            color = self.COLORS["TRADE_CLOSED_LOSS"]
+            result_emoji = "🔴"
+        else:
+            color = self.COLORS["TRADE_CLOSED_FLAT"]
+            result_emoji = "⚪"
+
+        pnl_str = f"${payload.pnl_total:+.2f} ({payload.pnl_pct:+.2f}%)"
+        fields = [
+            {"name": "Symbol", "value": payload.symbol, "inline": True},
+            {"name": "Side", "value": payload.side.upper(), "inline": True},
+            {"name": "Qty", "value": f"{payload.quantity:,.0f}", "inline": True},
+            {"name": "Entry", "value": f"${payload.entry_price:.2f}", "inline": True},
+            {"name": "Exit", "value": f"${payload.exit_price:.2f}", "inline": True},
+            {"name": f"{result_emoji} P&L", "value": pnl_str, "inline": True},
+            {"name": "Exit Reason", "value": payload.exit_reason, "inline": True},
+            {"name": "Strategy", "value": payload.strategy_name, "inline": True},
+        ]
+
+        footer_text = "Trading Bot"
+        if payload.version:
+            footer_text = f"Trading Bot {payload.version}"
+
+        return {
+            "embeds": [{
+                "title": f"{result_emoji} Trade Closed — {payload.symbol}",
                 "color": color,
                 "fields": fields,
                 "timestamp": payload.timestamp.isoformat(),

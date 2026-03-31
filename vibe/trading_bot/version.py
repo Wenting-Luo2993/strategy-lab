@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.3"  # fix: send both ORDER_SENT+ORDER_FILLED for entry orders; ORDER_SENT+ORDER_FILLED for exit orders
+VERSION = "1.4.5"  # fix: use actual fill prices for P&L; add fill/slippage/commission/account logging
 
 
 def get_build_timestamp() -> str:
