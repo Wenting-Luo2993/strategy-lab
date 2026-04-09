@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.5"  # fix: use actual fill prices for P&L; add fill/slippage/commission/account logging
+VERSION = "1.4.8"  # fix: slippage flat 0.03% per leg — zero size_impact_factor (blew up with large share counts)
 
 
 def get_build_timestamp() -> str:

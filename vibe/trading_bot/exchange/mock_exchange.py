@@ -80,7 +80,7 @@ class MockExchange(ExecutionEngine):
         self.initial_capital = initial_capital
         self.cash = initial_capital
         self.slippage_model = (
-            slippage_model or SlippageModel(base_slippage_pct=0.0005)
+            slippage_model or SlippageModel(base_slippage_pct=0.0003, size_impact_factor=0.0)
         )
         self.partial_fill_probability = partial_fill_probability
         self.commission_pct = commission_pct
@@ -224,7 +224,7 @@ class MockExchange(ExecutionEngine):
             fill_price = self.slippage_model.apply(
                 price=current_price,
                 side=order.side,
-                volatility=0.02,  # Default volatility
+                volatility=0.0,  # Default volatility
                 order_size=order.quantity,
             )
 
@@ -244,7 +244,7 @@ class MockExchange(ExecutionEngine):
                 fill_price = self.slippage_model.apply(
                     price=current_price,
                     side=order.side,
-                    volatility=0.02,
+                    volatility=0.0,
                     order_size=order.quantity,
                 )
             elif order.side == "sell" and current_price <= order.price:
@@ -252,7 +252,7 @@ class MockExchange(ExecutionEngine):
                 fill_price = self.slippage_model.apply(
                     price=current_price,
                     side=order.side,
-                    volatility=0.02,
+                    volatility=0.0,
                     order_size=order.quantity,
                 )
             else:

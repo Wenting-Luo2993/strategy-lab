@@ -472,25 +472,35 @@ class TradingOrchestrator:
 
         # Record ORB levels (include body_pct from current bar)
         if "orb_high" in metadata and symbol not in self._daily_stats["orb_levels"]:
-            # Calculate body percentage of current bar if available
-            body_pct = 0.0
-            if "current_bar" in metadata:
-                bar = metadata["current_bar"]
-                if "open" in bar and "close" in bar and "high" in bar and "low" in bar:
-                    total_range = bar["high"] - bar["low"]
-                    if total_range > 0:
-                        body_pct = abs(bar["close"] - bar["open"]) / total_range * 100
+            # Guard: only store ORB levels for today's trading date.
+            # At startup, replayed yfinance bars carry yesterday's date — reject those
+            # so they cannot prematurely trigger the ORB Discord notification.
+            orb_trading_date = metadata.get("orb_trading_date")
+            if orb_trading_date is not None and orb_trading_date.isoformat() != current_date:
+                self.logger.debug(
+                    f"[ORB SKIP] {symbol}: ORB levels from {orb_trading_date} "
+                    f"(stale historical data, today={current_date}) — skipping"
+                )
+            else:
+                # Calculate body percentage of current bar if available
+                body_pct = 0.0
+                if "current_bar" in metadata:
+                    bar = metadata["current_bar"]
+                    if "open" in bar and "close" in bar and "high" in bar and "low" in bar:
+                        total_range = bar["high"] - bar["low"]
+                        if total_range > 0:
+                            body_pct = abs(bar["close"] - bar["open"]) / total_range * 100
 
-            self._daily_stats["orb_levels"][symbol] = {
-                "high": metadata["orb_high"],
-                "low": metadata["orb_low"],
-                "range": metadata["orb_range"],
-                "body_pct": body_pct,
-            }
-            self.logger.info(
-                f"[ORB STORED] {symbol}: High=${metadata['orb_high']:.2f}, "
-                f"Low=${metadata['orb_low']:.2f}, Range=${metadata['orb_range']:.2f}"
-            )
+                self._daily_stats["orb_levels"][symbol] = {
+                    "high": metadata["orb_high"],
+                    "low": metadata["orb_low"],
+                    "range": metadata["orb_range"],
+                    "body_pct": body_pct,
+                }
+                self.logger.info(
+                    f"[ORB STORED] {symbol}: High=${metadata['orb_high']:.2f}, "
+                    f"Low=${metadata['orb_low']:.2f}, Range=${metadata['orb_range']:.2f}"
+                )
 
         # Count breakouts detected
         price_position = metadata.get("price_position", "")
@@ -566,12 +576,17 @@ class TradingOrchestrator:
             notifier = DiscordNotifier(webhook_url=self.config.notifications.discord_webhook_url)
             await notifier.start()
 
-            await notifier.send_orb_notification(payload)
+            success = await notifier.send_orb_notification(payload)
 
             await notifier.stop()
 
-            self._orb_notification_sent_date = current_date
-            self.logger.info("[ORB NOTIFICATION] Discord notification sent successfully")
+            if success:
+                self._orb_notification_sent_date = current_date
+                self.logger.info("[ORB NOTIFICATION] Discord notification sent successfully")
+            else:
+                self.logger.warning(
+                    "[ORB NOTIFICATION] Discord notification failed — will retry next cycle"
+                )
 
         except Exception as e:
             self.logger.error(f"Failed to send ORB Discord notification: {e}", exc_info=True)

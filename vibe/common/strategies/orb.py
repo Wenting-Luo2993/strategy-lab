@@ -214,6 +214,7 @@ class ORBStrategy(StrategyBase):
                 "orb_high": levels.high,
                 "orb_low": levels.low,
                 "orb_range": levels.range,
+                "orb_trading_date": current_time_local.date(),
                 "current_price": current_bar["close"],
                 "price_position": "n/a",
             }
@@ -246,6 +247,7 @@ class ORBStrategy(StrategyBase):
                 "orb_high": levels.high,
                 "orb_low": levels.low,
                 "orb_range": levels.range,
+                "orb_trading_date": trading_date,
                 "current_price": current_price,
                 "price_position": price_position,
             }
@@ -254,6 +256,7 @@ class ORBStrategy(StrategyBase):
             "orb_high": levels.high,
             "orb_low": levels.low,
             "orb_range": levels.range,
+            "orb_trading_date": trading_date,
             "current_price": current_price,
             "current_bar": current_bar,
             "price_position": price_position,
