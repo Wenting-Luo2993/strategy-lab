@@ -25,6 +25,8 @@ class Trade(BaseModel):
     pnl_pct: Optional[float] = Field(default=None, description="Realized P&L percentage")
     commission: float = Field(default=0.0, description="Total commission")
     strategy: Optional[str] = Field(default=None, description="Strategy name")
+    initial_risk: Optional[float] = Field(default=None, description="Dollar risk at entry: abs(entry_price - stop_loss) * quantity")
+    exit_reason: Optional[str] = Field(default=None, description="Why the trade was closed: 'STOP' | 'TARGET' | 'EOD' | 'SIGNAL'")
 
     @field_validator("side")
     @classmethod
@@ -96,5 +98,7 @@ class Trade(BaseModel):
                 "pnl_pct": 6.67,
                 "commission": 10.0,
                 "strategy": "orb",
+                "initial_risk": 200.0,
+                "exit_reason": "STOP",
             }
         }
