@@ -41,6 +41,8 @@ vibe/backtester/data/
 !vibe/common/data/
 !vibe/trading_bot/data/
 !vibe/trading_bot/data/**/*.py
+!vibe/backtester/data/
+!vibe/backtester/data/**/*.py
 
 # Google API credentials (service account & OAuth tokens)
 *.service-account.json
