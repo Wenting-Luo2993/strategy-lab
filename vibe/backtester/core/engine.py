@@ -74,6 +74,8 @@ class BacktestEngine:
         pd_interval = interval.replace("m", "min")
         df = _resample(df_1m, pd_interval)
         df = _add_atr(df)
+        # ORBCalculator requires a 'timestamp' column (not just the DatetimeIndex)
+        df["timestamp"] = df.index
 
         # 2. Init components
         clock = SimulatedClock()
@@ -101,8 +103,11 @@ class BacktestEngine:
             )
             current_bars = {symbol: bar}
 
-            # Check exits before entry (stop/EOD)
+            # Check exits before entry (stop/EOD); sync runner state for closed positions
+            open_before = set(portfolio.positions.keys())
             portfolio.check_exits(current_bars, clock)
+            for closed_sym in open_before - set(portfolio.positions.keys()):
+                runner.close_position(closed_sym)
 
             # Generate entry signal only if no open position
             if symbol not in portfolio.positions:
