@@ -226,12 +226,15 @@ class ORBStrategy(StrategyBase):
                 return 0, {"reason": "insufficient_volume"}
 
         current_price = current_bar["close"]
+        bar_high = float(current_bar.get("high", current_price))
+        bar_low  = float(current_bar.get("low",  current_price))
+        bar_open = float(current_bar.get("open", current_price))
 
         # Calculate distance to breakout levels for logging
         distance_to_high = ((levels.high - current_price) / current_price) * 100 if current_price < levels.high else 0
         distance_to_low = ((current_price - levels.low) / current_price) * 100 if current_price > levels.low else 0
 
-        # Determine price position
+        # Determine price position (close-based, for metadata/logging)
         if current_price > levels.high:
             price_position = "above_high"
         elif current_price < levels.low:
@@ -265,12 +268,30 @@ class ORBStrategy(StrategyBase):
             "bar_time": bar_time.strftime("%H:%M"),
         }
 
+        # Intrabar breakout detection: use bar high/low with a 1-tick offset.
+        # QC places stop-market orders at OR_high+$0.01 (long) and OR_low-$0.01
+        # (short), so merely touching OR_high does NOT trigger a fill.
+        # Using levels.high + TICK_SIZE avoids false positives on bars that
+        # only graze the ORB level and then close on the other side.
+        _TICK = 0.01
+        long_broke  = bar_high >= levels.high + _TICK
+        short_broke = bar_low  <= levels.low  - _TICK
+
+        # Tie-break when both levels are breached in the same bar.
+        # LEAN's heuristic: the side that moved further from bar open fired first.
+        if long_broke and short_broke:
+            up_move   = bar_high - bar_open
+            down_move = bar_open - bar_low
+            if up_move >= down_move:
+                short_broke = False  # bar moved more up: long fires first
+            else:
+                long_broke  = False  # bar moved more down: short fires first
+
         # Long breakout
-        if orb_calc.is_long_breakout(current_price, levels):
+        if long_broke:
             # Check body percentage filter for breakout bar
             body_pct = self._calculate_body_percentage(current_bar)
             if body_pct < self.config.orb_body_pct_filter:
-                # Return full metadata (includes ORB levels) even when rejecting signal
                 metadata.update({
                     "reason": "weak_breakout_candle",
                     "reason_detail": f"Body {body_pct:.1%} < {self.config.orb_body_pct_filter:.1%} threshold"
@@ -279,13 +300,10 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            # take_profit_multiplier=0 means no TP target (EOD exit only)
             tp = None
             if self.config.take_profit_multiplier > 0:
                 tp = orb_calc.get_long_exit_level(
-                    levels,
-                    atr,
-                    multiplier=self.config.take_profit_multiplier,
+                    levels, atr, multiplier=self.config.take_profit_multiplier,
                 )
             sl = levels.low if self.config.stop_loss_at_level else current_price - atr
 
@@ -300,11 +318,9 @@ class ORBStrategy(StrategyBase):
             return 1, metadata
 
         # Short breakout
-        elif orb_calc.is_short_breakout(current_price, levels):
-            # Check body percentage filter for breakout bar
+        elif short_broke:
             body_pct = self._calculate_body_percentage(current_bar)
             if body_pct < self.config.orb_body_pct_filter:
-                # Return full metadata (includes ORB levels) even when rejecting signal
                 metadata.update({
                     "reason": "weak_breakout_candle",
                     "reason_detail": f"Body {body_pct:.1%} < {self.config.orb_body_pct_filter:.1%} threshold"
@@ -313,13 +329,10 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            # take_profit_multiplier=0 means no TP target (EOD exit only)
             tp = None
             if self.config.take_profit_multiplier > 0:
                 tp = orb_calc.get_short_exit_level(
-                    levels,
-                    atr,
-                    multiplier=self.config.take_profit_multiplier,
+                    levels, atr, multiplier=self.config.take_profit_multiplier,
                 )
             sl = levels.high if self.config.stop_loss_at_level else current_price + atr
 
@@ -333,7 +346,7 @@ class ORBStrategy(StrategyBase):
             self._traded_today[symbol] = trading_date
             return -1, metadata
 
-        # No breakout - return full metadata (includes ORB levels for notification)
+        # No breakout
         metadata.update({"reason": "no_breakout"})
         return 0, metadata
 

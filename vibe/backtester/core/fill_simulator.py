@@ -36,15 +36,17 @@ class FillSimulator:
         quantity: float,
         bar: Bar,
         next_bar: Optional[Bar] = None,
+        price_override: Optional[float] = None,
     ) -> FillResult:
-        slippage = self.slippage_ticks * TICK_SIZE
-
-        if self.fill_mode == 1 and next_bar is not None:
-            base_price = next_bar.open
+        if price_override is not None:
+            fill_price = price_override
         else:
-            base_price = bar.close
-
-        fill_price = base_price + slippage if side == "buy" else base_price - slippage
+            slippage = self.slippage_ticks * TICK_SIZE
+            if self.fill_mode == 1 and next_bar is not None:
+                base_price = next_bar.open
+            else:
+                base_price = bar.close
+            fill_price = base_price + slippage if side == "buy" else base_price - slippage
 
         return FillResult(
             symbol=symbol,

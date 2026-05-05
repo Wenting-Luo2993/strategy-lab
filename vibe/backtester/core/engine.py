@@ -52,7 +52,7 @@ class BacktestEngine:
         ruleset: StrategyRuleSet,
         data_dir: Path,
         initial_capital: float = 10_000.0,
-        slippage_ticks: int = 5,
+        slippage_ticks: int = 2,
     ) -> None:
         self.ruleset = ruleset
         self.data_dir = data_dir
@@ -121,13 +121,28 @@ class BacktestEngine:
                 if signal_value in (1, -1):
                     side = "buy" if signal_value == 1 else "sell"
                     stop_price = metadata.get("stop_loss", bar.close * 0.99)
+
+                    # Entry at stop-market trigger price (OR_high+$0.01 / OR_low-$0.01)
+                    # plus configurable slippage ticks for market impact.
+                    _TICK = 0.01
+                    slippage = self.slippage_ticks * _TICK
+                    orb_high = metadata.get("orb_high")
+                    orb_low  = metadata.get("orb_low")
+                    if signal_value == 1 and orb_high is not None:
+                        entry_price = orb_high + _TICK + slippage
+                    elif signal_value == -1 and orb_low is not None:
+                        entry_price = orb_low - _TICK - slippage
+                    else:
+                        entry_price = bar.close
+
                     quantity = self._position_size(
                         capital=portfolio.cash,
-                        entry_price=bar.close,
+                        entry_price=entry_price,
                         stop_price=stop_price,
                     )
                     if quantity > 0:
-                        fill = fill_sim.execute(symbol, side, quantity, bar)
+                        fill = fill_sim.execute(symbol, side, quantity, bar,
+                                                price_override=entry_price)
                         portfolio.open_position(fill, stop_price=stop_price, timestamp=ts.to_pydatetime())
                         runner.track_position(
                             symbol=symbol, side=side,

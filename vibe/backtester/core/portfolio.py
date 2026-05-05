@@ -45,7 +45,10 @@ class PortfolioManager:
             side=fill.side,
             entry_time=timestamp,
         )
-        self.cash -= fill.filled_qty * fill.avg_price
+        if fill.side == "buy":
+            self.cash -= fill.filled_qty * fill.avg_price
+        else:  # short (sell)
+            self.cash += fill.filled_qty * fill.avg_price
 
     def close_position(
         self, fill: FillResult, exit_reason: str, timestamp: datetime
@@ -64,13 +67,17 @@ class PortfolioManager:
             initial_risk=initial_risk,
             exit_reason=exit_reason,
         ))
-        self.cash += fill.filled_qty * fill.avg_price
+        if fill.side == "sell":  # closing long
+            self.cash += fill.filled_qty * fill.avg_price
+        else:  # closing short (buy back)
+            self.cash -= fill.filled_qty * fill.avg_price
 
     def check_exits(
         self, current_bars: Dict[str, Bar], clock
     ) -> None:
         """
-        Check stop-loss hits and EOD exit for all open positions.
+        Check stop-loss and EOD exit for all open positions.
+        Stop trigger matches QC: bar.close must cross the stop level (not intrabar wick).
         clock must have a .now() method returning a timezone-aware datetime.
         """
         local_time = clock.now().astimezone(_ET).time()
@@ -82,15 +89,25 @@ class PortfolioManager:
                 continue
             pos = self.positions[symbol]
 
-            if pos.side == "buy" and bar.low <= pos.stop_price:
+            long_stop  = pos.side == "buy"  and bar.low  <= pos.stop_price
+            short_stop = pos.side == "sell" and bar.high >= pos.stop_price
+
+            if long_stop:
                 fill = FillResult(
                     symbol=symbol, side="sell",
                     filled_qty=pos.quantity, avg_price=pos.stop_price,
                 )
                 self.close_position(fill, exit_reason="STOP", timestamp=clock.now())
-            elif is_eod:
+            elif short_stop:
                 fill = FillResult(
-                    symbol=symbol, side="sell",
+                    symbol=symbol, side="buy",
+                    filled_qty=pos.quantity, avg_price=pos.stop_price,
+                )
+                self.close_position(fill, exit_reason="STOP", timestamp=clock.now())
+            elif is_eod:
+                close_side = "sell" if pos.side == "buy" else "buy"
+                fill = FillResult(
+                    symbol=symbol, side=close_side,
                     filled_qty=pos.quantity, avg_price=bar.close,
                 )
                 self.close_position(fill, exit_reason="EOD", timestamp=clock.now())
@@ -99,7 +116,9 @@ class PortfolioManager:
         self, current_bars: Dict[str, Bar], timestamp: datetime
     ) -> None:
         position_value = sum(
-            current_bars[sym].close * pos.quantity
+            (current_bars[sym].close * pos.quantity
+             if pos.side == "buy"
+             else -current_bars[sym].close * pos.quantity)
             for sym, pos in self.positions.items()
             if sym in current_bars
         )
