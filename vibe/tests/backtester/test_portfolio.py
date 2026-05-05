@@ -66,11 +66,55 @@ def test_check_exits_stop_hit():
     clock = SimulatedClock()
     clock.set_time(datetime(2024, 1, 15, 10, 0, tzinfo=ET))
     pm.open_position(_fill(price=480.0, qty=10), stop_price=475.0, timestamp=clock.now())
-    # bar low touches stop
+    # bar low touches stop level — intrabar detection, fills at stop_price
     bars = {"QQQ": _bar(close=474.0, low=473.0, high=480.0)}
     pm.check_exits(bars, clock)
     assert len(pm.trade_history) == 1
     assert pm.trade_history[0].exit_reason == "STOP"
+    assert pm.trade_history[0].exit_price == pytest.approx(475.0)  # fills at stop_price
+
+
+def test_check_exits_intrabar_wick_stops():
+    """Bar low wicks below stop even though close is above — intrabar detection fires."""
+    pm = PortfolioManager(10_000.0)
+    from vibe.backtester.core.clock import SimulatedClock
+    clock = SimulatedClock()
+    clock.set_time(datetime(2024, 1, 15, 10, 0, tzinfo=ET))
+    pm.open_position(_fill(price=480.0, qty=10), stop_price=475.0, timestamp=clock.now())
+    # low dips to 473 (below stop=475), close=476 is above stop
+    bars = {"QQQ": _bar(close=476.0, low=473.0, high=481.0)}
+    pm.check_exits(bars, clock)
+    assert len(pm.trade_history) == 1  # stop fires on intrabar wick
+    assert pm.trade_history[0].exit_price == pytest.approx(475.0)
+
+
+def test_check_exits_short_stop_hit():
+    """Short position stop fires when bar.high >= stop_price; fills at stop_price."""
+    pm = PortfolioManager(10_000.0)
+    from vibe.backtester.core.clock import SimulatedClock
+    clock = SimulatedClock()
+    clock.set_time(datetime(2024, 1, 15, 10, 0, tzinfo=ET))
+    short_fill = _fill(side="sell", price=480.0, qty=10)
+    pm.open_position(short_fill, stop_price=485.0, timestamp=clock.now())
+    # bar high rises above short stop
+    bars = {"QQQ": _bar(close=484.0, low=479.0, high=487.0)}
+    pm.check_exits(bars, clock)
+    assert len(pm.trade_history) == 1
+    assert pm.trade_history[0].exit_reason == "STOP"
+    assert pm.trade_history[0].exit_price == pytest.approx(485.0)
+
+
+def test_short_cash_accounting():
+    """Opening a short adds cash (receive proceeds); closing a short subtracts cash (buy back)."""
+    pm = PortfolioManager(10_000.0)
+    ts = datetime(2024, 1, 15, 10, 0, tzinfo=ET)
+    short_fill = _fill(side="sell", price=480.0, qty=10)
+    pm.open_position(short_fill, stop_price=485.0, timestamp=ts)
+    assert pm.cash == pytest.approx(10_000.0 + 480.0 * 10)  # received proceeds
+
+    pm.close_position(_fill(side="buy", price=470.0, qty=10), exit_reason="STOP", timestamp=ts)
+    # bought back at 470, net cash = initial + proceeds_received - buyback_cost
+    assert pm.cash == pytest.approx(10_000.0 + 480.0 * 10 - 470.0 * 10)
 
 def test_check_exits_eod():
     pm = PortfolioManager(10_000.0)
