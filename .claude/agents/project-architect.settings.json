@@ -19,8 +19,7 @@
       "Write(/*.py)",
       "Write(/*.json)",
       "Write(/*.md)",
-      "Read(/pine/**)",
-      "Read(/python/**)"
+      "Read(/pine/**)"
     ],
     "allow": [
       "Edit(/docs/**)",

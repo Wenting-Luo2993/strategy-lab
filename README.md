@@ -50,10 +50,6 @@ Pine Script libraries and strategies for rapid prototyping on TradingView:
 - `libraries/` — Modular components for display, entry, and risk management
 - `strategies/` — Ready-to-use strategies (ORB, etc.) for alerts and screening
 
-### `python/` — Legacy Codebase (Deprecated)
-
-Original Python implementation - superseded by `vibe/`. Kept for reference.
-
 ## ✨ Key Features
 
 ### Trading Bot (`vibe/trading_bot/`)

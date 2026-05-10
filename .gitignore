@@ -18,14 +18,7 @@ ENV/
 
 # Data cache
 data_cache/
-python/results
 results/
-
-# Trading database files (keep folder structure, ignore data)
-python/data/*.db
-python/data/*.db-shm
-python/data/*.db-wal
-python/data/backups/
 
 # Trading bot data (MVP)
 data/
@@ -62,9 +55,6 @@ token.json
 
 # Streamlit secrets
 .streamlit/secrets.toml
-
-# Finnhub credentials
-python/src/config/finnhub_config.json
 
 # Logs
 *.log

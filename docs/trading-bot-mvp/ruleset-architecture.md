@@ -125,7 +125,6 @@ strategy-lab/
 ├── docs/
 │   └── trading-bot-mvp/
 │       └── ruleset-architecture.md        # this document
-├── python/                                # other projects (unchanged)
 └── pine/                                  # other projects (unchanged)
 ```
 
