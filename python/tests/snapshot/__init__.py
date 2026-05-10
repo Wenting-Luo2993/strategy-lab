@@ -1,1 +1,0 @@
-"""Snapshot-related tests package."""
