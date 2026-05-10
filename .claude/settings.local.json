@@ -18,7 +18,31 @@
       "Bash(curl:*)",
       "Bash(chmod:*)",
       "Bash(ssh:*)",
-      "Bash(tee:*)"
+      "Bash(tee:*)",
+      "Bash(taskkill:*)",
+      "Bash(powershell \"Get-Process python* | Stop-Process -Force\")",
+      "Bash(find:*)",
+      "Bash(dir:*)",
+      "Bash(ls:*)",
+      "Bash(git reset:*)",
+      "Bash([ -f .env ])",
+      "Bash(git pull:*)",
+      "Bash($env:FINNHUB_API_KEY=\"d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0\")",
+      "Bash(FINNHUB_API_KEY=\"d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0\" python:*)",
+      "Bash(FINNHUB_API_KEY=\"d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0\" timeout 90 python:*)",
+      "Bash(set:*)",
+      "Bash(powershell -Command \"$env:FINNHUB_API_KEY=''d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0''; cd ''C:\\\\Users\\\\wentingluo\\\\OneDrive - Microsoft\\\\Development\\\\strategy-lab''; python test_orchestrator_daily_cycle.py\")",
+      "Bash(powershell -Command \"$env:FINNHUB_API_KEY=''d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0''; python ''C:\\\\Users\\\\wentingluo\\\\OneDrive - Microsoft\\\\Development\\\\strategy-lab\\\\test_orchestrator_daily_cycle.py''\")",
+      "Bash(powershell:*)",
+      "Bash(Select-String -Pattern \"\\(TEST|subscribed_symbols|BUG|OK.*cleared|COMPLETE\\)\")",
+      "Bash(Select-Object:*)",
+      "Bash(echo:*)",
+      "Bash(export FINNHUB_API_KEY=\"d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0\")",
+      "Bash(1)",
+      "Bash(export:*)",
+      "Bash(git mv:*)",
+      "Bash(git restore:*)",
+      "Bash(scp:*)"
     ]
   }
 }
