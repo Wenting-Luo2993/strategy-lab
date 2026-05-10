@@ -19,6 +19,11 @@ position_size:
 exit:
   eod: true
   eod_time: "15:55"
+  
+  take_profit:
+    method: orb_range_multiple
+    multiplier: 2.0
+  
   stop_loss:
     method: orb_level
 

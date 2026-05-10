@@ -310,9 +310,31 @@ class ORBCalculator:
             reason="",
         )
 
-        # Cache for current day
-        self._current_date = current_date_str
-        self._current_levels = levels
+        # CRITICAL FIX: Only cache if the opening window is complete
+        # If current time is still within the opening window, we should recalculate
+        # on the next bar to include newly arrived data
+        # Use trading_date parameter (datetime) to determine current time
+        if trading_date is not None:
+            current_bar_time = self._get_time_from_timestamp(trading_date)
+        else:
+            # Fall back to last bar's timestamp
+            last_ts = df.iloc[-1]["timestamp"]
+            current_bar_time = self._get_time_from_timestamp(last_ts)
+        
+        start_minutes = self.start_time.hour * 60 + self.start_time.minute
+        end_minutes = start_minutes + self.duration_minutes
+        end_time = time(end_minutes // 60, end_minutes % 60)
+        
+        is_window_complete = current_bar_time >= end_time
+        
+        if is_window_complete:
+            # Window is complete, safe to cache
+            self._current_date = current_date_str
+            self._current_levels = levels
+            logger.info(f"ORB Calculate: Window complete, caching result for {current_date_str}")
+        else:
+            # Window still in progress, don't cache (will recalculate on next bar)
+            logger.info(f"ORB Calculate: Window in progress (current={current_bar_time}, end={end_time}), not caching")
 
         return levels
 

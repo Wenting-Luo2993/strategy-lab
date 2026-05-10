@@ -5,6 +5,73 @@ Read this alongside `CLAUDE.md` to understand both patterns AND hard-won lessons
 
 ---
 
+## CRITICAL: ORB Calculator Premature Caching Bug
+
+**Date**: 2026-05-10  
+**Rule**: NEVER cache ORB levels until the opening window is complete
+
+### The Problem (Bug Found in Backtester Parameter Sweep)
+
+**Symptom**: Parameter sweep showed identical results when ORB duration changed from 5→10→15 minutes, even though each duration should produce different ORB levels.
+
+**Root Cause**: ORB calculator cached results on the FIRST bar of the opening window, before the window was complete:
+
+```python
+# ❌ WRONG: Cached too early
+def calculate(self, df, trading_date):
+    # At 9:30 (first bar), calculate ORB from 1 bar
+    levels = calculate_from_opening_bars(opening_bars)
+    
+    # IMMEDIATELY cache (window not complete!)
+    self._current_date = current_date_str
+    self._current_levels = levels  # ❌ Cached with incomplete data!
+    return levels
+```
+
+**Why this broke parameter sweeps:**
+- 5-min ORB (9:30-9:35): At 9:30, calculates from 1 bar, caches → never updates
+- 10-min ORB (9:30-9:40): At 9:30, calculates from 1 bar, caches → never gets bars 2-3!  
+- 15-min ORB (9:30-9:45): At 9:30, calculates from 1 bar, caches → never gets bars 2-4!
+
+All three used only the first bar's high/low, producing identical results.
+
+### The Solution
+
+**Only cache when the opening window is COMPLETE:**
+
+```python
+# ✅ CORRECT: Check if window is complete before caching
+def calculate(self, df, trading_date):
+    levels = calculate_from_opening_bars(opening_bars)
+    
+    # Determine if opening window is complete
+    current_bar_time = self._get_time_from_timestamp(trading_date)
+    start_minutes = self.start_time.hour * 60 + self.start_time.minute
+    end_minutes = start_minutes + self.duration_minutes
+    end_time = time(end_minutes // 60, end_minutes % 60)
+    
+    is_window_complete = current_bar_time >= end_time
+    
+    if is_window_complete:
+        # Window complete, safe to cache
+        self._current_date = current_date_str
+        self._current_levels = levels
+    else:
+        # Window in progress, don't cache (will recalculate on next bar)
+        pass
+    
+    return levels
+```
+
+**Impact**: After fix, parameter sweeps showed correct variation:
+- 5-min ORB: 49.5% win rate, $934 P&L  
+- 10-min ORB: 54.5% win rate, $993 P&L (different!)  
+- 15-min ORB: 55.7% win rate, $244 P&L (different!)
+
+**Lesson**: When caching calculated values, ensure all required data is available before caching. For time-windowed calculations, verify the window is complete.
+
+---
+
 ## CRITICAL: Timezone Handling for Timestamp Comparisons
 
 **Date**: 2026-03-12

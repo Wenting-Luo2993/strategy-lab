@@ -10,6 +10,7 @@ Usage:
 """
 import argparse
 import csv
+import logging
 import os
 import sys
 from datetime import datetime
@@ -69,7 +70,16 @@ def main() -> None:
     parser.add_argument("--slippage-ticks", default=5, type=int, help="Slippage in ticks")
     parser.add_argument("--output",     default="reports/backtest.html", help="Output HTML path")
     parser.add_argument("--trades-csv", default=None, help="Optional path to dump trade list as CSV")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO if args.verbose else logging.WARNING,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
+    )
 
     data_dir = Path(os.environ.get("BACKTEST__DATA_DIR", "vibe/data/parquet"))
     if not data_dir.exists():

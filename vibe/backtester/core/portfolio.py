@@ -17,6 +17,7 @@ class Position:
     quantity: float
     entry_price: float
     stop_price: float
+    take_profit: Optional[float]  # None = no TP
     side: str           # "buy" | "sell"
     entry_time: datetime
 
@@ -35,13 +36,14 @@ class PortfolioManager:
         self.trade_history: List[Trade] = []
 
     def open_position(
-        self, fill: FillResult, stop_price: float, timestamp: datetime
+        self, fill: FillResult, stop_price: float, take_profit: Optional[float], timestamp: datetime
     ) -> None:
         self.positions[fill.symbol] = Position(
             symbol=fill.symbol,
             quantity=fill.filled_qty,
             entry_price=fill.avg_price,
             stop_price=stop_price,
+            take_profit=take_profit,
             side=fill.side,
             entry_time=timestamp,
         )
@@ -76,8 +78,9 @@ class PortfolioManager:
         self, current_bars: Dict[str, Bar], clock
     ) -> None:
         """
-        Check stop-loss and EOD exit for all open positions.
-        Stop trigger matches QC: bar.close must cross the stop level (not intrabar wick).
+        Check take-profit, stop-loss, and EOD exit for all open positions.
+        Exit priority: TP > Stop > EOD
+        Stop/TP trigger: bar.close must cross the level (not intrabar wick).
         clock must have a .now() method returning a timezone-aware datetime.
         """
         local_time = clock.now().astimezone(_ET).time()
@@ -89,6 +92,27 @@ class PortfolioManager:
                 continue
             pos = self.positions[symbol]
 
+            # Check take-profit first (highest priority)
+            if pos.take_profit is not None:
+                long_tp  = pos.side == "buy"  and bar.high >= pos.take_profit
+                short_tp = pos.side == "sell" and bar.low  <= pos.take_profit
+                
+                if long_tp:
+                    fill = FillResult(
+                        symbol=symbol, side="sell",
+                        filled_qty=pos.quantity, avg_price=pos.take_profit,
+                    )
+                    self.close_position(fill, exit_reason="TP", timestamp=clock.now())
+                    continue
+                elif short_tp:
+                    fill = FillResult(
+                        symbol=symbol, side="buy",
+                        filled_qty=pos.quantity, avg_price=pos.take_profit,
+                    )
+                    self.close_position(fill, exit_reason="TP", timestamp=clock.now())
+                    continue
+
+            # Check stop-loss
             long_stop  = pos.side == "buy"  and bar.low  <= pos.stop_price
             short_stop = pos.side == "sell" and bar.high >= pos.stop_price
 

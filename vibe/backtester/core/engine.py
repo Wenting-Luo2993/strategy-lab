@@ -143,11 +143,12 @@ class BacktestEngine:
                     if quantity > 0:
                         fill = fill_sim.execute(symbol, side, quantity, bar,
                                                 price_override=entry_price)
-                        portfolio.open_position(fill, stop_price=stop_price, timestamp=ts.to_pydatetime())
+                        take_profit = metadata.get("take_profit")
+                        portfolio.open_position(fill, stop_price=stop_price, take_profit=take_profit, timestamp=ts.to_pydatetime())
                         runner.track_position(
                             symbol=symbol, side=side,
                             entry_price=fill.avg_price,
-                            take_profit=metadata.get("take_profit"),
+                            take_profit=take_profit,
                             stop_loss=stop_price,
                             timestamp=ts.to_pydatetime(),
                         )
