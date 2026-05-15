@@ -33,8 +33,8 @@ ET = ZoneInfo("America/New_York")
 
 
 def _write_trades_csv(trades, path: Path) -> None:
-    fieldnames = ["date", "exit_reason", "direction", "entry_price", "stop_price",
-                  "exit_price", "qty", "initial_risk", "pnl"]
+    fieldnames = ["entry_time", "date", "exit_reason", "direction", "entry_price",
+                  "stop_price", "exit_price", "qty", "initial_risk", "pnl", "pnl_r"]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -47,7 +47,9 @@ def _write_trades_csv(trades, path: Path) -> None:
                 stop_price = t.entry_price - risk_per_share
             else:
                 stop_price = t.entry_price + risk_per_share
+            pnl_r = round(t.pnl / t.initial_risk, 6) if (t.pnl is not None and t.initial_risk) else ""
             writer.writerow({
+                "entry_time":   entry_time.isoformat(),
                 "date":         entry_time.strftime("%Y-%m-%d"),
                 "exit_reason":  t.exit_reason or "",
                 "direction":    "long" if t.side == "buy" else "short",
@@ -57,6 +59,7 @@ def _write_trades_csv(trades, path: Path) -> None:
                 "qty":          int(t.quantity),
                 "initial_risk": round(t.initial_risk, 2) if t.initial_risk is not None else "",
                 "pnl":          round(t.pnl, 2) if t.pnl is not None else "",
+                "pnl_r":        pnl_r,
             })
 
 
