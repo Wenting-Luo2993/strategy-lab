@@ -66,6 +66,12 @@ def _load_ohlcv(data_dir: Path, symbol: str) -> pd.DataFrame:
             logger.info("Loading OHLCV from %s", path)
             df = pd.read_parquet(path)
             df.columns = [c.lower() for c in df.columns]
+            # Remove timezone info from index to match trades CSV (loaded as naive)
+            if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            # Ensure nanosecond precision to match trades
+            if isinstance(df.index, pd.DatetimeIndex):
+                df.index = pd.DatetimeIndex(df.index.values.astype('datetime64[ns]'))
             return df
     raise FileNotFoundError(
         f"No parquet file found for symbol '{symbol}' in {data_dir}. "
@@ -81,6 +87,8 @@ def _load_trades(path: Path) -> pd.DataFrame:
             f"Trades CSV must have an 'entry_time' column. Found: {trades.columns.tolist()}"
         )
     trades["entry_time"] = pd.to_datetime(trades["entry_time"], utc=True).dt.tz_localize(None)
+    # Ensure nanosecond precision to match parquet features
+    trades["entry_time"] = pd.to_datetime(trades["entry_time"].values.astype('datetime64[ns]'))
     if "pnl_r" not in trades.columns:
         raise ValueError(
             "Trades CSV must have a 'pnl_r' column (R-multiple per trade)."
