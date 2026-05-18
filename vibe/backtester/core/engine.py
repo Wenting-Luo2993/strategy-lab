@@ -64,7 +64,22 @@ class BacktestEngine:
         symbol: str,
         start_date: datetime,
         end_date: datetime,
+        precomputed_features: Optional[pd.DataFrame] = None,
     ) -> BacktestResult:
+        """
+        Run backtest simulation.
+        
+        Args:
+            symbol: Trading symbol
+            start_date: Backtest start date
+            end_date: Backtest end date
+            precomputed_features: Optional pre-computed indicators (ATR, ADX, etc.)
+                                 If provided, skips indicator computation for performance.
+                                 Index must match the resampled bar timestamps.
+        
+        Returns:
+            BacktestResult with trades, metrics, and equity curve
+        """
         # 1. Load and resample data
         loader = ParquetLoader(self.data_dir, [symbol])
         df_1m = asyncio.run(
@@ -73,7 +88,17 @@ class BacktestEngine:
         interval = self.ruleset.instruments.timeframe  # e.g. "5m"
         pd_interval = interval.replace("m", "min")
         df = _resample(df_1m, pd_interval)
-        df = _add_atr(df)
+        
+        # Use pre-computed features if provided, otherwise compute ATR on-the-fly
+        if precomputed_features is not None:
+            # Merge pre-computed features (indexed by timestamp)
+            # Only use features that align with our df index
+            aligned_features = precomputed_features.loc[df.index.intersection(precomputed_features.index)]
+            df = df.join(aligned_features, how="left")
+        else:
+            # Backward compatibility: compute ATR if not provided
+            df = _add_atr(df)
+        
         # ORBCalculator requires a 'timestamp' column (not just the DatetimeIndex)
         df["timestamp"] = df.index
 

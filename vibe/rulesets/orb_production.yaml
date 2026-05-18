@@ -10,6 +10,7 @@ strategy:
   type: orb
   orb_start_time: "09:30"
   orb_duration_minutes: 5
+  orb_body_pct_filter: 0.5
   entry_cutoff_time: "15:00"
 
 position_size:

@@ -33,12 +33,13 @@ class OrbRangeMultipleTakeProfit(BaseModel):
     """Take profit based on ORB range multiple."""
 
     method: Literal["orb_range_multiple"] = "orb_range_multiple"
-    multiplier: float = Field(default=2.0, description="TP = ORB_Range * multiplier")
+    multiplier: float = Field(default=2.0, description="TP = ORB_Range * multiplier (0.0 = disabled)")
 
     @model_validator(mode="after")
     def multiplier_positive(self) -> "OrbRangeMultipleTakeProfit":
-        if self.multiplier <= 0:
-            raise ValueError("multiplier must be positive")
+        # Allow 0.0 as a special case for "disabled" TP
+        if self.multiplier < 0:
+            raise ValueError("multiplier must be non-negative (0.0 = disabled)")
         return self
 
 

@@ -46,13 +46,14 @@ def get_orb_parameters(mode: str = "quick") -> list:
     Get parameter definitions for ORB strategy.
     
     Args:
-        mode: "quick" (one-at-a-time: 3+3+3=9 tests) or "full" (grid search)
+        mode: "quick" (one-at-a-time sensitivity) or "full" (grid search)
         
     Returns:
         List of ParameterDefinition objects
     """
     if mode == "quick":
         return [
+            # Core ORB parameters
             ParameterDefinition(
                 path="strategy.orb_duration_minutes",
                 values=[5, 10, 15],
@@ -60,20 +61,60 @@ def get_orb_parameters(mode: str = "quick") -> list:
                 name="ORB_Duration",
             ),
             ParameterDefinition(
+                path="strategy.orb_start_time",
+                values=["09:30", "09:35", "09:40"],
+                base_value="09:30",
+                name="ORB_Start_Time",
+            ),
+            ParameterDefinition(
+                path="strategy.orb_body_pct_filter",
+                values=[0.0, 0.3, 0.5],
+                base_value=0.0,
+                name="Body_Filter",
+            ),
+            
+            # Entry parameters
+            ParameterDefinition(
+                path="strategy.entry_cutoff_time",
+                values=["14:00", "15:00", "15:30"],
+                base_value="15:00",
+                name="Entry_Cutoff",
+            ),
+            
+            # Exit parameters
+            ParameterDefinition(
+                path="exit.eod_time",
+                values=["15:50", "15:55", "16:00"],
+                base_value="15:55",
+                name="EOD_Time",
+            ),
+            # NOTE: TP disabled (0.0) based on regime research showing TP destroys edge
+            ParameterDefinition(
                 path="exit.take_profit.multiplier",
-                values=[1.5, 2.0, 3.0],
-                base_value=2.0,
+                values=[0.0],
+                base_value=0.0,
                 name="TP_Multiplier",
             ),
+            
+            # Position sizing
             ParameterDefinition(
                 path="position_size.value",
                 values=[0.005, 0.01, 0.02],
                 base_value=0.01,
                 name="Risk_Pct",
             ),
+            
+            # Trade filters
+            ParameterDefinition(
+                path="trade_filter.volume_threshold",
+                values=[1.0, 1.5, 2.0],
+                base_value=1.5,
+                name="Volume_Threshold",
+            ),
         ]
     elif mode == "full":
         return [
+            # Core ORB parameters
             ParameterDefinition(
                 path="strategy.orb_duration_minutes",
                 values=[5, 10, 15, 20, 30],
@@ -81,22 +122,55 @@ def get_orb_parameters(mode: str = "quick") -> list:
                 name="ORB_Duration",
             ),
             ParameterDefinition(
+                path="strategy.orb_start_time",
+                values=["09:30", "09:35", "09:40", "09:45"],
+                base_value="09:30",
+                name="ORB_Start_Time",
+            ),
+            ParameterDefinition(
+                path="strategy.orb_body_pct_filter",
+                values=[0.0, 0.3, 0.5, 0.7],
+                base_value=0.0,
+                name="Body_Filter",
+            ),
+            
+            # Entry parameters
+            ParameterDefinition(
+                path="strategy.entry_cutoff_time",
+                values=["13:00", "14:00", "15:00", "15:30"],
+                base_value="15:00",
+                name="Entry_Cutoff",
+            ),
+            
+            # Exit parameters
+            ParameterDefinition(
+                path="exit.eod_time",
+                values=["15:45", "15:50", "15:55", "16:00"],
+                base_value="15:55",
+                name="EOD_Time",
+            ),
+            # NOTE: TP disabled (0.0) based on regime research
+            ParameterDefinition(
                 path="exit.take_profit.multiplier",
-                values=[1.0, 1.5, 2.0, 2.5, 3.0],
-                base_value=2.0,
+                values=[0.0],
+                base_value=0.0,
                 name="TP_Multiplier",
             ),
+            
+            # Position sizing
             ParameterDefinition(
                 path="position_size.value",
                 values=[0.005, 0.01, 0.015, 0.02],
                 base_value=0.01,
                 name="Risk_Pct",
             ),
+            
+            # Trade filters
             ParameterDefinition(
-                path="strategy.entry_cutoff_time",
-                values=["14:00", "15:00", "15:30"],
-                base_value="15:00",
-                name="Entry_Cutoff",
+                path="trade_filter.volume_threshold",
+                values=[1.0, 1.5, 2.0, 2.5],
+                base_value=1.5,
+                name="Volume_Threshold",
             ),
         ]
     else:

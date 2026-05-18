@@ -3,8 +3,11 @@ Generic parameter sensitivity testing framework for backtesting strategies.
 
 Supports testing parameter combinations across any ruleset configuration.
 """
+import asyncio
+import hashlib
 import itertools
 import logging
+import pickle
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,8 +16,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import yaml
 
-from vibe.backtester.core.engine import BacktestEngine
+from vibe.backtester.core.engine import BacktestEngine, _resample
 from vibe.backtester.analysis.metrics import BacktestResult
+from vibe.backtester.analysis.regime_research.features import FeatureEngine
+from vibe.backtester.analysis.scoring import composite_score, calculate_tail_ratio
+from vibe.backtester.data.parquet_loader import ParquetLoader
 from vibe.common.ruleset.models import StrategyRuleSet
 
 logger = logging.getLogger(__name__)
@@ -65,8 +71,13 @@ class SweepResult:
         avg_win = sum(wins) / len(wins) if wins else 0.0
         avg_loss = sum(losses) / len(losses) if losses else 0.0
         
+        # Calculate composite score and tail ratio
+        score = composite_score(self.result)
+        tail_ratio = calculate_tail_ratio(metrics.r_multiples)
+        
         return {
             **self.params,  # Parameter values
+            "composite_score": score,  # ← New: Multi-metric ranking score
             "n_trades": metrics.n_trades,
             "win_rate": metrics.win_rate,
             "expectancy_r": metrics.expectancy_r,
@@ -76,6 +87,7 @@ class SweepResult:
             "avg_win": avg_win,
             "avg_loss": avg_loss,
             "sharpe_ratio": equity.sharpe_ratio,
+            "tail_ratio": tail_ratio,  # ← New: Convexity measure
         }
 
 
@@ -143,6 +155,119 @@ class ParameterSweep:
         # Load base ruleset YAML
         with open(self.base_ruleset_path, "r") as f:
             self.base_config = yaml.safe_load(f)
+    
+    def _precompute_features(
+        self, 
+        symbol: str, 
+        start_date: datetime, 
+        end_date: datetime,
+        timeframe: str = "5m"
+    ) -> pd.DataFrame:
+        """
+        Pre-compute technical indicators for the entire date range.
+        
+        This is a CRITICAL optimization: compute indicators ONCE instead of
+        recalculating on every parameter combination.
+        
+        Args:
+            symbol: Trading symbol
+            start_date: Start date
+            end_date: End date
+            timeframe: Bar timeframe (e.g., "5m", "15m")
+        
+        Returns:
+            DataFrame with indicators indexed by timestamp
+        """
+        logger.info(f"Pre-computing features for {symbol} ({start_date.date()} to {end_date.date()})...")
+        
+        # Load 1-minute data
+        loader = ParquetLoader(self.data_dir, [symbol])
+        df_1m = asyncio.run(
+            loader.get_bars(symbol, start_time=start_date, end_time=end_date)
+        )
+        
+        # Resample to target timeframe
+        pd_interval = timeframe.replace("m", "min")
+        df = _resample(df_1m, pd_interval)
+        
+        # Compute all features using FeatureEngine
+        feature_engine = FeatureEngine()
+        features = feature_engine.compute(
+            df, 
+            features=["atr_14", "atr_pctile", "adx_14", "slope_20d", "slope_50d"]
+        )
+        
+        # Also add ATR_{period} column for backward compatibility
+        # (ORB strategy expects ATR_14 column)
+        if "atr_14" in features.columns:
+            features["ATR_14"] = features["atr_14"]
+        
+        logger.info(f"  ✓ Computed {len(features.columns)} indicators for {len(features)} bars")
+        
+        return features
+    
+    def _cache_key(
+        self, 
+        params: Dict[str, Any], 
+        symbol: str, 
+        start_date: datetime, 
+        end_date: datetime
+    ) -> str:
+        """
+        Generate a unique cache key for a parameter combination.
+        
+        Args:
+            params: Parameter values
+            symbol: Trading symbol
+            start_date: Backtest start
+            end_date: Backtest end
+        
+        Returns:
+            MD5 hash string
+        """
+        # Sort params for consistent hashing
+        sorted_params = sorted(params.items())
+        key_string = (
+            f"{self.base_ruleset_path.name}_"
+            f"{symbol}_"
+            f"{start_date.isoformat()}_"
+            f"{end_date.isoformat()}_"
+            f"{sorted_params}_"
+            f"capital_{self.initial_capital}_"
+            f"slippage_{self.slippage_ticks}"
+        )
+        return hashlib.md5(key_string.encode()).hexdigest()
+    
+    def _get_cached_result(
+        self, 
+        cache_dir: Path, 
+        cache_key: str
+    ) -> Optional[BacktestResult]:
+        """Load cached backtest result if it exists."""
+        cache_file = cache_dir / f"{cache_key}.pkl"
+        if cache_file.exists():
+            try:
+                with open(cache_file, "rb") as f:
+                    return pickle.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load cache {cache_key}: {e}")
+                return None
+        return None
+    
+    def _save_cached_result(
+        self, 
+        cache_dir: Path, 
+        cache_key: str, 
+        result: BacktestResult
+    ) -> None:
+        """Save backtest result to cache."""
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{cache_key}.pkl"
+        try:
+            with open(cache_file, "wb") as f:
+                pickle.dump(result, f)
+        except Exception as e:
+            logger.warning(f"Failed to save cache {cache_key}: {e}")
     
     def _set_nested_value(self, config: Dict[str, Any], path: str, value: Any) -> None:
         """Set a value in nested dictionary using dot-separated path.
@@ -236,6 +361,8 @@ class ParameterSweep:
         start_date: datetime,
         end_date: datetime,
         progress_callback: Optional[callable] = None,
+        use_precomputed_features: bool = True,
+        cache_dir: Optional[Path] = None,
     ) -> pd.DataFrame:
         """
         Run parameter sweep across all combinations.
@@ -245,6 +372,8 @@ class ParameterSweep:
             start_date: Start date for backtest
             end_date: End date for backtest
             progress_callback: Optional callback(current, total, params) for progress updates
+            use_precomputed_features: If True, pre-compute indicators once (50-90% speedup)
+            cache_dir: Optional directory for caching results (avoids re-running same params)
             
         Returns:
             DataFrame with results for all parameter combinations
@@ -256,7 +385,20 @@ class ParameterSweep:
         logger.info(f"Parameters: {[p.name for p in self.parameters]}")
         logger.info(f"Symbol: {symbol}, Period: {start_date.date()} to {end_date.date()}")
         
+        # Enable caching if cache_dir provided
+        if cache_dir:
+            cache_dir = Path(cache_dir)
+            logger.info(f"Result caching enabled: {cache_dir}")
+        
+        # Pre-compute features ONCE for massive performance gain
+        precomputed_features = None
+        if use_precomputed_features:
+            # Get timeframe from base config (default to 5m)
+            timeframe = self.base_config.get("instruments", {}).get("timeframe", "5m")
+            precomputed_features = self._precompute_features(symbol, start_date, end_date, timeframe)
+        
         results = []
+        cache_hits = 0
         
         for i, params in enumerate(combinations, 1):
             logger.info(f"[{i}/{total}] Testing: {params}")
@@ -265,22 +407,38 @@ class ParameterSweep:
                 progress_callback(i, total, params)
             
             try:
-                # Create modified ruleset
-                ruleset = self._create_modified_ruleset(params)
+                # Check cache first
+                result = None
+                if cache_dir:
+                    cache_key = self._cache_key(params, symbol, start_date, end_date)
+                    result = self._get_cached_result(cache_dir, cache_key)
+                    if result:
+                        cache_hits += 1
+                        logger.info(f"  ✓ Loaded from cache ({cache_hits} hits so far)")
                 
-                # Run backtest
-                engine = BacktestEngine(
-                    ruleset=ruleset,
-                    data_dir=self.data_dir,
-                    initial_capital=self.initial_capital,
-                    slippage_ticks=self.slippage_ticks,
-                )
-                
-                result = engine.run(
-                    symbol=symbol,
-                    start_date=start_date,
-                    end_date=end_date,
-                )
+                # Run backtest if not cached
+                if result is None:
+                    # Create modified ruleset
+                    ruleset = self._create_modified_ruleset(params)
+                    
+                    # Run backtest with pre-computed features
+                    engine = BacktestEngine(
+                        ruleset=ruleset,
+                        data_dir=self.data_dir,
+                        initial_capital=self.initial_capital,
+                        slippage_ticks=self.slippage_ticks,
+                    )
+                    
+                    result = engine.run(
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date,
+                        precomputed_features=precomputed_features,  # ← Key optimization!
+                    )
+                    
+                    # Save to cache
+                    if cache_dir:
+                        self._save_cached_result(cache_dir, cache_key, result)
                 
                 # Store result
                 sweep_result = SweepResult(params=params, result=result)
@@ -297,10 +455,12 @@ class ParameterSweep:
         # Convert to DataFrame
         df = pd.DataFrame([r.to_dict() for r in results])
         
-        # Sort by total_pnl descending
-        df = df.sort_values("total_pnl", ascending=False).reset_index(drop=True)
+        # Sort by composite_score descending (multi-metric ranking)
+        df = df.sort_values("composite_score", ascending=False).reset_index(drop=True)
         
         logger.info(f"Parameter sweep complete: {len(results)}/{total} successful")
+        if cache_hits > 0:
+            logger.info(f"Cache hits: {cache_hits}/{total} ({cache_hits/total:.1%})")
         
         return df
     
