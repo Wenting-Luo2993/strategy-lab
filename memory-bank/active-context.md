@@ -198,6 +198,8 @@
 - **Restructured ADR system**: Converted adr.md to index (67 lines), created individual ADR files in `adrs/`
 - **Added ADR-013**: Keep documentation files under ~200 lines for optimal token usage
 - **Optimized Copilot instructions**: Changed from "read all files every time" to selective reading based on task type
+- **Shortened agent descriptions**: Reduced all 3 agent descriptions from verbose (with examples) to concise one-liners
+- **Created prd-breakdown-architect agent**: New agent that breaks down PRDs into staged execution plans with architecture review, TDD specs, and test-first approach (134 lines)
 
 **Key Insights**:
 - Framework is working correctly by rejecting weak performance (2026 YTD failure)
@@ -210,6 +212,8 @@
 - **File size matters for AI assistants** - ~200 line limit optimizes token budget and scannability
 - **ADR index + individual files** - Scalable pattern for growing decision history
 - **Selective reading > read everything** - Read memory bank files based on task type to save tokens
+- **Agent descriptions should be concise** - One-line descriptions for agent invocation efficiency
+- **Specialized agents for complex workflows** - prd-breakdown-architect codifies PRD breakdown methodology (architecture review → execution plan → TDD specs → stage reviews)
 
 **Roadmap Priorities**:
 1. **Immediate**: Research Journal (scientific backbone)

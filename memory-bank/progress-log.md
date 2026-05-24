@@ -85,6 +85,12 @@
   - [x] README.md - Memory bank usage guide with detailed ADR template + file size guideline
 - [x] **Copilot Instructions** - Streamlined to 85 lines (enforce memory bank, safety rules)
 
+### Custom Agents
+- [x] code-efficiency-reviewer - Performance/scalability review (purple, sonnet)
+- [x] code-implementer - Implements TODOs and plans (orange, haiku)
+- [x] project-architect - Architecture design and tool research (cyan, opus)
+- [x] prd-breakdown-architect - PRD breakdown into staged execution plans with architecture review, TDD specs, and test-first approach (blue, sonnet, 134 lines)
+
 ---
 
 ## 🚧 In Progress (Active Work)
