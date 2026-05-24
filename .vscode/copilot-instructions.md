@@ -1,110 +1,91 @@
 # GitHub Copilot Instructions for Strategy Lab
 
-## Cloud Infrastructure & Deployment
+## 📚 CRITICAL: Read Memory Bank First
 
-**Current Infrastructure**: Cloud-hosted with containerized deployment
-**Design Principle**: Cloud-agnostic implementation for future portability
+**Read selectively based on task type** to minimize token usage:
 
-### Cloud-Agnostic Configuration
+**For architectural/design decisions** → Read:
+1. `memory-bank/adr.md` - Check for existing decisions (NEVER re-suggest rejected approaches)
+2. `memory-bank/system-patterns.md` - Understand current architecture
 
-**ALWAYS** use environment variables for cloud-specific configuration:
+**For implementation work** → Read:
+1. `memory-bank/active-context.md` - Current focus, recent decisions, blockers
+2. `CLAUDE.md` - Code patterns (Discord, phases, timezone, providers) - only relevant sections
 
-- **DO**: `bucket_name = os.getenv("STORAGE_BUCKET_NAME")`
-- **DON'T**: `bucket_name = "oracle-specific-bucket-name"`
-- **DO**: `cloud_region = os.getenv("CLOUD_REGION", "us-east-1")`
-- **DON'T**: Reference specific cloud provider regions (e.g., `us-phoenix-1`)
+**For simple fixes/syntax/general questions** → No memory bank needed
 
-**Rationale**: Environment variables abstract cloud-specific details, enabling easy migration between providers without code changes. Current deployment is on Oracle Cloud, but future deployments may target AWS, GCP, Azure, or other providers.
+**Why selective reading**: Prevents token waste while ensuring critical context for significant decisions.
 
-### Avoid Provider-Specific References
+**Full guidelines**: See `memory-bank/README.md` for complete memory bank usage.
 
-**NEVER** hardcode cloud provider specifics:
-
-- **DON'T**: Import/reference `oci.*` modules directly in core logic
-- **DON'T**: Use provider-specific resource identifiers (e.g., OCID, ARN)
-- **DON'T**: Reference provider-specific services (e.g., "OCI Vault", "OCI Logging")
-- **DO**: Use generic abstractions (e.g., "cloud storage", "secret management", "logging service")
-
-**Example**:
-
-```python
-# DO: Generic approach
-from src.utils.cloud import CloudStorage
-storage = CloudStorage()
-storage.upload_file("results/backtest.csv", "backups/")
-
-# DON'T: Provider-specific
-from oci.object_storage import ObjectStorageClient
-client = ObjectStorageClient()
-```
-
-### Configuration via Environment Variables
-
-**ALWAYS** use environment variables for deployment settings:
-
-```python
-import os
-
-# Correct: cloud-agnostic
-storage_type = os.getenv("STORAGE_TYPE", "local")  # local, s3, gcs, oci
-region = os.getenv("CLOUD_REGION")
-credentials_path = os.getenv("CLOUD_CREDENTIALS_PATH")
-
-# Avoid hardcoding provider specifics
-```
-
-### Documentation Guidelines
-
-When documenting deployment or configuration:
-
-- **DO**: "Deploy to cloud storage (S3, GCS, OCI Object Storage)"
-- **DO**: "Use environment variables for credentials"
-- **DON'T**: "Deploy to Oracle OCI Object Storage"
-- **DO**: "Deploy to container orchestration service (Kubernetes, Container Instances, ECS)"
-- **DON'T**: "Deploy to Oracle Cloud Container Instances"
+---
 
 ## Python Code Guidelines
 
-### File Path Resolution
+### CRITICAL Safety Rules
 
-**ALWAYS** use `resolve_workspace_path` from `src.utils.workspace` when constructing file paths in Python code.
+**NEVER** delete cache files (`*_rolling_cache.parquet`, `*_indicators.pkl`):
+- Contains historical data beyond lookback window
+- Deleting = **permanent data loss** (can't re-fetch old data from Yahoo Finance)
+- Safe alternatives: Use different symbol, copy before testing, use test cache directory
 
-- **DO**: `state_path = resolve_workspace_path(f"data_cache/{filename}")`
-- **DON'T**: `state_path = Path("data_cache") / filename`
-
-**Rationale**: `resolve_workspace_path` ensures consistent path resolution relative to the Python workspace root, regardless of where the script is executed from. This prevents path resolution errors when running code from different directories.
-
-**Example**:
-
+**ALWAYS** use `resolve_workspace_path()` for file paths:
 ```python
 from src.utils.workspace import resolve_workspace_path
-
-# Resolve relative paths against workspace root
-cache_path = resolve_workspace_path("data_cache")
-config_path = resolve_workspace_path("config/settings.json")
-results_path = resolve_workspace_path("results/backtest")
+path = resolve_workspace_path("data_cache/file.csv")  # ✅ DO
+path = Path("data_cache") / "file.csv"                # ❌ DON'T
 ```
 
-### Cache File Safety
+**ALWAYS** use environment variables for cloud config:
+```python
+bucket = os.getenv("STORAGE_BUCKET_NAME")  # ✅ Cloud-agnostic
+bucket = "oracle-bucket-123"                # ❌ Provider-specific
+```
 
-**NEVER** suggest removing cache files (`*_rolling_cache.parquet` or `*_indicators.pkl`) to force recalculation!
+**Full guidelines**: See `memory-bank/tech-context.md` for complete dev environment details.
 
-- **DON'T**: `Remove-Item data_cache\AAPL_5m.parquet`
-- **DON'T**: Delete cache files to trigger fresh fetches
+---
 
-**Rationale**: Cache files contain historical data beyond the max_lookback_days window (default 59 days). Deleting them results in **permanent data loss** of older historical data that cannot be re-fetched from data sources like Yahoo Finance.
+## 📝 Memory Bank Maintenance (REQUIRED)
 
-**Safe Testing Alternatives**:
+**After EVERY significant technical decision** → Create new ADR:
+1. Create `memory-bank/adrs/adr-NNN-short-title.md` (use template from README)
+2. Add entry to `memory-bank/adr.md` index
+3. Examples: Choosing libraries, changing architecture, adopting frameworks
 
-- Use a different symbol for testing
-- Copy cache files before testing and restore after
-- Test with cache-only mode or mock data
-- Use dedicated test cache directories
+**After EVERY session** → Update `memory-bank/active-context.md`:
+- What you worked on
+- Decisions made (link to ADR if technical)
+- Current blockers
+- Next steps
 
-## General Guidelines
+**Weekly or per milestone** → Update `memory-bank/progress-log.md`:
+- Move tasks: Not Started → In Progress → Done
+- Add milestones
 
-- Follow existing code patterns and conventions in the repository
-- Write clear, concise docstrings for all public functions
-- Use type hints where appropriate
+**When architecture changes** → Update `memory-bank/system-patterns.md`:
+- New components, data flow changes, design patterns
+
+---
+
+### End-of-Session Checklist
+
+- [ ] Significant technical decision? → Create ADR file + update index
+- [ ] Session notes current? → Update `active-context.md`
+- [ ] Tasks completed/started? → Update `progress-log.md`
+- [ ] Architecture changed? → Update `system-patterns.md`
+- [ ] Memory bank committed with code? → `git commit`
+
+**ADR Template & Full Guidelines**: See `memory-bank/README.md`
+
+**Why this matters**: Prevents lost context, repeated mistakes, undocumented decisions. Enables fast onboarding and better AI assistance.
+
+---
+
+## General Principles
+
+- Follow existing patterns in `CLAUDE.md` and `memory-bank/system-patterns.md`
+- Write docstrings and type hints
 - Keep functions focused and single-purpose
 - Add tests for new functionality
+- Commit memory bank updates with code changes
