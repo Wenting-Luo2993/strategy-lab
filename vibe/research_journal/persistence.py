@@ -14,6 +14,7 @@ from typing import Optional
 import yaml
 
 from vibe.research_journal.models import (
+    ArtifactReference,
     Experiment,
     ExperimentStatus,
     Hypothesis,
@@ -325,3 +326,67 @@ def save_rejected_idea(
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     return filepath
+
+
+def save_artifact_reference(
+    artifact_ref: ArtifactReference, research_root: Optional[Path] = None
+) -> Path:
+    """Save artifact reference to YAML file.
+
+    Args:
+        artifact_ref: ArtifactReference instance to save
+        research_root: Optional override for research directory root
+
+    Returns:
+        Path to saved file
+
+    Raises:
+        FileExistsError: If file already exists (prevent overwrites)
+    """
+    research_root = ensure_research_directories(research_root)
+    filepath = research_root / "artifacts" / f"{artifact_ref.id}.yaml"
+
+    if filepath.exists():
+        raise FileExistsError(
+            f"Artifact reference file already exists: {filepath}\n"
+            f"Use a different ID or delete existing file to overwrite."
+        )
+
+    # Serialize to dict with ISO datetime format
+    data = artifact_ref.model_dump(mode="json")
+
+    # Write YAML with nice formatting
+    with open(filepath, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    return filepath
+
+
+def load_artifact_reference(
+    artifact_id: str, research_root: Optional[Path] = None
+) -> ArtifactReference:
+    """Load artifact reference from YAML file.
+
+    Args:
+        artifact_id: ID of artifact to load (e.g., "ART-001")
+        research_root: Optional override for research directory root
+
+    Returns:
+        ArtifactReference instance
+
+    Raises:
+        FileNotFoundError: If artifact file doesn't exist
+    """
+    research_root = ensure_research_directories(research_root)
+    filepath = research_root / "artifacts" / f"{artifact_id}.yaml"
+
+    if not filepath.exists():
+        raise FileNotFoundError(
+            f"Artifact not found: {filepath}\n"
+            f"Available artifacts: {list(research_root.glob('artifacts/*.yaml'))}"
+        )
+
+    with open(filepath, "r") as f:
+        data = yaml.safe_load(f)
+
+    return ArtifactReference(**data)
