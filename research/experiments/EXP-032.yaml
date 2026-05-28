@@ -1,0 +1,67 @@
+id: EXP-032
+hypothesis_id: HYP-003
+parent_experiment_id: null
+strategy_name: ORBStrategy
+strategy_version: 1.4.x
+parameters:
+  sweep_dimensions:
+  - orb_duration_minutes
+  - tp_multiplier
+  - risk_pct
+  orb_duration_minutes:
+  - 5
+  - 10
+  - 15
+  tp_multiplier:
+  - 0.0
+  - 1.5
+  - 2.0
+  - 3.0
+  risk_pct:
+  - 0.01
+  - 0.02
+  - 0.03
+  total_combinations: 36
+  note: Corrected sweep adding tp_multiplier=0. Supersedes EXP-004.
+dataset_config:
+  start_date: '2018-01-01'
+  end_date: '2024-12-31'
+  symbols:
+  - QQQ
+  cache_dir: cache/optimization/orb_full_2018_2024_notp
+execution_metadata:
+  git_branch: main
+  executed_at: '2026-05-28T14:17:06.000000Z'
+  python_version: 3.12.10
+status: completed
+supersedes: EXP-004
+results_summary:
+  total_variations_tested: 36
+  best_composite_score: 0.7316
+  best_orb_minutes: 5
+  best_tp_multiplier: 0.0
+  best_risk_pct: 0.01
+  best_expectancy_r: 0.2912
+  best_tail_ratio: 4.6514
+  best_sharpe: 2.3416
+  robustness_score: 0.92
+  robustness_expectancy_std: 0.025
+  surface_cliffs: 0
+  surface_plateaus: 7
+  orb5_dominates: true
+  no_tp_dominates: true
+conclusion: 'tp=0 (no take-profit) dominates all TP variants. Best: ORB=5min, TP=none,
+  risk=1% | composite=0.7316, expectancy=+0.291R, tail_ratio=4.65, Sharpe=2.34. vs
+  EXP-004 best (TP=3.0x): composite +5.4% (0.695->0.732), expectancy +61% (0.180R->0.291R),
+  tail_ratio +104% (2.28->4.65). ORB convexity confirmed. Robustness 0.92 (+-0.025R).
+  Surface: 0 cliffs, 7 plateaus.'
+artifacts: []
+tags:
+- parameter_sweep
+- optimization
+- orb
+- grid_search
+- no_tp
+- corrected
+created_at: '2026-05-28T14:17:06.000000Z'
+completed_at: '2026-05-28T14:50:15.000000Z'

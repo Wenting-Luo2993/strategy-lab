@@ -74,5 +74,11 @@ vibe/backtester/logs/
 backtest_charts/
 reports/
 
+# Optimization cache (computed artifacts, binary pkl files, reproducible from source)
+cache/
+
+# Tick data logs (large binary/CSV, local only)
+tick_logs_local/
+
 # Local Claude Code settings (user-specific)
 .claude/settings.local.json

@@ -1,0 +1,12 @@
+id: HYP-001
+title: ORB performance varies by market regime; simple filters may improve outcomes
+rationale: Evaluate regime-sensitive diagnostics on combined 2020/2022 ORB trades
+  and test basic filter hypotheses (volatility percentile and regime exclusion).
+status: proposed
+tags:
+- orb
+- regime
+- filter
+- analysis
+created_at: '2026-05-27T22:39:21.982384Z'
+updated_at: '2026-05-27T22:39:21.982384Z'

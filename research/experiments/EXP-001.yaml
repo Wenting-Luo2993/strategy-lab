@@ -1,0 +1,46 @@
+id: EXP-001
+hypothesis_id: HYP-001
+parent_experiment_id: null
+strategy_name: ORBStrategy
+strategy_version: 1.0.0
+parameters:
+  orb_duration_minutes: 5
+  take_profit_multiplier: 2.0
+  risk_pct: 0.01
+dataset_config:
+  symbol: QQQ
+  trades_csv: reports\regime-filter-research\orb_trades_combined.csv
+  data_dir: data\parquet
+  period: 2020-2022
+  features:
+  - atr_pctile
+  - gap_pct
+  - slope_20d
+  - adx_14
+  - realized_vol
+  - vol_pctile
+  - dist_ma20_pct
+  filter_expr: ''
+execution_metadata:
+  git_commit: 81846f765741cc504eccb2923df2ca91bf712f53
+  git_branch: main
+  git_dirty: false
+  random_seed: null
+  executed_at: '2026-05-27T22:39:22.441470Z'
+  python_version: 3.12.10
+status: completed
+results_summary:
+  trade_count: 503
+  expectancy: -0.01993166799204772
+  win_rate: 0.4731610337972167
+  sharpe: -0.29849019511027447
+  max_drawdown: -41.711365
+  profit_factor: 0.9618642942767971
+  convexity: 0.29066774224059344
+conclusion: Baseline regime diagnostic on combined 2020/2022 ORB trades.
+artifacts: []
+tags:
+- regime-diagnostic
+- baseline
+created_at: '2026-05-27T22:39:21.998529Z'
+completed_at: '2026-05-27T15:39:22.469710-07:00'

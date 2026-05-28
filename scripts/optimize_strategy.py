@@ -49,9 +49,14 @@ logger = logging.getLogger(__name__)
 
 
 def get_orb_parameters(mode: str = "quick") -> list:
-    """Get ORB strategy parameter definitions."""
+    """Get ORB strategy parameter definitions.
+
+    tp_multiplier=0 means no take-profit (pure EOD exit).
+    ORB is a convex structure — winners tend to run far, so capping profit
+    with a TP multiplier kills positive skew. Include 0 to test the no-TP case.
+    """
     if mode == "quick":
-        # One-at-a-time mode (7 tests)
+        # One-at-a-time mode (8 tests)
         return [
             ParameterDefinition(
                 path="strategy.orb_duration_minutes",
@@ -61,13 +66,13 @@ def get_orb_parameters(mode: str = "quick") -> list:
             ),
             ParameterDefinition(
                 path="exit.take_profit.multiplier",
-                values=[1.5, 2.0, 3.0],
-                base_value=2.0,
+                values=[0, 1.5, 2.0, 3.0],  # 0 = no TP (EOD-only exit)
+                base_value=0,
                 name="tp_multiplier",
             ),
         ]
     else:  # "full" mode
-        # Grid search (27 tests)
+        # Grid search (36 tests: 3 ORB x 4 TP x 3 risk)
         return [
             ParameterDefinition(
                 path="strategy.orb_duration_minutes",
@@ -76,7 +81,7 @@ def get_orb_parameters(mode: str = "quick") -> list:
             ),
             ParameterDefinition(
                 path="exit.take_profit.multiplier",
-                values=[1.5, 2.0, 3.0],
+                values=[0, 1.5, 2.0, 3.0],  # 0 = no TP (EOD-only exit)
                 name="tp_multiplier",
             ),
             ParameterDefinition(

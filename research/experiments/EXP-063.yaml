@@ -1,0 +1,38 @@
+id: EXP-063
+hypothesis_id: HYP-003
+parent_experiment_id: EXP-032
+strategy_name: ORBStrategy
+strategy_version: 1.4.x
+parameters:
+  orb_duration_minutes: 10
+  tp_multiplier: 1.5
+  risk_pct: 0.01
+dataset_config:
+  start_date: '2018-01-01'
+  end_date: '2024-12-31'
+  symbols:
+  - QQQ
+execution_metadata:
+  git_branch: main
+  executed_at: '2026-05-28T14:17:06.000000Z'
+  python_version: 3.12.10
+status: completed
+results_summary:
+  composite_score: 0.536
+  n_trades: 1677
+  win_rate: 0.6625
+  expectancy_r: 0.0715
+  sharpe_ratio: 1.4376
+  max_drawdown: -0.1877
+  profit_factor: 1.2721
+  tail_ratio: 0.9613
+  total_pnl: 215112.15
+conclusion: 'Rank #31: ORB=10min, TP=1.5x, risk=1% | composite=0.5360, expectancy=0.0715R,
+  Sharpe=1.44, tail_ratio=0.96'
+artifacts: []
+tags:
+- sweep_child
+- parameter_sweep
+- orb
+created_at: '2026-05-28T14:17:06.000000Z'
+completed_at: '2026-05-28T14:50:15.000000Z'

@@ -1,0 +1,63 @@
+id: EXP-004
+hypothesis_id: HYP-002
+parent_experiment_id: null
+strategy_name: ORBStrategy
+strategy_version: 1.4.x
+parameters:
+  sweep_dimensions:
+  - orb_duration_minutes
+  - tp_multiplier
+  - risk_pct
+  orb_duration_minutes:
+  - 5
+  - 10
+  - 15
+  tp_multiplier:
+  - 1.5
+  - 2.0
+  - 3.0
+  risk_pct:
+  - 0.01
+  - 0.02
+  - 0.03
+  total_combinations: 27
+dataset_config:
+  start_date: '2018-01-01'
+  end_date: '2024-12-31'
+  symbols:
+  - QQQ
+  cache_dir: cache/optimization/orb_full_2018_2024_20260527
+execution_metadata:
+  git_commit: 81846f765741cc504eccb2923df2ca91bf712f53
+  git_branch: main
+  git_dirty: false
+  random_seed: null
+  executed_at: '2026-05-27T23:56:09.715034Z'
+  python_version: 3.12.10
+status: superseded
+results_summary:
+  total_variations_tested: 27
+  best_composite_score: 0.6946
+  best_orb_minutes: 5
+  best_tp_multiplier: 3.0
+  best_risk_pct: 0.03
+  best_expectancy_r: 0.1804
+  best_sharpe: 2.1934
+  orb5_dominates: true
+  larger_tp_wins_on_composite: true
+conclusion: 'ORB 5min consistently dominates all 10min and 15min variants. Best: ORB=5min,
+  TP=3.0x, risk=3% | composite=0.6946, expectancy=+0.180R, Sharpe=2.19. TP=3.0x wins
+  on composite due to superior tail ratio (2.28) despite lower win rate (45.8%). Shorter
+  ORB window advantage is consistent across all TP/risk combinations.'
+artifacts: []
+tags:
+- parameter_sweep
+- optimization
+- orb
+- grid_search
+created_at: '2026-05-27T23:56:09.141450Z'
+completed_at: '2026-05-27T16:58:26.696932-07:00'
+superseded_by: EXP-032
+superseded_note: Grid did not include tp_multiplier=0. Results biased toward highest
+  TP since no-TP option was absent. See EXP-032 for corrected 36-combo sweep that
+  confirms no-TP dominates.

@@ -1,0 +1,16 @@
+id: HYP-003
+strategy_name: ORBStrategy
+title: ORB is a convex payoff structure - no take-profit maximizes expectancy
+description: 'ORB breakout trades have a convex payoff profile: losers are bounded
+  by the ORB range (stopped at opposite ORB boundary), while winners run freely to
+  EOD close. A take-profit multiplier caps the right tail, destroying positive skew
+  without a compensating increase in win rate. Hypothesis: tp_multiplier=0 produces
+  the best risk-adjusted returns across all ORB window sizes.'
+status: confirmed
+created_at: '2026-05-28T14:55:00.000000Z'
+tags:
+- orb
+- take-profit
+- convexity
+- payoff-structure
+- parameter-optimization

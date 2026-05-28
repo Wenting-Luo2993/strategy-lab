@@ -23,7 +23,7 @@ exit:
   
   take_profit:
     method: orb_range_multiple
-    multiplier: 2.0
+    multiplier: 0  # 0 = no take-profit; let winners run to EOD (ORB convexity, see HYP-003/EXP-032)
   
   stop_loss:
     method: orb_level

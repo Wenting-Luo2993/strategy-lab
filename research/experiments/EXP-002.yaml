@@ -1,0 +1,55 @@
+id: EXP-002
+hypothesis_id: HYP-001
+parent_experiment_id: EXP-001
+strategy_name: ORBStrategy
+strategy_version: 1.0.0
+parameters:
+  orb_duration_minutes: 5
+  take_profit_multiplier: 2.0
+  risk_pct: 0.01
+dataset_config:
+  symbol: QQQ
+  trades_csv: reports\regime-filter-research\orb_trades_combined.csv
+  data_dir: data\parquet
+  period: 2020-2022
+  features:
+  - atr_pctile
+  - gap_pct
+  - slope_20d
+  - adx_14
+  - realized_vol
+  - vol_pctile
+  - dist_ma20_pct
+  filter_expr: atr_pctile < 0.80
+execution_metadata:
+  git_commit: 81846f765741cc504eccb2923df2ca91bf712f53
+  git_branch: main
+  git_dirty: false
+  random_seed: null
+  executed_at: '2026-05-27T22:39:23.012225Z'
+  python_version: 3.12.10
+status: completed
+results_summary:
+  filter_expr: atr_pctile < 0.80
+  baseline_trade_count: 503
+  baseline_expectancy: -0.01993166799204772
+  baseline_win_rate: 0.4731610337972167
+  baseline_sharpe: -0.29849019511027447
+  baseline_max_drawdown: -41.711365
+  baseline_profit_factor: 0.9618642942767971
+  filtered_trade_count: 315
+  filtered_expectancy: 0.011843085714285715
+  filtered_win_rate: 0.5047619047619047
+  filtered_sharpe: 0.183664199548944
+  filtered_max_drawdown: -12.972711000000002
+  filtered_profit_factor: 1.0241741082289806
+  warnings:
+  - SINGLE_YEAR_STABILITY
+conclusion: Filter evaluation completed. Review warnings for regime stability and
+  promote only if multi-year expectancy improves.
+artifacts: []
+tags:
+- regime-filter
+- filter-low-vol
+created_at: '2026-05-27T22:39:22.567253Z'
+completed_at: '2026-05-27T15:39:23.039537-07:00'

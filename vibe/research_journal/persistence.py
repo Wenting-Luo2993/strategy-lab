@@ -97,7 +97,7 @@ def save_hypothesis(
     data = hypothesis.model_dump(mode="json")
 
     # Write YAML with nice formatting
-    with open(filepath, "w") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     return filepath
@@ -127,7 +127,7 @@ def load_hypothesis(
             f"Available hypotheses: {list(research_root.glob('hypotheses/*.yaml'))}"
         )
 
-    with open(filepath, "r") as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     return Hypothesis(**data)
@@ -164,7 +164,7 @@ def save_experiment(
     data = experiment.model_dump(mode="json")
 
     # Write YAML with nice formatting
-    with open(filepath, "w") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     # Set read-only permissions if completed/failed
@@ -198,7 +198,7 @@ def load_experiment(
             f"Available experiments: {list(research_root.glob('experiments/*.yaml'))}"
         )
 
-    with open(filepath, "r") as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     return Experiment(**data)
@@ -284,7 +284,7 @@ def save_research_note(
     }
 
     # Write Markdown with YAML frontmatter
-    with open(filepath, "w") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         f.write("---\n")
         yaml.dump(frontmatter, f, default_flow_style=False, sort_keys=False)
         f.write("---\n\n")
@@ -322,7 +322,7 @@ def save_rejected_idea(
     data = idea.model_dump(mode="json")
 
     # Write YAML with nice formatting
-    with open(filepath, "w") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     return filepath
@@ -356,7 +356,7 @@ def save_artifact_reference(
     data = artifact_ref.model_dump(mode="json")
 
     # Write YAML with nice formatting
-    with open(filepath, "w") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     return filepath
@@ -386,7 +386,7 @@ def load_artifact_reference(
             f"Available artifacts: {list(research_root.glob('artifacts/*.yaml'))}"
         )
 
-    with open(filepath, "r") as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     return ArtifactReference(**data)
