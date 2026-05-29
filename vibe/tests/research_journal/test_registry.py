@@ -11,6 +11,7 @@ Tests focus on:
 
 import sys
 import tempfile
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -146,6 +147,20 @@ class TestCreateExperiment:
             )
 
         assert "not found" in str(exc_info.value).lower()
+
+    def test_create_experiment_unresolved_hypothesis_warns(self, temp_registry, caplog):
+        """Unresolved hypothesis references should be allowed but visible."""
+        with caplog.at_level(logging.WARNING):
+            exp = temp_registry.create_experiment(
+                strategy_name="ORBStrategy",
+                strategy_version="1.0.0",
+                parameters={},
+                dataset_config={},
+                hypothesis_id="HYP-999",
+            )
+
+        assert exp.hypothesis_id == "HYP-999"
+        assert any("unresolved hypothesis" in record.message.lower() for record in caplog.records)
 
 
 class TestCompleteExperiment:

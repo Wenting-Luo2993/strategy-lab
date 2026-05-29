@@ -129,6 +129,15 @@ class ResearchRegistry:
         if tags is None:
             tags = []
 
+        if hypothesis_id:
+            try:
+                load_hypothesis(hypothesis_id, self.research_root)
+            except FileNotFoundError:
+                logger.warning(
+                    "Creating experiment with unresolved hypothesis reference: %s",
+                    hypothesis_id,
+                )
+
         # Validate parent exists if provided
         if parent_experiment_id:
             try:

@@ -182,6 +182,36 @@ class TestExperimentQueryBasic:
         assert exps["parent"].id in ids
         assert exps["child"].id in ids
 
+    def test_query_by_unresolved_hypothesis(self, temp_research_dir):
+        """Should find experiments whose hypothesis references do not resolve."""
+        registry = ResearchRegistry(temp_research_dir)
+
+        resolved_hyp = registry.create_hypothesis(
+            title="Resolved hypothesis",
+            rationale="Long enough rationale for a resolved reference",
+            tags=["resolved"],
+        )
+
+        registry.create_experiment(
+            strategy_name="ORBStrategy",
+            strategy_version="1.0.0",
+            parameters={},
+            dataset_config={},
+            hypothesis_id=resolved_hyp.id,
+        )
+        unresolved = registry.create_experiment(
+            strategy_name="ORBStrategy",
+            strategy_version="1.0.0",
+            parameters={},
+            dataset_config={},
+            hypothesis_id="HYP-999",
+        )
+
+        results = ExperimentQuery(registry).by_unresolved_hypothesis().execute()
+
+        assert len(results) == 1
+        assert results[0].id == unresolved.id
+
 
 class TestExperimentQueryParameter:
     """P0: Parameter filtering tests."""

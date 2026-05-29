@@ -177,6 +177,28 @@ class FixedDollarTrailingStop(BaseModel):
         return self
 
 
+class BreakEvenPlusTicksTrailingStop(BaseModel):
+    """Move stop to break-even plus/minus ticks after reaching a trigger R."""
+
+    method: Literal["breakeven_plus_ticks"] = "breakeven_plus_ticks"
+    trigger_r: float = Field(
+        default=1.0,
+        description="Activate when unrealized move reaches this R multiple",
+    )
+    plus_ticks: int = Field(
+        default=0,
+        description="Ticks above BE for longs / below BE for shorts (1 tick = $0.01)",
+    )
+
+    @model_validator(mode="after")
+    def validate_trigger_and_ticks(self) -> "BreakEvenPlusTicksTrailingStop":
+        if self.trigger_r <= 0:
+            raise ValueError("trigger_r must be positive")
+        if self.plus_ticks < 0:
+            raise ValueError("plus_ticks must be non-negative")
+        return self
+
+
 class SteppedRMultipleTrailingStop(BaseModel):
     """Trailing stop with stepped R-multiple rules."""
 
@@ -198,6 +220,7 @@ TrailingStopConfig = Annotated[
         ATRTrailingStop,
         InitialRiskPctTrailingStop,
         FixedDollarTrailingStop,
+        BreakEvenPlusTicksTrailingStop,
         SteppedRMultipleTrailingStop,
     ],
     Field(discriminator="method"),

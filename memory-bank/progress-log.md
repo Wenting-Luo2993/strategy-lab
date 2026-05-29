@@ -95,6 +95,14 @@
 
 ## 🚧 In Progress (Active Work)
 
+### ORB Research Continuation (Updated 2026-05-28)
+- [ ] Create new hypothesis **HYP-004** for regime filters on no-TP baseline
+- [ ] Re-run regime analysis with corrected baseline (no TP) and register **EXP-069+**
+- [ ] Re-evaluate H1 (`atr_pctile < 0.80`) and H2 (`regime != ranging_high_vol`) using updated baseline
+- [ ] Run walk-forward optimization validation (`--walk-forward`)
+- [ ] Test multi-symbol generalization on SPY and IWM
+- [ ] Register next IDs correctly: **ART-017**, **NOTE-005** onward
+
 ### Research Journal / Experiment Registry Framework (Priority 1)
 - [ ] **Phase 1 - Core Registry**:
   - [ ] Define domain models (Hypothesis, Experiment, ResearchNote, RejectedIdea)
@@ -203,6 +211,11 @@
 ## Recent Milestones
 
 ### May 2026
+- ✅ **Optimization Correction**: Added `tp_multiplier=0` to sweep grid and reran full comparison
+- ✅ **Definitive Sweep (EXP-032)**: Best config is ORB=5min, TP=none, risk=1% (composite 0.732, expectancy +0.291R)
+- ✅ **Convexity Confirmation**: TP caps were shown to destroy ORB right-tail edge; no-TP promoted
+- ✅ **Production Ruleset Update**: `vibe/rulesets/orb_production.yaml` now sets `multiplier: 0`
+- ✅ **Windows Persistence Fix**: `vibe/research_journal/persistence.py` now uses `encoding='utf-8'`
 - 🎯 **Phase 6 OOS Validation**: 2025 full-year passed (+0.16R)
 - ⚠️ **Phase 6 OOS Validation**: 2026 YTD failed (-0.17R) - deployment paused
 - 📚 **Memory Bank**: Created structured documentation system

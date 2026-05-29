@@ -1,0 +1,13 @@
+id: HYP-004
+title: Break-even trailing stop after N-R trigger for ORB
+rationale: If price reaches a meaningful favorable excursion such as 1R, 2R, or 2.5R,
+  moving the stop to break-even plus a few ticks may reduce losing trades while preserving
+  ORB convexity because the best multi-R winners may never revisit break-even.
+status: proposed
+tags:
+- orb
+- trailing-stop
+- convexity
+- risk-management
+created_at: '2026-05-29T17:16:36.436607Z'
+updated_at: '2026-05-29T17:16:36.436607Z'

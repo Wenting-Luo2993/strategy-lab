@@ -31,6 +31,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from typing import List
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -48,16 +49,65 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_orb_parameters(mode: str = "quick") -> list:
+def _parse_float_list(raw: str) -> List[float]:
+    return [float(x.strip()) for x in raw.split(",") if x.strip()]
+
+
+def _parse_int_list(raw: str) -> List[int]:
+    return [int(x.strip()) for x in raw.split(",") if x.strip()]
+
+
+def get_orb_parameters(
+    mode: str = "quick",
+    trailing_breakeven: bool = False,
+    trailing_only: bool = False,
+    trigger_rs: List[float] | None = None,
+    plus_ticks: List[int] | None = None,
+) -> list:
     """Get ORB strategy parameter definitions.
 
     tp_multiplier=0 means no take-profit (pure EOD exit).
     ORB is a convex structure — winners tend to run far, so capping profit
     with a TP multiplier kills positive skew. Include 0 to test the no-TP case.
     """
+    if trigger_rs is None:
+        trigger_rs = [1.0, 2.0, 2.5, 3.0]
+    if plus_ticks is None:
+        plus_ticks = [0, 1, 2, 3, 5]
+
+    if trailing_breakeven:
+        base = [
+            ParameterDefinition(
+                path="exit.take_profit.multiplier",
+                values=[0],
+                base_value=0,
+                name="tp_multiplier",
+            ),
+            ParameterDefinition(
+                path="exit.trailing_stop.method",
+                values=["breakeven_plus_ticks"],
+                base_value="breakeven_plus_ticks",
+                name="trailing_method",
+            ),
+            ParameterDefinition(
+                path="exit.trailing_stop.trigger_r",
+                values=trigger_rs,
+                base_value=trigger_rs[0],
+                name="trigger_r",
+            ),
+            ParameterDefinition(
+                path="exit.trailing_stop.plus_ticks",
+                values=plus_ticks,
+                base_value=plus_ticks[0],
+                name="plus_ticks",
+            ),
+        ]
+        if trailing_only:
+            return base
+
     if mode == "quick":
         # One-at-a-time mode (8 tests)
-        return [
+        params = [
             ParameterDefinition(
                 path="strategy.orb_duration_minutes",
                 values=[5, 10, 15],
@@ -71,9 +121,12 @@ def get_orb_parameters(mode: str = "quick") -> list:
                 name="tp_multiplier",
             ),
         ]
+        if trailing_breakeven:
+            params.extend(base[1:])
+        return params
     else:  # "full" mode
         # Grid search (36 tests: 3 ORB x 4 TP x 3 risk)
-        return [
+        params = [
             ParameterDefinition(
                 path="strategy.orb_duration_minutes",
                 values=[5, 10, 15],
@@ -90,12 +143,28 @@ def get_orb_parameters(mode: str = "quick") -> list:
                 name="risk_pct",
             ),
         ]
+        if trailing_breakeven:
+            params.extend(base[1:])
+        return params
 
 
-def get_parameters_for_strategy(strategy: str, mode: str = "quick") -> list:
+def get_parameters_for_strategy(
+    strategy: str,
+    mode: str = "quick",
+    trailing_breakeven: bool = False,
+    trailing_only: bool = False,
+    trigger_rs: List[float] | None = None,
+    plus_ticks: List[int] | None = None,
+) -> list:
     """Get parameter definitions for a strategy."""
     if strategy == "orb":
-        return get_orb_parameters(mode)
+        return get_orb_parameters(
+            mode=mode,
+            trailing_breakeven=trailing_breakeven,
+            trailing_only=trailing_only,
+            trigger_rs=trigger_rs,
+            plus_ticks=plus_ticks,
+        )
     else:
         raise ValueError(f"Unknown strategy: {strategy}")
 
@@ -197,6 +266,73 @@ def main():
         default="cache/optimization",
         help="Cache directory for results (default: cache/optimization)",
     )
+
+    parser.add_argument(
+        "--trailing-breakeven",
+        action="store_true",
+        help="Enable break-even-plus-ticks trailing stop sweep",
+    )
+
+    parser.add_argument(
+        "--trailing-only",
+        action="store_true",
+        help="When --trailing-breakeven is set, sweep only trailing params on fixed base config",
+    )
+
+    parser.add_argument(
+        "--trigger-rs",
+        type=str,
+        default="1.0,2.0,2.5,3.0",
+        help="Comma-separated trigger R values for break-even trailing stop",
+    )
+
+    parser.add_argument(
+        "--plus-ticks",
+        type=str,
+        default="0,1,2,3,5",
+        help="Comma-separated plus-ticks values for break-even trailing stop",
+    )
+
+    parser.add_argument(
+        "--journal",
+        action="store_true",
+        help="Register parameter sweep rows as completed experiments in research journal",
+    )
+
+    parser.add_argument(
+        "--research-root",
+        type=str,
+        default="research",
+        help="Research journal root directory (default: research)",
+    )
+
+    parser.add_argument(
+        "--hypothesis-id",
+        type=str,
+        default=None,
+        help="Existing hypothesis ID to attach experiments to (e.g., HYP-004)",
+    )
+
+    parser.add_argument(
+        "--hypothesis-title",
+        type=str,
+        default=None,
+        help="Create a new hypothesis with this title when --journal is enabled",
+    )
+
+    parser.add_argument(
+        "--hypothesis-rationale",
+        type=str,
+        default=None,
+        help="Rationale for new hypothesis when --journal is enabled",
+    )
+
+    parser.add_argument(
+        "--journal-tags",
+        type=str,
+        default="optimization,parameter-sweep",
+        help="Comma-separated tags for created hypothesis",
+    )
     
     args = parser.parse_args()
     
@@ -215,9 +351,20 @@ def main():
         print("Run: python scripts/convert_databento.py", file=sys.stderr)
         sys.exit(1)
     
+    # Parse optional trailing-stop grids
+    trigger_rs = _parse_float_list(args.trigger_rs)
+    plus_ticks = _parse_int_list(args.plus_ticks)
+
     # Get strategy configuration
     base_ruleset = get_base_ruleset_for_strategy(args.strategy)
-    parameters = get_parameters_for_strategy(args.strategy, args.mode)
+    parameters = get_parameters_for_strategy(
+        args.strategy,
+        args.mode,
+        trailing_breakeven=args.trailing_breakeven,
+        trailing_only=args.trailing_only,
+        trigger_rs=trigger_rs,
+        plus_ticks=plus_ticks,
+    )
     
     # Determine sweep mode
     sweep_mode = "one_at_a_time" if args.mode == "quick" else "grid"
@@ -253,10 +400,20 @@ def main():
             run_walk_forward=args.walk_forward,
             run_surface=args.surface,
             output_dir=output_dir,
+            register_in_research_journal=args.journal,
+            research_root=Path(args.research_root),
+            hypothesis_id=args.hypothesis_id,
+            hypothesis_title=args.hypothesis_title,
+            hypothesis_rationale=args.hypothesis_rationale,
+            journal_tags=[t.strip() for t in args.journal_tags.split(",") if t.strip()],
+            experiment_tags=["optimization", "parameter-sweep", args.strategy],
+            strategy_name=f"{args.strategy.upper()}Strategy",
         )
         
         # Print summary
         print("\n" + result.summary())
+        if result.hypothesis_id:
+            print(f"Research Journal Hypothesis: {result.hypothesis_id}")
         
         # Save summary to file
         summary_path = output_dir / "optimization_summary.txt"

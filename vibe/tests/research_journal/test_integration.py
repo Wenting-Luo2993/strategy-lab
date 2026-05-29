@@ -110,7 +110,7 @@ class TestBacktestResultAdapter:
         assert len(exp.tags) >= 2  # At least "backtest" and "validation"
     
     def test_compute_metrics_from_trades(self, registry, sample_trades):
-        """Test computing backtest metrics from trades."""
+        """Metrics are not persisted until completion."""
         reg, hyp = registry
         
         adapter = BacktestResultAdapter(reg)
@@ -123,15 +123,13 @@ class TestBacktestResultAdapter:
             trades=sample_trades
         )
         
-        # Metrics should be computed
-        assert exp.results_summary is not None
-        assert "total_trades" in exp.results_summary
-        assert "win_rate" in exp.results_summary
-        assert "total_pnl" in exp.results_summary
-        assert exp.results_summary["total_trades"] == 2
+        assert exp.results_summary is None
+
+        persisted = reg.get_experiment(exp.id)
+        assert persisted.results_summary is None
     
     def test_backtest_metrics_accuracy(self, registry, sample_trades):
-        """Test that computed metrics are accurate."""
+        """Test that computed metrics are accurate when experiment completes."""
         reg, hyp = registry
         
         adapter = BacktestResultAdapter(reg)
@@ -142,15 +140,21 @@ class TestBacktestResultAdapter:
             parameters={},
             dataset_config={},
             trades=sample_trades
+        )
+
+        completed = adapter.complete_experiment(
+            exp.id,
+            trades=sample_trades,
+            conclusion="Computed metrics persisted on completion"
         )
         
         # Trade 1: (360 - 350) * 100 = 1000 (win)
         # Trade 2: (360 - 355) * 100 = 500 (win)
         # Total: 1500
-        assert exp.results_summary["total_pnl"] == 1500.0
-        assert exp.results_summary["win_rate"] == 1.0  # 2/2 = 100%
-        assert exp.results_summary["winning_trades"] == 2
-        assert exp.results_summary["losing_trades"] == 0
+        assert completed.results_summary["total_pnl"] == 1500.0
+        assert completed.results_summary["win_rate"] == 1.0  # 2/2 = 100%
+        assert completed.results_summary["winning_trades"] == 2
+        assert completed.results_summary["losing_trades"] == 0
 
 
 class TestExperimentCompletion:

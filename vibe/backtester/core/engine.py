@@ -105,7 +105,14 @@ class BacktestEngine:
         # 2. Init components
         clock = SimulatedClock()
         fill_sim = FillSimulator(slippage_ticks=self.slippage_ticks)
-        portfolio = PortfolioManager(self.initial_capital)
+        trailing_stop_config = None
+        if self.ruleset.exit.trailing_stop is not None:
+            trailing_stop_config = self.ruleset.exit.trailing_stop.model_dump()
+
+        portfolio = PortfolioManager(
+            self.initial_capital,
+            trailing_stop_config=trailing_stop_config,
+        )
         runner = RuleSetRunner(self.ruleset)
 
         # 3. Event loop

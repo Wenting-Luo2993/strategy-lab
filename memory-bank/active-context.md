@@ -1,14 +1,11 @@
 # Active Context
 
 ## Current Focus Area
-**Status**: Infrastructure Phase - Building Research Journal / Experiment Registry Framework
+**Status**: ORB Research Continuation - Post Optimization Handoff
 
-**Primary Task**: Implement scientific backbone for trading research (see `docs/backtester-mvp/research-journal-framework/PRD.md`)
+**Primary Task**: Re-run regime filter analysis on corrected no-TP baseline
 
-**Context**: Before continuing ORB validation or testing new strategies, we need institutional memory for research:
-- Current problem: Ad-hoc backtests with no lineage tracking, no hypothesis registry, risk of repeated mistakes
-- Solution: Research Journal framework for traceability, reproducibility, and scientific integrity
-- Benefits: Prevent parameter fishing, preserve failed ideas, enable optimization lineage, ensure audit trails
+**Context**: Research journal infrastructure is now operational and actively used. Latest optimization research confirmed no-TP as the correct baseline and invalidated earlier regime conclusions that were measured against TP=2.0.
 
 **Background - ORB Strategy Validation Status**:
 - 2025 OOS: +0.16R (validation passed) ✅
@@ -68,6 +65,18 @@
 - Add new filters for 2026 regime (rejected - high overfitting risk on 4 months of data)
 
 **Impact**: Paper trading on hold until 2026 H1 shows recovery to positive expectancy
+
+---
+
+### Decision: Prefer Reusable Hypothesis Infrastructure Over One-Off Scripts (2026-05-28)
+**Chosen**: Extend `scripts/optimize_strategy.py` + `OptimizationPipeline` for hypothesis sweeps and journal registration; retire per-hypothesis runner scripts.
+
+**Reasoning**:
+- One-off scripts increase maintenance cost and fragment workflow.
+- Generic CLI + pipeline flags support many hypotheses through parameterization.
+- Built-in journal registration enforces lineage and reproducibility by default.
+
+**Impact**: New hypotheses should be executed via reusable optimization infrastructure with journal linkage, not custom orchestration scripts.
 
 ## Known Blockers
 
@@ -146,6 +155,21 @@
 
 ## What's Next
 
+### Immediate Priority (Next Session)
+- [ ] Create **HYP-004**: "Regime filters improve no-TP ORB strategy"
+- [ ] Re-run `scripts/analyze_regimes.py` against no-TP baseline and register as **EXP-069+**
+- [ ] Re-test prior filter candidates (`atr_pctile < 0.80`, `regime != ranging_high_vol`) under corrected baseline
+- [ ] Apply promotion checklist with emphasis on single-year stability and OOS consistency
+
+### Secondary Priority
+- [ ] Run walk-forward validation:
+   `python scripts/optimize_strategy.py --mode full --walk-forward --output-dir reports/optimization/orb_walk_forward`
+- [ ] Validate generalization out-of-sample before any deployment change
+
+### Third Priority
+- [ ] Run multi-symbol validation (SPY, IWM) for 5-minute ORB with no TP
+- [ ] Compare cross-symbol robustness versus QQQ baseline
+
 ### Immediate (This Week) - Research Journal Foundation
 - [ ] **Research Journal Phase 1**: Core registry (experiment model, hypothesis model, persistence layer)
 - [ ] Define domain models (Hypothesis, Experiment, ResearchNote, RejectedIdea, ArtifactRegistry)
@@ -182,7 +206,18 @@
 
 ## Session Notes
 
-**Last Updated**: 2026-05-23
+**Last Updated**: 2026-05-28
+
+**Session Handoff (2026-05-28)**:
+- Journal counters: next IDs are **HYP-004**, **EXP-069**, **ART-017**, **NOTE-005**
+- Confirmed best config: 5-minute ORB, no TP (`multiplier: 0`), risk 1%
+- Definitive sweep EXP-032 supersedes EXP-004 after correcting TP grid to include tp=0
+- Regime filter conclusions in EXP-001/002/003 require re-validation against no-TP baseline
+- Production ruleset updated in `vibe/rulesets/orb_production.yaml`
+- Windows encoding fix applied in `vibe/research_journal/persistence.py` with `encoding='utf-8'`
+- HYP-004 baseline registered as EXP-069; focused trailing-stop slice registered as EXP-071..074
+- Preliminary HYP-004 result: break-even trailing stop reduces losing trades materially, but lowers total P&L versus no-trailing baseline
+- Caution: trailing-stop variants show implausible `expectancy_r` / `max_win_r` values, so R-multiple accounting likely has a bug under trailing-stop exits; compare dollar P&L, drawdown, win rate, and loser counts until fixed
 
 **Progress Since Last Session**:
 - Created memory bank structure for project documentation

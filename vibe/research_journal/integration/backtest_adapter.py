@@ -64,7 +64,8 @@ class BacktestResultAdapter:
             tags: Optional list of tags
             
         Returns:
-            Experiment with results_summary computed from trades
+            Registered experiment. Results are persisted when complete_experiment()
+            is called so the on-disk state matches the experiment lifecycle.
         """
         # Create experiment
         exp = self.registry.create_experiment(
@@ -76,13 +77,6 @@ class BacktestResultAdapter:
             parent_experiment_id=parent_experiment_id,
             tags=tags or []
         )
-        
-        # Compute metrics from trades
-        metrics = self._compute_metrics_from_trades(trades)
-        
-        # Update experiment with results (but don't mark complete yet)
-        # This allows for subsequent modifications before marking complete
-        exp.results_summary = metrics
         
         return exp
     

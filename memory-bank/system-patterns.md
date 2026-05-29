@@ -187,6 +187,30 @@ class BaseRealTimeProvider(ABC):
 
 **Key Guardrails**: Full-history validation, out-of-sample testing, mechanistic reasoning
 
+### 6. Reusable Hypothesis Optimization Pattern
+**Purpose**: Run hypothesis-driven sweeps without creating one-off scripts
+
+**Standard Pattern**:
+```powershell
+# Reusable optimization + journal workflow
+python scripts/optimize_strategy.py \
+    --strategy orb \
+    --mode full \
+    --trailing-breakeven \
+    --trailing-only \
+    --trigger-rs 1.0,2.0,2.5,3.0 \
+    --plus-ticks 0,1,2,3,5 \
+    --journal \
+    --hypothesis-id HYP-004
+```
+
+**Best Practice Rules**:
+1. Prefer extending generic infrastructure (`optimize_strategy.py`, optimization pipeline, ruleset models) over adding hypothesis-specific scripts.
+2. Register each sweep row as a journal experiment for full lineage and reproducibility.
+3. Keep hypothesis logic in parameters and metadata (CLI flags, hypothesis IDs, tags), not in ad-hoc orchestration files.
+4. Retire one-off research scripts after generic capability lands.
+5. Default to quiet logging for sweeps: unless debugging strategy/indicator/engine internals, force `vibe.common.strategies*` and `vibe.common.indicators*` loggers to WARNING.
+
 ## Integration Points
 
 ### External Services

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from vibe.backtester.core.fill_simulator import FillResult
@@ -20,6 +20,8 @@ class Position:
     take_profit: Optional[float]  # None = no TP
     side: str           # "buy" | "sell"
     entry_time: datetime
+    initial_stop_price: float
+    initial_risk_per_share: float
 
 
 class PortfolioManager:
@@ -28,12 +30,13 @@ class PortfolioManager:
     Records initial_risk and exit_reason on every closed Trade.
     """
 
-    def __init__(self, initial_capital: float) -> None:
+    def __init__(self, initial_capital: float, trailing_stop_config: Optional[Dict[str, Any]] = None) -> None:
         self.initial_capital = initial_capital
         self.cash = initial_capital
         self.positions: Dict[str, Position] = {}
         self.equity_curve: List[Tuple[datetime, float]] = []
         self.trade_history: List[Trade] = []
+        self.trailing_stop_config = trailing_stop_config
 
     def open_position(
         self, fill: FillResult, stop_price: float, take_profit: Optional[float], timestamp: datetime
@@ -46,6 +49,8 @@ class PortfolioManager:
             take_profit=take_profit,
             side=fill.side,
             entry_time=timestamp,
+            initial_stop_price=stop_price,
+            initial_risk_per_share=abs(fill.avg_price - stop_price),
         )
         if fill.side == "buy":
             self.cash -= fill.filled_qty * fill.avg_price
@@ -56,7 +61,9 @@ class PortfolioManager:
         self, fill: FillResult, exit_reason: str, timestamp: datetime
     ) -> None:
         pos = self.positions.pop(fill.symbol)
-        initial_risk = abs(pos.entry_price - pos.stop_price) * pos.quantity
+        # R-multiple denominator must remain anchored to entry-time risk.
+        # Do not use the moved trailing stop at exit time.
+        initial_risk = abs(pos.entry_price - pos.initial_stop_price) * pos.quantity
 
         self.trade_history.append(Trade(
             symbol=fill.symbol,
@@ -91,6 +98,9 @@ class PortfolioManager:
             if bar is None:
                 continue
             pos = self.positions[symbol]
+
+            # Update stop from trailing rules before evaluating exits.
+            self._maybe_update_trailing_stop(pos=pos, bar=bar)
 
             # Check take-profit first (highest priority)
             if pos.take_profit is not None:
@@ -135,6 +145,67 @@ class PortfolioManager:
                     filled_qty=pos.quantity, avg_price=bar.close,
                 )
                 self.close_position(fill, exit_reason="EOD", timestamp=clock.now())
+
+    def _maybe_update_trailing_stop(self, pos: Position, bar: Bar) -> None:
+        """Update stop price based on configured trailing stop logic."""
+        if not self.trailing_stop_config:
+            return
+
+        method = self.trailing_stop_config.get("method")
+        if method not in {"breakeven_plus_ticks", "stepped_r_multiple"}:
+            return
+
+        risk = pos.initial_risk_per_share
+        if risk <= 0:
+            return
+
+        if pos.side == "buy":
+            favorable_move = max(0.0, bar.high - pos.entry_price)
+            favorable_r = favorable_move / risk
+        else:
+            favorable_move = max(0.0, pos.entry_price - bar.low)
+            favorable_r = favorable_move / risk
+
+        if method == "breakeven_plus_ticks":
+            trigger_r = float(self.trailing_stop_config.get("trigger_r", 1.0))
+            plus_ticks = int(self.trailing_stop_config.get("plus_ticks", 0))
+            tick_size = 0.01
+
+            if favorable_r < trigger_r:
+                return
+
+            if pos.side == "buy":
+                candidate = pos.entry_price + plus_ticks * tick_size
+                if candidate > pos.stop_price:
+                    pos.stop_price = candidate
+            else:
+                candidate = pos.entry_price - plus_ticks * tick_size
+                if candidate < pos.stop_price:
+                    pos.stop_price = candidate
+            return
+
+        # stepped_r_multiple
+        steps = self.trailing_stop_config.get("steps", [])
+        if not isinstance(steps, list):
+            return
+
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+
+            at = float(step.get("at", 0.0))
+            move_stop_to = float(step.get("move_stop_to", 0.0))
+            if favorable_r < at:
+                continue
+
+            if pos.side == "buy":
+                candidate = pos.entry_price + move_stop_to * risk
+                if candidate > pos.stop_price:
+                    pos.stop_price = candidate
+            else:
+                candidate = pos.entry_price - move_stop_to * risk
+                if candidate < pos.stop_price:
+                    pos.stop_price = candidate
 
     def update_equity(
         self, current_bars: Dict[str, Bar], timestamp: datetime

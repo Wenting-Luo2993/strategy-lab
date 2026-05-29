@@ -3,6 +3,7 @@ Tests for Backtester Integration with Research Journal
 """
 
 import pytest
+import logging
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -88,6 +89,7 @@ class TestWrapBacktestEngine:
         mock_engine = MagicMock()
         mock_result = MagicMock()
         mock_engine.run.return_value = mock_result
+        original_run = mock_engine.run
         
         wrapped = wrap_backtest_engine(mock_engine, registry=None)
         
@@ -99,7 +101,7 @@ class TestWrapBacktestEngine:
         )
         
         # Should call original run()
-        mock_engine.run.assert_called_once()
+        original_run.assert_called_once()
         assert result == mock_result
     
     def test_wrap_engine_adds_experiment_tracking(self, tmp_path):
@@ -118,7 +120,9 @@ class TestWrapBacktestEngine:
         mock_engine = MagicMock()
         mock_result = MagicMock()
         mock_result.trades = []
+        mock_result.overall.expectancy_r = 0.25
         mock_engine.run.return_value = mock_result
+        original_run = mock_engine.run
         mock_engine.ruleset.strategy_name = "TestStrategy"
         mock_engine.ruleset.version = "1.0"
         mock_engine.ruleset.parameters = {}
@@ -135,12 +139,50 @@ class TestWrapBacktestEngine:
         )
         
         # Verify original run() called
-        mock_engine.run.assert_called_once()
+        original_run.assert_called_once()
         assert result == mock_result
         
         # Verify experiment completed
         completed = registry.get_experiment(exp.id)
         assert completed.status == ExperimentStatus.COMPLETED
+
+    def test_wrap_engine_tracking_failure_does_not_fail_backtest(self, tmp_path, caplog):
+        """Tracking errors should be logged and the backtest result should still return."""
+        registry = ResearchRegistry(tmp_path)
+
+        exp = registry.create_experiment(
+            strategy_name="TestStrategy",
+            strategy_version="1.0",
+            parameters={},
+            dataset_config={},
+        )
+
+        mock_engine = MagicMock()
+        mock_result = MagicMock()
+        mock_result.trades = []
+        mock_result.overall.expectancy_r = 0.25
+        mock_engine.run.return_value = mock_result
+        mock_engine.ruleset.strategy_name = "TestStrategy"
+        mock_engine.ruleset.version = "1.0"
+        mock_engine.ruleset.parameters = {}
+
+        wrapped = wrap_backtest_engine(mock_engine, registry=registry)
+
+        with patch.object(
+            wrapped._experiment_tracker,
+            "track_backtest_result",
+            side_effect=RuntimeError("tracking broke"),
+        ):
+            with caplog.at_level(logging.WARNING):
+                result = wrapped.run(
+                    symbol="QQQ",
+                    start_date=datetime(2024, 1, 1),
+                    end_date=datetime(2024, 12, 31),
+                    experiment_id=exp.id,
+                )
+
+        assert result == mock_result
+        assert any("tracking failed" in record.message.lower() for record in caplog.records)
     
     def test_wrap_engine_without_experiment_id(self):
         """Wrapped engine should work without experiment_id."""
@@ -150,6 +192,7 @@ class TestWrapBacktestEngine:
         mock_result = MagicMock()
         mock_result.trades = []
         mock_engine.run.return_value = mock_result
+        original_run = mock_engine.run
         
         wrapped = wrap_backtest_engine(mock_engine, registry=registry)
         
@@ -161,7 +204,7 @@ class TestWrapBacktestEngine:
         )
         
         # Should call original run()
-        mock_engine.run.assert_called_once()
+        original_run.assert_called_once()
         assert result == mock_result
     
     def test_wrap_engine_preserves_precomputed_features(self):
@@ -170,6 +213,7 @@ class TestWrapBacktestEngine:
         mock_result = MagicMock()
         mock_result.trades = []
         mock_engine.run.return_value = mock_result
+        original_run = mock_engine.run
         
         wrapped = wrap_backtest_engine(mock_engine, registry=None)
         
@@ -184,7 +228,7 @@ class TestWrapBacktestEngine:
         )
         
         # Verify precomputed_features passed to original
-        call_args = mock_engine.run.call_args
+        call_args = original_run.call_args
         assert call_args[1]["precomputed_features"] == mock_features
 
 

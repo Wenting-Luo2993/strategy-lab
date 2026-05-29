@@ -9,6 +9,7 @@ Integrates all optimization components:
 - Surface analysis (cliff/plateau detection)
 """
 import logging
+import yaml
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from vibe.backtester.analysis.walk_forward import WalkForwardEngine, WalkForward
 from vibe.backtester.analysis.surface import SurfaceAnalyzer, ParameterSurface
 from vibe.backtester.analysis.scoring import rank_results
 from vibe.common.ruleset.models import StrategyRuleSet
+from vibe.research_journal.registry import ResearchRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,7 @@ class OptimizationResult:
     sweep_results: pd.DataFrame
     best_params: Dict[str, Any]
     best_score: float
+    hypothesis_id: Optional[str] = None
     
     robustness_analysis: Optional[RobustnessAnalysis] = None
     walk_forward_analysis: Optional[WalkForwardAnalysis] = None
@@ -152,6 +155,14 @@ class OptimizationPipeline:
         run_walk_forward: bool = False,
         run_surface: bool = False,
         output_dir: Optional[Path] = None,
+        register_in_research_journal: bool = False,
+        research_root: Optional[Path] = None,
+        hypothesis_id: Optional[str] = None,
+        hypothesis_title: Optional[str] = None,
+        hypothesis_rationale: Optional[str] = None,
+        journal_tags: Optional[List[str]] = None,
+        experiment_tags: Optional[List[str]] = None,
+        strategy_name: str = "ORBStrategy",
     ) -> OptimizationResult:
         """
         Run complete optimization pipeline.
@@ -216,6 +227,30 @@ class OptimizationPipeline:
             sweep_results_path = output_dir / "parameter_sweep.csv"
             sweep.save_results(sweep_results, sweep_results_path)
             logger.info(f"  Saved sweep results to {sweep_results_path}")
+
+        # Optional: register each sweep row as a completed experiment in research journal.
+        resolved_hypothesis_id = hypothesis_id
+        if register_in_research_journal:
+            logger.info("\n[1.5/4] Registering sweep in research journal...")
+            sweep_results, resolved_hypothesis_id = self._register_sweep_in_research_journal(
+                sweep_results=sweep_results,
+                parameters=parameters,
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                hypothesis_id=hypothesis_id,
+                hypothesis_title=hypothesis_title,
+                hypothesis_rationale=hypothesis_rationale,
+                journal_tags=journal_tags,
+                experiment_tags=experiment_tags,
+                research_root=research_root,
+                strategy_name=strategy_name,
+            )
+            logger.info(
+                "  ✓ Registered %d experiments%s",
+                len(sweep_results),
+                f" under {resolved_hypothesis_id}" if resolved_hypothesis_id else "",
+            )
         
         # Step 2: Robustness analysis (optional)
         robustness_analysis = None
@@ -309,6 +344,7 @@ class OptimizationPipeline:
             sweep_results=sweep_results,
             best_params=best_params,
             best_score=best_score,
+            hypothesis_id=resolved_hypothesis_id,
             robustness_analysis=robustness_analysis,
             walk_forward_analysis=walk_forward_analysis,
             surface_analysis=surface_analysis,
@@ -319,3 +355,123 @@ class OptimizationPipeline:
         logger.info("=" * 80)
         
         return result
+
+    def _register_sweep_in_research_journal(
+        self,
+        *,
+        sweep_results: pd.DataFrame,
+        parameters: List[ParameterDefinition],
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        hypothesis_id: Optional[str],
+        hypothesis_title: Optional[str],
+        hypothesis_rationale: Optional[str],
+        journal_tags: Optional[List[str]],
+        experiment_tags: Optional[List[str]],
+        research_root: Optional[Path],
+        strategy_name: str,
+    ) -> tuple[pd.DataFrame, Optional[str]]:
+        """Register sweep rows as completed experiments.
+
+        Creates (or links) a hypothesis, then writes one experiment per row
+        including parameters, dataset config, and metric summaries.
+        """
+        registry = ResearchRegistry(research_root)
+
+        resolved_hypothesis_id = hypothesis_id
+        if resolved_hypothesis_id:
+            registry.get_hypothesis(resolved_hypothesis_id)
+        elif hypothesis_title and hypothesis_rationale:
+            hyp = registry.create_hypothesis(
+                title=hypothesis_title,
+                rationale=hypothesis_rationale,
+                tags=journal_tags or [],
+            )
+            resolved_hypothesis_id = hyp.id
+
+        timeframe = self._base_ruleset_timeframe()
+        strategy_version = self._base_ruleset_version()
+
+        param_name_to_path = {p.name: p.path for p in parameters}
+        enriched = sweep_results.copy()
+        experiment_ids: List[str] = []
+
+        for _, row in enriched.iterrows():
+            row_dict = row.to_dict()
+
+            param_values = {
+                name: self._to_native(row_dict.get(name))
+                for name in param_name_to_path.keys()
+            }
+
+            params_payload = {
+                "sweep_values": param_values,
+                "sweep_paths": param_name_to_path,
+                "slippage_ticks": self.slippage_ticks,
+                "initial_capital": self.initial_capital,
+            }
+
+            dataset_config = {
+                "symbol": symbol,
+                "start_date": start_date.date().isoformat(),
+                "end_date": end_date.date().isoformat(),
+                "timeframe": timeframe,
+            }
+
+            exp = registry.create_experiment(
+                strategy_name=strategy_name,
+                strategy_version=strategy_version,
+                parameters=params_payload,
+                dataset_config=dataset_config,
+                hypothesis_id=resolved_hypothesis_id,
+                parent_experiment_id=None,
+                tags=experiment_tags or ["optimization", "parameter-sweep"],
+            )
+
+            results_summary = {
+                k: self._to_native(v)
+                for k, v in row_dict.items()
+                if k not in param_name_to_path
+            }
+            conclusion = (
+                f"score={results_summary.get('composite_score', 0.0):.3f}, "
+                f"exp={results_summary.get('expectancy_r', 0.0):+.3f}R, "
+                f"win={results_summary.get('win_rate', 0.0):.1%}"
+            )
+            registry.complete_experiment(
+                exp.id,
+                results=results_summary,
+                conclusion=conclusion,
+            )
+            experiment_ids.append(exp.id)
+
+        enriched["experiment_id"] = experiment_ids
+        if resolved_hypothesis_id:
+            enriched["hypothesis_id"] = resolved_hypothesis_id
+        return enriched, resolved_hypothesis_id
+
+    def _base_ruleset_timeframe(self) -> str:
+        ruleset = self._load_base_ruleset()
+        return ruleset.instruments.timeframe
+
+    def _base_ruleset_version(self) -> str:
+        ruleset = self._load_base_ruleset()
+        return ruleset.version
+
+    def _load_base_ruleset(self) -> StrategyRuleSet:
+        with open(self.base_ruleset_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+        return StrategyRuleSet(**config)
+
+    @staticmethod
+    def _to_native(value: Any) -> Any:
+        """Convert numpy/pandas scalar types to native Python types for YAML."""
+        if value is None:
+            return None
+        if hasattr(value, "item"):
+            try:
+                return value.item()
+            except Exception:
+                return value
+        return value

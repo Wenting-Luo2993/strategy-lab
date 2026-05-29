@@ -83,6 +83,25 @@ class ExperimentQuery:
         
         self._filters.append(filter_fn)
         return self
+
+    def by_unresolved_hypothesis(self) -> "ExperimentQuery":
+        """Filter experiments whose hypothesis reference does not resolve.
+
+        Returns:
+            Self for chaining
+        """
+        def filter_fn(exp: Experiment) -> bool:
+            if exp.hypothesis_id is None:
+                return False
+
+            try:
+                self.registry.get_hypothesis(exp.hypothesis_id)
+                return False
+            except FileNotFoundError:
+                return True
+
+        self._filters.append(filter_fn)
+        return self
     
     def by_parameter(self, param_path: str, value: Any) -> "ExperimentQuery":
         """Filter experiments by parameter value.

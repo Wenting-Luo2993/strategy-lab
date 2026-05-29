@@ -14,12 +14,16 @@ Usage:
     )
 """
 
+import logging
 from typing import Optional, List
 from datetime import datetime
 from vibe.backtester.analysis.metrics import BacktestResult
 from vibe.research_journal.registry import ResearchRegistry
 from vibe.research_journal.integration.backtest_adapter import BacktestResultAdapter
 from vibe.common.models.trade import Trade
+
+
+logger = logging.getLogger(__name__)
 
 
 class BacktestExperimentTracker:
@@ -119,19 +123,32 @@ def wrap_backtest_engine(engine, registry: Optional[ResearchRegistry] = None):
         
         # If experiment_id provided and tracking enabled, complete experiment
         if experiment_id and tracker.can_track():
-            tracker.track_backtest_result(
-                backtest_result=result,
-                experiment_id=experiment_id,
-                strategy_name=engine.ruleset.strategy_name if hasattr(engine.ruleset, 'strategy_name') else "Unknown",
-                strategy_version=getattr(engine.ruleset, 'version', '1.0'),
-                parameters=getattr(engine.ruleset, 'parameters', {}),
-                dataset_config={
-                    'symbol': symbol,
-                    'start_date': start_date.isoformat(),
-                    'end_date': end_date.isoformat()
-                },
-                conclusion=f"Backtest completed: {result.expectancy:.3f}R expectancy"
-            )
+            try:
+                expectancy_r = getattr(getattr(result, "overall", None), "expectancy_r", None)
+                if expectancy_r is None:
+                    conclusion = "Backtest completed"
+                else:
+                    conclusion = f"Backtest completed: {expectancy_r:.3f}R expectancy"
+
+                tracker.track_backtest_result(
+                    backtest_result=result,
+                    experiment_id=experiment_id,
+                    strategy_name=engine.ruleset.strategy_name if hasattr(engine.ruleset, 'strategy_name') else "Unknown",
+                    strategy_version=getattr(engine.ruleset, 'version', '1.0'),
+                    parameters=getattr(engine.ruleset, 'parameters', {}),
+                    dataset_config={
+                        'symbol': symbol,
+                        'start_date': start_date.isoformat(),
+                        'end_date': end_date.isoformat()
+                    },
+                    conclusion=conclusion
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Research journal tracking failed for %s; returning backtest result without tracking. Error: %s",
+                    experiment_id,
+                    exc,
+                )
         
         return result
     

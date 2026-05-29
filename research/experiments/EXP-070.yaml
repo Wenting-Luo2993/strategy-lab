@@ -1,0 +1,57 @@
+id: EXP-070
+hypothesis_id: HYP-004
+parent_experiment_id: null
+strategy_name: ORBStrategy
+strategy_version: 1.0.0
+parameters:
+  sweep_values:
+    tp_multiplier: 0
+    trailing_method: breakeven_plus_ticks
+    trigger_r: 2.0
+    plus_ticks: 3
+  sweep_paths:
+    tp_multiplier: exit.take_profit.multiplier
+    trailing_method: exit.trailing_stop.method
+    trigger_r: exit.trailing_stop.trigger_r
+    plus_ticks: exit.trailing_stop.plus_ticks
+  slippage_ticks: 5
+  initial_capital: 100000.0
+dataset_config:
+  symbol: QQQ
+  start_date: '2018-01-01'
+  end_date: '2024-12-31'
+  timeframe: 5m
+execution_metadata:
+  git_commit: 8089a1f4c74208f6708df232f172eb19ba93ea7e
+  git_branch: main
+  git_dirty: true
+  random_seed: null
+  executed_at: '2026-05-29T17:56:36.538939Z'
+  python_version: 3.12.10
+status: completed
+results_summary:
+  composite_score: 0.7464744392831832
+  n_trades: 1677
+  win_rate: 0.4084675014907573
+  expectancy_r: 0.2741821709083502
+  losing_trades: 991
+  total_pnl: 6968120.734999937
+  max_drawdown: -0.25049115517953097
+  profit_factor: 1.5510807062169176
+  avg_win: 28631.51210948895
+  avg_loss: -12759.298748738644
+  sharpe_ratio: 2.299428707901298
+  tail_ratio: 4.575014587466396
+  top10_pct: 84.17383037890274
+  max_win_r: 11.932584269662348
+  max_loss_r: -1.0
+  skewness: 1.9384508220952348
+  max_losing_streak: 9
+conclusion: score=0.746, exp=+0.274R, win=40.8%
+artifacts: []
+tags:
+- optimization
+- parameter-sweep
+- orb
+created_at: '2026-05-29T17:56:36.195362Z'
+completed_at: '2026-05-29T10:56:36.561705-07:00'
