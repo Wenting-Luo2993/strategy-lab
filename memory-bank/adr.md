@@ -23,6 +23,7 @@ This document is an index of all architectural decisions. Full details are in in
 | [011](adrs/adr-011-enforce-memory-bank-maintenance.md) | Enforce Memory Bank Maintenance via Copilot | ✅ Accepted | High | 2026-05-23 |
 | [012](adrs/adr-012-minimize-copilot-instructions.md) | Minimize Copilot Instructions, Detail in Memory Bank | ✅ Accepted | Medium | 2026-05-23 |
 | [013](adrs/adr-013-keep-files-under-200-lines.md) | Keep Documentation Files Under ~200 Lines | ✅ Accepted | Medium | 2026-05-23 |
+| [014](adrs/adr-014-roes-pluggable-execution.md) | Realistic Order Execution Simulator (ROES) - Pluggable Architecture | ✅ Accepted | High | 2026-05-31 |
 
 ---
 
@@ -31,13 +32,13 @@ This document is an index of all architectural decisions. Full details are in in
 ### By Impact Level
 
 **Critical**: 007 (remove TP gate), 008 (pause paper trading)
-**High**: 001 (backtester), 003 (Polygon), 006 (regime framework), 011 (memory bank)
+**High**: 001 (backtester), 003 (Polygon), 006 (regime framework), 011 (memory bank), 014 (ROES)
 **Medium**: 002 (timezone), 004 (Discord), 005 (phases), 009 (asyncio), 012 (copilot), 013 (file sizes)
 **Low**: 010 (YAML config)
 
 ### By Category
 
-**Infrastructure**: 001, 009, 010
+**Infrastructure**: 001, 009, 010, 014 (ROES execution)
 **Data & Providers**: 002, 003
 **Trading Strategy**: 006, 007, 008
 **Operations**: 004, 005

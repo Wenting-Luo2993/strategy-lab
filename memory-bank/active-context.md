@@ -1,18 +1,45 @@
 # Active Context
 
 ## Current Focus Area
-**Status**: ORB Research Continuation - Post Optimization Handoff
+**Status**: Realistic Order Execution Simulator (ROES) - Phase 1 Complete ✅ → Phase 2 Next
 
-**Primary Task**: Re-run regime filter analysis on corrected no-TP baseline
+**Primary Task**: Move from infrastructure work (ROES Phase 1) to ORB research continuation
 
-**Context**: Research journal infrastructure is now operational and actively used. Latest optimization research confirmed no-TP as the correct baseline and invalidated earlier regime conclusions that were measured against TP=2.0.
+**Context**: ROES Phase 1 provides production-ready execution engine with pluggable models. All 114 tests passing. Full backward compatibility with legacy FillSimulator verified.
 
-**Background - ORB Strategy Validation Status**:
+---
+
+## Recent Decisions
+
+### Decision: Complete ROES Phase 1 Before ORB Research (2026-05-31)
+**Chosen**: Execute full Phase 1 (6 tasks, 114 tests) for Realistic Order Execution Simulator
+
+**Reasoning**:
+- ORB research on hold until 2026 H1 (currently showing -0.17R degradation)
+- ROES Phase 1 provides foundation for realistic paper trading and execution quality monitoring
+- Protocol-based architecture enables easy addition of new slippage/impact/volume models
+- Full backward compatibility ensures no disruption to existing backtests
+
+**Deliverables**:
+- Task 1: Order/Fill models with validation (23 tests)
+- Task 2: Slippage models - FixedTickSlippage (legacy-compatible) + SqrtVolumeSlippage (20 tests)
+- Task 3: Volume models - UnlimitedVolume + ParticipationRateVolume (15 tests)
+- Task 4: Impact models - NoImpact + SqrtImpact (16 tests)
+- Task 5: ExecutionConfig with legacy() and realistic() factories (20 tests)
+- Task 6: ExecutionSimulator with market/limit order routing (20 tests)
+
+**Impact**: Ready for Phase 2 (ADV computation, pending orders, latency), then Phase 3 (validation), then Phase 4 (docs)
+
+**Next**: ROES Phase 2 - ADV computation, pending order queue, limit order depth tracking
+
+---
+
+## Background: ORB Strategy Validation Status
 - 2025 OOS: +0.16R (validation passed) ✅
 - 2026 YTD: -0.17R (validation FAILED) ⚠️
 - Paper trading paused pending 2026 H1 validation
 
-## Recent Decisions
+## Previous Decisions
 
 ### Decision: Implement Research Journal Before Further Strategy Work (2026-05-23)
 **Chosen**: Build Research Journal / Experiment Registry Framework as next priority

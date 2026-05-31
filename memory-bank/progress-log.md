@@ -91,9 +91,28 @@
 - [x] project-architect - Architecture design and tool research (cyan, opus)
 - [x] prd-breakdown-architect - PRD breakdown into staged execution plans with architecture review, TDD specs, and test-first approach (blue, sonnet, 134 lines)
 
+### Realistic Order Execution Simulator (ROES) - Phase 1 (2026-05-31)
+- [x] **Task 1**: Data Models (Order, Fill) - 23 tests ✅
+- [x] **Task 2**: Slippage Models (FixedTickSlippage, SqrtVolumeSlippage) - 20 tests ✅
+- [x] **Task 3**: Volume Models (UnlimitedVolume, ParticipationRateVolume) - 15 tests ✅
+- [x] **Task 4**: Impact Models (NoImpact, SqrtImpact) - 16 tests ✅
+- [x] **Task 5**: ExecutionConfig with factories (legacy, realistic) - 20 tests ✅
+- [x] **Task 6**: ExecutionSimulator (market/limit orders, price overrides) - 20 tests ✅
+- [x] **Total**: 114 tests passing, protocol-based pluggable architecture
+- [x] Full backward compatibility with legacy FillSimulator behavior
+- [x] Partial fill support via volume participation rates
+- [x] Market impact modeling (ADV-sensitive sqrt model)
+- [x] Price override support for special cases (ORB entries)
+
 ---
 
 ## 🚧 In Progress (Active Work)
+
+### Realistic Order Execution Simulator (ROES) - Phase 2 (Next Priority)
+- [ ] ADV computation with 20-day rolling window
+- [ ] Pending order queue with latency handling
+- [ ] Limit order fill logic with FIFO priority and depth tracking
+- [ ] Engine integration tests (backtester ↔ ROES)
 
 ### ORB Research Continuation (Updated 2026-05-28)
 - [ ] Create new hypothesis **HYP-004** for regime filters on no-TP baseline
@@ -138,13 +157,23 @@
 
 ## 📋 Not Started (Planned Work)
 
-### Paper Trading - Mock Exchange (Medium-Term Priority)
-- [ ] Mock exchange simulator (order matching engine, realistic fills)
-- [ ] Slippage modeling (bid-ask spread, market impact)
-- [ ] Fill simulation (partial fills, reject conditions)
-- [ ] Paper trading orchestrator (real-time data → mock execution)
+### Realistic Order Execution Simulator (ROES) - Phase 3 Validation
+- [ ] Determinism tests (same seed → identical fills)
+- [ ] Degradation validation (legacy config matches old FillSimulator exactly)
+- [ ] A/B comparison framework (legacy vs realistic configs)
+- [ ] Edge case coverage (zero volume, extreme slippage, missing data)
+
+### Realistic Order Execution Simulator (ROES) - Phase 4 Documentation
+- [ ] Update implementation.md with ROES architecture
+- [ ] Add ROES configuration guide
+- [ ] Document Protocol-based extension patterns
+- [ ] Migration guide from FillSimulator to ExecutionSimulator
+
+### Paper Trading - Execution Quality Monitoring (Medium-Term Priority)
+- [ ] Paper trading orchestrator (real-time data → ROES execution)
 - [ ] Execution quality monitoring (compare to backtest assumptions)
 - [ ] Integration with Research Journal (log all paper trades as experiments)
+- [ ] Realistic fill quality metrics (fill rate, partial fills, reject conditions)
 
 ### Paper Trading - Interactive Brokers Integration (Long-Term Priority)
 - [ ] IB API client library integration (ib_insync or ibapi)
@@ -198,6 +227,7 @@
 - [ ] Expand unit test coverage to 80%+
 - [ ] Integration tests for full warmup → trading → cooldown cycle
 - [ ] Load testing for real-time data pipeline (100+ symbols)
+- [ ] ROES Phase 2 integration tests (pending orders, latency, limit orders, ADV computation)
 - [ ] Chaos engineering (network failures, provider outages)
 
 ### Monitoring & Observability
