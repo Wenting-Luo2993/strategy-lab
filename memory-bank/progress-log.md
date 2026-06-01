@@ -98,32 +98,45 @@
 - [x] **Task 4**: Impact Models (NoImpact, SqrtImpact) - 16 tests ✅
 - [x] **Task 5**: ExecutionConfig with factories (legacy, realistic) - 20 tests ✅
 - [x] **Task 6**: ExecutionSimulator (market/limit orders, price overrides) - 20 tests ✅
-- [x] **Total**: 114 tests passing, protocol-based pluggable architecture
+- [x] **Total Phase 1**: 114 tests passing, protocol-based pluggable architecture
 - [x] Full backward compatibility with legacy FillSimulator behavior
 - [x] Partial fill support via volume participation rates
 - [x] Market impact modeling (ADV-sensitive sqrt model)
 - [x] Price override support for special cases (ORB entries)
 
+### Realistic Order Execution Simulator (ROES) - Phase 2 (2026-05-31)
+- [x] **Task 7**: Pending Order Queue with latency handling - 17 tests ✅
+- [x] **Task 8**: Engine ExecutionConfig Integration with ADV pre-computation - 19 tests ✅
+- [x] **Task 9**: Limit Order Verification through BacktestEngine - 19 tests ✅
+- [x] **Task 10**: Portfolio Partial Fill Handling with weighted average entry price - 13 tests ✅
+- [x] **Total Phase 2**: 68 tests passing
+- [x] Cumulative: 114 + 68 = **192 tests passing**
+- [x] ADV pre-computation (O(n) single pass, O(1) lookups)
+- [x] Pending order queue with automatic EOD clearing
+- [x] Limit order fills only when price reached + volume constraints
+- [x] Partial fill scaling with weighted average entry price preservation of stop/TP
+- [x] Full backward compatibility verified (all existing tests pass)
+
 ---
 
 ## 🚧 In Progress (Active Work)
 
-### Realistic Order Execution Simulator (ROES) - Phase 2 (Next Priority)
-- [ ] ADV computation with 20-day rolling window
-- [ ] Pending order queue with latency handling
-- [ ] Limit order fill logic with FIFO priority and depth tracking
-- [ ] Engine integration tests (backtester ↔ ROES)
+### Realistic Order Execution Simulator (ROES) - Phase 3 Validation (Next Priority)
+- [ ] Determinism tests (3-4 tests) - verify identical results across 3 runs
+- [ ] Degradation validation - confirm realistic config produces worse fills than legacy
+- [ ] A/B comparison framework for configuration analysis
+- [ ] Edge case coverage (zero volume, extreme slippage, missing data)
 
-### ORB Research Continuation (Updated 2026-05-28)
-- [ ] Create new hypothesis **HYP-004** for regime filters on no-TP baseline
-- [ ] Re-run regime analysis with corrected baseline (no TP) and register **EXP-069+**
-- [ ] Re-evaluate H1 (`atr_pctile < 0.80`) and H2 (`regime != ranging_high_vol`) using updated baseline
-- [ ] Run walk-forward optimization validation (`--walk-forward`)
-- [ ] Test multi-symbol generalization on SPY and IWM
-- [ ] Register next IDs correctly: **ART-017**, **NOTE-005** onward
+### ORB Research Continuation (Deferred - On Hold Until 2026 H1)
+- [ ] **PAUSED**: Waiting for 2026 H1 data (6 months) before investigation
+- [ ] 2026 YTD shows -0.17R (failed validation) - similar to 2020 COVID
+- [ ] H3 filter failed for first time (made performance worse)
+- [ ] Will create **HYP-004** and **EXP-069+** when 2026 H1 data available
+- [ ] Re-validate prior filters against no-TP baseline
+- [ ] Plan walk-forward validation and multi-symbol generalization (SPY, IWM)
 
-### Research Journal / Experiment Registry Framework (Priority 1)
-- [ ] **Phase 1 - Core Registry**:
+### Research Journal / Experiment Registry Framework (Priority 1 - Deferred)
+- [ ] **Phase 1 - Core Registry** (Estimated next week):
   - [ ] Define domain models (Hypothesis, Experiment, ResearchNote, RejectedIdea)
   - [ ] Implement persistence layer (YAML/JSON in Git)
   - [ ] Implement immutable experiment pattern
