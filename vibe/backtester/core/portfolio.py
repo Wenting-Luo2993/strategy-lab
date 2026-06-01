@@ -39,7 +39,7 @@ class PortfolioManager:
         self.trailing_stop_config = trailing_stop_config
 
     def open_position(
-        self, fill: FillResult, stop_price: float, take_profit: Optional[float], timestamp: datetime
+        self, fill: FillResult, stop_price: float, timestamp: datetime, take_profit: Optional[float] = None
     ) -> None:
         self.positions[fill.symbol] = Position(
             symbol=fill.symbol,
@@ -52,6 +52,50 @@ class PortfolioManager:
             initial_stop_price=stop_price,
             initial_risk_per_share=abs(fill.avg_price - stop_price),
         )
+        if fill.side == "buy":
+            self.cash -= fill.filled_qty * fill.avg_price
+        else:  # short (sell)
+            self.cash += fill.filled_qty * fill.avg_price
+
+    def add_to_position(
+        self, fill: FillResult, timestamp: datetime
+    ) -> None:
+        """
+        Scale into an existing position with a partial fill.
+        
+        Calculates weighted average entry price, accumulates quantity,
+        and preserves stop/TP from the original signal.
+        
+        Args:
+            fill: Partial fill to add
+            timestamp: Execution time
+            
+        Raises:
+            KeyError: If position doesn't exist (must open_position first)
+            ValueError: If fill side doesn't match position side
+        """
+        if fill.symbol not in self.positions:
+            raise KeyError(f"Position {fill.symbol} does not exist. Use open_position() first.")
+        
+        pos = self.positions[fill.symbol]
+        
+        # Verify same side (can't buy into short or vice versa)
+        if fill.side != pos.side:
+            raise ValueError(
+                f"Cannot add {fill.side} fill to existing {pos.side} position for {fill.symbol}"
+            )
+        
+        # Calculate weighted average entry price
+        old_value = pos.quantity * pos.entry_price
+        new_value = fill.filled_qty * fill.avg_price
+        total_quantity = pos.quantity + fill.filled_qty
+        weighted_avg_price = (old_value + new_value) / total_quantity
+        
+        # Update position (quantity and entry_price only; stop/TP unchanged)
+        pos.quantity = total_quantity
+        pos.entry_price = weighted_avg_price
+        
+        # Update cash (same logic as open_position)
         if fill.side == "buy":
             self.cash -= fill.filled_qty * fill.avg_price
         else:  # short (sell)
