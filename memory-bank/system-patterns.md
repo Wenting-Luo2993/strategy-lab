@@ -211,6 +211,28 @@ python scripts/optimize_strategy.py \
 4. Retire one-off research scripts after generic capability lands.
 5. Default to quiet logging for sweeps: unless debugging strategy/indicator/engine internals, force `vibe.common.strategies*` and `vibe.common.indicators*` loggers to WARNING.
 
+### 7. Execution Mode Contract Pattern (ROES)
+**Purpose**: Preserve historical comparability while enabling realistic execution research.
+
+**Contract**:
+1. `BacktestEngine(..., execution_config=None)` keeps legacy-compatible default behavior.
+2. Realistic fill is enabled only by explicitly passing `execution_config`.
+3. In realistic mode, avoid forcing ORB `price_override` so slippage/impact models can apply.
+
+**Reference**: `memory-bank/features/realistic-fill-guide.md`
+
+### 8. Research Journal Workflow Pattern
+**Purpose**: Make strategy research reproducible, traceable, and auditable.
+
+**Workflow**:
+1. Create hypothesis via `ResearchRegistry`.
+2. Create experiments with execution metadata capture.
+3. Complete experiments with immutable results and conclusions.
+4. Track lineage for parameter iterations.
+5. Query and verify artifacts for analysis and reporting.
+
+**Reference**: `memory-bank/features/research-journal-guide.md`
+
 ## Integration Points
 
 ### External Services

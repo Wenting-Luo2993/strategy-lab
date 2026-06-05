@@ -1,44 +1,13 @@
 # Active Context
 
 ## Current Focus Area
-**Status**: Realistic Order Execution Simulator (ROES) - Phase 2 Complete ✅ → Phase 3 Next
+**Next Priority**: ORB 2026 H1 re-validation planning and paper-trading quality monitoring design
 
-**Just Completed**: 
-- ✅ Task 8: Engine ExecutionConfig Integration (19 tests) - ADV pre-computation, ExecutionSimulator routing
-- ✅ Task 9: Limit Order Verification (19 tests) - End-to-end limit order execution through BacktestEngine  
-- ✅ Task 10: Partial Fill Handling (13 tests) - Portfolio.add_to_position() with weighted average entry price
-- ✅ **Total Phase 2**: 68 tests, **Cumulative**: 192 tests passing (114 Phase 1 + 78 Phase 2)
-
-**Next Priority**: ROES Phase 3 Validation (determinism tests, degradation validation)
-
-**Context**: ROES provides production-ready execution with pluggable models. All backward compatibility verified. Ready for Phase 3 validation before ORB research resumes.
+**Context**: Core execution and research tracking infrastructure are in place; near-term work shifts to validation cadence and applied research workflow.
 
 ---
 
 ## Recent Decisions
-
-### Decision: Complete ROES Phase 2 Implementation (2026-05-31)
-**Chosen**: Execute full Phase 2 (4 tasks, 68 tests) - Tasks 7-10 completed in single session
-
-**Reasoning**:
-- Phase 1 foundation (114 tests) complete and validated
-- Phase 2 integration critical for realistic backtest execution
-- Partial fill handling essential for multi-bar order accumulation
-- Limit order support enables more sophisticated entry logic
-- ADV pre-computation optimizes event loop performance
-- All work maintains 100% backward compatibility
-
-**Deliverables**:
-- Task 7: Pending Order Queue (17 tests) - Track unfilled orders with EOD clearing
-- Task 8: Engine ExecutionConfig Integration (19 tests) - ADV pre-comp, order routing, Fill→FillResult conversion
-- Task 9: Limit Order Verification (19 tests) - End-to-end limit order flow through BacktestEngine
-- Task 10: Partial Fill Handling (13 tests) - add_to_position() method with weighted average calculations
-
-**Impact**: 192 total tests passing. Production-ready execution engine with all key features. Ready for Phase 3 validation.
-
-**Next**: ROES Phase 3 - Determinism tests, degradation validation, A/B comparison framework
-
----
 
 ### Decision: Defer ORB Research Until 2026 H1 Data Available (2026-05-23)
 **Chosen**: Continue on hold pending 2026 H1 (6-month) validation period
@@ -64,21 +33,13 @@
 ## Previous Decisions
 
 ### Decision: Implement Research Journal Before Further Strategy Work (2026-05-23)
-**Chosen**: Build Research Journal / Experiment Registry Framework as next priority
+**Canonical record**: [memory-bank/adrs/adr-016-research-journal-framework-adoption.md](adrs/adr-016-research-journal-framework-adoption.md)
 
-**Reasoning**:
-- Current research lacks reproducibility and institutional memory
-- Risk of repeated mistakes (re-testing rejected ideas, undocumented parameter changes)
-- Need lineage tracking for optimization runs and derived experiments
-- Framework will prevent accidental overfitting and data snooping
-- Essential foundation before scaling to multiple strategies or intensive optimization
-
-**Alternatives Considered**:
-- Continue ad-hoc research (rejected - too risky, knowledge loss)
-- Use external tools like MLflow (rejected - not tailored to trading research needs)
-- Implement after more strategies tested (rejected - better to build foundation now)
-
-**Impact**: All future research will be traceable, reproducible, and scientifically defensible
+### Completed Feature References
+- ROES realistic fill / execution mode: [memory-bank/features/realistic-fill-guide.md](features/realistic-fill-guide.md)
+- Research Journal framework: [memory-bank/features/research-journal-guide.md](features/research-journal-guide.md)
+- Durable execution contract: [memory-bank/adrs/adr-015-roes-default-legacy-opt-in-realistic.md](adrs/adr-015-roes-default-legacy-opt-in-realistic.md)
+- Durable research workflow: [memory-bank/adrs/adr-016-research-journal-framework-adoption.md](adrs/adr-016-research-journal-framework-adoption.md)
 
 ---
 
@@ -118,14 +79,7 @@
 ---
 
 ### Decision: Prefer Reusable Hypothesis Infrastructure Over One-Off Scripts (2026-05-28)
-**Chosen**: Extend `scripts/optimize_strategy.py` + `OptimizationPipeline` for hypothesis sweeps and journal registration; retire per-hypothesis runner scripts.
-
-**Reasoning**:
-- One-off scripts increase maintenance cost and fragment workflow.
-- Generic CLI + pipeline flags support many hypotheses through parameterization.
-- Built-in journal registration enforces lineage and reproducibility by default.
-
-**Impact**: New hypotheses should be executed via reusable optimization infrastructure with journal linkage, not custom orchestration scripts.
+**Canonical record**: see the Research Journal workflow ADR and the optimization pipeline implementation guidance.
 
 ## Known Blockers
 
@@ -171,18 +125,9 @@
 
 ## Open Questions
 
-### Research Journal Implementation
-1. **Q**: What persistence format is best for experiment metadata (YAML vs JSON)?
-   - **Hypothesis**: YAML is more human-readable for research notes, JSON for structured data
-   - **Action**: Prototype both, evaluate readability and git diff quality
-
-2. **Q**: How granular should experiment IDs be (per backtest run vs per parameter set)?
-   - **Hypothesis**: One experiment = one backtest run (most atomic, best reproducibility)
-   - **Action**: Review PRD requirements and define ID generation strategy
-
-3. **Q**: Should we backfill all historical ORB experiments or start fresh?
-   - **Hypothesis**: Backfill key runs (baseline, no TP, H3 filter) for reference
-   - **Action**: Prioritize manual backfill for documented experiments in user memory
+### Research Journal Adoption
+1. **Q**: How much historical ORB research should be backfilled into the journal now vs incrementally?
+   - **Action**: Prioritize key baseline and promotion experiments first.
 
 ### Mock Exchange Design
 4. **Q**: How realistic should fill simulation be (simple vs complex matching engine)?
@@ -204,35 +149,13 @@
 
 ## What's Next
 
-### Immediate Priority (This Week) - ROES Phase 3 Validation
-- [ ] **Task 11**: Determinism Tests (3-4 tests)
-  - Verify 3 runs produce identical BacktestResult
-  - Compare with legacy FillSimulator output
-  - Confirm no floating-point drift
+### Immediate Priority (This Week)
+- [ ] Prepare ORB 2026 H1 re-validation plan using completed Research Journal workflow
+- [ ] Define paper-trading execution quality metrics aligned to ROES realistic mode
 
-- [ ] **Task 12**: Degradation Validation (functional test)
-  - Run same strategy with legacy config vs realistic config
-  - Assert realistic fills are worse (higher slippage costs, lower P&L)
-  - Measure slippage cost per trade
-
-- [ ] **Task 13**: Legacy FillSimulator Wrapper
-  - Preserve backward compatibility
-  - Provide clear migration path
-
-- [ ] **Task 14**: Comparison Tooling
-  - Report generation (legacy vs realistic)
-  - Slippage analysis utilities
-
-**Estimated Duration**: 1-2 hours total  
-**Success Criteria**: All 196-200 Phase 3 tests pass without modification to Phase 2
-
-### Secondary Priority (Next Week) - Research Journal Phase 1
-- [ ] Define domain models (Hypothesis, Experiment, ResearchNote, RejectedIdea)
-- [ ] Implement Git-based persistence layer with YAML/JSON support
-- [ ] Create `research/hypotheses/`, `research/experiments/`, `research/notes/` directory structure
-- [ ] Implement immutable experiment pattern with validation
-- [ ] Unit tests for experiment immutability and lineage integrity
-- [ ] Journal counter initialization (HYP-001+, EXP-001+, ART-001+, NOTE-001+)
+### Secondary Priority (Next Week)
+- [ ] Backfill selected historical ORB experiments into Research Journal for lineage continuity
+- [ ] Add focused ROES edge-case hardening tests where gaps are discovered
 
 ### Third Priority (Next 2 Weeks) - Research Journal Phase 2-3
 - [ ] Metadata integrity (git commit hashes, config checksums, lineage graph)
@@ -264,70 +187,8 @@
 
 ## Session Notes
 
-**Last Updated**: 2026-05-31
+- Keep detailed completion records in canonical guides, not here.
+- ROES details: `memory-bank/features/realistic-fill-guide.md`
+- Research Journal details: `memory-bank/features/research-journal-guide.md`
 
-**Session Completion Summary (2026-05-31)**:
-- ✅ **ROES Phase 2 Complete**: Tasks 7-10 fully implemented (68 tests)
-  - Task 7: Pending Order Queue (17 tests) - unfilled order tracking with EOD clearing
-  - Task 8: Engine ExecutionConfig Integration (19 tests) - ADV pre-computation O(n), ExecutionSimulator routing
-  - Task 9: Limit Order Verification (19 tests) - limit orders fill only when price reached + volume constraints
-  - Task 10: Partial Fill Handling (13 tests) - Portfolio.add_to_position() with weighted average entry price
-- ✅ **Cumulative**: 192 tests passing (114 Phase 1 + 78 Phase 2 = all passing)
-- ✅ **Backward Compatibility**: 100% verified - all existing tests pass without modification
-- ✅ **Architecture Patterns**: Execution pipeline Order → ExecutionSimulator → Portfolio fully integrated
-- 🎯 **Next**: ROES Phase 3 Validation (determinism, degradation, comparison tooling)
-
-**Key Achievements**:
-- Limit orders work end-to-end through BacktestEngine
-- Partial fills accumulate with correct weighted average entry prices
-- ADV pre-computation optimizes event loop from O(n×20) to O(1) lookups
-- Pending order queue automatically expires at EOD
-- No breaking changes to any public API
-
-**Files Modified**:
-- `vibe/backtester/core/portfolio.py` - Added add_to_position() method
-- `vibe/backtester/core/engine.py` - ExecutionConfig integration (Task 8)
-- `vibe/backtester/core/execution/simulator.py` - Bar format normalization (Task 8)
-- Created: `test_engine_integration.py`, `test_engine_limit_orders.py`, `test_portfolio_partial_fills.py`
-
-**Test Statistics**:
-| Phase | Component | Tests | Status |
-|-------|-----------|-------|--------|
-| 1 | Core Models & Simulator | 114 | ✅ |
-| 2.7 | Pending Queue | 17 | ✅ |
-| 2.8 | Engine Integration | 19 | ✅ |
-| 2.9 | Limit Orders | 19 | ✅ |
-| 2.10 | Partial Fills | 13 | ✅ |
-| 2 | Portfolio (existing) | 10 | ✅ |
-| **TOTAL** | | **192** | **✅** |
-
-**Progress Since Last Session (2026-05-28)**:
-- Completed entire Phase 2 Task 8-10 cycle
-- Fixed 3 failing tests (field names, ADV window, data sizes)
-- Verified all 169 execution tests + 23 portfolio tests = 192 total
-- Updated memory bank with completion summary
-- Documented architecture patterns and implementation details
-
-**Known Issues**: None - all tests pass, no regressions detected
-
-**Blockers**: None - Phase 3 ready to begin
-
-**ORB Strategy Status**:
-- 2026 YTD: -0.17R (FAILED validation) - on hold pending 2026 H1 data
-- H3 filter failed for first time
-- Will resume July 2026 with Research Journal framework
-
-**Priority for Next Session**:
-1. ROES Phase 3 Validation (determinism, degradation tests, comparison tools)
-2. Research Journal Phase 1 (core registry, persistence layer)
-3. ORB research continuation (deferred - waiting for 2026 H1 data)
-
----
-
-**Previous Session Note** (2026-05-28):
-- Journal counters: next IDs are **HYP-004**, **EXP-069**, **ART-017**, **NOTE-005**
-- Confirmed best config: 5-minute ORB, no TP (`multiplier: 0`), risk 1%
-- Definitive sweep EXP-032 supersedes EXP-004 after correcting TP grid to include tp=0
-- Regime filter conclusions in EXP-001/002/003 require re-validation against no-TP baseline
-- Production ruleset updated in `vibe/rulesets/orb_production.yaml`
-- Windows encoding fix applied in `vibe/research_journal/persistence.py` with `encoding='utf-8'`
+**Last Updated**: 2026-06-04

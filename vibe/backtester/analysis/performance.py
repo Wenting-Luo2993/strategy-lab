@@ -10,6 +10,101 @@ from vibe.backtester.analysis.metrics import (
 from vibe.common.models.trade import Trade
 
 
+def compare_execution_modes(
+    legacy_result: BacktestResult,
+    realistic_result: BacktestResult,
+) -> str:
+    """
+    Build a markdown A/B report comparing legacy vs realistic execution modes.
+
+    The report focuses on practical differences for review:
+    - trade count and fill-level price averages
+    - total P&L and win rate deltas
+    - estimated execution-cost drift from entry/exit price differences
+    """
+    legacy_trades = legacy_result.trades
+    realistic_trades = realistic_result.trades
+
+    legacy_trade_count = len(legacy_trades)
+    realistic_trade_count = len(realistic_trades)
+    trade_count_diff = realistic_trade_count - legacy_trade_count
+
+    def _avg_entry(trades: List[Trade]) -> float:
+        if not trades:
+            return 0.0
+        return float(sum(t.entry_price for t in trades) / len(trades))
+
+    def _avg_exit(trades: List[Trade]) -> float:
+        exits = [t.exit_price for t in trades if t.exit_price is not None]
+        if not exits:
+            return 0.0
+        return float(sum(exits) / len(exits))
+
+    legacy_avg_entry = _avg_entry(legacy_trades)
+    realistic_avg_entry = _avg_entry(realistic_trades)
+    avg_entry_diff = realistic_avg_entry - legacy_avg_entry
+
+    legacy_avg_exit = _avg_exit(legacy_trades)
+    realistic_avg_exit = _avg_exit(realistic_trades)
+    avg_exit_diff = realistic_avg_exit - legacy_avg_exit
+
+    legacy_pnl = legacy_result.overall.total_pnl
+    realistic_pnl = realistic_result.overall.total_pnl
+    pnl_diff = realistic_pnl - legacy_pnl
+
+    legacy_win_rate = legacy_result.overall.win_rate
+    realistic_win_rate = realistic_result.overall.win_rate
+    win_rate_diff = realistic_win_rate - legacy_win_rate
+
+    paired_count = min(legacy_trade_count, realistic_trade_count)
+    entry_execution_cost = 0.0
+    exit_execution_cost = 0.0
+    for idx in range(paired_count):
+        legacy_trade = legacy_trades[idx]
+        realistic_trade = realistic_trades[idx]
+        side_mult = 1.0 if legacy_trade.side == "buy" else -1.0
+        qty = min(legacy_trade.quantity, realistic_trade.quantity)
+
+        entry_execution_cost += (
+            (realistic_trade.entry_price - legacy_trade.entry_price) * side_mult * qty
+        )
+
+        if legacy_trade.exit_price is not None and realistic_trade.exit_price is not None:
+            # Exit is adverse in opposite direction to entry.
+            exit_execution_cost += (
+                (legacy_trade.exit_price - realistic_trade.exit_price) * side_mult * qty
+            )
+
+    total_estimated_execution_cost = entry_execution_cost + exit_execution_cost
+
+    lines = [
+        "## Execution Mode Comparison",
+        "",
+        "### Summary",
+        f"- Legacy trades: {legacy_trade_count}",
+        f"- Realistic trades: {realistic_trade_count}",
+        f"- Trade count diff (realistic - legacy): {trade_count_diff:+d}",
+        "",
+        "### Fill Price Deltas",
+        f"- Avg entry price diff: {avg_entry_diff:+.6f}",
+        f"- Avg exit price diff: {avg_exit_diff:+.6f}",
+        "",
+        "### Performance Deltas",
+        f"- Total P&L (legacy): {legacy_pnl:+.2f}",
+        f"- Total P&L (realistic): {realistic_pnl:+.2f}",
+        f"- P&L diff (realistic - legacy): {pnl_diff:+.2f}",
+        f"- Win rate diff (realistic - legacy): {win_rate_diff:+.4f}",
+        "",
+        "### Slippage Cost Breakdown (Estimated)",
+        f"- Entry execution cost delta: {entry_execution_cost:+.2f}",
+        f"- Exit execution cost delta: {exit_execution_cost:+.2f}",
+        f"- Total estimated execution cost delta: {total_estimated_execution_cost:+.2f}",
+        "",
+        f"Paired-trade sample size used for execution-cost estimate: {paired_count}",
+    ]
+    return "\n".join(lines)
+
+
 class PerformanceAnalyzer:
 
     @staticmethod

@@ -1,5 +1,7 @@
 # Realistic Order Execution Simulator — Implementation Plan
 
+> Completion + handoff guide: see [completion-and-usage-guide.md](completion-and-usage-guide.md)
+
 ## Project Scope: Medium (14 tasks across 3 phases)
 
 ---

@@ -11,7 +11,10 @@ from vibe.backtester.core.portfolio import PortfolioManager
 from vibe.backtester.core.execution.config import ExecutionConfig
 from vibe.backtester.core.execution.simulator import ExecutionSimulator
 from vibe.backtester.core.execution.pending_queue import PendingOrderQueue
-from vibe.backtester.core.execution.models import Order, Fill
+from vibe.backtester.core.execution.models import Order
+from vibe.backtester.core.execution.slippage import FixedTickSlippage
+from vibe.backtester.core.execution.volume import UnlimitedVolume
+from vibe.backtester.core.execution.impact import NoImpact
 from vibe.backtester.data.parquet_loader import ParquetLoader
 from vibe.backtester.runner import RuleSetRunner
 from vibe.backtester.analysis.metrics import BacktestResult
@@ -140,12 +143,25 @@ class BacktestEngine:
             execution_config = ExecutionConfig.legacy(slippage_ticks=self.slippage_ticks)
         else:
             execution_config = self.execution_config
+
+        use_realistic_execution = self.execution_config is not None
+
+        def _use_orb_price_override() -> bool:
+            # Preserve legacy instant-fill behavior by default.
+            if not use_realistic_execution:
+                return True
+            # Explicitly allow legacy-like configs to preserve old behavior.
+            return (
+                isinstance(execution_config.slippage_model, FixedTickSlippage)
+                and isinstance(execution_config.volume_model, UnlimitedVolume)
+                and isinstance(execution_config.impact_model, NoImpact)
+            )
         
         # 4. Init components
         clock = SimulatedClock()
         
-        # Use ExecutionSimulator if config provided, otherwise keep FillSimulator for legacy
-        if self.execution_config is not None:
+        # Use ExecutionSimulator only when user explicitly opts in with execution_config.
+        if use_realistic_execution:
             execution_sim = ExecutionSimulator(config=execution_config)
         else:
             # Backward compatibility: use old FillSimulator
@@ -164,6 +180,8 @@ class BacktestEngine:
         runner = RuleSetRunner(self.ruleset)
         
         # Reset pending orders for new backtest
+        pending_queue = PendingOrderQueue()
+        pending_order_meta: dict[str, dict[str, float | None]] = {}
         self.pending_orders = []
 
         # 5. Event loop with bar_index counter
@@ -178,6 +196,10 @@ class BacktestEngine:
                 # Reset bar index at start of new day
                 bar_index = 0
                 runner.reset_daily_state(symbol)
+                # Expire any unfilled prior-day orders at EOD boundary.
+                pending_queue = PendingOrderQueue()
+                pending_order_meta.clear()
+                self.pending_orders = []
                 prev_date = current_date
             else:
                 bar_index += 1
@@ -198,8 +220,9 @@ class BacktestEngine:
             for closed_sym in open_before - set(portfolio.positions.keys()):
                 runner.close_position(closed_sym)
 
-            # Generate entry signal only if no open position
-            if symbol not in portfolio.positions:
+            # Generate entry signal only if no open position and no pending order.
+            has_pending_symbol_order = any(o.symbol == symbol for o in self.pending_orders)
+            if symbol not in portfolio.positions and not has_pending_symbol_order:
                 current_bar_dict = row.to_dict()
                 current_bar_dict["timestamp"] = ts.to_pydatetime()
 
@@ -231,6 +254,7 @@ class BacktestEngine:
                     )
                     if quantity > 0:
                         # Create Order with signal_bar_index for latency tracking
+                        order_price_override = entry_price if _use_orb_price_override() else None
                         order = Order(
                             id=f"{symbol}_{ts.timestamp()}",
                             symbol=symbol,
@@ -240,45 +264,87 @@ class BacktestEngine:
                             limit_price=None,
                             timestamp=ts.to_pydatetime(),
                             signal_bar_index=bar_index,
-                            price_override=entry_price,
+                            price_override=order_price_override,
                         )
-                        
-                        # Execute order (use ExecutionSimulator if available)
-                        if execution_sim is not None:
-                            # Get current ADV for realistic impact calculation
-                            current_adv = adv_series.get(current_date)
-                            fill = execution_sim.execute_market_order(
-                                order=order,
-                                bar=bar,
-                                adv=current_adv,
-                            )
-                            # Convert Fill to FillResult format for portfolio compatibility
-                            if fill is not None:
-                                fill_result = FillResult(
-                                    symbol=fill.symbol,
-                                    side=fill.side,
-                                    filled_qty=fill.qty,
-                                    avg_price=fill.price,
-                                    commission=0.0,
-                                )
-                        else:
-                            # Backward compatibility: use FillSimulator
-                            fill_result = fill_sim.execute(symbol, side, quantity, bar,
-                                                           price_override=entry_price)
-                        
-                        if fill_result is not None:
-                            take_profit = metadata.get("take_profit")
-                            portfolio.open_position(fill_result, stop_price=stop_price, take_profit=take_profit, timestamp=ts.to_pydatetime())
-                            runner.track_position(
-                                symbol=symbol, side=side,
-                                entry_price=fill_result.avg_price,
-                                take_profit=take_profit,
-                                stop_loss=stop_price,
-                                timestamp=ts.to_pydatetime(),
-                            )
-                            
-                            # Remove filled order from pending
-                            self.pending_orders = [o for o in self.pending_orders if o.id != order.id]
+
+                        pending_queue.add(order)
+                        pending_order_meta[order.id] = {
+                            "stop_loss": stop_price,
+                            "take_profit": metadata.get("take_profit"),
+                        }
+
+            # Execute all orders eligible for this bar based on configured latency.
+            eligible_orders = pending_queue.get_eligible_orders(
+                current_bar_index=bar_index,
+                latency_bars=execution_config.latency_bars,
+            )
+
+            for order in eligible_orders:
+                fill_result = None
+
+                if execution_sim is not None:
+                    current_adv = adv_series.get(current_date)
+                    fill = execution_sim.execute_order(
+                        order=order,
+                        bar=bar,
+                        adv=current_adv,
+                    )
+                    if fill is not None:
+                        fill_result = FillResult(
+                            symbol=fill.symbol,
+                            side=fill.side,
+                            filled_qty=fill.qty,
+                            avg_price=fill.price,
+                            commission=0.0,
+                        )
+                else:
+                    # Legacy default path: instant market fills with ORB entry override.
+                    if order.order_type != "market":
+                        continue
+                    fill_result = fill_sim.execute(
+                        order.symbol,
+                        order.side,
+                        order.size,
+                        bar,
+                        price_override=order.price_override,
+                    )
+
+                if fill_result is None or fill_result.filled_qty <= 0:
+                    continue
+
+                order_meta = pending_order_meta.get(order.id, {})
+                stop_price = float(order_meta.get("stop_loss", bar.close * 0.99))
+                take_profit = order_meta.get("take_profit")
+
+                if order.symbol not in portfolio.positions:
+                    portfolio.open_position(
+                        fill_result,
+                        stop_price=stop_price,
+                        take_profit=take_profit,
+                        timestamp=ts.to_pydatetime(),
+                    )
+                    runner.track_position(
+                        symbol=order.symbol,
+                        side=order.side,
+                        entry_price=fill_result.avg_price,
+                        take_profit=take_profit,
+                        stop_loss=stop_price,
+                        timestamp=ts.to_pydatetime(),
+                    )
+                else:
+                    # Partial fills can accumulate into an existing position.
+                    portfolio.add_to_position(fill_result, timestamp=ts.to_pydatetime())
+
+                pending_queue.mark_filled(order.id)
+
+                if fill_result.filled_qty < order.size:
+                    remainder = order.remaining(fill_result.filled_qty)
+                    pending_queue.add(remainder)
+                else:
+                    pending_order_meta.pop(order.id, None)
+
+            # Keep exposed state synchronized for tests/diagnostics.
+            self.pending_orders = [entry.order for entry in pending_queue._orders]
 
             portfolio.update_equity(current_bars, ts.to_pydatetime())
 

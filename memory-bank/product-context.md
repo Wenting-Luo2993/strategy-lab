@@ -51,6 +51,18 @@ Trading strategies often look profitable in backtests but fail in production due
 - ✅ **Structured notifications** with version tracking for debugging
 - ✅ **Timezone correctness** (no DST bugs, date changes aligned with market timezone)
 
+## Completed Product Capabilities
+
+### Execution Infrastructure
+- **ROES realistic-fill**: complete and backward compatible by default; realistic execution is explicit opt-in.
+	- Guide: [memory-bank/features/realistic-fill-guide.md](features/realistic-fill-guide.md)
+	- Deep guide: [docs/backtester-mvp/realistic-fill/completion-and-usage-guide.md](../docs/backtester-mvp/realistic-fill/completion-and-usage-guide.md)
+
+### Research Infrastructure
+- **Research Journal Framework**: complete and canonical for hypothesis, experiment, lineage, and artifact tracking.
+	- Guide: [memory-bank/features/research-journal-guide.md](features/research-journal-guide.md)
+	- Deep guide: [docs/backtester-mvp/research-journal-framework/IMPLEMENTATION_SUMMARY.md](../docs/backtester-mvp/research-journal-framework/IMPLEMENTATION_SUMMARY.md)
+
 ## Key Differentiators
 
 ### vs. Manual Trading

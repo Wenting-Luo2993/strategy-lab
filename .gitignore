@@ -8,6 +8,7 @@ __pycache__/
 env/
 ENV/
 **/.venv312/
+*.egg-info/
 
 # IDEs
 .vscode/settings.json

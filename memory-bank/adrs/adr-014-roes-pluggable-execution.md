@@ -2,11 +2,11 @@
 
 **Date**: 2026-05-31
 
-**Status**: ✅ Accepted (Phase 1 Complete)
+**Status**: ✅ Accepted (Integrated)
 
 ## Context
 
-Current FillSimulator has monolithic slippage/volume/impact logic. Hard to extend with new models. Needs paper trading preparation with realistic execution constraints.
+Current FillSimulator had monolithic slippage/volume/impact logic and was hard to extend. The system needed realistic execution constraints while keeping legacy backtest behavior intact.
 
 ## Decision
 
@@ -15,7 +15,7 @@ Implement Realistic Order Execution Simulator (ROES) with Protocol-based pluggab
 - **Volume**: Unlimited (legacy) or participation-rate-based (realistic)
 - **Impact**: No impact (legacy) or sqrt-impact based on ADV (realistic)
 
-Backward compatible: `ExecutionConfig.legacy()` replicates old behavior exactly.
+Backward compatible foundation: `ExecutionConfig.legacy()` replicates old behavior. Final mode contract is documented in ADR-015.
 
 ## Alternatives Considered
 
@@ -27,29 +27,29 @@ Backward compatible: `ExecutionConfig.legacy()` replicates old behavior exactly.
 
 - Protocol-based design enables zero-cost abstraction (structural typing)
 - Factory methods (legacy/realistic) make configuration intent explicit
-- Edge cases handled uniformly (zero volume, zero ADV → ValueError)
-- 114 comprehensive tests ensure correctness before Phase 2 integration
+- Edge cases handled uniformly for unfillable bars and volume constraints
+- Extensive tests across core, integration, and validation phases
 - Full backward compatibility prevents breaking existing analysis
 
 ## Consequences
 
-- ✅ Ready for Phase 2 (pending orders, latency, ADV computation)
+- ✅ Fully integrated with backtester execution flow
 - ✅ Supports realistic paper trading execution quality monitoring
 - ✅ Easy to add new slippage/impact models without refactoring
-- ✅ 100% test coverage of core execution logic
-- ⚠️ Requires Phase 2/3 before full integration with backtester
-- ⚠️ ADV window adds 20-bar memory (Phase 2)
+- ✅ Backward-compatible default behavior preserved (see ADR-015)
+- ⚠️ Realistic mode requires explicit opt-in via `execution_config`
 
 ## Phase Breakdown
 
-- **Phase 1** (✅ Complete): Core models, ExecutionConfig, ExecutionSimulator (6 tasks, 114 tests)
-- **Phase 2** (Next): ADV computation, pending orders, latency (4 tasks)
-- **Phase 3**: Validation, determinism tests, degradation checks (4 tasks)
-- **Phase 4**: Documentation, migration guides (4 tasks)
+- **Phase 1** (✅ Complete): Core models, ExecutionConfig, ExecutionSimulator
+- **Phase 2** (✅ Complete): ADV computation, pending orders, latency wiring
+- **Phase 3** (✅ Complete): Validation, determinism, degradation, comparison tooling
+- **Phase 4** (✅ Complete): Documentation and handoff guides
 
 ## Related Files
 
 - Implementation: `vibe/backtester/core/execution/`
-- Tests: `vibe/tests/backtester/execution/` (114 tests)
-- Session memory: `/memories/session/phase1-completion.md`
-- Progress: `memory-bank/progress-log.md` (updated 2026-05-31)
+- Engine integration: `vibe/backtester/core/engine.py`
+- Tests: `vibe/tests/backtester/execution/`
+- Feature guide: `memory-bank/features/realistic-fill-guide.md`
+- Completion guide: `docs/backtester-mvp/realistic-fill/completion-and-usage-guide.md`

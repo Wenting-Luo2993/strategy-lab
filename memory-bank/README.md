@@ -22,6 +22,7 @@ The memory bank helps:
 | [active-context.md](active-context.md) | Current focus, recent decisions, blockers | **Every session** (most dynamic) |
 | [progress-log.md](progress-log.md) | Done/in-progress/not-started tasks | Weekly or per milestone |
 | [adr.md](adr.md) | Architectural Decision Record (significant choices) | When major decisions are made |
+| [features/](features) | Feature-level guides and handoff docs | Per feature completion |
 
 ## How to Use
 
@@ -162,6 +163,24 @@ When helping with this project:
 5. **If architecture changed** → Update [system-patterns.md](system-patterns.md)
 6. **Commit together**: `git commit -m "Feature X + memory bank updates"`
 
+### Post-Feature Memory Sync Rule (Required)
+
+After a feature is completed, do a quick pruning pass:
+
+1. Keep `active-context.md` compact:
+   - Keep: current focus area, recent decisions, blockers, next priority.
+   - Remove: completed implementation details and long task breakdowns.
+2. Keep `progress-log.md` compact:
+   - Keep: one-line completion summary + link to canonical usage/design doc.
+   - Keep: concise `Recent Milestones` and `Version Updates` sections.
+   - Remove: detailed test inventories and historical implementation notes.
+3. Persist durable knowledge into the right long-term file:
+   - `adr.md` / `adrs/*` for significant technical decisions.
+   - `system-patterns.md` for architecture and execution/data-flow changes.
+   - `tech-context.md` for tooling/commands/environment changes.
+   - `project-brief.md` / `product-context.md` for stable mission-level updates.
+   - Feature-specific usage should live in docs (for example `docs/**/completion-and-usage-guide.md`).
+
 ---
 
 ### Anti-Patterns ❌
@@ -250,5 +269,5 @@ This memory bank structure is inspired by:
 
 ---
 
-**Last Updated**: 2026-05-23  
+**Last Updated**: 2026-06-04  
 **Maintained By**: Project team + AI assistants

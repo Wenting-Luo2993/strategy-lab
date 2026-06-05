@@ -99,7 +99,7 @@ class ExecutionSimulator:
         order: Order,
         bar: Any,
         adv: Optional[float] = None,
-    ) -> Fill:
+    ) -> Optional[Fill]:
         """
         Execute a market order at current bar prices.
         
@@ -112,7 +112,7 @@ class ExecutionSimulator:
             adv: Average Daily Volume (optional, used by impact model)
             
         Returns:
-            Fill with execution price and actual quantity filled
+            Fill with execution price and actual quantity filled, or None if unfillable
             
         Raises:
             ValueError: If order type is not "market", side is invalid, or prices are invalid
@@ -144,6 +144,8 @@ class ExecutionSimulator:
             # Use override price directly, limited by volume
             max_qty = self.volume_model.max_fill_qty(order.size, volume)
             filled_qty = min(order.size, max_qty)
+            if filled_qty <= 0:
+                return None
             
             return Fill(
                 order_id=order.id,
@@ -184,6 +186,8 @@ class ExecutionSimulator:
         # Check volume constraints (partial fills)
         max_qty = self.volume_model.max_fill_qty(order.size, volume)
         filled_qty = min(order.size, max_qty)
+        if filled_qty <= 0:
+            return None
         
         return Fill(
             order_id=order.id,
@@ -242,10 +246,12 @@ class ExecutionSimulator:
             if order.side == "buy":
                 # Buy limit: only fill if market price <= limit price
                 if low_price <= order.limit_price:
-                    # Execute at the limit price or better
-                    execution_price = min(order.limit_price, close_price)
+                    # Execute at requested limit price.
+                    execution_price = order.limit_price
                     max_qty = self.volume_model.max_fill_qty(order.size, volume)
                     filled_qty = min(order.size, max_qty)
+                    if filled_qty <= 0:
+                        return None
                     
                     return Fill(
                         order_id=order.id,
@@ -260,10 +266,12 @@ class ExecutionSimulator:
             else:  # sell
                 # Sell limit: only fill if market price >= limit price
                 if high_price >= order.limit_price:
-                    # Execute at the limit price or better
-                    execution_price = max(order.limit_price, close_price)
+                    # Execute at requested limit price.
+                    execution_price = order.limit_price
                     max_qty = self.volume_model.max_fill_qty(order.size, volume)
                     filled_qty = min(order.size, max_qty)
+                    if filled_qty <= 0:
+                        return None
                     
                     return Fill(
                         order_id=order.id,

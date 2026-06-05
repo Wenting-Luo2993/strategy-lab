@@ -117,15 +117,25 @@
 - [x] Partial fill scaling with weighted average entry price preservation of stop/TP
 - [x] Full backward compatibility verified (all existing tests pass)
 
+### Realistic Order Execution Simulator (ROES) - Phase 3 (2026-06-04)
+- [x] Determinism validation completed
+- [x] Degradation validation completed
+- [x] Legacy wrapper compatibility finalized
+- [x] A/B comparison reporting utility added
+- [x] Mode contract finalized: legacy default + explicit realistic opt-in
+
+### Research Journal Framework (2026-06-04)
+- [x] Framework implementation completed and operationalized
+- [x] Canonical summary: `docs/backtester-mvp/research-journal-framework/IMPLEMENTATION_SUMMARY.md`
+- [x] Feature guide: `memory-bank/features/research-journal-guide.md`
+
 ---
 
 ## 🚧 In Progress (Active Work)
 
-### Realistic Order Execution Simulator (ROES) - Phase 3 Validation (Next Priority)
-- [ ] Determinism tests (3-4 tests) - verify identical results across 3 runs
-- [ ] Degradation validation - confirm realistic config produces worse fills than legacy
-- [ ] A/B comparison framework for configuration analysis
+### Realistic Order Execution Simulator (ROES) - Hardening
 - [ ] Edge case coverage (zero volume, extreme slippage, missing data)
+- [ ] Optional: CLI comparison runner for automated legacy-vs-realistic batch runs
 
 ### ORB Research Continuation (Deferred - On Hold Until 2026 H1)
 - [ ] **PAUSED**: Waiting for 2026 H1 data (6 months) before investigation
@@ -135,27 +145,9 @@
 - [ ] Re-validate prior filters against no-TP baseline
 - [ ] Plan walk-forward validation and multi-symbol generalization (SPY, IWM)
 
-### Research Journal / Experiment Registry Framework (Priority 1 - Deferred)
-- [ ] **Phase 1 - Core Registry** (Estimated next week):
-  - [ ] Define domain models (Hypothesis, Experiment, ResearchNote, RejectedIdea)
-  - [ ] Implement persistence layer (YAML/JSON in Git)
-  - [ ] Implement immutable experiment pattern
-  - [ ] Set up Git-based storage structure (`research/hypotheses/`, `research/experiments/`, etc.)
-  - [ ] Implement artifact registry (references only, no large files in Git)
-- [ ] **Phase 2 - Metadata Integrity**:
-  - [ ] Git commit hash capture
-  - [ ] Config checksums
-  - [ ] Lineage graph implementation
-  - [ ] Artifact checksum validation
-- [ ] **Phase 3 - Framework Integrations**:
-  - [ ] Backtesting integration (auto-register experiments)
-  - [ ] Optimization framework integration (lineage tracking)
-  - [ ] Strategy version tracking
-- [ ] **Phase 4 - Research UX**:
-  - [ ] Query interface (by hypothesis, tag, parameter, regime)
-  - [ ] Timeline browsing
-  - [ ] Duplicate detection
-  - [ ] Reporting utilities
+### Research Journal / Experiment Registry Framework - Adoption
+- [ ] Backfill selected historical experiments into journal lineage
+- [ ] Enforce journal registration in new optimization/backtest workflows
 
 ### Memory Bank Documentation
 - [x] Project brief
@@ -170,17 +162,10 @@
 
 ## 📋 Not Started (Planned Work)
 
-### Realistic Order Execution Simulator (ROES) - Phase 3 Validation
-- [ ] Determinism tests (same seed → identical fills)
-- [ ] Degradation validation (legacy config matches old FillSimulator exactly)
-- [ ] A/B comparison framework (legacy vs realistic configs)
-- [ ] Edge case coverage (zero volume, extreme slippage, missing data)
-
 ### Realistic Order Execution Simulator (ROES) - Phase 4 Documentation
-- [ ] Update implementation.md with ROES architecture
-- [ ] Add ROES configuration guide
-- [ ] Document Protocol-based extension patterns
-- [ ] Migration guide from FillSimulator to ExecutionSimulator
+- [x] Completion/usage guide exists in docs
+- [x] Feature guide exists in memory-bank/features
+- [ ] Optional: add root docs index link for discoverability
 
 ### Paper Trading - Execution Quality Monitoring (Medium-Term Priority)
 - [ ] Paper trading orchestrator (real-time data → ROES execution)
@@ -252,6 +237,11 @@
 ---
 
 ## Recent Milestones
+
+### June 2026
+- ✅ **ROES Phase 3 Complete**: deterministic + degradation validation and realistic execution contract finalized
+- ✅ **Research Journal Complete**: framework implementation finalized with registry, lineage, and adapters
+- ✅ **Feature Memory Guides**: realistic fill and research journal guides available under `memory-bank/features/`
 
 ### May 2026
 - ✅ **Optimization Correction**: Added `tp_multiplier=0` to sweep grid and reran full comparison

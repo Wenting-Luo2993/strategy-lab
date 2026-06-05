@@ -24,6 +24,8 @@ This document is an index of all architectural decisions. Full details are in in
 | [012](adrs/adr-012-minimize-copilot-instructions.md) | Minimize Copilot Instructions, Detail in Memory Bank | ✅ Accepted | Medium | 2026-05-23 |
 | [013](adrs/adr-013-keep-files-under-200-lines.md) | Keep Documentation Files Under ~200 Lines | ✅ Accepted | Medium | 2026-05-23 |
 | [014](adrs/adr-014-roes-pluggable-execution.md) | Realistic Order Execution Simulator (ROES) - Pluggable Architecture | ✅ Accepted | High | 2026-05-31 |
+| [015](adrs/adr-015-roes-default-legacy-opt-in-realistic.md) | ROES Execution Mode Contract (Default Legacy, Explicit Realistic Opt-In) | ✅ Accepted | Critical | 2026-06-04 |
+| [016](adrs/adr-016-research-journal-framework-adoption.md) | Research Journal Framework as Canonical Research Workflow | ✅ Accepted | High | 2026-06-04 |
 
 ---
 
@@ -32,15 +34,16 @@ This document is an index of all architectural decisions. Full details are in in
 ### By Impact Level
 
 **Critical**: 007 (remove TP gate), 008 (pause paper trading)
-**High**: 001 (backtester), 003 (Polygon), 006 (regime framework), 011 (memory bank), 014 (ROES)
+**High**: 001 (backtester), 003 (Polygon), 006 (regime framework), 011 (memory bank), 014 (ROES), 016 (research journal)
 **Medium**: 002 (timezone), 004 (Discord), 005 (phases), 009 (asyncio), 012 (copilot), 013 (file sizes)
 **Low**: 010 (YAML config)
 
 ### By Category
 
-**Infrastructure**: 001, 009, 010, 014 (ROES execution)
+**Infrastructure**: 001, 009, 010, 014, 015
 **Data & Providers**: 002, 003
 **Trading Strategy**: 006, 007, 008
+**Research Workflow**: 016
 **Operations**: 004, 005
 **Documentation**: 011, 012, 013
 
