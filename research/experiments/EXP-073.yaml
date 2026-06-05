@@ -1,0 +1,53 @@
+id: EXP-073
+hypothesis_id: HYP-004
+parent_experiment_id: EXP-072
+strategy_name: ORBStrategy
+strategy_version: 1.0.0
+parameters:
+  sweep_values:
+    tp_multiplier: 0
+    trailing_method: breakeven_plus_ticks
+    trigger_r: 3.0
+    plus_ticks: 1
+  sweep_paths:
+    tp_multiplier: exit.take_profit.multiplier
+    trailing_method: exit.trailing_stop.method
+    trigger_r: exit.trailing_stop.trigger_r
+    plus_ticks: exit.trailing_stop.plus_ticks
+  execution_config:
+    mode: realistic_calibrated
+    slippage_k: 0.005
+    impact_k: 0.0025
+    participation_rate: 0.1
+  slippage_ticks: 5
+  initial_capital: 100000.0
+dataset_config:
+  symbol: QQQ
+  start_date: '2018-01-01'
+  end_date: '2024-12-31'
+  timeframe: 5m
+execution_metadata:
+  git_commit: fb45207cdeaf8f35c3cf0ef3674507d21d8a61d5
+  git_branch: main
+  git_dirty: true
+  random_seed: null
+  executed_at: '2026-06-05T18:24:01.449272Z'
+  python_version: 3.12.10
+status: completed
+results_summary:
+  n_trades: 1677
+  win_rate: 0.33094812164579607
+  expectancy_r: -0.05524350359450403
+  total_pnl: -45088.568178426256
+  max_drawdown: -0.7633110589011605
+  tail_ratio: 2.8723805672406137
+conclusion: calibrated realistic execution materially degrades EXP-072 baseline over full 2018-2024 window
+artifacts:
+- C:/Users/wentingluo/OneDrive - Microsoft/Development/strategy-lab/reports/optimization/orb_reality_check_exp073/exp073_vs_exp072_summary_full_2018_2024.json
+- C:/Users/wentingluo/OneDrive - Microsoft/Development/strategy-lab/reports/optimization/orb_reality_check_exp073/exp073_vs_exp072_report_full_2018_2024.md
+tags:
+- validation
+- realistic-execution
+- orb
+created_at: '2026-06-05T18:24:01.449272Z'
+completed_at: '2026-06-05T18:24:01.449272Z'

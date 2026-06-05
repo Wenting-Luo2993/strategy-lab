@@ -190,5 +190,6 @@
 - Keep detailed completion records in canonical guides, not here.
 - ROES details: `memory-bank/features/realistic-fill-guide.md`
 - Research Journal details: `memory-bank/features/research-journal-guide.md`
+- ORB living roadmap: [memory-bank/features/orb-research-roadmap.md](features/orb-research-roadmap.md)
 
 **Last Updated**: 2026-06-04

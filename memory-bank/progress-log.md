@@ -138,12 +138,14 @@
 - [ ] Optional: CLI comparison runner for automated legacy-vs-realistic batch runs
 
 ### ORB Research Continuation (Deferred - On Hold Until 2026 H1)
+- [ ] Living roadmap: `memory-bank/features/orb-research-roadmap.md`
 - [ ] **PAUSED**: Waiting for 2026 H1 data (6 months) before investigation
 - [ ] 2026 YTD shows -0.17R (failed validation) - similar to 2020 COVID
 - [ ] H3 filter failed for first time (made performance worse)
 - [ ] Will create **HYP-004** and **EXP-069+** when 2026 H1 data available
 - [ ] Re-validate prior filters against no-TP baseline
 - [ ] Plan walk-forward validation and multi-symbol generalization (SPY, IWM)
+- [ ] Next step: run current promoted config with realistic fill enabled and compare vs legacy baseline (expectancy, drawdown, tail preservation, fill quality)
 
 ### Research Journal / Experiment Registry Framework - Adoption
 - [ ] Backfill selected historical experiments into journal lineage
@@ -242,6 +244,7 @@
 - ✅ **ROES Phase 3 Complete**: deterministic + degradation validation and realistic execution contract finalized
 - ✅ **Research Journal Complete**: framework implementation finalized with registry, lineage, and adapters
 - ✅ **Feature Memory Guides**: realistic fill and research journal guides available under `memory-bank/features/`
+- ✅ **ORB Living Roadmap**: created at `memory-bank/features/orb-research-roadmap.md` for ongoing research planning and updates
 
 ### May 2026
 - ✅ **Optimization Correction**: Added `tp_multiplier=0` to sweep grid and reran full comparison

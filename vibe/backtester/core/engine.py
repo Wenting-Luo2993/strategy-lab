@@ -283,7 +283,16 @@ class BacktestEngine:
                 fill_result = None
 
                 if execution_sim is not None:
-                    current_adv = adv_series.get(current_date)
+                    # Align daily ADV lookup key with ADV series index dtype/timezone.
+                    if adv_series.index.tz is not None:
+                        adv_key = pd.Timestamp(ts).tz_convert(adv_series.index.tz).normalize()
+                    else:
+                        adv_key = pd.Timestamp(ts).tz_localize(None).normalize()
+
+                    current_adv = adv_series.get(adv_key)
+                    if pd.isna(current_adv):
+                        current_adv = None
+
                     fill = execution_sim.execute_order(
                         order=order,
                         bar=bar,
