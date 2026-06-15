@@ -243,12 +243,36 @@ A candidate entry filter/gating approach is promotable only if all pass:
 - Decision:
   - Full-window EXP-073 confirms the same conclusion as 2024 checks: calibrated realism is less punitive than default realistic, but still leaves a large degradation versus legacy; execution realism remains a hard blocker for promotion.
 - Next actions:
-  - Improve entry quality around open (9:35-9:55 ET) and re-test against EXP-073 baseline.
+  - Prioritize entry-signal evaluation to weed out structurally losing trades (first focus window: 9:35-9:55 ET).
+  - Build loser-vs-winner entry cohorts and rank candidate entry gates by loser reduction, then re-test under calibrated realistic fills.
+  - Enforce convexity guardrails while filtering: preserve top-tail winner cohort and avoid expectancy collapse from over-filtering.
   - Keep both reference modes in reports: calibrated realistic (primary) and default realistic (stress).
 - Links: notes, experiment YAMLs, reports
   - `research/experiments/EXP-073.yaml`
   - `reports/optimization/orb_reality_check_exp073/exp073_vs_exp072_summary_full_2018_2024.json`
   - `reports/optimization/orb_reality_check_exp073/exp073_vs_exp072_report_full_2018_2024.md`
+
+### Update 2026-06-05 (EXP-073 entry cohort signal scan)
+- Objective: Start loser-reduction workstream by profiling entry cohorts and generating first candidate entry gates under EXP-073 baseline.
+- Experiments run:
+  - Full-window (2018-2024) entry cohort table built from EXP-073 realistic-calibrated trades.
+  - Candidate gate scan using exclusion of worst entry-time buckets, scored by loser removal + post-filter expectancy with top-tail retention penalties.
+- Main findings:
+  - Baseline (EXP-073): `1677` trades, win rate `33.09%`, expectancy `-0.0552R`.
+  - Strong loss concentration appears in early sell buckets around open.
+  - Top candidates (initial shortlist):
+    - Exclude `09:35 sell` + `09:40 sell`: losers removed `31.82%`, post expectancy `-0.0341R`, top-20 retention `85%`.
+    - Exclude `09:40 sell` + `09:45 buy`: losers removed `17.47%`, post expectancy `-0.0522R`, top-20 retention `100%`.
+    - Exclude `09:40 sell` + `09:50 sell`: losers removed `14.71%`, post expectancy `-0.0508R`, top-20 retention `95%`.
+- Decision:
+  - Continue with candidate-gate backtests, prioritizing variants that preserve top-tail (`>=90%` top-20 retention target) while improving expectancy.
+- Next actions:
+  - Convert shortlisted buckets into explicit rule gates and run full A/B under calibrated realistic fills.
+  - Select 2-3 candidates for deeper robustness checks by year/regime.
+- Links: notes, experiment YAMLs, reports
+  - `reports/optimization/orb_reality_check_exp073/exp073_entry_cohort_signal_scan_full_2018_2024.json`
+  - `reports/optimization/orb_reality_check_exp073/exp073_entry_cohort_signal_scan_full_2018_2024.md`
+  - `reports/optimization/orb_reality_check_exp073/exp073_entry_cohort_table_full_2018_2024.csv`
 
 ## Update Template (append each research cycle)
 Use this block for each update:

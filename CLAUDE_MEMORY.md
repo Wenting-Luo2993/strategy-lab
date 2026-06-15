@@ -72,6 +72,39 @@ def calculate(self, df, trading_date):
 
 ---
 
+## CRITICAL: Backtest Research Must Be Decision-Time Causal (No Lookahead)
+
+**Date**: 2026-06-05
+**Rule**: Never evaluate or promote filters that use information unavailable at the entry decision timestamp.
+
+### Why this matters
+
+Lookahead features can make loser-filter research look stronger than it is, then fail in live trading.
+
+### Guardrail
+
+- Any feature used for filtering must be computable using data observed up to decision time only.
+- If a feature depends on later intraday bars or full-day outcomes, it is research-only diagnostic and cannot be promoted as a rule.
+
+### Common examples
+
+- `range_vs_adr` using full-day high/low is not known near the open and is lookahead for early entries.
+- `first3_rel_vol` is only known after the 09:40 bar closes, so it cannot be used for earlier entries.
+
+### Forward-safe alternatives
+
+- Use `range_so_far_vs_adr` (session high/low observed so far divided by ADR).
+- Use time-aligned `rel_vol_so_far` (1-bar/2-bar/3-bar version based on entry timestamp).
+- Keep inherently causal features (e.g., gap, MA distance, trailing ADR).
+
+### Enforcement checklist for research scripts
+
+- Explicitly label each feature as `causal` or `diagnostic`.
+- Exclude non-causal features from candidate gate ranking.
+- Document feature availability timestamp assumptions in each experiment report.
+
+---
+
 ## CRITICAL: Timezone Handling for Timestamp Comparisons
 
 **Date**: 2026-03-12

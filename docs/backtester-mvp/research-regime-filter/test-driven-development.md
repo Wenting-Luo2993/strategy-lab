@@ -530,7 +530,7 @@ Use:
 
 * deterministic synthetic datasets
 * tiny controlled OHLCV samples
-* explicit expected outputs
+* explicit expected outputsxy
 
 Do NOT rely only on:
 

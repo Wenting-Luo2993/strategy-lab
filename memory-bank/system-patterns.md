@@ -187,6 +187,12 @@ class BaseRealTimeProvider(ABC):
 
 **Key Guardrails**: Full-history validation, out-of-sample testing, mechanistic reasoning
 
+**Causality Guardrail (Backtest Research)**:
+- Features must be available at decision time for the trade being evaluated.
+- Treat non-causal features as diagnostic only; do not rank or promote them as candidate gates.
+- Examples of non-causal usage to avoid for early entries: full-day `range_vs_adr`, completed-window `first3_rel_vol` before that window closes.
+- Prefer forward-safe variants such as `range_so_far_vs_adr` and time-aligned `rel_vol_so_far`.
+
 ### 6. Reusable Hypothesis Optimization Pattern
 **Purpose**: Run hypothesis-driven sweeps without creating one-off scripts
 
