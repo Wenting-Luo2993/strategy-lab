@@ -133,6 +133,16 @@
 
 ## 🚧 In Progress (Active Work)
 
+### Interactive Brokers Paper Trading Integration (2026-06-14)
+- [x] Broker package foundation with Protocol-style contracts and normalized fill events
+- [x] IB adapter for TWS/Gateway connect, market data snapshot, order submission, fill wait, cancel/status, account summary, positions
+- [x] Operational metrics recorder for expected fill, actual fill, slippage, slippage bps, latency, commission, and fill quantity
+- [x] P0 zero-cost path documented: local TWS/Gateway + SQLite, optional Supabase/Vercel free tiers
+- [x] Smoke command added: `scripts/ib_paper_smoke.py`
+- [x] P1/P2 dashboard scaffold added at `apps/operational-metrics-dashboard` with build/lint passing
+- [ ] Manual IB paper validation: run smoke command with TWS/Gateway paper session
+- [ ] Connect dashboard to real Supabase project once remote credentials/table are created
+
 ### Realistic Order Execution Simulator (ROES) - Hardening
 - [ ] Edge case coverage (zero volume, extreme slippage, missing data)
 - [ ] Optional: CLI comparison runner for automated legacy-vs-realistic batch runs

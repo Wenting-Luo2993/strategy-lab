@@ -19,6 +19,7 @@ azure-storage-blob>=12.0
 boto3>=1.26
 streamlit>=1.28
 plotly>=5.0
+ib-insync>=0.9.86
 
 # Development dependencies
 pytest>=7.0

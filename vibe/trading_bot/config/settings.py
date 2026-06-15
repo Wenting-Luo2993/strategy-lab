@@ -62,6 +62,39 @@ class CloudSettings(BaseSettings):
         case_sensitive = False
 
 
+class BrokerSettings(BaseSettings):
+    """Broker configuration for paper/live execution."""
+
+    broker_type: str = Field(default="mock", description="Broker backend (mock, interactive_brokers)")
+    mode: str = Field(default="paper", description="Broker mode (paper, live)")
+    ib_host: str = Field(default="127.0.0.1", description="IB TWS/Gateway host")
+    ib_port: int = Field(default=7497, description="IB paper port 7497, live port 7496")
+    ib_client_id: int = Field(default=1, description="IB client id")
+    ib_account_id: Optional[str] = Field(default=None, description="IB account id")
+    ib_exchange: str = Field(default="SMART", description="IB routing exchange")
+    ib_currency: str = Field(default="USD", description="IB account/order currency")
+
+    class Config:
+        env_prefix = ""
+        case_sensitive = False
+
+
+class OperationalMetricsSettings(BaseSettings):
+    """Operational execution metrics persistence settings."""
+
+    enabled: bool = Field(default=True, description="Enable operational metrics recording")
+    local_database_path: str = Field(default="./data/local/operational_metrics.db", description="Local metrics database path")
+    remote_enabled: bool = Field(default=False, description="Enable remote cloud metrics writes")
+    remote_provider: str = Field(default="supabase", description="Remote metrics provider")
+    supabase_url: Optional[str] = Field(default=None, description="Supabase project URL")
+    supabase_anon_key: Optional[str] = Field(default=None, description="Supabase anonymous key")
+    supabase_table: str = Field(default="operational_metrics", description="Supabase table name")
+
+    class Config:
+        env_prefix = ""
+        case_sensitive = False
+
+
 class StrategySettings(BaseSettings):
     """Strategy configuration."""
 
@@ -109,6 +142,8 @@ class AppSettings(BaseSettings):
     data: DataSettings = Field(default_factory=DataSettings)
     strategy: StrategySettings = Field(default_factory=StrategySettings)
     cloud: CloudSettings = Field(default_factory=CloudSettings)
+    broker: BrokerSettings = Field(default_factory=BrokerSettings)
+    operational_metrics: OperationalMetricsSettings = Field(default_factory=OperationalMetricsSettings)
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)
 
     class Config:

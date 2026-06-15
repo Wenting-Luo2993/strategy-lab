@@ -28,6 +28,25 @@ exchange:
   initial_capital: 10000.0
   paper_trading: true
 
+broker:
+  broker_type: "interactive_brokers"
+  mode: "paper"  # Keep paper until explicit live-trading approval
+  ib_host: "127.0.0.1"
+  ib_port: 7497
+  ib_client_id: 1
+  ib_account_id: null
+  ib_exchange: "SMART"
+  ib_currency: "USD"
+
+operational_metrics:
+  enabled: true
+  local_database_path: "/app/data/operational_metrics.db"
+  remote_enabled: true
+  remote_provider: "supabase"
+  supabase_url: null
+  supabase_anon_key: null
+  supabase_table: "operational_metrics"
+
 notifications:
   discord_enabled: true
   notify_on_order_sent: true

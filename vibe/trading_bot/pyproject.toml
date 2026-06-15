@@ -20,6 +20,7 @@ dependencies = [
     "websockets>=11.0",
     "structlog>=23.2",
     "pytz>=2023.3",
+    "ib-insync>=0.9.86",
 ]
 
 [project.optional-dependencies]
