@@ -40,6 +40,7 @@ class InteractiveBrokersAPI:
         account_id: Optional[str] = None,
         exchange: str = "SMART",
         currency: str = "USD",
+        market_data_type: int = 1,
         readonly: bool = False,
     ):
         if IB is None:
@@ -51,6 +52,7 @@ class InteractiveBrokersAPI:
         self.account_id = account_id
         self.exchange = exchange
         self.currency = currency
+        self.market_data_type = market_data_type
         self.readonly = readonly
         self.ib = IB()
         self._trades: Dict[str, Trade] = {}
@@ -80,6 +82,7 @@ class InteractiveBrokersAPI:
     async def get_market_data(self, symbol: str, timeout_seconds: float = 15.0) -> BrokerQuote:
         """Request a market data snapshot for a stock symbol."""
         contract = await self._stock_contract(symbol)
+        self.ib.reqMarketDataType(self.market_data_type)
         ticker = self.ib.reqMktData(contract, "", False, False)
         deadline = asyncio.get_running_loop().time() + timeout_seconds
 
@@ -173,15 +176,18 @@ class InteractiveBrokersAPI:
 
     async def get_account_info(self) -> BrokerAccount:
         """Return selected IB account summary values."""
-        values = self.ib.accountSummary(self.account_id or "")
-        summary = {item.tag: item.value for item in values if item.currency in {self.currency, ""}}
+        values = await self.ib.accountSummaryAsync(self.account_id or "")
+        account_id = self.account_id or next((item.account for item in values if item.account), None)
+        net_liquidation, account_currency = self._find_account_summary_value(values, "NetLiquidation", account_id)
+        cash, _ = self._find_account_summary_value(values, "TotalCashValue", account_id)
+        buying_power, _ = self._find_account_summary_value(values, "BuyingPower", account_id)
 
         return BrokerAccount(
-            account_id=self.account_id,
-            net_liquidation=self._parse_float(summary.get("NetLiquidation")),
-            cash=self._parse_float(summary.get("TotalCashValue")),
-            buying_power=self._parse_float(summary.get("BuyingPower")),
-            currency=self.currency,
+            account_id=account_id,
+            net_liquidation=self._parse_float(net_liquidation),
+            cash=self._parse_float(cash),
+            buying_power=self._parse_float(buying_power),
+            currency=account_currency or self.currency,
         )
 
     async def get_positions(self) -> List[BrokerPosition]:
@@ -220,11 +226,11 @@ class InteractiveBrokersAPI:
     def _to_ib_order(self, order: BrokerOrder):
         action = "BUY" if order.side == "buy" else "SELL"
         if order.order_type == "market":
-            return MarketOrder(action, order.quantity)
+            return MarketOrder(action, order.quantity, tif="DAY")
         if order.order_type == "limit":
-            return LimitOrder(action, order.quantity, order.limit_price)
+            return LimitOrder(action, order.quantity, order.limit_price, tif="DAY")
         if order.order_type == "stop":
-            return StopOrder(action, order.quantity, order.stop_price)
+            return StopOrder(action, order.quantity, order.stop_price, tif="DAY")
         raise ValueError(f"Unsupported IB order_type: {order.order_type}")
 
     def _require_trade(self, broker_order_id: str):
@@ -248,6 +254,19 @@ class InteractiveBrokersAPI:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def _find_account_summary_value(self, values: Any, tag: str, account_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        candidates = [item for item in values if item.tag == tag and (not account_id or item.account in {account_id, "All"})]
+        for currency in (self.currency, "BASE", ""):
+            for item in candidates:
+                if item.currency == currency:
+                    return item.value, item.currency or None
+        for item in candidates:
+            if item.account != "All":
+                return item.value, item.currency or None
+        if candidates:
+            return candidates[0].value, candidates[0].currency or None
+        return None, None
 
     @staticmethod
     def _resolve_avg_fill_price(trade: Trade) -> float:

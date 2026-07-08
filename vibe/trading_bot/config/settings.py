@@ -68,11 +68,14 @@ class BrokerSettings(BaseSettings):
     broker_type: str = Field(default="mock", description="Broker backend (mock, interactive_brokers)")
     mode: str = Field(default="paper", description="Broker mode (paper, live)")
     ib_host: str = Field(default="127.0.0.1", description="IB TWS/Gateway host")
-    ib_port: int = Field(default=7497, description="IB paper port 7497, live port 7496")
+    ib_port: int = Field(default=4002, description="IB Gateway paper port 4002, live port 4001")
     ib_client_id: int = Field(default=1, description="IB client id")
     ib_account_id: Optional[str] = Field(default=None, description="IB account id")
     ib_exchange: str = Field(default="SMART", description="IB routing exchange")
     ib_currency: str = Field(default="USD", description="IB account/order currency")
+    ib_market_data_type: int = Field(default=1, description="IB market data type: 1 live, 2 frozen, 3 delayed, 4 delayed frozen")
+    health_check_enabled: bool = Field(default=True, description="Enable IB broker health checks during warmup")
+    health_check_symbol: Optional[str] = Field(default=None, description="Symbol used for IB warmup quote validation")
 
     class Config:
         env_prefix = ""

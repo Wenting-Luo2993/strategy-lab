@@ -73,7 +73,10 @@ class WarmupPhaseManager(BasePhase):
         # Step 3: Pre-calculate indicators (optional)
         await self._precalculate_indicators()
 
-        # Step 4: Run health checks
+        # Step 4: Verify broker health when live/paper broker execution is configured
+        warmup_success &= await self._verify_broker_health()
+
+        # Step 5: Run health checks
         health_status, all_healthy = await self._run_health_checks()
 
         # Summary
@@ -341,6 +344,74 @@ class WarmupPhaseManager(BasePhase):
                     self.logger.warning(f"  {component}: {status['status']}")
 
         return health_status, all_healthy
+
+    async def _verify_broker_health(self) -> bool:
+        """Verify broker connectivity when Interactive Brokers is configured.
+
+        Returns:
+            True if broker health is verified or not required, False otherwise
+        """
+        broker_config = getattr(self.config, "broker", None)
+        broker_type = getattr(broker_config, "broker_type", "mock") if broker_config else "mock"
+
+        if broker_type != "interactive_brokers":
+            self.logger.info("Step 4/6: Broker health check skipped (broker_type=%s)", broker_type)
+            return True
+
+        if not getattr(broker_config, "health_check_enabled", True):
+            self.logger.info("Step 4/6: Interactive Brokers health check disabled by config")
+            return True
+
+        self.logger.info("Step 4/6: Verifying Interactive Brokers health...")
+
+        try:
+            from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
+
+            broker = InteractiveBrokersAPI(
+                host=broker_config.ib_host,
+                port=broker_config.ib_port,
+                client_id=broker_config.ib_client_id,
+                account_id=broker_config.ib_account_id,
+                exchange=broker_config.ib_exchange,
+                currency=broker_config.ib_currency,
+                market_data_type=broker_config.ib_market_data_type,
+                readonly=True,
+            )
+
+            try:
+                connected = await broker.connect()
+                if not connected:
+                    self.logger.error("   [!] IB Gateway API connection failed")
+                    return False
+
+                account = await broker.get_account_info()
+                if broker_config.ib_account_id and account.account_id != broker_config.ib_account_id:
+                    self.logger.error(
+                        "   [!] IB account mismatch: expected=%s actual=%s",
+                        broker_config.ib_account_id,
+                        account.account_id,
+                    )
+                    return False
+
+                quote_symbol = broker_config.health_check_symbol or self.orchestrator.active_symbols[0]
+                quote = await broker.get_market_data(quote_symbol)
+                positions = await broker.get_positions()
+
+                self.logger.info(
+                    "   [OK] IB broker healthy: account=%s net_liq=%s positions=%s quote=%s market_price=%s",
+                    account.account_id,
+                    account.net_liquidation,
+                    len(positions),
+                    quote.symbol,
+                    quote.market_price,
+                )
+                return True
+            finally:
+                await broker.disconnect()
+
+        except Exception as e:
+            self.logger.error("   [!] Interactive Brokers health check failed: %s", e, exc_info=True)
+            return False
 
     async def _send_discord_notification(
         self,
