@@ -145,7 +145,7 @@ For the current MVP, keep this as a planned evolution rather than adding the ser
 | Phase | Status | Evidence / Notes | Next Decision |
 | --- | --- | --- | --- |
 | Phase 0: Local Paper Trading Burn-In | Complete | Live API quotes validated for `QQQ`, `GOOGL`, `AMZN`, and `TSLA`; paper market buy/sell filled; non-marketable limit timeout/cancel validated; QQQ position reconciled back to baseline. | Proceed to Phase 1 planning for Oracle VM + IBC. |
-| Phase 1: Oracle VM IBC Deployment | Not started | Local IB Gateway operating assumptions and runbook are ready; IBC-first design chosen. | Build Oracle/IBC runbook and provision target VM. |
+| Phase 1: Oracle VM IBC Deployment | Complete | Oracle VM reachable; 4 GB swap configured; Java, Xvfb, x11vnc, IB Gateway stable, IBC 3.24.1, repo checkout, Python venv, IBC wrapper, and `ibc-gateway.service` are prepared. IBC/Gateway starts in paper mode; host firewall drops non-loopback `4001`/`4002`; readonly cloud smoke passed; paper market buy/sell filled; non-marketable limit timeout/cancel validated; final QQQ position reconciled with zero open orders. | Proceed to Phase 2 cloud trading bot integration and longer burn-in on a larger VM shape. |
 | Phase 2: Cloud Trading Bot Integration | Not started | IB-only warmup health check exists locally; cloud orchestration wiring still pending. | Wire broker health, fail-closed behavior, and paper/live guardrails into cloud runtime. |
 | Phase 3: IBC Hardening | Not started | Reconciliation requirement discovered during Phase 0 order validation. | Add restart/reconciliation runbook, watchdogs, and log rotation. |
 | Phase 4: Dockerized Deployment | Deferred | Docker should follow stable IBC VM operations. | Decide service boundaries after Phase 1/2 burn-in. |
@@ -169,6 +169,8 @@ Exit criteria:
 - The local runbook is documented well enough to repeat from a clean machine.
 
 ### Phase 1: Oracle VM IBC Deployment
+
+Status: in progress as of 2026-07-08. See `phase-1-oracle-ibc-runbook.md` for Oracle VM setup, IBC/Gateway service configuration, fallback GUI access, and validation commands.
 
 Tasks:
 
