@@ -29,6 +29,14 @@ except ImportError:  # pragma: no cover - exercised by environments without ib_i
 logger = logging.getLogger(__name__)
 
 
+class IBOperatorActionRequired(RuntimeError):
+    """Raised when IB Gateway requires manual operator action before API use."""
+
+
+class IBConnectionFailed(RuntimeError):
+    """Raised when IB Gateway connection fails after bounded retries."""
+
+
 class InteractiveBrokersAPI:
     """Interactive Brokers adapter for TWS or IB Gateway."""
 
@@ -41,6 +49,9 @@ class InteractiveBrokersAPI:
         exchange: str = "SMART",
         currency: str = "USD",
         market_data_type: int = 1,
+        connect_timeout: float = 20.0,
+        connect_max_retries: int = 3,
+        connect_retry_delay_seconds: float = 2.0,
         readonly: bool = False,
     ):
         if IB is None:
@@ -53,24 +64,90 @@ class InteractiveBrokersAPI:
         self.exchange = exchange
         self.currency = currency
         self.market_data_type = market_data_type
+        self.connect_timeout = connect_timeout
+        self.connect_max_retries = max(connect_max_retries, 1)
+        self.connect_retry_delay_seconds = max(connect_retry_delay_seconds, 0.0)
         self.readonly = readonly
         self.ib = IB()
-        self._trades: Dict[str, Trade] = {}
+        self._last_error_code: Optional[int] = None
+        self._last_error_message: Optional[str] = None
+        self.ib.errorEvent += self._handle_ib_error
+        self._trades: Dict[str, Any] = {}
         self._submitted_orders: Dict[str, BrokerOrder] = {}
+
+    def _handle_ib_error(self, req_id: int, error_code: int, error_string: str, *args: Any) -> None:
+        """Capture IB API errors emitted during async connection and requests."""
+        self._last_error_code = error_code
+        self._last_error_message = error_string
+        if error_code == 10141:
+            logger.error("IB Gateway requires paper trading disclaimer acceptance before API use")
 
     async def connect(self) -> bool:
         """Connect to TWS or IB Gateway."""
         if self.ib.isConnected():
             return True
 
-        await self.ib.connectAsync(
-            self.host,
-            self.port,
-            clientId=self.client_id,
-            account=self.account_id or "",
-        )
+        last_exception: Optional[BaseException] = None
+        for attempt in range(1, self.connect_max_retries + 1):
+            self._last_error_code = None
+            self._last_error_message = None
+            try:
+                await self.ib.connectAsync(
+                    self.host,
+                    self.port,
+                    clientId=self.client_id,
+                    account=self.account_id or "",
+                    timeout=self.connect_timeout,
+                )
+                break
+            except Exception as exc:
+                last_exception = exc
+                if self._requires_operator_action(exc):
+                    await self.disconnect()
+                    raise IBOperatorActionRequired(
+                        "IB Gateway rejected API access because the paper trading disclaimer "
+                        "has not been accepted. Accept the disclaimer in Gateway, then restart "
+                        "the trading bot service."
+                    ) from exc
+
+                await self.disconnect()
+                if attempt >= self.connect_max_retries:
+                    raise IBConnectionFailed(
+                        f"Failed to connect to IB Gateway at {self.host}:{self.port} "
+                        f"after {self.connect_max_retries} attempts"
+                    ) from exc
+
+                logger.warning(
+                    "IB connection attempt %s/%s failed: %s; retrying in %.1fs",
+                    attempt,
+                    self.connect_max_retries,
+                    exc,
+                    self.connect_retry_delay_seconds,
+                )
+                if self.connect_retry_delay_seconds > 0:
+                    await asyncio.sleep(self.connect_retry_delay_seconds)
+
+        if last_exception and not self.ib.isConnected():
+            raise IBConnectionFailed(
+                f"Failed to connect to IB Gateway at {self.host}:{self.port} "
+                f"after {self.connect_max_retries} attempts"
+            ) from last_exception
+
+        if self._requires_operator_action(None):
+            await self.disconnect()
+            raise IBOperatorActionRequired(
+                "IB Gateway rejected API access because the paper trading disclaimer has not been accepted."
+            )
+
         logger.info("Connected to IB at %s:%s client_id=%s", self.host, self.port, self.client_id)
         return self.ib.isConnected()
+
+    def _requires_operator_action(self, exc: Optional[BaseException]) -> bool:
+        """Return True when the last IB error indicates a manual Gateway action is needed."""
+        message = self._last_error_message or ""
+        if exc is not None:
+            message = f"{message} {exc}"
+        return self._last_error_code == 10141 or "Paper trading disclaimer" in message
 
     async def disconnect(self) -> bool:
         """Disconnect from IB."""
@@ -269,7 +346,7 @@ class InteractiveBrokersAPI:
         return None, None
 
     @staticmethod
-    def _resolve_avg_fill_price(trade: Trade) -> float:
+    def _resolve_avg_fill_price(trade: Any) -> float:
         avg_price = InteractiveBrokersAPI._parse_float(getattr(trade.orderStatus, "avgFillPrice", None))
         if avg_price and avg_price > 0:
             return avg_price
@@ -280,7 +357,7 @@ class InteractiveBrokersAPI:
         raise RuntimeError("IB fill event did not include an average fill price")
 
     @staticmethod
-    def _resolve_commission(trade: Trade) -> float:
+    def _resolve_commission(trade: Any) -> float:
         commissions = []
         for fill in getattr(trade, "fills", []):
             report = getattr(fill, "commissionReport", None)

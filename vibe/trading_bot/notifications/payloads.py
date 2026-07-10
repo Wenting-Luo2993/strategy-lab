@@ -253,6 +253,41 @@ class SystemStatusPayload:
 
 
 @dataclass
+class SystemAlertPayload:
+    """Notification payload for warnings and errors that need operator attention."""
+
+    event_type: str  # SYSTEM_WARNING, SYSTEM_ERROR
+    timestamp: datetime
+    severity: str  # warning, error, critical
+    title: str
+    message: str
+    component: Optional[str] = None
+    action_required: Optional[str] = None
+    version: Optional[str] = None
+    details: Optional[Dict[str, Any]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        valid_event_types = {"SYSTEM_WARNING", "SYSTEM_ERROR"}
+        if self.event_type not in valid_event_types:
+            raise ValueError(
+                f"Invalid event_type: {self.event_type}. Must be one of {valid_event_types}"
+            )
+        valid_severities = {"warning", "error", "critical"}
+        if self.severity not in valid_severities:
+            raise ValueError(
+                f"Invalid severity: {self.severity}. Must be one of {valid_severities}"
+            )
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["timestamp"] = self.timestamp.isoformat()
+        return data
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), default=str)
+
+
+@dataclass
 class DailySummaryPayload:
     """Notification payload for end-of-day trading summary.
 

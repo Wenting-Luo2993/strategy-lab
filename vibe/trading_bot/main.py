@@ -4,6 +4,7 @@ import asyncio
 import logging
 import signal
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -11,7 +12,10 @@ import click
 
 from vibe.trading_bot.config.logging_config import setup_logging
 from vibe.trading_bot.config.settings import get_settings
+from vibe.trading_bot.brokers.interactive_brokers import IBConnectionFailed, IBOperatorActionRequired
 from vibe.trading_bot.core.orchestrator import TradingOrchestrator
+from vibe.trading_bot.notifications.helper import discord_notification_context
+from vibe.trading_bot.notifications.payloads import SystemAlertPayload
 from vibe.trading_bot.version import BUILD_VERSION, BUILD_INFO
 
 
@@ -69,9 +73,72 @@ class TradingBotCLI:
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
             return 1
+        except IBOperatorActionRequired as e:
+            logger.error("Operator action required: %s", e)
+            logger.error("Trading bot stopped fail-closed; restart the service after resolving the Gateway prompt.")
+            await self._send_error_alert(
+                title="Trading Bot Warning - Operator Action Required",
+                message=str(e),
+                severity="warning",
+                component="Interactive Brokers Gateway",
+                action_required="Accept the IB paper trading disclaimer in Gateway, then restart trading-bot-phase2.service.",
+            )
+            return 0
+        except IBConnectionFailed as e:
+            logger.error("IB connection failed after bounded retries: %s", e)
+            logger.error("Trading bot stopped fail-closed; restart the service after resolving IB connectivity.")
+            await self._send_error_alert(
+                title="Trading Bot Error - IB Connection Failed",
+                message=str(e),
+                severity="error",
+                component="Interactive Brokers Gateway",
+                action_required="Check IB Gateway/API connectivity, then restart trading-bot-phase2.service.",
+            )
+            return 0
         except Exception as e:
             logger.error(f"Fatal error: {e}", exc_info=True)
+            await self._send_error_alert(
+                title="Trading Bot Fatal Error",
+                message=str(e) or e.__class__.__name__,
+                severity="critical",
+                component="Trading Bot",
+                action_required="Check service logs and restart only after the root cause is understood.",
+            )
             return 1
+
+    async def _send_error_alert(
+        self,
+        title: str,
+        message: str,
+        severity: str,
+        component: str,
+        action_required: str,
+    ) -> None:
+        """Send a Discord warning/error alert if notification config is available."""
+        notifications = self.settings.notifications
+        if not notifications.notify_on_error:
+            logger.info("Error notifications disabled by config")
+            return
+        if not notifications.discord_webhook_url:
+            logger.warning("Discord webhook URL not configured; cannot send error notification")
+            return
+
+        try:
+            payload = SystemAlertPayload(
+                event_type="SYSTEM_WARNING" if severity == "warning" else "SYSTEM_ERROR",
+                timestamp=datetime.now(),
+                severity=severity,
+                title=title,
+                message=message,
+                component=component,
+                action_required=action_required,
+                version=BUILD_VERSION,
+                details={"environment": self.settings.environment},
+            )
+            async with discord_notification_context(notifications.discord_webhook_url) as notifier:
+                await notifier.send_system_alert(payload)
+        except Exception as notify_error:
+            logger.error("Failed to send Discord error notification: %s", notify_error, exc_info=True)
 
     async def backtest(
         self,

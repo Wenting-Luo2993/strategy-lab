@@ -133,6 +133,60 @@ class TestStrategyBase:
         assert exit_sig is not None
         assert exit_sig.exit_type == "stop_loss"
 
+    def test_breakeven_plus_ticks_trailing_stop_long(self):
+        """Trailing stop moves to break-even plus ticks after trigger R."""
+        strategy = ORBStrategy(config=ORBStrategyConfig(name="test"))
+
+        strategy.track_position(
+            symbol="AAPL",
+            side="buy",
+            entry_price=150.0,
+            take_profit=None,
+            stop_loss=149.0,
+            timestamp=datetime.now(),
+            trailing_stop={
+                "method": "breakeven_plus_ticks",
+                "trigger_r": 3.0,
+                "plus_ticks": 1,
+            },
+        )
+
+        assert strategy.check_exit_conditions("AAPL", 153.0, "10:00") is None
+        pos = strategy.get_position("AAPL")
+        assert pos["stop_loss"] == 150.01
+
+        exit_sig = strategy.check_exit_conditions("AAPL", 150.0, "10:01")
+
+        assert exit_sig is not None
+        assert exit_sig.exit_type == "stop_loss"
+
+    def test_breakeven_plus_ticks_trailing_stop_short(self):
+        """Trailing stop moves below short break-even after trigger R."""
+        strategy = ORBStrategy(config=ORBStrategyConfig(name="test"))
+
+        strategy.track_position(
+            symbol="AAPL",
+            side="sell",
+            entry_price=150.0,
+            take_profit=None,
+            stop_loss=151.0,
+            timestamp=datetime.now(),
+            trailing_stop={
+                "method": "breakeven_plus_ticks",
+                "trigger_r": 3.0,
+                "plus_ticks": 1,
+            },
+        )
+
+        assert strategy.check_exit_conditions("AAPL", 147.0, "10:00") is None
+        pos = strategy.get_position("AAPL")
+        assert pos["stop_loss"] == 149.99
+
+        exit_sig = strategy.check_exit_conditions("AAPL", 150.0, "10:01")
+
+        assert exit_sig is not None
+        assert exit_sig.exit_type == "stop_loss"
+
 
 class TestORBStrategy:
     """Tests for ORBStrategy."""

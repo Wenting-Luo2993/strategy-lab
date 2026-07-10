@@ -370,11 +370,14 @@ class WarmupPhaseManager(BasePhase):
             broker = InteractiveBrokersAPI(
                 host=broker_config.ib_host,
                 port=broker_config.ib_port,
-                client_id=broker_config.ib_client_id,
+                client_id=broker_config.ib_client_id + 20,
                 account_id=broker_config.ib_account_id,
                 exchange=broker_config.ib_exchange,
                 currency=broker_config.ib_currency,
                 market_data_type=broker_config.ib_market_data_type,
+                connect_timeout=broker_config.ib_connect_timeout,
+                connect_max_retries=broker_config.ib_connect_max_retries,
+                connect_retry_delay_seconds=broker_config.ib_connect_retry_delay_seconds,
                 readonly=True,
             )
 

@@ -209,6 +209,8 @@ class StrategyBase(ABC):
 
         pos = self.positions[symbol]
 
+        self._maybe_update_trailing_stop(pos, current_price)
+
         # Check take-profit (only if TP is set — None means EOD-only exit)
         tp = pos.get("take_profit")
         if tp is not None:
@@ -277,6 +279,40 @@ class StrategyBase(ABC):
 
         return None
 
+    def _maybe_update_trailing_stop(self, pos: Dict[str, Any], current_price: float) -> None:
+        """Update tracked stop-loss from optional trailing stop config."""
+        trailing_stop = pos.get("trailing_stop")
+        if not trailing_stop:
+            return
+
+        method = trailing_stop.get("method")
+        if method != "breakeven_plus_ticks":
+            return
+
+        risk = abs(pos["entry_price"] - pos.get("initial_stop_loss", pos["stop_loss"]))
+        if risk <= 0:
+            return
+
+        if pos["side"] == "buy":
+            favorable_move = max(0.0, current_price - pos["entry_price"])
+        else:
+            favorable_move = max(0.0, pos["entry_price"] - current_price)
+
+        trigger_r = float(trailing_stop.get("trigger_r", 1.0))
+        if favorable_move / risk < trigger_r:
+            return
+
+        tick_size = float(trailing_stop.get("tick_size", 0.01))
+        plus_ticks = int(trailing_stop.get("plus_ticks", 0))
+        if pos["side"] == "buy":
+            candidate = pos["entry_price"] + plus_ticks * tick_size
+            if candidate > pos["stop_loss"]:
+                pos["stop_loss"] = candidate
+        else:
+            candidate = pos["entry_price"] - plus_ticks * tick_size
+            if candidate < pos["stop_loss"]:
+                pos["stop_loss"] = candidate
+
     def track_position(
         self,
         symbol: str,
@@ -285,6 +321,7 @@ class StrategyBase(ABC):
         take_profit: Optional[float],
         stop_loss: float,
         timestamp: Any,
+        trailing_stop: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Track an open position.
@@ -302,6 +339,8 @@ class StrategyBase(ABC):
             "entry_price": entry_price,
             "take_profit": take_profit,
             "stop_loss": stop_loss,
+            "initial_stop_loss": stop_loss,
+            "trailing_stop": trailing_stop,
             "timestamp": timestamp,
         }
 

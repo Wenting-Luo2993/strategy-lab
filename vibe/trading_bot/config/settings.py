@@ -26,7 +26,7 @@ class DataSettings(BaseSettings):
     """Data provider configuration."""
 
     # Provider selection
-    primary_provider: str = Field(default="finnhub", description="Primary data provider (polygon, finnhub, alpaca)")
+    primary_provider: str = Field(default="finnhub", description="Primary data provider (interactive_brokers, polygon, finnhub, alpaca, yfinance)")
     secondary_provider: Optional[str] = Field(default=None, description="Secondary provider for fallback (optional)")
 
     # API keys
@@ -74,6 +74,9 @@ class BrokerSettings(BaseSettings):
     ib_exchange: str = Field(default="SMART", description="IB routing exchange")
     ib_currency: str = Field(default="USD", description="IB account/order currency")
     ib_market_data_type: int = Field(default=1, description="IB market data type: 1 live, 2 frozen, 3 delayed, 4 delayed frozen")
+    ib_connect_timeout: float = Field(default=20.0, description="IB API connection timeout in seconds")
+    ib_connect_max_retries: int = Field(default=3, description="Max IB API connection attempts before failing closed")
+    ib_connect_retry_delay_seconds: float = Field(default=2.0, description="Delay between IB API connection retry attempts")
     health_check_enabled: bool = Field(default=True, description="Enable IB broker health checks during warmup")
     health_check_symbol: Optional[str] = Field(default=None, description="Symbol used for IB warmup quote validation")
 

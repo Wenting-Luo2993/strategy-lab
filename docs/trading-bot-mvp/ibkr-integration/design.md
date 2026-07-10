@@ -146,7 +146,7 @@ For the current MVP, keep this as a planned evolution rather than adding the ser
 | --- | --- | --- | --- |
 | Phase 0: Local Paper Trading Burn-In | Complete | Live API quotes validated for `QQQ`, `GOOGL`, `AMZN`, and `TSLA`; paper market buy/sell filled; non-marketable limit timeout/cancel validated; QQQ position reconciled back to baseline. | Proceed to Phase 1 planning for Oracle VM + IBC. |
 | Phase 1: Oracle VM IBC Deployment | Complete | Oracle VM reachable; 4 GB swap configured; Java, Xvfb, x11vnc, IB Gateway stable, IBC 3.24.1, repo checkout, Python venv, IBC wrapper, and `ibc-gateway.service` are prepared. IBC/Gateway starts in paper mode; host firewall drops non-loopback `4001`/`4002`; readonly cloud smoke passed; paper market buy/sell filled; non-marketable limit timeout/cancel validated; final QQQ position reconciled with zero open orders. | Proceed to Phase 2 cloud trading bot integration and longer burn-in on a larger VM shape. |
-| Phase 2: Cloud Trading Bot Integration | Not started | IB-only warmup health check exists locally; cloud orchestration wiring still pending. | Wire broker health, fail-closed behavior, and paper/live guardrails into cloud runtime. |
+| Phase 2: Cloud Trading Bot Integration | In progress | `trading-bot-phase2.service` is running on the Oracle VM in paper mode with `orb_exp073_paper_burn_in`; strategy execution now routes through the Interactive Brokers execution adapter; `DATA__PRIMARY_PROVIDER=interactive_brokers` opts the bot into IB live market data snapshots instead of Finnhub WebSocket; current paper account is flat with zero open orders/trades. | Observe the next market-session warmup/open using IB market data, confirm live polling creates realtime bars, then continue the longer paper burn-in and VM shape migration. |
 | Phase 3: IBC Hardening | Not started | Reconciliation requirement discovered during Phase 0 order validation. | Add restart/reconciliation runbook, watchdogs, and log rotation. |
 | Phase 4: Dockerized Deployment | Deferred | Docker should follow stable IBC VM operations. | Decide service boundaries after Phase 1/2 burn-in. |
 | Phase 5: Live Readiness Review | Deferred | Live trading remains out of scope until paper cloud stability is proven. | Review risk controls and require explicit live-mode approval. |
@@ -196,18 +196,35 @@ Exit criteria:
 
 ### Phase 2: Cloud Trading Bot Integration
 
+Status: in progress as of 2026-07-09. See `phase-2-cloud-burn-in-runbook.md` for current service configuration, deployed code path, validation evidence, and remaining burn-in tasks.
+
+Current VM/runtime state:
+
+- Oracle VM shape remains `VM.Standard.E2.1.Micro` with 4 GB swap; usable for controlled paper burn-in but still memory-tight.
+- `ibc-gateway.service` runs IB Gateway paper mode on localhost port `4002`.
+- `trading-bot-phase2.service` runs `python -m vibe.trading_bot.main run` from `/opt/strategy-lab`.
+- Active ruleset is `orb_exp073_paper_burn_in`, based on EXP-073 parameters, with `max_shares: 1` for paper burn-in risk control.
+- Execution uses `InteractiveBrokersExecutionEngine`; mock execution is no longer used when `BROKER__BROKER_TYPE=interactive_brokers`.
+- Market data is configured with `DATA__PRIMARY_PROVIDER=interactive_brokers`, `BROKER__IB_MARKET_DATA_TYPE=1`, and a distinct IB data-provider client id derived from the execution client id.
+- Because validation was performed outside market hours, the bot initialized successfully and then slept until next warmup. Next validation must confirm IB polling behavior during market hours.
+
 Tasks:
 
-- Wire the existing broker factory/config path so Oracle paper config selects Interactive Brokers.
-- Add startup checks that fail closed when Gateway is disconnected, account id mismatches, market data is stale, or `readonly` mode is unexpectedly enabled/disabled.
-- Add broker health reporting into existing system status notifications.
-- Ensure market-open warmup validates broker connectivity before strategy execution.
-- Add a paper/live guardrail that requires explicit config for live mode.
+- Complete next-session market-hours validation with IB realtime data polling: provider connection, snapshot quotes, realtime bar aggregation, and no Yahoo/Finnhub substitution while IB realtime is active.
+- Continue longer paper burn-in and record service uptime, memory/swap pressure, Gateway reconnect behavior, order/fill outcomes, and final account reconciliation.
+- Add startup checks that fail closed when Gateway is disconnected, account id mismatches, market data is stale, or Gateway API read-only state conflicts with broker mode.
+- Add broker health and market data provider status into existing system status notifications.
+- Add restart/reconciliation checks before allowing new orders after bot or Gateway restart.
+- Migrate burn-in to the larger always-free VM shape once prepared, then repeat service and paper account validation.
+- Add a paper/live guardrail that requires explicit config and operator approval for live mode.
 
 Exit criteria:
 
 - During paper mode, the orchestrator can complete warmup only when IBC/Gateway and broker account checks pass.
+- During market hours, IB realtime market data feeds the active ORB strategy path and the bot does not depend on Finnhub WebSocket.
 - Broker failures prevent new orders and produce actionable alerts.
+- Restarting the bot or Gateway reconciles positions, open orders, and recent executions before new orders can be submitted.
+- A multi-session paper burn-in completes with documented memory, connectivity, order, and reconciliation results.
 - Existing mock/backtest paths remain unaffected.
 
 ### Phase 3: IBC Hardening

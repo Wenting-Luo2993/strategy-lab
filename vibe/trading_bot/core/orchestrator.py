@@ -19,6 +19,8 @@ from vibe.trading_bot.data.providers.types import RealtimeDataProvider, WebSocke
 from vibe.trading_bot.storage.trade_store import TradeStore
 import pandas as pd
 from vibe.trading_bot.exchange.mock_exchange import MockExchange
+from vibe.trading_bot.exchange.ib_exchange import InteractiveBrokersExecutionEngine
+from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
 from vibe.trading_bot.execution.order_manager import OrderManager, OrderRetryPolicy
 from vibe.trading_bot.execution.trade_executor import TradeExecutor
 from vibe.common.risk import PositionSizer
@@ -105,7 +107,7 @@ class TradingOrchestrator:
             self._idle_cycle_interval = 300  # 5 minutes when no positions (production)
             self._max_backoff_seconds = 900  # 15 minutes max backoff (production)
         self.data_manager: Optional[DataManager] = None
-        self.exchange = MockExchange()
+        self.exchange = self._create_execution_engine()
         self.trade_executor: Optional[TradeExecutor] = None
         self.strategy: Optional[ORBStrategy] = None
         self.indicator_engine: Optional[IncrementalIndicatorEngine] = None
@@ -161,6 +163,27 @@ class TradingOrchestrator:
             f"Symbols: {', '.join(self.ruleset.instruments.symbols)} | "
             f"Timeframe: {self.ruleset.instruments.timeframe}"
         )
+
+    def _create_execution_engine(self):
+        """Create the configured execution engine."""
+        broker_config = getattr(self.config, "broker", None)
+        broker_type = getattr(broker_config, "broker_type", "mock") if broker_config else "mock"
+        if broker_type == "interactive_brokers":
+            return InteractiveBrokersExecutionEngine(
+                InteractiveBrokersAPI(
+                    host=broker_config.ib_host,
+                    port=broker_config.ib_port,
+                    client_id=broker_config.ib_client_id,
+                    account_id=broker_config.ib_account_id,
+                    exchange=broker_config.ib_exchange,
+                    currency=broker_config.ib_currency,
+                    market_data_type=broker_config.ib_market_data_type,
+                    connect_timeout=broker_config.ib_connect_timeout,
+                    connect_max_retries=broker_config.ib_connect_max_retries,
+                    connect_retry_delay_seconds=broker_config.ib_connect_retry_delay_seconds,
+                )
+            )
+        return MockExchange()
 
     @property
     def active_symbols(self) -> List[str]:
@@ -220,9 +243,14 @@ class TradingOrchestrator:
                 # Risk amount is calculated dynamically based on current account value
                 # Risk pct driven by ruleset if available, else default 1%
                 risk_pct = 0.01
+                max_shares = None
                 if self.ruleset and self.ruleset.position_size.method == "max_loss_pct":
                     risk_pct = self.ruleset.position_size.value
-                position_sizer = PositionSizer(risk_pct=risk_pct)
+                    max_shares = self.ruleset.position_size.max_shares
+                position_sizer = PositionSizer(
+                    risk_pct=risk_pct,
+                    max_position_size=max_shares,
+                )
 
                 # Create order manager with retry policy
                 retry_policy = OrderRetryPolicy(
@@ -321,7 +349,17 @@ class TradingOrchestrator:
                 self.primary_provider = DataProviderFactory.create_realtime_provider(
                     provider_type=primary_type,
                     finnhub_api_key=finnhub_key,
-                    polygon_api_key=polygon_key
+                    polygon_api_key=polygon_key,
+                    ib_host=self.config.broker.ib_host,
+                    ib_port=self.config.broker.ib_port,
+                    ib_client_id=self.config.broker.ib_client_id + 1,
+                    ib_account_id=self.config.broker.ib_account_id,
+                    ib_exchange=self.config.broker.ib_exchange,
+                    ib_currency=self.config.broker.ib_currency,
+                    ib_market_data_type=self.config.broker.ib_market_data_type,
+                    ib_connect_timeout=self.config.broker.ib_connect_timeout,
+                    ib_connect_max_retries=self.config.broker.ib_connect_max_retries,
+                    ib_connect_retry_delay_seconds=self.config.broker.ib_connect_retry_delay_seconds,
                 )
 
                 if not self.primary_provider:
@@ -342,7 +380,17 @@ class TradingOrchestrator:
                         self.secondary_provider = DataProviderFactory.create_realtime_provider(
                             provider_type=secondary_type,
                             finnhub_api_key=finnhub_key,
-                            polygon_api_key=polygon_key
+                            polygon_api_key=polygon_key,
+                            ib_host=self.config.broker.ib_host,
+                            ib_port=self.config.broker.ib_port,
+                            ib_client_id=self.config.broker.ib_client_id + 2,
+                            ib_account_id=self.config.broker.ib_account_id,
+                            ib_exchange=self.config.broker.ib_exchange,
+                            ib_currency=self.config.broker.ib_currency,
+                            ib_market_data_type=self.config.broker.ib_market_data_type,
+                            ib_connect_timeout=self.config.broker.ib_connect_timeout,
+                            ib_connect_max_retries=self.config.broker.ib_connect_max_retries,
+                            ib_connect_retry_delay_seconds=self.config.broker.ib_connect_retry_delay_seconds,
                         )
                         if self.secondary_provider:
                             self.logger.info(
@@ -411,17 +459,24 @@ class TradingOrchestrator:
             self.logger.info("=" * 60)
             self.logger.info("DATA SOURCE CONFIGURATION")
             self.logger.info("=" * 60)
-            if self.finnhub_ws:
+            if self.active_provider:
                 if market_is_open:
                     self.logger.info("Market Status: OPEN")
-                    self.logger.info("Primary Source: Finnhub WebSocket (real-time)")
+                    self.logger.info(
+                        "Primary Source: %s (%s)",
+                        self.active_provider.provider_name,
+                        "real-time" if self.active_provider.is_real_time else "delayed",
+                    )
                     self.logger.info("Fallback Source: Yahoo Finance (15-min delayed)")
-                    self.logger.info("Expected Gap: ~15 minutes between yfinance and Finnhub on restart")
+                    self.logger.info("Expected Gap: ~15 minutes between yfinance and realtime provider on restart")
                 else:
                     self.logger.info("Market Status: CLOSED")
-                    self.logger.info("Data Source: Yahoo Finance only (Finnhub will connect at market open)")
+                    self.logger.info(
+                        "Data Source: Yahoo Finance historical plus %s at market open",
+                        self.active_provider.provider_name,
+                    )
             else:
-                self.logger.info("Finnhub: Not configured")
+                self.logger.info("Realtime provider: Not configured")
                 self.logger.info("Data Source: Yahoo Finance only (15-min delayed)")
             self.logger.info("=" * 60)
 
@@ -808,7 +863,13 @@ class TradingOrchestrator:
             while self._running and self.market_scheduler.is_market_open():
                 try:
                     # Determine poll interval based on positions
-                    has_positions = len(self.exchange.get_all_positions()) > 0
+                    positions = {}
+                    if hasattr(self.exchange, "get_all_positions"):
+                        positions = self.exchange.get_all_positions()
+                    elif hasattr(self.exchange, "get_positions"):
+                        maybe_positions = self.exchange.get_positions()
+                        positions = await maybe_positions if hasattr(maybe_positions, "__await__") else maybe_positions
+                    has_positions = len(positions) > 0
                     poll_interval = (
                         self.config.data.poll_interval_with_position if has_positions
                         else self.config.data.poll_interval_no_position
@@ -1246,22 +1307,26 @@ class TradingOrchestrator:
                     self.logger.info("Started REST API polling task")
 
             # 1. Fetch fresh data for all symbols
-            # During market hours with Finnhub active, don't use Yahoo Finance fallback
+            # During market hours with a live provider active, don't use Yahoo Finance fallback
             # (Yahoo is 15-min delayed and would interfere with real-time data)
             market_open = self.market_scheduler.is_market_open()
-            finnhub_active = self.finnhub_ws and self.finnhub_ws.connected
+            realtime_provider_active = bool(
+                self.active_provider
+                and self.active_provider.connected
+                and self.active_provider.is_real_time
+            )
 
-            allow_yfinance = not (market_open and finnhub_active)
+            allow_yfinance = not (market_open and realtime_provider_active)
 
             if market_open and not allow_yfinance:
                 self.logger.debug(
-                    f"Market is open and Finnhub is active - relying solely on websocket data"
+                    f"Market is open and {self.active_provider.provider_name} is active - relying on real-time data"
                 )
 
             for symbol in self.active_symbols:
                 try:
                     # Fetch historical data from Yahoo (includes yesterday + today with staleness check)
-                    # During market hours with Finnhub websocket, disable yfinance fallback
+                    # During market hours with a live provider, disable yfinance fallback
                     bars = await self.data_manager.get_data(
                         symbol=symbol,
                         timeframe="5m",
@@ -1275,11 +1340,11 @@ class TradingOrchestrator:
                             self.logger.warning(f"No bars fetched for {symbol}")
                         continue
 
-                    # If we have real-time bars from Finnhub websocket, append them
+                    # If we have real-time bars from a live provider, append them
                     if symbol in self._realtime_bars and not self._realtime_bars[symbol].empty:
                         realtime_bars = self._realtime_bars[symbol]
 
-                        # Detect data gap between yfinance (delayed) and Finnhub (real-time)
+                        # Detect data gap between yfinance (delayed) and real-time provider data
                         if "timestamp" in bars.columns and not bars.empty:
                             import pytz
                             last_yf_bar = pd.to_datetime(bars.iloc[-1]["timestamp"])
@@ -1301,10 +1366,10 @@ class TradingOrchestrator:
                                 self.logger.warning(
                                     f"[DATA GAP] {symbol}: {gap_minutes:.1f} minute gap between "
                                     f"yfinance (last: {last_yf_bar.strftime('%H:%M:%S')}) and "
-                                    f"Finnhub (first: {first_rt_bar.strftime('%H:%M:%S')})"
+                                    f"realtime (first: {first_rt_bar.strftime('%H:%M:%S')})"
                                 )
 
-                        # Combine historical (Yahoo) + real-time (Finnhub)
+                        # Combine historical (Yahoo) + real-time provider bars
                         bars = pd.concat([bars, realtime_bars], ignore_index=True)
 
                         # Remove duplicates based on timestamp (prefer real-time data)
@@ -1321,7 +1386,7 @@ class TradingOrchestrator:
 
                         self.logger.info(
                             f"[HYBRID DATA] {symbol}: Combined {len(bars) - len(realtime_bars)} "
-                            f"yfinance bars + {len(realtime_bars)} Finnhub real-time bars"
+                            f"yfinance bars + {len(realtime_bars)} real-time provider bars"
                         )
 
                     # Successfully fetched data
@@ -1471,6 +1536,11 @@ class TradingOrchestrator:
                                     take_profit=signal_metadata.get("take_profit"),
                                     stop_loss=stop_price,
                                     timestamp=get_market_now(self.market_scheduler),
+                                    trailing_stop=(
+                                        self.ruleset.exit.trailing_stop.model_dump()
+                                        if self.ruleset and self.ruleset.exit.trailing_stop
+                                        else None
+                                    ),
                                 )
 
                             else:
