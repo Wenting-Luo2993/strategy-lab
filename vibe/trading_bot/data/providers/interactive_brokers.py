@@ -98,7 +98,7 @@ class InteractiveBrokersDataProvider(RESTDataProvider):
             "high": price,
             "low": price,
             "close": price,
-            "volume": 0,
+            "volume": 1,
         }
 
     async def get_multiple_latest_bars(

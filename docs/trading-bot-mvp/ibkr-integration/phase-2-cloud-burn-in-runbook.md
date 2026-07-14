@@ -2,9 +2,9 @@
 
 ## Status Snapshot
 
-As of 2026-07-09, Phase 2 is in progress on the current Oracle `VM.Standard.E2.1.Micro` instance. The bot is running as a host `systemd` service rather than Docker for this burn-in slice.
+As of 2026-07-13, Phase 2 is in progress on the current Oracle `VM.Standard.E2.1.Micro` instance. The bot is running as a host `systemd` service rather than Docker for this burn-in slice.
 
-The current validation was performed outside market hours. The bot initialized successfully, selected the Interactive Brokers provider, and then slept until the next market warmup. Market-hours validation remains required.
+Market-hours recovery validation completed on 2026-07-13 after enabling IBC automation for the paper non-brokerage warning. The bot initialized successfully, selected the Interactive Brokers provider, completed intraday warmup, sent Discord notifications, and placed a one-share QQQ paper short from the active ORB ruleset.
 
 ## Current Services
 
@@ -12,6 +12,7 @@ The current validation was performed outside market hours. The bot initialized s
 | --- | --- | --- |
 | `ibc-gateway.service` | Active/enabled | Starts IBC + IB Gateway in paper mode. |
 | `trading-bot-phase2.service` | Active/enabled | Runs the trading bot with paper IB execution and IB realtime market data snapshots. |
+| `trading-bot-phase2-start.timer` | Active/enabled | Starts `trading-bot-phase2.service` on weekdays at 13:20 UTC for pre-market warmup. |
 
 Current bot command:
 
@@ -41,6 +42,15 @@ Environment=DATA__POLL_INTERVAL_NO_POSITION=300
 
 `DATA__PRIMARY_PROVIDER=interactive_brokers` intentionally opts out of Finnhub WebSocket for Phase 2. IB market data uses a separate provider connection derived from the execution client id, so execution and data do not share the same IB client id.
 
+IBC paper warning automation must be enabled in `/etc/ibkr/config.ini`:
+
+```ini
+AcceptNonBrokerageAccountWarning=yes
+AcceptIncomingConnectionAction=accept
+```
+
+Without `AcceptNonBrokerageAccountWarning=yes`, Gateway can display the paper-account non-brokerage warning after restart and block API clients with IB error `10141`.
+
 ## Deployed Code Path
 
 - `InteractiveBrokersExecutionEngine` adapts IB orders/account/positions to the existing execution interface.
@@ -51,15 +61,25 @@ Environment=DATA__POLL_INTERVAL_NO_POSITION=300
 
 ## Latest Validation Evidence
 
-Confirmed on 2026-07-09:
+Confirmed on 2026-07-13:
 
-- Service env contains `DATA__PRIMARY_PROVIDER=interactive_brokers`.
-- Bot log shows `Creating Interactive Brokers market data provider`.
-- Bot log shows `Primary provider: Interactive Brokers (type=rest, real_time=True)`.
-- Bot log shows `Market Status: CLOSED` and `Data Source: Yahoo Finance historical plus Interactive Brokers at market open`.
-- Bot log shows `All components initialized successfully` and `Trading loop started`.
-- IB paper account check showed no open positions, no open orders, and no open trades.
-- Memory after restart was approximately 579 MiB available with 3.4 GiB swap free.
+- `trading-bot-phase2.service` was inactive because it stopped fail-closed on 2026-07-10 after an IB connection failure and no weekday start timer existed yet.
+- `trading-bot-phase2-start.timer` was added and enabled; next run was scheduled for the following weekday at 13:20 UTC.
+- `AcceptNonBrokerageAccountWarning=yes` was set in `/etc/ibkr/config.ini`; after restarting `ibc-gateway.service`, an API probe connected to account `DUQ886014` without error `10141`.
+- Bot log shows execution client `201`, IB data client `202`, and warmup health probe client `221` all reached `API connection ready`.
+- Bot log shows `WARM-UP COMPLETE - Ready for trading!`.
+- Bot log shows ORB levels for QQQ on 2026-07-13: high `$718.43`, low `$716.35`, range `$2.08`.
+- Bot generated a `SHORT_BREAKOUT` signal and filled a one-share QQQ paper sell at `$712.11`.
+- Discord logs show `ORDER_SENT`, `ORDER_FILLED`, and ORB notifications sent successfully.
+
+Confirmed on 2026-07-14:
+
+- `trading-bot-phase2-start.timer` fired automatically at `13:20:07 UTC` and started `trading-bot-phase2.service` without manual action.
+- `ibc-gateway.service`, `trading-bot-phase2.service`, and `trading-bot-phase2-start.timer` were all active during the market-hours status check.
+- IB API probe connected to account `DUQ886014`; no QQQ paper position was open at the time of the check.
+- A stale-data issue was found: IB snapshot bars used `volume=0`, causing the trade-based `BarAggregator` to reject every snapshot as invalid trade data and keep strategy evaluation on the prior day's final bar.
+- `InteractiveBrokersDataProvider` now emits positive synthetic volume for quote snapshots so the existing aggregator accepts IB snapshot updates.
+- After deploying the fix and restarting the bot, warmup fetched/merged fresh July 14 bars, strategy evaluation used `2026-07-14 11:55:00-04:00`, ORB levels were calculated for July 14, and the ORB Discord notification sent successfully.
 
 ## Next Market-Hours Validation
 

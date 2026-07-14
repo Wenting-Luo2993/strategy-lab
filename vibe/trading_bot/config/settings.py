@@ -157,6 +157,7 @@ class AppSettings(BaseSettings):
         env_file_encoding = "utf-8"
         case_sensitive = False
         env_nested_delimiter = "__"  # Enable reading nested fields like DATA__FINNHUB_API_KEY
+        extra = "ignore"  # Allow backtester-only env vars to coexist in the shared .env
 
 
 def get_settings() -> AppSettings:
