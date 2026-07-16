@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -41,3 +41,4 @@ async def test_ib_snapshot_bar_uses_positive_synthetic_volume():
     assert bar["symbol"] == "QQQ"
     assert bar["close"] == 720.05
     assert bar["volume"] > 0
+    assert bar["timestamp"].tzinfo == timezone.utc

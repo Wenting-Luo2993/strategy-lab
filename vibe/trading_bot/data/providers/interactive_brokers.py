@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -91,9 +91,12 @@ class InteractiveBrokersDataProvider(RESTDataProvider):
     async def get_latest_bar(self, symbol: str, timeframe: str = "5") -> Optional[Dict]:
         quote = await self.broker.get_market_data(symbol)
         price = quote.market_price
+        timestamp = quote.timestamp
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
         return {
             "symbol": symbol,
-            "timestamp": quote.timestamp,
+            "timestamp": timestamp,
             "open": price,
             "high": price,
             "low": price,

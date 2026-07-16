@@ -37,7 +37,9 @@ Environment=BROKER__IB_CONNECT_TIMEOUT=30
 Environment=BROKER__HEALTH_CHECK_ENABLED=true
 Environment=BROKER__HEALTH_CHECK_SYMBOL=QQQ
 Environment=DATA__POLL_INTERVAL_WITH_POSITION=60
-Environment=DATA__POLL_INTERVAL_NO_POSITION=300
+Environment=DATA__POLL_INTERVAL_NO_POSITION=60
+TimeoutStartSec=240
+ExecStartPre=/bin/bash -lc 'for i in {1..180}; do if timeout 1 bash -c "</dev/tcp/127.0.0.1/4002" 2>/dev/null; then exit 0; fi; echo "Waiting for IB Gateway API port 4002 ($i/180)"; sleep 1; done; exit 1'
 ```
 
 `DATA__PRIMARY_PROVIDER=interactive_brokers` intentionally opts out of Finnhub WebSocket for Phase 2. IB market data uses a separate provider connection derived from the execution client id, so execution and data do not share the same IB client id.
@@ -81,7 +83,40 @@ Confirmed on 2026-07-14:
 - `InteractiveBrokersDataProvider` now emits positive synthetic volume for quote snapshots so the existing aggregator accepts IB snapshot updates.
 - After deploying the fix and restarting the bot, warmup fetched/merged fresh July 14 bars, strategy evaluation used `2026-07-14 11:55:00-04:00`, ORB levels were calculated for July 14, and the ORB Discord notification sent successfully.
 
+Confirmed on 2026-07-15:
+
+- `trading-bot-phase2-start.timer` fired at `13:20 UTC`; `ibc-gateway.service`, `trading-bot-phase2.service`, and the timer were active during the market-hours status check.
+- IB API probe connected to account `DUQ886014` with net liquidation visible; no QQQ paper position was open.
+- A timestamp issue was found: IB quote snapshots returned naive UTC timestamps, and the aggregator treated naive timestamps as Eastern, shifting realtime bars into afternoon market time and causing ORB opening-window detection to miss `09:30`.
+- `InteractiveBrokersDataProvider` now marks naive IB quote timestamps as UTC before passing them to the bar aggregator.
+- After deploying the fix and restarting the bot, warmup fetched fresh July 15 bars, ORB calculation used Eastern timestamps from `09:30-04:00` onward, and ORB levels were valid for July 15: high `$724.35`, low `$722.78`.
+
+Confirmed on 2026-07-16:
+
+- `trading-bot-phase2-start.timer` fired at `13:20:11 UTC`; `ibc-gateway.service`, `trading-bot-phase2.service`, and the timer were active during the market-hours status check.
+- Initial status showed healthy services, valid IB connectivity, no QQQ paper position, Eastern realtime bars, and valid ORB levels, but ORB range was `$0.00` because 5-minute no-position polling contributed only one IB quote snapshot to the `09:30` opening bar.
+- Phase 2 no-position polling was tightened from `300s` to `60s` in `trading-bot-phase2.service` and the service was restarted with no open QQQ position.
+- After restart, warmup fetched fresh July 16 yfinance bars through `12:15 ET`; ORB recalculated to high `$713.59`, low `$711.20`, range `$2.39`.
+- The bot generated a `SHORT_BREAKOUT` signal and filled a one-share QQQ paper sell at `$708.11`; Discord `ORDER_SENT`, `ORDER_FILLED`, and ORB notifications were sent successfully.
+
+Post-market alert fix on 2026-07-16:
+
+- The July 15 evening Discord `IB connection failed` alert was caused by a Gateway restart race, not a persistent broker outage.
+- At `23:45 UTC`, `ibc-gateway.service` restarted. Because `trading-bot-phase2.service` requires Gateway, systemd stopped and restarted the sleeping bot. The bot relaunched before Gateway reopened API port `4002`, exhausted its 3 application-level IB connection attempts, and correctly sent a `SYSTEM_ERROR` alert.
+- `trading-bot-phase2.service` now includes an `ExecStartPre` readiness gate that waits up to 180 seconds for `127.0.0.1:4002` before launching the Python bot. This keeps expected Gateway startup latency out of the bot's bounded retry/error-alert path.
+- The unit was daemon-reloaded without restarting the currently running bot because a one-share QQQ paper short was open at the time of the fix.
+
 ## Next Market-Hours Validation
+
+Before the next market day, run the compressed lifecycle simulation locally or on the VM to validate phase routing without touching IB or placing orders:
+
+```bash
+cd /opt/strategy-lab
+. .venv/bin/activate
+PYTHONPATH=/opt/strategy-lab python -m pytest vibe/tests/trading_bot/test_lifecycle_simulation.py -q
+```
+
+This test uses `MockMarketScheduler` and orchestrator `testing_mode` to fast-forward through day 1 warmup, market-hours trading, post-close cooldown, and day 2 warmup in seconds.
 
 Run these checks after the next warmup/open window:
 
