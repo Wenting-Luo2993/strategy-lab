@@ -1,8 +1,8 @@
 # Product Requirements Document: Live Trading Dashboard
 
-**Version:** 1.8.0  
-**Last Updated:** 2026-04-17  
-**Status:** Draft  
+**Version:** 1.9.0  
+**Last Updated:** 2026-07-17  
+**Status:** Published  
 
 ---
 
@@ -18,13 +18,14 @@ The trading bot currently operates headlessly with Discord notifications as the 
 
 ### 1.2 Solution Overview
 
-Build a **live remote dashboard** that provides real-time visibility into trading activity, aggregated performance metrics, and operational health monitoring. The dashboard will be accessible from any device with a web browser, updating in real-time as trading events occur.
+Build a **live remote dashboard** that provides real-time visibility into trading activity, aggregated performance metrics, and operational health monitoring. The dashboard will be accessible from any device with a web browser and must remain useful both during market hours and after market close for end-of-day review.
 
 ### 1.3 Success Criteria
 
 | Metric | Target |
 |--------|--------|
-| Data latency | < 2 seconds from trade event to dashboard display |
+| Trade event latency | < 2 seconds from persisted trade/order event to dashboard display |
+| Position value freshness | Match trading bot market-data cadence: 5-minute refresh with no active position, 1-minute refresh with active position |
 | Dashboard uptime | 99.5% during market hours |
 | Page load time | < 3 seconds initial load |
 | User satisfaction | Dashboard becomes primary monitoring tool (replacing Discord for live monitoring) |
@@ -54,8 +55,8 @@ Build a **live remote dashboard** that provides real-time visibility into tradin
 - **US-6:** As a reviewer, I want to see performance broken down by strategy so I can compare different trading approaches.
 
 #### Operational Monitoring
-- **US-7:** As an operator, I want to see the health status of downstream APIs (Alpaca, Finnhub) so I can identify connectivity issues.
-- **US-8:** As an operator, I want to see WebSocket connection status and message latency so I can detect data feed problems.
+- **US-7:** As an operator, I want to see the health status of downstream broker/data providers, currently Interactive Brokers, so I can identify connectivity issues.
+- **US-8:** As an operator, I want to see API latency and, if a streaming provider is enabled later, WebSocket connection quality so I can detect data feed problems without coupling the dashboard to one provider.
 - **US-9:** As an operator, I want to track order slippage over time so I can identify execution quality degradation.
 - **US-10:** As an operator, I want to receive visual alerts when system health degrades so I don't miss critical issues.
 
@@ -70,8 +71,10 @@ Build a **live remote dashboard** that provides real-time visibility into tradin
 
 | Requirement | Description |
 |-------------|-------------|
-| Real-time updates | Equity line updates within 2 seconds of any position value change |
+| Event updates | Equity line updates within 2 seconds when a trade/order/equity event is persisted |
+| Mark-to-market updates | Open-position equity updates follow the bot's market-data cadence: 1 minute while a position is active, 5 minutes while flat |
 | Intraday view | Shows today's equity progression starting from market open |
+| Review view | Outside market hours, shows the latest completed trading day by default with selectable historical periods |
 | Historical overlay | Option to overlay previous days/benchmark for comparison |
 | Annotations | Visual markers for trade entry/exit points on the curve |
 | Zoom controls | Ability to zoom into specific time ranges |
@@ -164,8 +167,8 @@ Build a **live remote dashboard** that provides real-time visibility into tradin
 | Component | Health Indicators |
 |-----------|-------------------|
 | Bot Service | Running/Stopped, Uptime, Memory usage, Last heartbeat |
-| Alpaca API | Connected/Disconnected, Response latency, Error rate |
-| Finnhub WebSocket | Connected/Disconnected, Last message received, Message rate |
+| Broker API | Connected/Disconnected, Provider name, Response latency, Error rate; current provider is Interactive Brokers |
+| Market Data Provider | Connected/Disconnected, Provider name, Last price/bar received, Data freshness |
 | Database | Connected, Query latency, Storage usage |
 
 **Health Status Colors:**
@@ -178,11 +181,12 @@ Build a **live remote dashboard** that provides real-time visibility into tradin
 
 | Indicator | Description |
 |-----------|-------------|
-| WebSocket Latency | Time between server push and client receipt |
+| API Latency | Time from bot request to provider response, tracked by provider and operation |
 | Data Feed Freshness | Time since last price update per symbol |
-| API Response Time | Average Alpaca API response time (rolling 5 min) |
-| Reconnection Count | Number of WebSocket reconnects today |
-| Message Rate | Tick messages per second |
+| Provider Error Rate | Error rate for broker/data-provider calls over rolling 5-minute and daily windows |
+| WebSocket Latency | P1 future streaming option: time between server push and bot receipt |
+| WebSocket Reconnection Count | P1 future streaming option: number of reconnects today |
+| WebSocket Message Rate | P1 future streaming option: tick or event messages per second |
 
 #### 3.3.3 Execution Quality Metrics
 **Priority:** P1 (Should Have)
@@ -244,26 +248,27 @@ The trading bot currently runs a single strategy. The dashboard must display str
 | Entry: Short | Close breaks below ORB Low; candle body ≥ 50% of bar range |
 | Take Profit | 2× ORB Range above entry (long) / below entry (short) |
 | Stop Loss | ORB Low (long) / ORB High (short) |
+| Trailing Stop Loss | Optional strategy parameter; display configured mode, trigger, and trail distance when enabled |
 | Entry Cutoff | No new entries after 3:00 PM EST |
 | EOD Exit | All open positions closed at market close (4:00 PM EST) |
 | Volume Filter | Optional (currently disabled); threshold = 1.5× average |
 | Risk per Trade | Max 10% of capital per position |
-| Indicator | ATR-14 (used to validate ORB range size) |
+| Strategy-Specific Parameters | Configurable key/value list for parameters that do not apply to every strategy, such as ATR validation, ORB body threshold, volume filter, and trailing-stop settings |
 
 #### 3.5.2 Intraday Stock Charts
 **Priority:** P0 (Must Have)
 
-One candlestick chart per traded symbol, showing the current trading day's intraday price action. The chart provides visual confirmation that the bot is trading at the correct levels.
+One candlestick chart per traded symbol, showing the current trading day's intraday price action. The chart provides visual confirmation that the bot is trading at the correct levels. Prefer a TradingView-compatible charting approach, such as TradingView Lightweight Charts, so the dashboard can support professional candlesticks, overlays, crosshair interaction, and trade markers without building chart primitives from scratch.
 
 | Element | Description |
 |---------|-------------|
 | Chart type | Candlestick (OHLC) on 5-minute bars |
 | Timeframe | Current trading day (9:30 AM – 4:00 PM EST) |
-| ORB High/Low | Horizontal lines marking the ORB high and low levels for today |
-| ORB Zone | Shaded region between ORB High and ORB Low |
+| Strategy levels | Configurable horizontal lines such as ORB high/low, stop loss, take profit, and trailing-stop level |
+| Strategy zones | Configurable shaded regions such as ORB zone; can be disabled by strategy |
 | Entry markers | Triangle markers on the chart at trade entry price/time |
 | Exit markers | Triangle markers at trade exit price/time (TP = green, SL = red, EOD = gray) |
-| Current price | Real-time price line updated as ticks arrive |
+| Current price | Price line updated on the latest available market-data event; cadence follows the provider/bot configuration |
 | Volume | Volume bars in a sub-panel below the price chart |
 | Layout | Symbol tabs or a 2-column grid (e.g., AAPL | GOOGL on one row, MSFT alone) |
 
@@ -272,7 +277,7 @@ One candlestick chart per traded symbol, showing the current trading day's intra
 #### 3.5.3 Per-Strategy Indicator Overlays
 **Priority:** P1 (Should Have)
 
-Each strategy may require additional indicator overlays on its stock chart. For ORB:
+Each strategy may require additional indicator overlays on its stock chart. Overlays must be configurable by strategy and individually enabled/disabled so a future strategy does not inherit ORB-specific visuals by default. For ORB:
 
 | Indicator | Overlay Location | Description |
 |-----------|-----------------|-------------|
@@ -313,24 +318,25 @@ A compact status card per symbol showing whether the strategy has acted today:
 | Requirement | Target |
 |-------------|--------|
 | Initial page load | < 3 seconds |
-| Real-time update latency | < 2 seconds |
+| Trade/order event update latency | < 2 seconds after the event is persisted |
+| Position value refresh | 1 minute while a position is active; 5 minutes while flat, matching the trading bot configuration |
 | Smooth scrolling | 60 FPS in trade feed |
 | Historical data query | < 2 seconds for 1 year of data |
 
-### 4.2 Accessibility
+### 4.2 Accessibility (P2)
 
 | Requirement | Description |
 |-------------|-------------|
 | Remote access | Accessible from any device with browser (desktop, tablet, phone) |
 | Mobile responsive | Key views usable on mobile (equity curve, open positions, health status) |
-| Authentication | Secure login required for access |
-| Session management | Auto-logout after inactivity |
+| Authentication | Phase 1 has no login; add secure login in a later phase if the URL is shared more broadly |
+| Session management | Not required until authentication is added |
 
 ### 4.3 Reliability
 
 | Requirement | Target |
 |-------------|--------|
-| Dashboard uptime | 99.5% during market hours (9:30 AM - 4:00 PM EST) |
+| Dashboard uptime | 99.5% during market hours (9:30 AM - 4:00 PM EST); historical review remains available outside market hours when the data store is available |
 | Graceful degradation | Dashboard remains usable if real-time updates fail |
 | Reconnection | Automatic reconnect with exponential backoff |
 | Data consistency | No stale data displayed; show "last updated" timestamp |
@@ -340,7 +346,7 @@ A compact status card per symbol showing whether the strategy has acted today:
 | Requirement | Description |
 |-------------|-------------|
 | Authentication | **Phase 1: None.** Dashboard is publicly accessible to anyone with the URL. Acceptable because the dashboard is read-only and the URL is not advertised. Add auth in a later phase if needed. |
-| Transport encryption | HTTPS/WSS only (Let's Encrypt via Caddy) |
+| Transport encryption | HTTPS via GitHub Pages in Phase 1; WSS/managed TLS only applies if a future realtime backend is added |
 | No trading actions | Dashboard is read-only; no ability to place/cancel orders |
 | Rate limiting | Not required in Phase 1 |
 
@@ -350,57 +356,65 @@ A compact status card per symbol showing whether the strategy has acted today:
 
 All infrastructure choices — compute, database, networking — must stay within free tiers or be self-hosted at no charge. Any technology or service that requires payment (even after a trial period) is disqualified.
 
-**Design constraint that shapes these choices:** The trading bot runs on Oracle Cloud Always Free AMD micro (1 vCPU, 1 GB RAM). This instance is fully committed to the bot. The dashboard must run on a completely separate machine — co-hosting anything alongside the bot on 1 vCPU / 1 GB RAM risks starving the trading loop of CPU and memory during market hours.
+**Design constraint that shapes these choices:** The trading bot runs on Oracle Cloud Always Free AMD micro (1 vCPU, 1 GB RAM). This instance is fully committed to the bot. The dashboard must run on a separate hosting surface or as static files so dashboard traffic cannot starve the trading loop of CPU and memory during market hours.
 
-**The dashboard is a monitoring tool, not a trading-critical service.** A human opens it intentionally to check on the bot. It does not need to be always-on. A cold start of 30–60 seconds when opening the dashboard is acceptable — the user is already present and waiting. This changes which hosting options are viable.
+**The dashboard is a monitoring tool, not a trading-critical service.** A human opens it intentionally to check on the bot or review the day. The dashboard should be read-only and should not contain provider-specific trading logic. Computation-heavy work, including realized P&L, expectancy, symbol breakdowns, and health rollups, should be performed by the trading bot, backtester, or a backend/job that writes dashboard-ready records.
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
 | Trading bot | Oracle Cloud Always Free AMD micro (existing) | Unchanged. Bot is the sole tenant on this VM. |
-| Database | **Neon Postgres free tier** | Required because the dashboard runs on a separate machine and cannot read a SQLite file on the Oracle Cloud VM. Neon is free (0.5 GB), never pauses, and the SQLite schema migrates 1:1. |
-| Dashboard (FastAPI + Streamlit) | **Render free web service** | Free, publicly accessible, no credit card required. Spins down after 15 min inactivity and takes ~30–60s to cold-start — acceptable for a monitoring dashboard opened intentionally by a human. Dashboard is fully isolated from the bot. |
-| TLS/HTTPS | Managed by Render (automatic) | No configuration needed; Render provides HTTPS on its `*.onrender.com` subdomain. |
+| Database | **Supabase Postgres free tier** for Phase 1; **Neon Postgres free tier** remains viable if a backend/API is introduced | Supabase provides Postgres plus browser-friendly REST access with anonymous read-only policies, which fits a static GitHub Pages dashboard. Supabase pause/manual unpause is acceptable if data is preserved and the dashboard can show an unavailable state. Neon is attractive for always-available Postgres, but a static browser app should not connect directly with database credentials. |
+| Dashboard | **Next.js static export on GitHub Pages** | Keeps hosting simple, free, and repo-native. The dashboard is a visualization layer that fetches precomputed/dashboard-ready data; it does not need Python, Streamlit, or server-side rendering in Phase 1. |
+| TLS/HTTPS | Managed by GitHub Pages | No server configuration needed. |
 
 **Why this split makes sense:**
 
-| Concern | Co-hosting on 1 vCPU | Render + Neon |
-|---------|---------------------|---------------|
-| Bot safety during market hours | ❌ Dashboard queries compete for CPU/RAM | ✅ Completely separate machines |
-| Cold start (30–60s) | N/A | ✅ Acceptable — human opens it deliberately |
-| Database access | SQLite on same VM | Neon Postgres, accessible from any host |
+| Concern | Co-hosting on 1 vCPU | Static Next.js + managed Postgres |
+|---------|---------------------|----------------------------------|
+| Bot safety during market hours | ❌ Dashboard queries compete for CPU/RAM | ✅ Dashboard hosting is separate from the bot |
+| Cold start | N/A | ✅ Static site has no app cold start; database may have an availability/cold-start state depending on provider |
+| Database access | SQLite on same VM | Managed Postgres or read-optimized API/artifacts, accessible from dashboard hosting |
 | Cost | $0 | $0 |
 
-**Why not other options:**
+**Database provider comparison:**
+
+| Option | Fit | Tradeoff |
+|--------|-----|----------|
+| **Supabase free tier** | Best fit for a static GitHub Pages dashboard because the browser can query Postgres through Supabase REST with anon read-only policies | Free projects may pause after inactivity. Data is expected to be preserved during pause and restored after manual unpause, but this must be verified before production. During pause, the dashboard should show a clear data-store unavailable state. |
+| **Neon Postgres free tier** | Strong fit if a backend/API or scheduled export job is added | Browser clients should not connect directly to Neon with database credentials. Using Neon with GitHub Pages requires an API layer, serverless function, or generated static JSON artifacts. |
+| **SQLite on Oracle VM** | Simple for local development | Not directly readable from a separately hosted static dashboard. Requires sync/export/API. |
+
+**Why not other options for Phase 1:**
 
 | Option | Problem |
 |--------|---------|
-| **Supabase free tier** | Pauses the entire project after 1 week of inactivity — database becomes inaccessible until manually unpaused. Unacceptable for a bot that may go days without a dashboard visit. |
-| **Fly.io free tier** | 256 MB RAM per machine — too tight for Streamlit. |
-| **GitHub Pages / Vercel** | Static files only — cannot run Python, FastAPI, or WebSockets without a full JS rewrite. |
-| **Streamlit Community Cloud** | Requires a public GitHub repo. Trading logic and API keys must stay private. |
-| **Grafana Cloud** | Expects Prometheus/InfluxDB time-series sources. Cannot render custom candlestick charts with trade markers. |
+| **FastAPI + Streamlit on Render** | More moving parts than needed for a visualization-first dashboard. Streamlit is a Python app framework for quickly building data apps, but it requires a running Python server. |
+| **Fly.io free tier** | 256 MB RAM per machine is tight for Python dashboard services. |
+| **Vercel server-rendered Next.js** | Good future option, but GitHub Pages is simpler if Phase 1 can be static. Use Vercel if API routes, server-side secrets, or scheduled functions become necessary. |
+| **Grafana Cloud** | Expects time-series observability sources. It is not ideal for custom candlestick charts with ORB levels and trade markers. |
 | **Co-hosting on Oracle Cloud VM** | 1 vCPU / 1 GB RAM is fully committed to the trading bot. Adding a web server risks starving the trading loop. |
 
 **Constraints that follow from this:**
 - Bot and dashboard run on entirely separate machines — no shared process, no shared filesystem
-- Dashboard is read-only on the database — it never writes trade records
-- Bot writes trade data to Neon Postgres; dashboard reads from the same Neon database
-- Dashboard cold starts are acceptable; bot uptime is non-negotiable
+- Dashboard is read-only — it never writes trade records or sends trading actions
+- Bot, backtester, or a backend/job writes dashboard-ready records; dashboard only reads them
+- Browser-exposed credentials must be read-only and protected by row-level/security policies
+- Dashboard must handle paused/unavailable data stores gracefully; bot uptime is non-negotiable
 
 ### Future Migration Path
 
-FastAPI is the stable separation point — Streamlit communicates with it over HTTP, so any future frontend can replace Streamlit by pointing at the same API URL. The database is already on Neon Postgres, so hosting the dashboard elsewhere requires only a config change (API base URL).
+The stable separation point is the dashboard data contract: normalized trades, orders, positions, equity snapshots, OHLCV bars, strategy annotations, and provider-neutral operational metrics. The first implementation can be a static Next.js app. If static hosting becomes limiting, add a backend/API behind the same data contract without changing the trading bot's provider-specific adapters.
 
 | Stage | Bot | Dashboard | Database | Trigger |
 |-------|-----|-----------|----------|---------|
-| **Phase 1** | Oracle Cloud AMD micro | Render free tier | Neon Postgres free tier | Default |
-| **Low cost** | Oracle Cloud or any VPS | Fly.io, Railway, or any PaaS with persistent processes | Neon Postgres | When Render cold starts become annoying, or budget allows $5–7/month |
-| **Scale-out** | Any VPS | Static JS frontend on GitHub Pages / Vercel | Neon or managed Postgres | When Streamlit limits are hit or a mobile-first UI is needed |
+| **Phase 1** | Oracle Cloud AMD micro | Static Next.js on GitHub Pages | Supabase Postgres free tier, or static JSON artifacts generated from the bot | Default |
+| **Backend option** | Oracle Cloud or any VPS | Next.js on Vercel or GitHub Pages + API | Supabase or Neon Postgres | When server-side secrets, API aggregation, or scheduled computation are needed |
+| **Scale-out** | Any VPS | Next.js frontend on Vercel, Cloudflare Pages, or another static/PaaS host | Managed Postgres | When richer realtime delivery, auth, or mobile-first UI is needed |
 
 **What stays stable across all stages:**
-- FastAPI endpoint contracts and WebSocket protocol
-- Trade data model (Neon Postgres schema unchanged)
-- Dashboard UI logic — only the API base URL config changes
+- Provider-neutral trade, order, position, equity, OHLCV, and operational metric schemas
+- Dashboard read model and chart annotation contracts
+- UI components and charting layer; only the data source adapter changes
 
 ---
 
@@ -437,7 +451,7 @@ Dashboard
 
 When the user opens the dashboard, always show the Live View: equity curve, open positions, trade feed, and stock charts. The dashboard has no concept of market hours — it shows the same layout at all times.
 
-Performance metric calculations that are time-dependent (e.g., "today's P&L") are handled server-side using trade timestamps. The UI always requests the same data; the API returns whatever is current.
+Performance metric calculations that are time-dependent (e.g., "today's P&L") are handled upstream using trade timestamps. The UI always requests the same dashboard read model; the data source returns whatever is current.
 
 ---
 
@@ -447,28 +461,31 @@ Performance metric calculations that are time-dependent (e.g., "today's P&L") ar
 
 | Data | Source | Update Frequency |
 |------|--------|------------------|
-| Account equity | Trading bot (via API) | Real-time on position changes |
-| Open positions | Trading bot (via API) | Real-time |
+| Account equity | Trading bot persistence layer | On trade/order/equity events; mark-to-market at configured market-data cadence |
+| Open positions | Trading bot persistence layer | 1-minute refresh while active; 5-minute refresh while flat |
 | Trade history | Trading bot database | On each trade |
-| Current prices | Trading bot (from data provider) | Real-time during market hours |
+| Current prices | Trading bot (from broker/data provider; currently IB) | Latest available quote/bar based on provider and bot polling cadence |
+| Historical price bars | Trading bot price data store | Persist each completed OHLCV bar used by the strategy/dashboard |
 | Health metrics | Trading bot health monitor | Every 10 seconds |
-| Order events | Trading bot (via WebSocket) | Real-time |
+| Order events | Trading bot broker adapter | On each order lifecycle event |
 
 ### 6.2 Calculated Metrics
 
-All performance metrics (expectancy, Sharpe, etc.) should be calculated on the dashboard side from raw trade data to:
-- Avoid duplicating calculation logic
-- Allow flexible time period filtering
-- Enable breakdown views without pre-aggregation
+Performance metrics should be calculated upstream by the trading bot, backtester, or a lightweight backend/job, then stored in dashboard-ready form. The dashboard may perform simple client-side filtering, grouping, and formatting, but it should not own canonical trading metric calculations.
+
+This keeps the dashboard static-hosting friendly and avoids duplicating financial calculation logic across the bot, backtester, and UI. The dashboard data contract should still preserve enough raw records to support future recomputation and audit.
 
 ### 6.3 Historical Data Retention
 
 | Data Type | Retention |
 |-----------|-----------|
 | Trade records | Indefinite |
+| Price bars (OHLCV) | P0: intraday 5-minute bars for dashboard-traded symbols retained for at least 2 years; daily bars retained indefinitely |
 | Equity snapshots | Daily close for 5 years; intraday (5-min) for 90 days |
 | Health metrics | 90 days |
 | Order events | 1 year |
+
+**P0 price data storage requirement:** Build and own a durable stock price data store as part of Phase 1. The trading bot should persist normalized OHLCV bars for every symbol/timeframe needed by the dashboard, starting with 5-minute bars for currently traded symbols. Provider-specific ingestion details, currently IB market data, must be isolated from the dashboard read model so historical chart rendering still works if the provider changes later.
 
 ### 6.4 Database Requirements
 
@@ -477,7 +494,7 @@ All performance metrics (expectancy, Sharpe, etc.) should be calculated on the d
 | Environment | Database | Rationale |
 |-------------|----------|-----------|
 | Local development | SQLite (`./data/trades.db`) | Zero setup, already implemented, sufficient for local testing |
-| Production | **Neon Postgres** (free tier) | Dashboard runs on Render (separate machine from the bot); cannot read a SQLite file on the Oracle Cloud VM. Neon is free, never pauses, and the schema migrates 1:1 from SQLite. |
+| Production | **Supabase Postgres** (free tier) for static Phase 1; **Neon Postgres** if an API/backend is added | Dashboard runs separately from the bot and cannot read a SQLite file on the Oracle Cloud VM. Supabase is simpler for a static browser dashboard because it exposes REST with read-only anon access policies. Neon is viable when credentials stay behind an API or export job. |
 
 **Current gap — prerequisite for the dashboard to function:**
 
@@ -491,6 +508,8 @@ This must be resolved before the dashboard can display any meaningful data. It i
 **Required behaviour once fixed:**
 - Every filled order entry must create a trade record (symbol, side, quantity, fill price, timestamp, strategy)
 - Every position close must update that record (exit price, exit timestamp, P&L, status = closed)
+- Price bars must be persisted with symbol, timeframe, timestamp, OHLCV, provider, and ingestion timestamp
+- Core records should include an `account_id` or equivalent account key even though Phase 1 only displays one account
 - Records must survive bot restarts — the SQLite file is the source of truth
 
 ---
@@ -500,11 +519,12 @@ This must be resolved before the dashboard can display any meaningful data. It i
 ### Phase 1: Core Live Monitoring (MVP)
 **Target:** 2 weeks
 
-**Prerequisite (trading bot, not dashboard):** Wire trade persistence — bot must write trade entries and exits to SQLite before Phase 1 dashboard work begins. Without this, all dashboard data will be empty.
+**Prerequisite (trading bot, not dashboard):** Wire trade and price persistence — bot must write trade entries, exits, and dashboard-required OHLCV bars to durable storage before Phase 1 dashboard work begins. Without this, dashboard trade history, charts, and performance metrics will be empty or incomplete.
 
 | Feature | Priority |
 |---------|----------|
 | [Prereq] Trade persistence wired in trading bot execution path | P0 |
+| [Prereq] Stock price data persistence for dashboard symbols/timeframes | P0 |
 | Live equity curve | P0 |
 | Open positions panel | P0 |
 | Live trade feed | P0 |
@@ -512,7 +532,7 @@ This must be resolved before the dashboard can display any meaningful data. It i
 | Remote access via HTTPS (no login required) | P0 |
 | Intraday stock charts (candlestick + ORB levels + trade markers) | P0 |
 | Strategy status summary per symbol | P0 |
-| Free hosting on Oracle Cloud Always Free | P0 (hard requirement) |
+| Free hosting via static Next.js on GitHub Pages | P0 (hard requirement) |
 
 ### Phase 2: Performance Analytics
 **Target:** 2 weeks after Phase 1
@@ -524,7 +544,7 @@ This must be resolved before the dashboard can display any meaningful data. It i
 | Extended trading metrics | P1 |
 | Symbol breakdown | P1 |
 | Strategy breakdown | P1 |
-| Per-strategy indicator overlays (ATR-14, volume MA-20) | P1 |
+| Configurable per-strategy indicator overlays (ATR-14, volume MA-20, trailing-stop levels) | P1 |
 
 ### Phase 3: Operational Excellence
 **Target:** 2 weeks after Phase 2
@@ -553,12 +573,13 @@ This must be resolved before the dashboard can display any meaningful data. It i
 
 | # | Question | Impact | Resolution Required By | Status |
 |---|----------|--------|------------------------|--------|
-| 1 | Should the dashboard support multiple trading accounts? | Affects data model and UI | Phase 1 | **Resolved: No.** Single account only for now. |
+| 1 | Should the dashboard support multiple trading accounts? | Affects data model and UI | Phase 1 | **Resolved: Single-account UI in Phase 1.** Data model should remain multi-account extensible by including account identifiers on account, position, order, trade, equity, and operational metric records. |
 | 2 | Should there be multiple user access levels (admin vs. viewer)? | Affects authentication design | Phase 1 | **Resolved: No auth in Phase 1.** Dashboard is publicly accessible. No login, no roles. Revisit in a later phase if the URL is shared more broadly. |
-| 3 | Should real-time price data be included (beyond position values)? | Affects data bandwidth requirements | Phase 1 | **Resolved: Yes.** Stock charts require real-time OHLCV data. Sourced from the bot's existing data provider (Finnhub/Polygon). |
+| 3 | Should real-time price data be included (beyond position values)? | Affects data bandwidth requirements | Phase 1 | **Resolved: Yes, with bounded cadence.** Stock charts require latest OHLCV/quote data from the bot's provider adapter, currently IB. Updates follow bot/provider cadence rather than forcing 2-second polling. |
 | 4 | Should the dashboard include backtesting comparison views? | Affects scope significantly | Phase 2 | Open |
 | 5 | Should alerts be pushed to email/SMS in addition to dashboard? | Affects notification infrastructure | Phase 3 | Open |
-| 6 | What free hosting platform to use for the dashboard? | Affects deployment architecture | Phase 1 | **Resolved: Oracle Cloud Always Free** — co-host bot, FastAPI, and Streamlit on the same VM. No cold starts. Reads SQLite directly. Caddy handles HTTPS. See §4.5 for why Render, Grafana, and GitHub Pages were ruled out. |
+| 6 | What free hosting platform to use for the dashboard? | Affects deployment architecture | Phase 1 | **Resolved: GitHub Pages with static Next.js export.** The dashboard is a read-only visualization layer. Computation and provider-specific ingestion happen upstream. |
+| 7 | Should Phase 1 use Supabase or Neon for managed Postgres? | Affects static hosting simplicity and data availability | Phase 1 | **Tentative: Supabase for static Phase 1.** Manual unpause is acceptable if data is preserved. Verify pause/retention behavior before production; use Neon if a backend/API is introduced. |
 
 ---
 
@@ -577,6 +598,7 @@ This must be resolved before the dashboard can display any meaningful data. It i
 
 ### 9.2 Related Documents
 
+- `docs/trading-bot-mvp/dashboards/TDS-live-dashboard.md` - Technical design spec for implementation
 - `CLAUDE.md` - Trading bot code patterns and architecture
 - `CLAUDE_MEMORY.md` - Lessons learned and incident fixes
 - `vibe/trading_bot/notifications/payloads.py` - Current event types and data structures
@@ -587,6 +609,7 @@ This must be resolved before the dashboard can display any meaningful data. It i
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
+| 1.9.0 | 2026-07-17 | Copilot | Published PRD; revised live dashboard direction: IB/provider-neutral telemetry, realistic market-data cadence, P0 price data storage, single-account Phase 1 with multi-account extensible data model, static Next.js/GitHub Pages hosting, Supabase vs. Neon tradeoff, and configurable strategy overlays/parameters |
 | 1.8.0 | 2026-04-17 | Claude | Revised §4.5: 1 vCPU constraint means bot must be sole VM tenant; dashboard on Render (cold start acceptable for monitoring tool) + Neon Postgres; updated migration path |
 | 1.7.0 | 2026-04-17 | Claude | Revised §4.5: ARM Ampere (not AMD), two-container isolation rationale, Neon as DB migration target; ruled out Render (spin-down), Supabase (pausing), Fly.io (RAM), Grafana, GitHub Pages |
 | 1.6.0 | 2026-04-17 | Claude | Added migration path to §4.5: SQLite→Postgres as the unlock for separating dashboard from bot VM; Streamlit→JS as the path to static hosting |
