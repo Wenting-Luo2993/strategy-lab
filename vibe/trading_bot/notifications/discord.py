@@ -10,6 +10,7 @@ from vibe.trading_bot.notifications.payloads import (
     OrderNotificationPayload,
     TradeClosedPayload,
     SystemStatusPayload,
+    SystemAlertPayload,
     ORBLevelsPayload,
 )
 from vibe.trading_bot.notifications.formatter import DiscordNotificationFormatter
@@ -236,6 +237,38 @@ class DiscordNotifier:
 
         except Exception as e:
             logger.error(f"Error sending ORB notification: {e}", exc_info=True)
+            return False
+
+    async def send_system_alert(self, payload: SystemAlertPayload) -> bool:
+        """Send a system warning/error notification immediately."""
+        if not self._session:
+            logger.error("Session not initialized")
+            return False
+
+        try:
+            message = self.formatter.format_system_alert(payload)
+
+            wait_time = await self.rate_limiter.acquire()
+            if wait_time > 0:
+                logger.debug(f"Rate limit: waiting {wait_time:.2f}s before sending")
+
+            async with self._session.post(
+                self.webhook_url,
+                json=message,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status in self.SUCCESS_STATUS_CODES:
+                    logger.info("System alert notification sent: %s", payload.event_type)
+                    return True
+                logger.error(
+                    "Failed to send system alert: %s (text: %s)",
+                    response.status,
+                    await response.text(),
+                )
+                return False
+
+        except Exception as e:
+            logger.error(f"Error sending system alert: {e}", exc_info=True)
             return False
 
     async def _worker(self) -> None:

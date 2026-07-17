@@ -6,6 +6,7 @@ from vibe.trading_bot.notifications.payloads import (
     OrderNotificationPayload,
     TradeClosedPayload,
     SystemStatusPayload,
+    SystemAlertPayload,
     ORBLevelsPayload,
     DailySummaryPayload,
 )
@@ -29,6 +30,8 @@ class DiscordNotificationFormatter:
         "MARKET_START": 0x2ecc71,    # Green
         "MARKET_CLOSE": 0xf39c12,    # Orange
         "ORB_ESTABLISHED": 0x9b59b6,  # Purple
+        "SYSTEM_WARNING": 0xf39c12,   # Orange
+        "SYSTEM_ERROR": 0xe74c3c,     # Red
     }
 
     STATUS_COLORS = {
@@ -386,6 +389,34 @@ class DiscordNotificationFormatter:
             "timestamp": payload.timestamp.isoformat(),
             "footer": {"text": "Trading Bot Status"}
         }
+
+    def format_system_alert(self, payload: SystemAlertPayload) -> Dict[str, Any]:
+        """Format system warning/error payload into Discord webhook message."""
+        color = self.COLORS.get(payload.event_type, 0x95a5a6)
+        fields = [
+            {"name": "Severity", "value": payload.severity.upper(), "inline": True},
+        ]
+        if payload.component:
+            fields.append({"name": "Component", "value": payload.component, "inline": True})
+        if payload.action_required:
+            fields.append({"name": "Action Required", "value": payload.action_required, "inline": False})
+        if payload.details:
+            for key, value in payload.details.items():
+                fields.append({"name": key, "value": str(value), "inline": True})
+
+        footer_text = "Trading Bot Alert"
+        if payload.version:
+            footer_text = f"Trading Bot {payload.version}"
+
+        embed = {
+            "title": payload.title,
+            "description": payload.message,
+            "color": color,
+            "fields": fields,
+            "timestamp": payload.timestamp.isoformat(),
+            "footer": {"text": footer_text},
+        }
+        return {"embeds": [embed]}
 
     def format_orb_levels(self, payload: ORBLevelsPayload) -> Dict[str, Any]:
         """Format ORB levels payload into Discord webhook message.

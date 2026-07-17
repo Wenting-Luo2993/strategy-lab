@@ -29,6 +29,14 @@ except ImportError:  # pragma: no cover - exercised by environments without ib_i
 logger = logging.getLogger(__name__)
 
 
+class IBOperatorActionRequired(RuntimeError):
+    """Raised when IB Gateway requires manual operator action before API use."""
+
+
+class IBConnectionFailed(RuntimeError):
+    """Raised when IB Gateway connection fails after bounded retries."""
+
+
 class InteractiveBrokersAPI:
     """Interactive Brokers adapter for TWS or IB Gateway."""
 
@@ -40,6 +48,10 @@ class InteractiveBrokersAPI:
         account_id: Optional[str] = None,
         exchange: str = "SMART",
         currency: str = "USD",
+        market_data_type: int = 1,
+        connect_timeout: float = 20.0,
+        connect_max_retries: int = 3,
+        connect_retry_delay_seconds: float = 2.0,
         readonly: bool = False,
     ):
         if IB is None:
@@ -51,24 +63,91 @@ class InteractiveBrokersAPI:
         self.account_id = account_id
         self.exchange = exchange
         self.currency = currency
+        self.market_data_type = market_data_type
+        self.connect_timeout = connect_timeout
+        self.connect_max_retries = max(connect_max_retries, 1)
+        self.connect_retry_delay_seconds = max(connect_retry_delay_seconds, 0.0)
         self.readonly = readonly
         self.ib = IB()
-        self._trades: Dict[str, Trade] = {}
+        self._last_error_code: Optional[int] = None
+        self._last_error_message: Optional[str] = None
+        self.ib.errorEvent += self._handle_ib_error
+        self._trades: Dict[str, Any] = {}
         self._submitted_orders: Dict[str, BrokerOrder] = {}
+
+    def _handle_ib_error(self, req_id: int, error_code: int, error_string: str, *args: Any) -> None:
+        """Capture IB API errors emitted during async connection and requests."""
+        self._last_error_code = error_code
+        self._last_error_message = error_string
+        if error_code == 10141:
+            logger.error("IB Gateway requires paper trading disclaimer acceptance before API use")
 
     async def connect(self) -> bool:
         """Connect to TWS or IB Gateway."""
         if self.ib.isConnected():
             return True
 
-        await self.ib.connectAsync(
-            self.host,
-            self.port,
-            clientId=self.client_id,
-            account=self.account_id or "",
-        )
+        last_exception: Optional[BaseException] = None
+        for attempt in range(1, self.connect_max_retries + 1):
+            self._last_error_code = None
+            self._last_error_message = None
+            try:
+                await self.ib.connectAsync(
+                    self.host,
+                    self.port,
+                    clientId=self.client_id,
+                    account=self.account_id or "",
+                    timeout=self.connect_timeout,
+                )
+                break
+            except Exception as exc:
+                last_exception = exc
+                if self._requires_operator_action(exc):
+                    await self.disconnect()
+                    raise IBOperatorActionRequired(
+                        "IB Gateway rejected API access because the paper trading disclaimer "
+                        "has not been accepted. Accept the disclaimer in Gateway, then restart "
+                        "the trading bot service."
+                    ) from exc
+
+                await self.disconnect()
+                if attempt >= self.connect_max_retries:
+                    raise IBConnectionFailed(
+                        f"Failed to connect to IB Gateway at {self.host}:{self.port} "
+                        f"after {self.connect_max_retries} attempts"
+                    ) from exc
+
+                logger.warning(
+                    "IB connection attempt %s/%s failed: %s; retrying in %.1fs",
+                    attempt,
+                    self.connect_max_retries,
+                    exc,
+                    self.connect_retry_delay_seconds,
+                )
+                if self.connect_retry_delay_seconds > 0:
+                    await asyncio.sleep(self.connect_retry_delay_seconds)
+
+        if last_exception and not self.ib.isConnected():
+            raise IBConnectionFailed(
+                f"Failed to connect to IB Gateway at {self.host}:{self.port} "
+                f"after {self.connect_max_retries} attempts"
+            ) from last_exception
+
+        if self._requires_operator_action(None):
+            await self.disconnect()
+            raise IBOperatorActionRequired(
+                "IB Gateway rejected API access because the paper trading disclaimer has not been accepted."
+            )
+
         logger.info("Connected to IB at %s:%s client_id=%s", self.host, self.port, self.client_id)
         return self.ib.isConnected()
+
+    def _requires_operator_action(self, exc: Optional[BaseException]) -> bool:
+        """Return True when the last IB error indicates a manual Gateway action is needed."""
+        message = self._last_error_message or ""
+        if exc is not None:
+            message = f"{message} {exc}"
+        return self._last_error_code == 10141 or "Paper trading disclaimer" in message
 
     async def disconnect(self) -> bool:
         """Disconnect from IB."""
@@ -80,6 +159,7 @@ class InteractiveBrokersAPI:
     async def get_market_data(self, symbol: str, timeout_seconds: float = 15.0) -> BrokerQuote:
         """Request a market data snapshot for a stock symbol."""
         contract = await self._stock_contract(symbol)
+        self.ib.reqMarketDataType(self.market_data_type)
         ticker = self.ib.reqMktData(contract, "", False, False)
         deadline = asyncio.get_running_loop().time() + timeout_seconds
 
@@ -173,15 +253,18 @@ class InteractiveBrokersAPI:
 
     async def get_account_info(self) -> BrokerAccount:
         """Return selected IB account summary values."""
-        values = self.ib.accountSummary(self.account_id or "")
-        summary = {item.tag: item.value for item in values if item.currency in {self.currency, ""}}
+        values = await self.ib.accountSummaryAsync(self.account_id or "")
+        account_id = self.account_id or next((item.account for item in values if item.account), None)
+        net_liquidation, account_currency = self._find_account_summary_value(values, "NetLiquidation", account_id)
+        cash, _ = self._find_account_summary_value(values, "TotalCashValue", account_id)
+        buying_power, _ = self._find_account_summary_value(values, "BuyingPower", account_id)
 
         return BrokerAccount(
-            account_id=self.account_id,
-            net_liquidation=self._parse_float(summary.get("NetLiquidation")),
-            cash=self._parse_float(summary.get("TotalCashValue")),
-            buying_power=self._parse_float(summary.get("BuyingPower")),
-            currency=self.currency,
+            account_id=account_id,
+            net_liquidation=self._parse_float(net_liquidation),
+            cash=self._parse_float(cash),
+            buying_power=self._parse_float(buying_power),
+            currency=account_currency or self.currency,
         )
 
     async def get_positions(self) -> List[BrokerPosition]:
@@ -220,11 +303,11 @@ class InteractiveBrokersAPI:
     def _to_ib_order(self, order: BrokerOrder):
         action = "BUY" if order.side == "buy" else "SELL"
         if order.order_type == "market":
-            return MarketOrder(action, order.quantity)
+            return MarketOrder(action, order.quantity, tif="DAY")
         if order.order_type == "limit":
-            return LimitOrder(action, order.quantity, order.limit_price)
+            return LimitOrder(action, order.quantity, order.limit_price, tif="DAY")
         if order.order_type == "stop":
-            return StopOrder(action, order.quantity, order.stop_price)
+            return StopOrder(action, order.quantity, order.stop_price, tif="DAY")
         raise ValueError(f"Unsupported IB order_type: {order.order_type}")
 
     def _require_trade(self, broker_order_id: str):
@@ -249,8 +332,21 @@ class InteractiveBrokersAPI:
         except (TypeError, ValueError):
             return None
 
+    def _find_account_summary_value(self, values: Any, tag: str, account_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        candidates = [item for item in values if item.tag == tag and (not account_id or item.account in {account_id, "All"})]
+        for currency in (self.currency, "BASE", ""):
+            for item in candidates:
+                if item.currency == currency:
+                    return item.value, item.currency or None
+        for item in candidates:
+            if item.account != "All":
+                return item.value, item.currency or None
+        if candidates:
+            return candidates[0].value, candidates[0].currency or None
+        return None, None
+
     @staticmethod
-    def _resolve_avg_fill_price(trade: Trade) -> float:
+    def _resolve_avg_fill_price(trade: Any) -> float:
         avg_price = InteractiveBrokersAPI._parse_float(getattr(trade.orderStatus, "avgFillPrice", None))
         if avg_price and avg_price > 0:
             return avg_price
@@ -261,7 +357,7 @@ class InteractiveBrokersAPI:
         raise RuntimeError("IB fill event did not include an average fill price")
 
     @staticmethod
-    def _resolve_commission(trade: Trade) -> float:
+    def _resolve_commission(trade: Any) -> float:
         commissions = []
         for fill in getattr(trade, "fills", []):
             report = getattr(fill, "commissionReport", None)

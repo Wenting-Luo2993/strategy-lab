@@ -4,9 +4,32 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from scripts.ib_paper_smoke import optional_float, parse_market_data_type, parse_symbols
 from vibe.trading_bot.brokers.base import BrokerOrder, FillEvent
 from vibe.trading_bot.storage.metrics_store import MetricsStore
 from vibe.trading_bot.storage.operational_metrics import OperationalMetricsRecorder
+
+
+def test_ib_smoke_parse_symbols_normalizes_comma_separated_values():
+    assert parse_symbols(" qqq,GOOGL, amzn ,TSLA ") == ["QQQ", "GOOGL", "AMZN", "TSLA"]
+
+
+def test_ib_smoke_parse_symbols_requires_at_least_one_symbol():
+    with pytest.raises(ValueError, match="At least one symbol is required"):
+        parse_symbols(" , ")
+
+
+def test_ib_smoke_optional_float_handles_empty_values():
+    assert optional_float(None) is None
+    assert optional_float("") is None
+    assert optional_float("123.45") == 123.45
+
+
+def test_ib_smoke_parse_market_data_type_accepts_names_and_numbers():
+    assert parse_market_data_type("live") == 1
+    assert parse_market_data_type("delayed") == 3
+    assert parse_market_data_type("delayed-frozen") == 4
+    assert parse_market_data_type("2") == 2
 
 
 def test_broker_order_requires_positive_quantity():
