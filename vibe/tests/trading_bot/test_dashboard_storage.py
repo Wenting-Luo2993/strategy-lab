@@ -179,6 +179,38 @@ def test_publish_outbox_resets_stale_publishing_rows(tmp_path):
     store.close()
 
 
+def test_publish_outbox_refreshes_pending_payload(tmp_path):
+    store = PublishOutboxStore(str(tmp_path / "publish_outbox.db"))
+    event_time = datetime(2026, 7, 20, 13, 30)
+
+    store.enqueue_event(PublishOutboxEvent(
+        event_id="order_event:ORDER_FILLED:1",
+        event_type="upsert",
+        aggregate_type="order_event",
+        aggregate_id="ORDER_FILLED:1",
+        destination="supabase",
+        payload={"event_id": "ORDER_FILLED:1", "trade_id": None},
+        original_event_timestamp=event_time,
+        next_retry_at=event_time,
+    ))
+    store.enqueue_event(PublishOutboxEvent(
+        event_id="order_event:ORDER_FILLED:1",
+        event_type="upsert",
+        aggregate_type="order_event",
+        aggregate_id="ORDER_FILLED:1",
+        destination="supabase",
+        payload={"event_id": "ORDER_FILLED:1", "trade_id": "DU123:1"},
+        original_event_timestamp=event_time,
+        next_retry_at=event_time,
+    ))
+
+    event = store.get_event("order_event:ORDER_FILLED:1")
+
+    assert store.count_by_status("pending") == 1
+    assert event["payload"]["trade_id"] == "DU123:1"
+    store.close()
+
+
 def test_trade_store_dashboard_columns_and_account_backfill(tmp_path):
     store = TradeStore(str(tmp_path / "trades.db"))
     trade_id = store.insert_trade(Trade(

@@ -17,12 +17,25 @@ from vibe.trading_bot.data.providers.finnhub import FinnhubWebSocketClient
 from vibe.trading_bot.data.providers.factory import DataProviderFactory
 from vibe.trading_bot.data.providers.types import RealtimeDataProvider, WebSocketDataProvider, RESTDataProvider
 from vibe.trading_bot.storage.trade_store import TradeStore
+from vibe.trading_bot.storage.metrics_store import MetricType, MetricsStore
+from vibe.trading_bot.storage.dashboard_store import (
+    AccountRecord,
+    DashboardStore,
+    EquitySnapshot,
+    OrderEvent,
+    PositionSnapshot,
+    PriceBar,
+    PriceBarStore,
+    PublishOutboxEvent,
+    PublishOutboxStore,
+)
 import pandas as pd
 from vibe.trading_bot.exchange.mock_exchange import MockExchange
 from vibe.trading_bot.exchange.ib_exchange import InteractiveBrokersExecutionEngine
 from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
 from vibe.trading_bot.execution.order_manager import OrderManager, OrderRetryPolicy
 from vibe.trading_bot.execution.trade_executor import TradeExecutor
+from vibe.common.models import Trade
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
 from vibe.common.strategies.orb import ORBStrategyConfig
@@ -92,6 +105,21 @@ class TradingOrchestrator:
             self.market_scheduler: BaseMarketScheduler = market_scheduler
         self.health_monitor = HealthMonitor()
         self.trade_store = TradeStore(db_path=self.config.database_path)
+        self.operational_metrics_store: Optional[MetricsStore] = None
+        if self.config.operational_metrics.enabled:
+            self.operational_metrics_store = MetricsStore(db_path=self.config.operational_metrics.local_database_path)
+        self.dashboard_price_store: Optional[PriceBarStore] = None
+        self.dashboard_store: Optional[DashboardStore] = None
+        self.dashboard_outbox_store: Optional[PublishOutboxStore] = None
+        self.dashboard_publish_wake_event = asyncio.Event()
+        self._dashboard_order_trade_ids: Dict[str, str] = {}
+        self._dashboard_symbol_trade_ids: Dict[str, str] = {}
+        self._dashboard_trade_row_ids: Dict[str, int] = {}
+        self._dashboard_metric_recorded_events: set[str] = set()
+        if self.config.dashboard.enabled:
+            self.dashboard_price_store = PriceBarStore(db_path=self.config.dashboard.local_price_db_path)
+            self.dashboard_store = DashboardStore(db_path=self.config.dashboard.local_dashboard_db_path)
+            self.dashboard_outbox_store = PublishOutboxStore(db_path=self.config.dashboard.local_outbox_db_path)
 
         # Retry/backoff state
         self._consecutive_failures = 0
@@ -192,6 +220,450 @@ class TradingOrchestrator:
             return list(self.ruleset.instruments.symbols)
         return list(self.config.trading.symbols)
 
+    def _dashboard_enabled(self) -> bool:
+        return bool(
+            self.config.dashboard.enabled
+            and self.dashboard_store is not None
+            and self.dashboard_outbox_store is not None
+        )
+
+    def _dashboard_account_id(self) -> str:
+        return (
+            self.config.dashboard.account_id
+            or self.config.broker.ib_account_id
+            or "default"
+        )
+
+    def _dashboard_broker_name(self) -> str:
+        broker_type = getattr(self.config.broker, "broker_type", "mock")
+        return "interactive_brokers" if broker_type == "interactive_brokers" else broker_type
+
+    def _enqueue_dashboard_event(
+        self,
+        *,
+        event_id: str,
+        event_type: str,
+        aggregate_type: str,
+        aggregate_id: str,
+        payload: Dict[str, Any],
+        original_event_timestamp: datetime | str,
+    ) -> None:
+        if self.dashboard_outbox_store is None:
+            return
+        try:
+            self.dashboard_outbox_store.enqueue_event(PublishOutboxEvent(
+                event_id=event_id,
+                event_type=event_type,
+                aggregate_type=aggregate_type,
+                aggregate_id=aggregate_id,
+                destination=self.config.dashboard.remote_provider,
+                payload=payload,
+                original_event_timestamp=original_event_timestamp,
+            ))
+            self.dashboard_publish_wake_event.set()
+        except Exception as exc:
+            self.logger.warning("Dashboard outbox enqueue failed for %s: %s", event_id, exc)
+
+    def _trade_payload_from_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "trade_id": row.get("trade_id") or str(row.get("id")),
+            "account_id": row.get("account_id"),
+            "symbol": row.get("symbol"),
+            "side": "long" if row.get("side") == "buy" else "short",
+            "quantity": row.get("quantity"),
+            "entry_price": row.get("entry_price"),
+            "entry_time": row.get("entry_time"),
+            "exit_price": row.get("exit_price"),
+            "exit_time": row.get("exit_time"),
+            "status": row.get("status"),
+            "pnl": row.get("pnl"),
+            "pnl_pct": row.get("pnl_pct"),
+            "strategy": row.get("strategy"),
+            "exit_reason": row.get("exit_reason"),
+            "broker_order_id": row.get("broker_order_id"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+
+    def _enqueue_trade_row(self, trade_id: str, original_event_timestamp: datetime | str) -> None:
+        row_id = self._dashboard_trade_row_ids.get(trade_id)
+        if row_id is None:
+            return
+        row = self.trade_store.get_trade_by_id(row_id)
+        if row is None:
+            return
+        self._enqueue_dashboard_event(
+            event_id=f"trade:{trade_id}",
+            event_type="upsert",
+            aggregate_type="trade",
+            aggregate_id=trade_id,
+            payload=self._trade_payload_from_row(row),
+            original_event_timestamp=original_event_timestamp,
+        )
+
+    async def _persist_dashboard_trade_entry(
+        self,
+        *,
+        symbol: str,
+        order_id: str,
+        signal_value: int,
+        quantity: float,
+        entry_price: float,
+        entry_time: datetime,
+    ) -> Optional[str]:
+        if not self.config.dashboard.enabled:
+            return None
+        try:
+            account_id = self._dashboard_account_id()
+            trade_id = f"{account_id}:{order_id}"
+            trade_side = "buy" if signal_value == 1 else "sell"
+            trade = Trade(
+                trade_id=trade_id,
+                symbol=symbol,
+                side=trade_side,
+                quantity=quantity,
+                entry_price=entry_price,
+                entry_time=entry_time,
+                strategy=self.strategy.config.name if self.strategy else "orb",
+            )
+            row_id = self.trade_store.insert_trade(trade)
+            self.trade_store.update_trade(
+                row_id,
+                account_id=account_id,
+                broker_order_id=order_id,
+                status="open",
+            )
+            self._dashboard_order_trade_ids[order_id] = trade_id
+            self._dashboard_symbol_trade_ids[symbol] = trade_id
+            self._dashboard_trade_row_ids[trade_id] = row_id
+            self._enqueue_trade_row(trade_id, entry_time)
+            await self._record_dashboard_order_event("ORDER_SENT", order_id)
+            await self._record_dashboard_order_event("ORDER_FILLED", order_id)
+            return trade_id
+        except Exception as exc:
+            self.logger.warning("Dashboard trade entry persistence failed for %s: %s", order_id, exc)
+            return None
+
+    async def _persist_dashboard_trade_exit(
+        self,
+        *,
+        symbol: str,
+        order_id: str,
+        exit_price: float,
+        exit_time: datetime,
+        exit_reason: str,
+    ) -> None:
+        if not self.config.dashboard.enabled:
+            return
+        try:
+            trade_id = self._dashboard_symbol_trade_ids.get(symbol)
+            if trade_id is None:
+                return
+            row_id = self._dashboard_trade_row_ids.get(trade_id)
+            if row_id is None:
+                return
+            row = self.trade_store.get_trade_by_id(row_id)
+            if row is None:
+                return
+            entry_price = float(row["entry_price"])
+            quantity = float(row["quantity"])
+            if row["side"] == "buy":
+                pnl = (exit_price - entry_price) * quantity
+                pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price else 0.0
+            else:
+                pnl = (entry_price - exit_price) * quantity
+                pnl_pct = ((entry_price - exit_price) / entry_price) * 100 if entry_price else 0.0
+            self.trade_store.update_trade(
+                row_id,
+                exit_price=exit_price,
+                exit_time=exit_time.isoformat(),
+                status="closed",
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                exit_reason=exit_reason,
+                broker_order_id=order_id,
+            )
+            self._dashboard_order_trade_ids[order_id] = trade_id
+            self._enqueue_trade_row(trade_id, exit_time)
+            await self._record_dashboard_order_event("TRADE_CLOSED", order_id)
+            self._dashboard_symbol_trade_ids.pop(symbol, None)
+        except Exception as exc:
+            self.logger.warning("Dashboard trade exit persistence failed for %s: %s", order_id, exc)
+
+    def _record_dashboard_fill_metrics(
+        self,
+        *,
+        order: Any,
+        event_type: str,
+        timestamp: datetime,
+        slippage_bps: Optional[float],
+    ) -> None:
+        if self.operational_metrics_store is None:
+            return
+        try:
+            metric_key = f"{event_type}:{order.order_id}"
+            if metric_key in self._dashboard_metric_recorded_events:
+                return
+            account_id = self._dashboard_account_id()
+            dimensions = {
+                "account_id": account_id,
+                "broker": self._dashboard_broker_name(),
+                "symbol": order.symbol,
+                "side": order.side,
+                "broker_order_id": order.order_id,
+                "event_type": event_type,
+                "status": getattr(order.status, "name", str(order.status)),
+            }
+            samples = [
+                ("actual_fill_price", order.avg_price),
+                ("fill_quantity", order.filled_qty),
+                ("commission", order.commission),
+            ]
+            if order.price not in (None, 0):
+                samples.append(("expected_fill_price", order.price))
+            if slippage_bps is not None:
+                samples.append(("slippage_bps", slippage_bps))
+
+            for metric_name, metric_value in samples:
+                metric_id = self.operational_metrics_store.record_metric(
+                    metric_type=MetricType.TRADE.value,
+                    metric_name=metric_name,
+                    metric_value=float(metric_value or 0.0),
+                    dimensions=dimensions,
+                    timestamp=timestamp.isoformat(),
+                )
+                aggregate_id = f"{metric_name}:{order.order_id}:{metric_id}"
+                self._enqueue_dashboard_event(
+                    event_id=f"metric:{aggregate_id}",
+                    event_type="upsert",
+                    aggregate_type="metric",
+                    aggregate_id=aggregate_id,
+                    payload={
+                        "metric_name": metric_name,
+                        "metric_value": float(metric_value or 0.0),
+                        "dimensions": dimensions,
+                        "timestamp": timestamp.isoformat(),
+                    },
+                    original_event_timestamp=timestamp,
+                )
+            self._dashboard_metric_recorded_events.add(metric_key)
+        except Exception as exc:
+            self.logger.warning("Dashboard fill metric persistence failed for %s: %s", order.order_id, exc)
+
+    def _persist_dashboard_price_bar(self, symbol: str, bar_dict: dict) -> None:
+        if not self.config.dashboard.enabled or self.dashboard_price_store is None:
+            return
+        try:
+            bar_start = bar_dict.get("timestamp")
+            if bar_start is None:
+                return
+            provider = self.active_provider.provider_name if self.active_provider else "unknown"
+            ingestion_time = datetime.utcnow()
+            price_bar = PriceBar(
+                symbol=symbol,
+                timeframe=self._bar_interval,
+                bar_start=bar_start,
+                open=float(bar_dict["open"]),
+                high=float(bar_dict["high"]),
+                low=float(bar_dict["low"]),
+                close=float(bar_dict["close"]),
+                volume=float(bar_dict.get("volume", 0.0)),
+                provider=provider,
+                ingestion_time=ingestion_time,
+                is_complete=True,
+            )
+            self.dashboard_price_store.upsert_bar(price_bar)
+            bar_start_text = bar_start.isoformat() if isinstance(bar_start, datetime) else str(bar_start)
+            aggregate_id = f"{symbol}|{self._bar_interval}|{bar_start_text}"
+            self._enqueue_dashboard_event(
+                event_id=f"price_bar:{aggregate_id}",
+                event_type="upsert",
+                aggregate_type="price_bar",
+                aggregate_id=aggregate_id,
+                payload={
+                    "symbol": symbol,
+                    "timeframe": self._bar_interval,
+                    "bar_start": bar_start_text,
+                    "open": price_bar.open,
+                    "high": price_bar.high,
+                    "low": price_bar.low,
+                    "close": price_bar.close,
+                    "volume": price_bar.volume,
+                    "provider": provider,
+                    "ingestion_time": ingestion_time.isoformat(),
+                    "is_complete": True,
+                },
+                original_event_timestamp=bar_start,
+            )
+        except Exception as exc:
+            self.logger.warning("Dashboard price bar persistence failed for %s: %s", symbol, exc)
+
+    async def _persist_dashboard_account_and_positions(self, reason: str = "poll") -> None:
+        if not self._dashboard_enabled():
+            return
+        account_id = self._dashboard_account_id()
+        broker_name = self._dashboard_broker_name()
+        try:
+            account = await self.exchange.get_account()
+            observed_at = account.timestamp
+            account_record = AccountRecord(
+                account_id=account_id,
+                broker=broker_name,
+                display_name=account_id,
+                currency=getattr(self.config.broker, "ib_currency", "USD"),
+                mode=getattr(self.config.broker, "mode", "paper"),
+            )
+            snapshot = EquitySnapshot(
+                snapshot_id=f"{account_id}:{observed_at.isoformat()}",
+                account_id=account_id,
+                timestamp=observed_at,
+                net_liquidation=account.equity,
+                cash=account.cash,
+                buying_power=account.buying_power,
+                realized_pnl=account.total_pnl,
+                unrealized_pnl=None,
+                source=broker_name,
+            )
+            self.dashboard_store.upsert_account(account_record)
+            self.dashboard_store.upsert_equity_snapshot(snapshot)
+            self._enqueue_dashboard_event(
+                event_id=f"account:{account_id}",
+                event_type="upsert",
+                aggregate_type="account",
+                aggregate_id=account_id,
+                payload=account_record.__dict__,
+                original_event_timestamp=observed_at,
+            )
+            self._enqueue_dashboard_event(
+                event_id=f"equity_snapshot:{snapshot.snapshot_id}",
+                event_type="upsert",
+                aggregate_type="equity_snapshot",
+                aggregate_id=snapshot.snapshot_id,
+                payload={
+                    "snapshot_id": snapshot.snapshot_id,
+                    "account_id": account_id,
+                    "timestamp": observed_at.isoformat(),
+                    "net_liquidation": account.equity,
+                    "cash": account.cash,
+                    "buying_power": account.buying_power,
+                    "realized_pnl": account.total_pnl,
+                    "unrealized_pnl": None,
+                    "source": broker_name,
+                    "reason": reason,
+                },
+                original_event_timestamp=observed_at,
+            )
+
+            for symbol in self.active_symbols:
+                position = await self.exchange.get_position(symbol)
+                if position is None:
+                    continue
+                position_record = PositionSnapshot(
+                    position_id=f"{account_id}:{symbol}",
+                    account_id=account_id,
+                    symbol=symbol,
+                    quantity=position.quantity,
+                    side=position.side,
+                    avg_cost=position.entry_price,
+                    market_price=position.current_price,
+                    unrealized_pnl=position.unrealized_pnl,
+                    updated_at=observed_at,
+                )
+                self.dashboard_store.upsert_position(position_record)
+                self._enqueue_dashboard_event(
+                    event_id=f"position:{account_id}:{symbol}:{observed_at.isoformat()}",
+                    event_type="upsert",
+                    aggregate_type="position",
+                    aggregate_id=position_record.position_id,
+                    payload={
+                        "position_id": position_record.position_id,
+                        "account_id": account_id,
+                        "symbol": symbol,
+                        "quantity": position.quantity,
+                        "side": position.side,
+                        "avg_cost": position.entry_price,
+                        "market_price": position.current_price,
+                        "unrealized_pnl": position.unrealized_pnl,
+                        "updated_at": observed_at.isoformat(),
+                        "reason": reason,
+                    },
+                    original_event_timestamp=observed_at,
+                )
+        except Exception as exc:
+            self.logger.warning("Dashboard account/position persistence failed: %s", exc)
+
+    async def _record_dashboard_order_event(self, event_type: str, order_id: str) -> None:
+        if not self._dashboard_enabled():
+            return
+        try:
+            order = await self.exchange.get_order(order_id)
+            if order is None:
+                return
+            from vibe.trading_bot.utils.datetime_utils import get_market_now
+            occurred_at = get_market_now(self.market_scheduler)
+            account_id = self._dashboard_account_id()
+            fill_price = order.avg_price if order.avg_price > 0 else None
+            if fill_price is not None and order.price not in (None, 0):
+                if order.side == "buy":
+                    slippage_bps = ((fill_price - order.price) / order.price) * 10000.0
+                else:
+                    slippage_bps = ((order.price - fill_price) / order.price) * 10000.0
+            else:
+                slippage_bps = None
+            trade_id = self._dashboard_order_trade_ids.get(order_id)
+            order_event = OrderEvent(
+                event_id=f"{event_type}:{order_id}",
+                account_id=account_id,
+                broker=self._dashboard_broker_name(),
+                broker_order_id=order_id,
+                event_type=event_type,
+                symbol=order.symbol,
+                side=order.side,
+                quantity=order.filled_qty if event_type in {"ORDER_FILLED", "TRADE_CLOSED"} and order.filled_qty > 0 else order.quantity,
+                trade_id=trade_id,
+                price=fill_price,
+                expected_price=order.price,
+                slippage_bps=slippage_bps,
+                latency_ms=None,
+                occurred_at=occurred_at,
+                raw_status=getattr(order.status, "name", str(order.status)),
+            )
+            self.dashboard_store.upsert_order_event(order_event)
+            self._enqueue_dashboard_event(
+                event_id=f"order_event:{order_event.event_id}",
+                event_type="upsert",
+                aggregate_type="order_event",
+                aggregate_id=order_event.event_id,
+                payload={
+                    "event_id": order_event.event_id,
+                    "account_id": account_id,
+                    "broker": order_event.broker,
+                    "broker_order_id": order_id,
+                    "strategy_order_id": None,
+                    "trade_id": trade_id,
+                    "event_type": event_type,
+                    "symbol": order.symbol,
+                    "side": order.side,
+                    "quantity": order_event.quantity,
+                    "price": order_event.price,
+                    "expected_price": order_event.expected_price,
+                    "slippage_bps": order_event.slippage_bps,
+                    "latency_ms": None,
+                    "occurred_at": occurred_at.isoformat(),
+                    "raw_status": order_event.raw_status,
+                },
+                original_event_timestamp=occurred_at,
+            )
+            if event_type in {"ORDER_FILLED", "TRADE_CLOSED"}:
+                self._record_dashboard_fill_metrics(
+                    order=order,
+                    event_type=event_type,
+                    timestamp=occurred_at,
+                    slippage_bps=slippage_bps,
+                )
+        except Exception as exc:
+            self.logger.warning("Dashboard order event persistence failed for %s: %s", order_id, exc)
+
     async def initialize(self) -> bool:
         """Initialize all components in correct order.
 
@@ -261,8 +733,9 @@ class TradingOrchestrator:
                 order_manager = OrderManager(
                     exchange=self.exchange,
                     retry_policy=retry_policy,
-                    on_order_created=self._on_order_created_notification,
-                    on_order_filled=self._on_order_filled_notification,
+                    on_order_created=self._on_order_created,
+                    on_order_filled=self._on_order_filled,
+                    on_order_cancelled=self._on_order_cancelled,
                 )
 
                 # Create trade executor
@@ -807,6 +1280,8 @@ class TradingOrchestrator:
                 )
             else:
                 self._realtime_bars[symbol] = bar_row
+
+            self._persist_dashboard_price_bar(symbol, bar_dict)
 
         except Exception as e:
             self.logger.error(f"Error handling completed bar for {symbol}: {e}", exc_info=True)
@@ -1515,6 +1990,17 @@ class TradingOrchestrator:
                                 )
                                 self._daily_stats["trades_executed"] += 1
 
+                                from vibe.trading_bot.utils.datetime_utils import get_market_now
+                                entry_time = get_market_now(self.market_scheduler)
+                                await self._persist_dashboard_trade_entry(
+                                    symbol=symbol,
+                                    order_id=result.order_id,
+                                    signal_value=signal_value,
+                                    quantity=result.position_size,
+                                    entry_price=actual_fill_price,
+                                    entry_time=entry_time,
+                                )
+
                                 # Log account state after fill to track cash/equity impact
                                 try:
                                     _acct = await self.exchange.get_account()
@@ -1527,7 +2013,6 @@ class TradingOrchestrator:
                                     self.logger.warning(f"Could not read account state after entry: {_acct_err}")
 
                                 # Wire position into strategy tracking using actual fill price
-                                from vibe.trading_bot.utils.datetime_utils import get_market_now
                                 trade_side = "buy" if signal_value == 1 else "sell"
                                 self.strategy.track_position(
                                     symbol=symbol,
@@ -1535,7 +2020,7 @@ class TradingOrchestrator:
                                     entry_price=actual_fill_price,
                                     take_profit=signal_metadata.get("take_profit"),
                                     stop_loss=stop_price,
-                                    timestamp=get_market_now(self.market_scheduler),
+                                    timestamp=entry_time,
                                     trailing_stop=(
                                         self.ruleset.exit.trailing_stop.model_dump()
                                         if self.ruleset and self.ruleset.exit.trailing_stop
@@ -1572,6 +2057,9 @@ class TradingOrchestrator:
             # Flush any bars that crossed time boundaries (quiet market handling)
             # This is the TIME-TRIGGERED completion path (complements trade-triggered)
             await self._flush_elapsed_bars()
+
+            # Persist account/position snapshot at the trading-cycle polling cadence.
+            await self._persist_dashboard_account_and_positions(reason="poll")
 
             # Return success if we got data for at least one symbol
             return successful_fetches > 0
@@ -1660,6 +2148,11 @@ class TradingOrchestrator:
         except Exception as e:
             self.logger.error(f"Failed to send ORDER_SENT notification: {e}", exc_info=True)
 
+    async def _on_order_created(self, order_id: str) -> None:
+        """Record and notify ORDER_SENT events."""
+        await self._record_dashboard_order_event("ORDER_SENT", order_id)
+        await self._on_order_created_notification(order_id)
+
     async def _on_order_filled_notification(self, order_id: str) -> None:
         """Send ORDER_FILLED Discord notification when OrderManager detects a fill."""
         if not self.config.notifications.discord_webhook_url:
@@ -1689,6 +2182,16 @@ class TradingOrchestrator:
                 await notifier.send_order_event(payload)
         except Exception as e:
             self.logger.error(f"Failed to send ORDER_FILLED notification: {e}", exc_info=True)
+
+    async def _on_order_filled(self, order_id: str) -> None:
+        """Record and notify ORDER_FILLED events."""
+        await self._record_dashboard_order_event("ORDER_FILLED", order_id)
+        await self._persist_dashboard_account_and_positions(reason="order_filled")
+        await self._on_order_filled_notification(order_id)
+
+    async def _on_order_cancelled(self, order_id: str) -> None:
+        """Record ORDER_CANCELLED events."""
+        await self._record_dashboard_order_event("ORDER_CANCELLED", order_id)
 
     async def _close_position_with_notification(
         self,
@@ -1741,6 +2244,15 @@ class TradingOrchestrator:
 
         # Remove from strategy position tracking
         self.strategy.close_position(symbol)
+
+        await self._persist_dashboard_trade_exit(
+            symbol=symbol,
+            order_id=close_result.order_id,
+            exit_price=actual_exit_price,
+            exit_time=get_market_now(self.market_scheduler),
+            exit_reason=exit_reason,
+        )
+        await self._persist_dashboard_account_and_positions(reason="trade_closed")
 
         # Send TRADE_CLOSED notification with actual fill-based P&L
         if self.config.notifications.discord_webhook_url:

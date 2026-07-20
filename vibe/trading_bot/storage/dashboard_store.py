@@ -502,7 +502,15 @@ class PublishOutboxStore(_SQLiteStore):
                     payload_json, status, attempts, next_retry_at, original_event_timestamp,
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
-                ON CONFLICT(event_id) DO NOTHING
+                ON CONFLICT(event_id) DO UPDATE SET
+                    event_type = excluded.event_type,
+                    aggregate_type = excluded.aggregate_type,
+                    aggregate_id = excluded.aggregate_id,
+                    destination = excluded.destination,
+                    payload_json = excluded.payload_json,
+                    original_event_timestamp = excluded.original_event_timestamp,
+                    updated_at = excluded.updated_at
+                WHERE publish_outbox.status IN ('pending', 'failed')
             """, (
                 event.event_id,
                 event.event_type,

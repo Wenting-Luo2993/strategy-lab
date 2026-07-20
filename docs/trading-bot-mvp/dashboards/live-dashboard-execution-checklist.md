@@ -1,7 +1,7 @@
 # Live Dashboard Execution Checklist
 
 **Last Updated:** 2026-07-20  
-**Status:** Stage 1 Complete  
+**Status:** Stage 2 Complete  
 **Related TDS:** [TDS-live-dashboard.md](TDS-live-dashboard.md)
 
 This document is the working implementation tracker for the Phase 1 live trading dashboard. Update checkboxes and stage status here as work progresses; only update the TDS when the approved design itself changes.
@@ -30,22 +30,22 @@ Stage 1 exit criteria:
 
 ## Stage 2: Bot Integration
 
-- [ ] Wire `PriceBarStore` into the existing market-data polling/bar builder path and persist completed dashboard timeframe bars for configured symbols.
-- [ ] Record order lifecycle events from broker/order manager callbacks for submitted, filled, cancelled, and trade-closed states.
-- [ ] Link order events to trades when the strategy/order manager has the relationship available.
-- [ ] Persist account, position, and equity snapshots after fills and on the configured polling cadence.
-- [ ] Enqueue publish outbox events immediately after each local source-of-truth write, using stable aggregate IDs and provider-neutral payloads.
-- [ ] Signal the in-process publisher wake event after successful outbox enqueue without waiting for remote publication.
-- [ ] Ensure outbox enqueue failure is logged as telemetry degradation and does not block order submission, fill handling, market-data polling, or risk management.
-- [ ] Preserve provider name, ingestion timestamps, and original domain/event timestamps through every enqueue path.
-- [ ] Add focused integration tests or paper-mode smoke tests proving bot actions write local rows and outbox events.
+- [x] Wire `PriceBarStore` into the existing market-data polling/bar builder path and persist completed dashboard timeframe bars for configured symbols.
+- [x] Record order lifecycle events from broker/order manager callbacks for submitted, filled, cancelled, and trade-closed states.
+- [x] Link order events to trades when the strategy/order manager has the relationship available.
+- [x] Persist account, position, and equity snapshots after fills and on the configured polling cadence.
+- [x] Enqueue publish outbox events immediately after each local source-of-truth write, using stable aggregate IDs and provider-neutral payloads.
+- [x] Signal the in-process publisher wake event after successful outbox enqueue without waiting for remote publication.
+- [x] Ensure outbox enqueue failure is logged as telemetry degradation and does not block order submission, fill handling, market-data polling, or risk management.
+- [x] Preserve provider name, ingestion timestamps, and original domain/event timestamps through every enqueue path.
+- [x] Add focused integration tests or paper-mode smoke tests proving bot actions write local rows and outbox events.
 
 Stage 2 exit criteria:
 
-- [ ] Paper-mode market-data polling writes at least one completed bar per configured dashboard symbol.
-- [ ] A paper order writes order events, trade updates, fill-quality metrics, and equity/position snapshots.
-- [ ] Every dashboard-relevant local row has a corresponding pending outbox event or is discoverable by reconciliation.
-- [ ] Trading flow remains functional when remote publishing is disabled or misconfigured.
+- [x] Paper-mode market-data polling writes at least one completed bar per configured dashboard symbol.
+- [x] A paper order writes order events, trade updates, fill-quality metrics, and equity/position snapshots.
+- [x] Every dashboard-relevant local row has a corresponding pending outbox event or is discoverable by reconciliation.
+- [x] Trading flow remains functional when remote publishing is disabled or misconfigured.
 
 ---
 

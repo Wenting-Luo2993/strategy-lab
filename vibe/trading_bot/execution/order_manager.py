@@ -4,6 +4,7 @@ Orchestrates order submission, monitoring, and notification.
 """
 
 import asyncio
+import inspect
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -145,6 +146,13 @@ class OrderManager:
         self._orders: Dict[str, ManagedOrder] = {}
         self._monitoring_tasks: Dict[str, asyncio.Task] = {}
 
+    def _emit_callback(self, callback: Optional[Callable[[str], Awaitable[None]]], order_id: str) -> None:
+        if callback is None:
+            return
+        result = callback(order_id)
+        if inspect.isawaitable(result):
+            asyncio.create_task(result)
+
     async def submit_order(
         self,
         symbol: str,
@@ -189,8 +197,7 @@ class OrderManager:
         self._orders[response.order_id] = managed
 
         # Emit creation event
-        if self._on_order_created:
-            asyncio.create_task(self._on_order_created(response.order_id))
+        self._emit_callback(self._on_order_created, response.order_id)
 
         logger.info(
             f"Order submitted: {response.order_id} "
@@ -202,8 +209,7 @@ class OrderManager:
         if response.status == OrderStatus.FILLED:
             managed.completed_at = datetime.now()
             managed.terminal_status = OrderStatus.FILLED
-            if self._on_order_filled:
-                asyncio.create_task(self._on_order_filled(response.order_id))
+            self._emit_callback(self._on_order_filled, response.order_id)
         else:
             task = asyncio.create_task(
                 self._monitor_order(response.order_id)
@@ -241,8 +247,7 @@ class OrderManager:
                 managed.completed_at = datetime.now()
                 managed.terminal_status = OrderStatus.FILLED
 
-                if self._on_order_filled:
-                    asyncio.create_task(self._on_order_filled(order_id))
+                self._emit_callback(self._on_order_filled, order_id)
 
                 logger.info(f"Order filled: {order_id}")
                 break
@@ -256,8 +261,7 @@ class OrderManager:
                 managed.completed_at = datetime.now()
                 managed.terminal_status = OrderStatus.CANCELLED
 
-                if self._on_order_cancelled:
-                    asyncio.create_task(self._on_order_cancelled(order_id))
+                self._emit_callback(self._on_order_cancelled, order_id)
 
                 logger.info(
                     f"Order cancelled after timeout: {order_id}"
