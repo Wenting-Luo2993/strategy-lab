@@ -1,7 +1,7 @@
 # Live Dashboard Execution Checklist
 
 **Last Updated:** 2026-07-20  
-**Status:** Stage 2 Complete  
+**Status:** Stage 3 Complete  
 **Related TDS:** [TDS-live-dashboard.md](TDS-live-dashboard.md)
 
 This document is the working implementation tracker for the Phase 1 live trading dashboard. Update checkboxes and stage status here as work progresses; only update the TDS when the approved design itself changes.
@@ -51,24 +51,25 @@ Stage 2 exit criteria:
 
 ## Stage 3: Remote Read Model
 
-- [ ] Define Supabase dashboard tables/views for accounts, trades, order events, price bars, equity snapshots, positions, strategy annotations, and operational metrics.
-- [ ] Add RLS policies that allow bot-only writes through service credentials and anonymous read-only access to dashboard-safe rows/views.
-- [ ] Implement `RemoteDataPublisher` as an in-process asyncio background worker with bounded batch size, request timeouts, retry backoff, and circuit-breaker behavior.
-- [ ] Implement idempotent remote upserts for trades, order events, price bars, equity snapshots, positions, and metrics.
-- [ ] Implement durable publish failure logging with payload type, destination, retry count, error, and timestamp.
-- [ ] Add application-level wake signaling after enqueue plus periodic polling fallback.
-- [ ] Add `flush_pending(timeout_seconds, max_batches)` for bounded cooldown publishing.
-- [ ] Add `reconcile_sources(source_stores, trading_day)` to reconstruct missing outbox events from source rows using original domain timestamps.
-- [ ] Add `prune_published_before(cutoff_timestamp)` that never deletes unpublished or failed source rows.
-- [ ] Add cooldown summary telemetry and Discord notification for unresolved failed, pending, or dead-letter rows.
-- [ ] Add tests for claim flow, stale `publishing` recovery, retry scheduling, idempotent upserts, timestamp preservation, and cooldown reconciliation.
+- [x] Define Supabase dashboard tables/views for accounts, trades, order events, price bars, equity snapshots, positions, strategy annotations, and operational metrics. See [Supabase Read Model SQL](supabase-read-model.sql).
+- [x] Add RLS policies that allow bot-only writes through service credentials and anonymous read-only access to dashboard-safe rows/views.
+- [x] Implement `RemoteDataPublisher` as an in-process asyncio background worker with bounded batch size, request timeouts, retry backoff, and circuit-breaker behavior.
+- [x] Implement idempotent remote upserts for trades, order events, price bars, equity snapshots, positions, and metrics.
+- [x] Implement durable publish failure logging with payload type, destination, retry count, error, and timestamp.
+- [x] Add application-level wake signaling after enqueue plus periodic polling fallback.
+- [x] Add `flush_pending(timeout_seconds, max_batches)` for bounded cooldown publishing.
+- [x] Add `reconcile_sources(source_stores, trading_day)` to reconstruct missing outbox events from source rows using original domain timestamps.
+- [x] Add `prune_published_before(cutoff_timestamp)` that never deletes unpublished or failed source rows.
+- [x] Add cooldown summary telemetry for unresolved failed, pending, or dead-letter rows.
+- [x] Add Discord notification for unresolved failed, pending, or dead-letter rows.
+- [x] Add tests for claim flow, stale `publishing` recovery, retry scheduling, idempotent upserts, timestamp preservation, and cooldown reconciliation.
 
 Stage 3 exit criteria:
 
-- [ ] Publisher restarts resume pending rows from SQLite without duplicate remote records.
-- [ ] Remote failures never block trading-path operations.
-- [ ] Cooldown leaves each due row in `published`, retry-scheduled, or `dead_letter` state with an error reason.
-- [ ] Dashboard-relevant domain timestamps remain unchanged across retry and reconciliation.
+- [x] Publisher restarts resume pending rows from SQLite without duplicate remote records.
+- [x] Remote failures never block trading-path operations.
+- [x] Cooldown leaves each due row in `published`, retry-scheduled, or `dead_letter` state with an error reason.
+- [x] Dashboard-relevant domain timestamps remain unchanged across retry and reconciliation.
 
 ---
 

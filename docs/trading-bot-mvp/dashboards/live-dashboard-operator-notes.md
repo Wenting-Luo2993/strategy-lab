@@ -21,6 +21,36 @@ The stores create parent directories and SQLite schemas automatically on first u
 
 ---
 
+## Remote Publication
+
+Stage 3 adds an in-process `RemoteDataPublisher` that drains `publish_outbox` outside the trading path. The publisher starts only when all of these are true:
+
+- `dashboard.enabled = true`
+- `dashboard.remote_provider = "supabase"`
+- `dashboard.supabase_url` is configured
+- `dashboard.supabase_service_key` is configured
+
+The bot uses the Supabase service-role key only in the server-side trading process. Browser dashboard clients must use the anonymous key and RLS read policies from [Supabase Read Model SQL](supabase-read-model.sql). Never expose `dashboard.supabase_service_key` through static dashboard config or browser bundles.
+
+The publisher uses bounded batches, request timeouts, exponential retry backoff, and a circuit breaker. Outbox enqueue wakes the publisher immediately, and `dashboard.publish_interval_seconds` provides a polling fallback if wake signaling is missed. Cooldown runs a bounded `flush_pending(...)` before provider disconnect.
+
+If cooldown leaves unresolved `pending`, `failed`, `publishing`, or `dead_letter` rows, the bot sends a Discord `SystemAlertPayload` when `notifications.discord_webhook_url` is configured and `notifications.notify_on_error` is enabled. Dead-letter rows escalate the alert to `SYSTEM_ERROR`; other unresolved rows send `SYSTEM_WARNING`.
+
+Remote upserts are idempotent by aggregate key:
+
+| Aggregate | Remote table | Conflict key |
+|-----------|--------------|--------------|
+| `account` | `accounts` | `account_id` |
+| `trade` | `trades` | `trade_id` |
+| `order_event` | `order_events` | `event_id` |
+| `price_bar` | `price_bars` | `symbol,timeframe,bar_start` |
+| `equity_snapshot` | `equity_snapshots` | `snapshot_id` |
+| `position` | `positions` | `position_id` |
+| `metric` | `operational_metrics` | `metric_name,timestamp` |
+| `strategy_annotation` | `strategy_annotations` | `annotation_id` |
+
+---
+
 ## Retention Expectations
 
 - Local dashboard persistence defaults to `dashboard.local_retention_days = 3`.
@@ -42,4 +72,4 @@ Operational response during an outage:
 1. Confirm trading-path local source rows are still being written.
 2. Inspect `publish_outbox` status counts for `pending`, `failed`, `publishing`, and `dead_letter` rows.
 3. Let cooldown reconciliation retry due rows before pruning local dashboard data.
-4. Treat unresolved failed or dead-letter rows as dashboard degradation and alert through the standard Discord notification path once Stage 3 publishing is implemented.
+4. Treat unresolved failed or dead-letter rows as dashboard degradation; cooldown sends the standard Discord alert when notification settings are configured.

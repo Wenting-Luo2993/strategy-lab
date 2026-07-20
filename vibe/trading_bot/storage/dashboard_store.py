@@ -488,6 +488,22 @@ class PublishOutboxStore(_SQLiteStore):
             CREATE INDEX IF NOT EXISTS idx_publish_outbox_aggregate
             ON publish_outbox(aggregate_type, aggregate_id, destination)
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS publish_failures (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL,
+                aggregate_type TEXT NOT NULL,
+                aggregate_id TEXT NOT NULL,
+                destination TEXT NOT NULL,
+                attempts INTEGER NOT NULL,
+                error TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_publish_failures_event
+            ON publish_failures(event_id, created_at DESC)
+        """)
         conn.commit()
 
     def enqueue_event(self, event: PublishOutboxEvent) -> None:
@@ -614,6 +630,59 @@ class PublishOutboxStore(_SQLiteStore):
     def count_by_status(self, status: str) -> int:
         conn = self._get_connection()
         return conn.execute("SELECT COUNT(*) FROM publish_outbox WHERE status = ?", (status,)).fetchone()[0]
+
+    def status_counts(self) -> Dict[str, int]:
+        conn = self._get_connection()
+        rows = conn.execute("""
+            SELECT status, COUNT(*) AS count
+            FROM publish_outbox
+            GROUP BY status
+        """).fetchall()
+        return {row["status"]: row["count"] for row in rows}
+
+    def record_failure(self, event: Dict[str, Any], error: str) -> int:
+        now = _utc_now_iso()
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.execute("""
+                INSERT INTO publish_failures (
+                    event_id, aggregate_type, aggregate_id, destination,
+                    attempts, error, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                event["event_id"],
+                event["aggregate_type"],
+                event["aggregate_id"],
+                event["destination"],
+                int(event.get("attempts") or 0) + 1,
+                error,
+                now,
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_failures(self, event_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if event_id:
+            cursor.execute("""
+                SELECT * FROM publish_failures
+                WHERE event_id = ?
+                ORDER BY created_at DESC
+            """, (event_id,))
+        else:
+            cursor.execute("SELECT * FROM publish_failures ORDER BY created_at DESC")
+        return [dict(row) for row in cursor.fetchall()]
+
+    def prune_published_before(self, cutoff_timestamp: datetime | str) -> int:
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.execute("""
+                DELETE FROM publish_outbox
+                WHERE status = 'published' AND published_at < ?
+            """, (_iso(cutoff_timestamp),))
+            conn.commit()
+            return cursor.rowcount
 
     def enqueue_many(self, events: Sequence[PublishOutboxEvent]) -> None:
         for event in events:

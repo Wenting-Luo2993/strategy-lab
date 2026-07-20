@@ -29,6 +29,7 @@ from vibe.trading_bot.storage.dashboard_store import (
     PublishOutboxEvent,
     PublishOutboxStore,
 )
+from vibe.trading_bot.publishing.remote_data_publisher import RemoteDataPublisher, SupabaseRestDestination
 import pandas as pd
 from vibe.trading_bot.exchange.mock_exchange import MockExchange
 from vibe.trading_bot.exchange.ib_exchange import InteractiveBrokersExecutionEngine
@@ -111,6 +112,7 @@ class TradingOrchestrator:
         self.dashboard_price_store: Optional[PriceBarStore] = None
         self.dashboard_store: Optional[DashboardStore] = None
         self.dashboard_outbox_store: Optional[PublishOutboxStore] = None
+        self.remote_data_publisher: Optional[RemoteDataPublisher] = None
         self.dashboard_publish_wake_event = asyncio.Event()
         self._dashboard_order_trade_ids: Dict[str, str] = {}
         self._dashboard_symbol_trade_ids: Dict[str, str] = {}
@@ -237,6 +239,30 @@ class TradingOrchestrator:
     def _dashboard_broker_name(self) -> str:
         broker_type = getattr(self.config.broker, "broker_type", "mock")
         return "interactive_brokers" if broker_type == "interactive_brokers" else broker_type
+
+    async def _start_dashboard_publisher(self) -> None:
+        if not self.config.dashboard.enabled or self.dashboard_outbox_store is None:
+            return
+        if self.config.dashboard.remote_provider != "supabase":
+            self.logger.info("Dashboard remote publisher disabled for provider=%s", self.config.dashboard.remote_provider)
+            return
+        if not self.config.dashboard.supabase_url or not self.config.dashboard.supabase_service_key:
+            self.logger.info("Dashboard Supabase publisher not started; URL/service key not configured")
+            return
+        destination = SupabaseRestDestination(
+            url=self.config.dashboard.supabase_url,
+            service_key=self.config.dashboard.supabase_service_key,
+            request_timeout_seconds=10.0,
+        )
+        self.remote_data_publisher = RemoteDataPublisher(
+            outbox_store=self.dashboard_outbox_store,
+            destination=destination,
+            wake_event=self.dashboard_publish_wake_event,
+            batch_size=25,
+            poll_interval_seconds=self.config.dashboard.publish_interval_seconds,
+        )
+        await self.remote_data_publisher.start()
+        self.logger.info("Dashboard RemoteDataPublisher started")
 
     def _enqueue_dashboard_event(
         self,
@@ -923,6 +949,9 @@ class TradingOrchestrator:
             # 8. Initialize phase managers
             self.warmup_manager = WarmupPhaseManager(self)
             self.cooldown_manager = CooldownPhaseManager(self)
+
+            # 8.5. Start dashboard remote publisher if configured.
+            await self._start_dashboard_publisher()
 
             # 9. Provider connection now handled in warm-up phase (Step 2)
             # Removed old duplicate connection code that was causing rate limiting
@@ -2334,6 +2363,14 @@ class TradingOrchestrator:
                     self.logger.debug("Polling task cancelled")
                 except Exception as e:
                     self.logger.error(f"Error cancelling polling task: {e}")
+
+            # Disconnect from data providers
+            try:
+                if self.remote_data_publisher is not None:
+                    await self.remote_data_publisher.stop()
+                    self.logger.info("Dashboard RemoteDataPublisher stopped")
+            except Exception as e:
+                self.logger.error(f"Error stopping dashboard publisher: {e}")
 
             # Disconnect from data providers
             try:

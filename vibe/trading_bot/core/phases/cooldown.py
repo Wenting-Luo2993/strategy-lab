@@ -6,10 +6,16 @@ which processes final data, disconnects providers, and prepares for the next tra
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from vibe.trading_bot.core.phases.base import BasePhase
+from vibe.trading_bot.notifications.helper import discord_notification_context
+from vibe.trading_bot.notifications.payloads import SystemAlertPayload
 from vibe.trading_bot.utils.datetime_utils import get_market_now
+from vibe.trading_bot.version import BUILD_VERSION
+
+if TYPE_CHECKING:
+    from vibe.trading_bot.core.orchestrator import TradingOrchestrator
 
 
 class CooldownPhaseManager(BasePhase):
@@ -159,6 +165,8 @@ class CooldownPhaseManager(BasePhase):
         # We cannot execute trades after market close; this is a signal that EOD exit missed something
         self._warn_open_positions()
 
+        await self._flush_dashboard_publisher()
+
         # Disconnect from provider first (closes current tick log handle cleanly)
         await self._disconnect_provider()
 
@@ -190,6 +198,65 @@ class CooldownPhaseManager(BasePhase):
                         )
         except Exception as e:
             self.logger.error(f"Error checking open positions at cooldown: {e}", exc_info=True)
+
+    async def _flush_dashboard_publisher(self) -> None:
+        """Run a bounded dashboard publication flush at cooldown."""
+        publisher = getattr(self.orchestrator, "remote_data_publisher", None)
+        if publisher is None:
+            return
+        try:
+            result = await publisher.flush_pending(timeout_seconds=30.0, max_batches=5)
+            summary = publisher.publish_cooldown_summary()
+            self.logger.info(
+                "Dashboard cooldown publish flush: claimed=%s published=%s failed=%s dead_lettered=%s status=%s",
+                result.claimed,
+                result.published,
+                result.failed,
+                result.dead_lettered,
+                summary,
+            )
+            await self._send_dashboard_publish_alert(summary)
+        except Exception as e:
+            self.logger.warning("Dashboard cooldown publish flush failed: %s", e)
+
+    async def _send_dashboard_publish_alert(self, summary: dict) -> None:
+        """Send a Discord alert if cooldown leaves unresolved publish rows."""
+        unresolved_statuses = ("pending", "failed", "publishing", "dead_letter")
+        unresolved = {
+            status: int(summary.get(status, 0) or 0)
+            for status in unresolved_statuses
+            if int(summary.get(status, 0) or 0) > 0
+        }
+        if not unresolved:
+            return
+
+        notifications = getattr(self.config, "notifications", None)
+        webhook_url = getattr(notifications, "discord_webhook_url", None)
+        notify_on_error = getattr(notifications, "notify_on_error", True)
+        if not webhook_url or not notify_on_error:
+            self.logger.warning("Dashboard publish rows unresolved at cooldown: %s", unresolved)
+            return
+
+        has_dead_letter = unresolved.get("dead_letter", 0) > 0
+        payload = SystemAlertPayload(
+            event_type="SYSTEM_ERROR" if has_dead_letter else "SYSTEM_WARNING",
+            timestamp=get_market_now(self.market_scheduler),
+            severity="error" if has_dead_letter else "warning",
+            title="Live Dashboard Publication Degraded",
+            message="Cooldown completed with unresolved dashboard publication rows.",
+            component="RemoteDataPublisher",
+            action_required=(
+                "Inspect publish_outbox and publish_failures; confirm Supabase connectivity "
+                "before pruning local dashboard data."
+            ),
+            version=BUILD_VERSION,
+            details={**summary, "unresolved_total": sum(unresolved.values())},
+        )
+        try:
+            async with discord_notification_context(webhook_url) as notifier:
+                await notifier.send_system_alert(payload)
+        except Exception as e:
+            self.logger.warning("Dashboard publish Discord alert failed: %s", e)
 
     async def _rotate_tick_logs(self) -> None:
         """Rotate tick log file for next market session."""
