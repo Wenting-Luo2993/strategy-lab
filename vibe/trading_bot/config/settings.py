@@ -101,6 +101,28 @@ class OperationalMetricsSettings(BaseSettings):
         case_sensitive = False
 
 
+class DashboardSettings(BaseSettings):
+    """Live dashboard persistence and publication settings."""
+
+    enabled: bool = Field(default=False, description="Enable dashboard persistence and publication")
+    account_id: Optional[str] = Field(default=None, description="Phase 1 dashboard account ID")
+    symbols: List[str] = Field(default=["AAPL", "GOOGL", "MSFT"], description="Symbols to persist for dashboard charts")
+    price_timeframes: List[str] = Field(default=["5m", "1d"], description="Dashboard price bar timeframes")
+    local_price_db_path: str = Field(default="./data/market_data.db", description="Local SQLite DB for dashboard price bars")
+    local_dashboard_db_path: str = Field(default="./data/dashboard.db", description="Local SQLite DB for dashboard read-model rows")
+    local_outbox_db_path: str = Field(default="./data/local/publish_outbox.db", description="Local SQLite DB for dashboard publish outbox")
+    remote_provider: str = Field(default="supabase", description="Dashboard remote read-model provider")
+    supabase_url: Optional[str] = Field(default=None, description="Supabase project URL")
+    supabase_service_key: Optional[str] = Field(default=None, description="Bot-only Supabase service key")
+    supabase_anon_key: Optional[str] = Field(default=None, description="Browser read-only Supabase anon key")
+    publish_interval_seconds: int = Field(default=30, description="Dashboard publish batch interval")
+    local_retention_days: int = Field(default=3, description="Local dashboard row retention window after publication")
+
+    class Config:
+        env_prefix = ""
+        case_sensitive = False
+
+
 class StrategySettings(BaseSettings):
     """Strategy configuration."""
 
@@ -150,6 +172,7 @@ class AppSettings(BaseSettings):
     cloud: CloudSettings = Field(default_factory=CloudSettings)
     broker: BrokerSettings = Field(default_factory=BrokerSettings)
     operational_metrics: OperationalMetricsSettings = Field(default_factory=OperationalMetricsSettings)
+    dashboard: DashboardSettings = Field(default_factory=DashboardSettings)
     notifications: NotificationSettings = Field(default_factory=NotificationSettings)
 
     class Config:

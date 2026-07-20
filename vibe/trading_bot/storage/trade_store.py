@@ -14,7 +14,8 @@ class TradeStore:
     # Whitelist of allowed update fields (prevents SQL injection)
     ALLOWED_UPDATE_FIELDS = {
         'exit_price', 'exit_time', 'status', 'pnl', 'pnl_pct',
-        'strategy', 'updated_at', 'quantity', 'entry_price'
+        'strategy', 'updated_at', 'quantity', 'entry_price',
+        'account_id', 'broker_order_id', 'exit_reason'
     }
 
     def __init__(self, db_path: str = "./data/trades.db"):
@@ -58,6 +59,9 @@ class TradeStore:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id TEXT,
+                account_id TEXT,
+                broker_order_id TEXT,
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
                 quantity REAL NOT NULL,
@@ -69,10 +73,13 @@ class TradeStore:
                 pnl REAL,
                 pnl_pct REAL,
                 strategy TEXT,
+                exit_reason TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
+
+        self._ensure_dashboard_columns(cursor)
 
         # Create single-column indexes
         cursor.execute("""
@@ -87,6 +94,12 @@ class TradeStore:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_entry_time ON trades(entry_time)
         """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_account_id ON trades(account_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_broker_order_id ON trades(broker_order_id)
+        """)
 
         # Create composite indexes for common query patterns (performance optimization)
         cursor.execute("""
@@ -100,6 +113,33 @@ class TradeStore:
         """)
 
         conn.commit()
+
+    def _ensure_dashboard_columns(self, cursor: sqlite3.Cursor) -> None:
+        """Add dashboard columns to existing trade DBs without data loss."""
+        cursor.execute("PRAGMA table_info(trades)")
+        columns = {row[1] for row in cursor.fetchall()}
+        migrations = {
+            "trade_id": "ALTER TABLE trades ADD COLUMN trade_id TEXT",
+            "account_id": "ALTER TABLE trades ADD COLUMN account_id TEXT",
+            "broker_order_id": "ALTER TABLE trades ADD COLUMN broker_order_id TEXT",
+            "exit_reason": "ALTER TABLE trades ADD COLUMN exit_reason TEXT",
+        }
+        for column, statement in migrations.items():
+            if column not in columns:
+                cursor.execute(statement)
+
+    def backfill_dashboard_account_id(self, account_id: str) -> int:
+        """Backfill missing account IDs for existing Phase 1 dashboard rows."""
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE trades
+                SET account_id = ?, updated_at = ?
+                WHERE account_id IS NULL OR account_id = ''
+            """, (account_id, datetime.utcnow().isoformat()))
+            conn.commit()
+            return cursor.rowcount
 
     def insert_trade(self, trade: Trade) -> int:
         """Insert a new trade.
@@ -121,11 +161,13 @@ class TradeStore:
 
             cursor.execute("""
                 INSERT INTO trades (
-                    symbol, side, quantity, entry_price, exit_price,
+                    trade_id, account_id, symbol, side, quantity, entry_price, exit_price,
                     entry_time, exit_time, status, pnl, pnl_pct,
-                    strategy, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    strategy, exit_reason, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
+                trade.trade_id,
+                getattr(trade, 'account_id', None),
                 trade.symbol,
                 trade.side,
                 trade.quantity,
@@ -137,6 +179,7 @@ class TradeStore:
                 trade.pnl,
                 trade.pnl_pct,
                 trade.strategy if hasattr(trade, 'strategy') else None,
+                trade.exit_reason if hasattr(trade, 'exit_reason') else None,
                 now,
                 now,
             ))

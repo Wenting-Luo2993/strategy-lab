@@ -1,7 +1,7 @@
 # Live Dashboard Execution Checklist
 
 **Last Updated:** 2026-07-20  
-**Status:** Not Started  
+**Status:** Stage 1 Complete  
 **Related TDS:** [TDS-live-dashboard.md](TDS-live-dashboard.md)
 
 This document is the working implementation tracker for the Phase 1 live trading dashboard. Update checkboxes and stage status here as work progresses; only update the TDS when the approved design itself changes.
@@ -10,21 +10,21 @@ This document is the working implementation tracker for the Phase 1 live trading
 
 ## Stage 1: Persistence Foundation
 
-- [ ] Add `DashboardSettings` configuration fields in `vibe/trading_bot/config/settings.py` for enablement, account ID, symbols, timeframes, local DB paths, remote provider, publish interval, and retention window.
-- [ ] Add `PriceBarStore` with SQLite WAL mode, `(symbol, timeframe, bar_start)` idempotent upsert, `provider`, `ingestion_time`, and `is_complete` fields.
-- [ ] Add account, position, and equity snapshot stores with account-scoped primary keys and immutable domain timestamps.
-- [ ] Extend trade persistence with `account_id`, broker order linkage, `exit_reason`, and migration/backfill support for existing local rows.
-- [ ] Add `OrderEventStore` for broker-neutral order lifecycle events, including expected price, fill price, slippage, latency, raw broker status, and `occurred_at`.
-- [ ] Add durable `PublishOutboxStore` with retry state, idempotency keys, stale `publishing` recovery fields, and short WAL-mode transactions.
-- [ ] Add unit and migration tests for price bars, account snapshots, positions, equity snapshots, order events, trade migration/backfill, and outbox enqueue/claim behavior.
-- [ ] Update local documentation or operator notes with the new SQLite files and retention expectations.
+- [x] Add `DashboardSettings` configuration fields in `vibe/trading_bot/config/settings.py` for enablement, account ID, symbols, timeframes, local DB paths, remote provider, publish interval, and retention window.
+- [x] Add `PriceBarStore` with SQLite WAL mode, `(symbol, timeframe, bar_start)` idempotent upsert, `provider`, `ingestion_time`, and `is_complete` fields.
+- [x] Add account, position, and equity snapshot stores with account-scoped primary keys and immutable domain timestamps.
+- [x] Extend trade persistence with `account_id`, broker order linkage, `exit_reason`, and migration/backfill support for existing local rows.
+- [x] Add `OrderEventStore` for broker-neutral order lifecycle events, including expected price, fill price, slippage, latency, raw broker status, and `occurred_at`.
+- [x] Add durable `PublishOutboxStore` with retry state, idempotency keys, stale `publishing` recovery fields, and short WAL-mode transactions.
+- [x] Add unit and migration tests for price bars, account snapshots, positions, equity snapshots, order events, trade migration/backfill, and outbox enqueue/claim behavior.
+- [x] Update local documentation or operator notes with the new SQLite files and retention expectations. See [Live Dashboard Operator Notes](live-dashboard-operator-notes.md).
 
 Stage 1 exit criteria:
 
-- [ ] Local stores can be created from a clean checkout without manual DB setup.
-- [ ] Re-running the same insert/upsert paths does not duplicate price bars, order events, trades, snapshots, or outbox events.
-- [ ] Existing trade DB rows can be migrated or backfilled with the configured Phase 1 account ID without data loss.
-- [ ] Store tests pass locally.
+- [x] Local stores can be created from a clean checkout without manual DB setup.
+- [x] Re-running the same insert/upsert paths does not duplicate price bars, order events, trades, snapshots, or outbox events.
+- [x] Existing trade DB rows can be migrated or backfilled with the configured Phase 1 account ID without data loss.
+- [x] Store tests pass locally.
 
 ---
 
