@@ -1,7 +1,7 @@
 # Live Dashboard Execution Checklist
 
 **Last Updated:** 2026-07-20  
-**Status:** Stage 3 Complete  
+**Status:** Stage 4 In Progress  
 **Related TDS:** [TDS-live-dashboard.md](TDS-live-dashboard.md)
 
 This document is the working implementation tracker for the Phase 1 live trading dashboard. Update checkboxes and stage status here as work progresses; only update the TDS when the approved design itself changes.
@@ -75,23 +75,23 @@ Stage 3 exit criteria:
 
 ## Stage 4: Static Dashboard
 
-- [ ] Reuse `apps/operational-metrics-dashboard` as the live dashboard app and keep static export/GitHub Pages deployment working.
-- [ ] Add frontend data adapter boundary under `src/data/` with shared types, Supabase implementation, and static JSON fallback implementation.
-- [ ] Add fixture data covering live market day, closed market review, empty state, and remote unavailable state.
-- [ ] Build Live View with equity snapshot summary, open positions, latest order events, and data freshness status.
-- [ ] Build Charts view with TradingView Lightweight Charts, price bars, trade markers, and strategy annotations.
-- [ ] Build Operations view with health metrics, API latency, data freshness, publish status, and execution-quality metrics.
-- [ ] Build Performance view with precomputed performance metrics and trade summaries.
-- [ ] Add semantic light/dark theme tokens, system preference detection, local-storage preference persistence, and visible theme toggle.
-- [ ] Route chart/table health, profit, loss, warning, and freshness colors through theme tokens.
+- [x] Reuse `apps/operational-metrics-dashboard` as the live dashboard app and keep static export/GitHub Pages deployment working.
+- [x] Add frontend data adapter boundary under `src/data/` with shared types, Supabase implementation, and static JSON fallback implementation.
+- [x] Add fixture data covering live market day, closed market review, empty state, and remote unavailable state.
+- [x] Build Live View with equity snapshot summary, open positions, latest order events, and data freshness status.
+- [x] Build Charts view with TradingView Lightweight Charts, price bars, trade markers, and strategy annotations.
+- [x] Build Operations view with health metrics, API latency, data freshness, publish status, and execution-quality metrics.
+- [x] Build Performance view with precomputed performance metrics and trade summaries.
+- [x] Add semantic light/dark theme tokens, system preference detection, local-storage preference persistence, and visible theme toggle.
+- [x] Route chart/table health, profit, loss, warning, and freshness colors through theme tokens.
 - [ ] Add dashboard tests for static build, fixture rendering, non-empty chart rendering, empty states, and unavailable remote store states.
 
 Stage 4 exit criteria:
 
-- [ ] Static Next.js build succeeds.
-- [ ] Dashboard renders fixture data without requiring broker or Supabase credentials.
+- [x] Static Next.js build succeeds.
+- [x] Dashboard renders fixture data without requiring broker or Supabase credentials.
 - [ ] Dashboard can read real published paper-trading rows through the configured data adapter.
-- [ ] Light and dark themes are legible for charts, tables, trading states, and health states.
+- [x] Light and dark themes are legible for charts, tables, trading states, and health states.
 
 ---
 
