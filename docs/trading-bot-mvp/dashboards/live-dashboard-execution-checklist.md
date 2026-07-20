@@ -1,7 +1,7 @@
 # Live Dashboard Execution Checklist
 
 **Last Updated:** 2026-07-20  
-**Status:** Stage 4 In Progress  
+**Status:** Stage 5 Validation Prep  
 **Related TDS:** [TDS-live-dashboard.md](TDS-live-dashboard.md)
 
 This document is the working implementation tracker for the Phase 1 live trading dashboard. Update checkboxes and stage status here as work progresses; only update the TDS when the approved design itself changes.
@@ -97,6 +97,8 @@ Stage 4 exit criteria:
 
 ## Stage 5: End-to-End Validation
 
+Runbook: [Stage 5 Live Dashboard Validation Runbook](stage-5-validation-runbook.md)
+
 - [ ] Run IB paper smoke path with dashboard persistence and publication enabled.
 - [ ] Persist at least one completed 5-minute OHLCV bar for each configured dashboard symbol.
 - [ ] Submit a paper order and verify order event, trade, fill metric, position snapshot, and equity snapshot rows locally.
@@ -104,7 +106,7 @@ Stage 4 exit criteria:
 - [ ] Build static dashboard and verify charts, positions, equity, trade feed, operations, and performance panels against real published rows.
 - [ ] Simulate remote publish failure and confirm retries, dashboard degraded state, local failure log, cooldown reconciliation, and Discord escalation.
 - [ ] Deploy GitHub Pages dashboard and confirm no service credentials are present in browser bundles or public config.
-- [ ] Document operator setup, required environment variables, Supabase/RLS setup, local DB locations, recovery steps, and known fallback path.
+- [x] Document operator setup, required environment variables, Supabase/RLS setup, local DB locations, recovery steps, and known fallback path.
 
 Stage 5 exit criteria:
 
