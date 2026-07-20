@@ -1,8 +1,8 @@
 # Technical Design Spec: Live Trading Dashboard
 
-**Version:** 0.2.0  
-**Last Updated:** 2026-07-19  
-**Status:** Draft  
+**Version:** 1.0.0  
+**Last Updated:** 2026-07-20  
+**Status:** Published  
 **Related PRD:** [PRD-live-dashboard.md](PRD-live-dashboard.md)
 
 ---
@@ -651,45 +651,32 @@ Minimum Phase 1 validation:
 
 ## 14. Implementation Plan
 
+The working stage-by-stage execution tracker lives in [Live Dashboard Execution Checklist](live-dashboard-execution-checklist.md). Keep implementation status, checkboxes, and day-to-day progress updates in that document so this published TDS only changes when the approved technical design changes.
+
 ### Stage 1: Persistence Foundation
 
-- Add `PriceBarStore` with SQLite schema and idempotent upsert.
-- Extend trade/order persistence with `account_id`, broker order linkage, and exit reason.
-- Add account/position/equity snapshot persistence.
-- Add durable `publish_outbox` persistence with retry state and idempotency keys.
-- Add tests for stores and migrations.
+- Add local SQLite stores, migrations, dashboard settings, and outbox persistence.
+- Prove clean DB creation, idempotent writes, and existing trade backfill safety with focused tests.
 
 ### Stage 2: Bot Integration
 
-- Persist completed bars from the current market-data polling path.
-- Record order lifecycle events from the broker/order manager path.
-- Record account and position snapshots after fills and on polling cadence.
-- Enqueue outbox events after each local source-of-truth write.
-- Preserve provider name, ingestion timestamps, and original domain/event timestamps through outbox enqueue, retry, and reconciliation.
+- Wire stores into market data, order lifecycle, account snapshot, and metric paths.
+- Ensure every dashboard-relevant source row produces or can reconstruct a publish event without blocking trading flow.
 
 ### Stage 3: Remote Read Model
 
-- Define Supabase tables/views and RLS policies.
-- Implement in-process `RemoteDataPublisher` background worker with retry/backoff, idempotent upserts, failure logging, and Discord escalation.
-- Add application-level wake signaling after outbox enqueue plus periodic polling fallback.
-- Add unavailable/paused-store behavior expectations.
-- Add cooldown reconciliation that retries unpublished local rows and prunes reconciled local storage older than 1-3 days.
-- Add cooldown summary telemetry and Discord notification for unresolved publish failures.
+- Define Supabase read-model tables/views, RLS policies, and idempotent upsert contracts.
+- Implement `RemoteDataPublisher`, retry/recovery behavior, cooldown reconciliation, failure telemetry, and Discord escalation.
 
 ### Stage 4: Static Dashboard
 
-- Reuse `apps/operational-metrics-dashboard` as the static Next.js dashboard app.
-- Add a dashboard data adapter boundary.
-- Build Live View, Charts, Operations, and Performance skeletons using fixtures first.
-- Connect to Supabase/static JSON read model.
-- Add light/dark mode tokens, system preference detection, and a user theme toggle.
+- Evolve `apps/operational-metrics-dashboard` into the live dashboard with a data adapter boundary.
+- Build Live, Charts, Operations, and Performance views with fixture-first validation and static export support.
 
 ### Stage 5: End-to-End Validation
 
-- Run IB paper smoke path.
-- Verify persisted and published records.
-- Build and deploy GitHub Pages dashboard.
-- Document operator setup and recovery steps.
+- Run IB paper smoke validation, publish real rows, build/deploy the static dashboard, and document operator setup and recovery.
+- Confirm the Phase 1 acceptance criteria with real paper-trading data and browser-safe credentials only.
 
 ---
 
