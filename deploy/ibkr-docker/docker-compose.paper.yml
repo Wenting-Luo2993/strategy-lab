@@ -1,0 +1,89 @@
+services:
+  ib-gateway:
+    build:
+      context: ./ib-gateway
+    container_name: strategy-lab-ib-gateway
+    env_file:
+      - path: ./secrets/ibc.env
+        required: false
+    environment:
+      DISPLAY: ":1"
+      IB_GATEWAY_PORT: "4002"
+      ENABLE_VNC: "false"
+      TWS_MAJOR_VRSN: "1045"
+      IBC_INI: "/etc/ibkr/config.ini"
+      TRADING_MODE: "paper"
+      TWOFA_TIMEOUT_ACTION: "exit"
+      IBC_PATH: "/opt/IBC"
+      TWS_PATH: "/opt/ibkr"
+      TWS_SETTINGS_PATH: "/opt/ibkr/ibgateway"
+      LOG_PATH: "/var/log/ibkr"
+      APP: "GATEWAY"
+    volumes:
+      - ./runtime/ibgateway:/opt/ibkr/ibgateway
+      - ./runtime/IBC:/opt/IBC
+      - ./secrets/config.ini:/etc/ibkr/config.ini:ro
+      - ./logs/ibkr:/var/log/ibkr
+      - ./state/ibgateway:/home/ibkr
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:5901:5901"
+    healthcheck:
+      test: ["CMD", "/opt/ibkr-container/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    restart: unless-stopped
+    shm_size: "512m"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  trading-bot:
+    build:
+      context: ../..
+      dockerfile: vibe/trading_bot/Dockerfile
+    container_name: strategy-lab-trading-bot
+    network_mode: "service:ib-gateway"
+    depends_on:
+      ib-gateway:
+        condition: service_healthy
+    env_file:
+      - path: ./secrets/trading-bot.env
+        required: false
+    environment:
+      ENVIRONMENT: "production"
+      LOG_LEVEL: "INFO"
+      ACTIVE_RULESET: "orb_exp073_paper_burn_in"
+      DATA__PRIMARY_PROVIDER: "interactive_brokers"
+      BROKER__BROKER_TYPE: "interactive_brokers"
+      BROKER__MODE: "paper"
+      BROKER__IB_HOST: "127.0.0.1"
+      BROKER__IB_PORT: "4002"
+      BROKER__IB_CLIENT_ID: "201"
+      BROKER__IB_MARKET_DATA_TYPE: "1"
+      BROKER__HEALTH_CHECK_ENABLED: "true"
+      BROKER__HEALTH_CHECK_SYMBOL: "QQQ"
+      DATA__POLL_INTERVAL_WITH_POSITION: "60"
+      DATA__POLL_INTERVAL_NO_POSITION: "60"
+      DASHBOARD__ENABLED: "true"
+      DASHBOARD__SYMBOLS: '["QQQ"]'
+      DASHBOARD__PRICE_TIMEFRAMES: '["5m"]'
+      DASHBOARD__LOCAL_PRICE_DB_PATH: "/app/data/market_data.db"
+      DASHBOARD__LOCAL_DASHBOARD_DB_PATH: "/app/data/dashboard.db"
+      DASHBOARD__LOCAL_OUTBOX_DB_PATH: "/app/data/local/publish_outbox.db"
+      DASHBOARD__REMOTE_PROVIDER: "supabase"
+      DATABASE_PATH: "/app/data/trades.db"
+      OPERATIONAL_METRICS__LOCAL_DATABASE_PATH: "/app/data/local/operational_metrics.db"
+    volumes:
+      - ./data/trading-bot:/app/data
+      - ./logs/trading-bot:/app/logs
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"

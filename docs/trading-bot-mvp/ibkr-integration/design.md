@@ -149,7 +149,7 @@ For the current MVP, keep this as a planned evolution rather than adding the ser
 | Phase 1: Oracle VM IBC Deployment | Complete | Oracle VM reachable; 4 GB swap configured; Java, Xvfb, x11vnc, IB Gateway stable, IBC 3.24.1, repo checkout, Python venv, IBC wrapper, and `ibc-gateway.service` are prepared. IBC/Gateway starts in paper mode; host firewall drops non-loopback `4001`/`4002`; readonly cloud smoke passed; paper market buy/sell filled; non-marketable limit timeout/cancel validated; final QQQ position reconciled with zero open orders. | Proceed to Phase 2 cloud trading bot integration and longer burn-in on a larger VM shape. |
 | Phase 2: Cloud Trading Bot Integration | Complete for paper burn-in MVP | `trading-bot-phase2.service` is running on the Oracle VM in paper mode with `orb_exp073_paper_burn_in`; strategy execution routes through the Interactive Brokers execution adapter; `DATA__PRIMARY_PROVIDER=interactive_brokers` uses IB live/snapshot polling instead of Finnhub WebSocket; Stage 5 dashboard publishing is enabled and validated against Supabase; health API reports alive/ready. Current paper state on 2026-07-27: `QQQ -1`, zero open IB orders. | Continue observing multi-session paper burn-in while preparing the Docker boundary. |
 | Phase 3: IBC Hardening | In progress, sufficient to start Phase 4 planning | `ibc-gateway.service` and `trading-bot-phase2.service` are supervised by systemd; bot startup waits for IB API port `4002`; IBC paper warning handling was fixed with `AcceptNonBrokerageAccountWarning=yes`; Discord notifications cover order events and unresolved dashboard publish states; manual restart/flatten/redeploy/reconcile flow was exercised on 2026-07-27. Remaining gaps: formal restart/reconciliation runbook, watchdog near market open, log rotation, and multi-session recovery evidence. | Start Phase 4 Docker design in parallel, but keep Phase 3 hardening open until the remaining ops runbooks/watchdogs are complete. |
-| Phase 4: Dockerized Deployment | Ready to start | Current VM operations are stable enough to define container boundaries, volumes, health checks, and secret handling. Do not cut over production until paper burn-in and Phase 3 recovery runbooks are proven. | Draft Docker Compose architecture for separate `ib-gateway` and `trading-bot` services, with persisted Gateway settings/logs and health checks. |
+| Phase 4: Dockerized Deployment | Started | Initial Docker Compose scaffold and runbook were added under `deploy/ibkr-docker/` and `phase-4-dockerized-deployment-runbook.md`. The design uses separate `ib-gateway` and `trading-bot` services, with the bot sharing the Gateway network namespace so it can keep using `127.0.0.1:4002`; the Supabase `RemoteDataPublisher` remains an in-process worker inside `trading-bot`; `docker compose config` passes locally. Do not cut over production until paper burn-in and Phase 3 recovery runbooks are proven. | Populate ignored runtime inputs on a test host, build the shadow stack, then validate Gateway health, bot readiness, paper order smoke, and Supabase Stage 5 publishing. |
 | Phase 5: Live Readiness Review | Deferred | Live trading remains out of scope until paper cloud stability is proven. | Review risk controls and require explicit live-mode approval. |
 
 ### Phase 0: Local Paper Trading Burn-In
@@ -249,15 +249,18 @@ Exit criteria:
 
 ### Phase 4: Dockerized Deployment
 
-Status: ready to start design and local implementation. Keep production on the VM/systemd path until Phase 3 recovery operations and multi-session paper burn-in are proven.
+Status: started as of 2026-07-27. See `phase-4-dockerized-deployment-runbook.md` and `deploy/ibkr-docker/` for the initial Compose scaffold. Keep production on the VM/systemd path until Phase 3 recovery operations and multi-session paper burn-in are proven.
 
 Tasks:
 
-- Package IB Gateway, IBC, Xvfb, and optional VNC/noVNC into an `ib-gateway` service.
-- Package the bot separately so bot deploys do not rebuild Gateway.
-- Persist Gateway settings and logs through Docker volumes.
-- Add Docker health checks for Gateway socket availability and bot process health.
-- Keep secrets out of images and compose files.
+- [x] Package IB Gateway, IBC, Xvfb, and optional VNC/noVNC into an `ib-gateway` service scaffold.
+- [x] Package the bot separately so bot deploys do not rebuild Gateway.
+- [x] Persist Gateway settings and logs through Docker volumes in the Compose design.
+- [x] Add Docker health checks for Gateway socket availability and bot process health.
+- [x] Keep secrets out of images and compose files by using ignored runtime inputs and example env files only.
+- [ ] Populate a test host with ignored Gateway/IBC runtime inputs and real secret files.
+- [ ] Build and start the shadow Docker stack without affecting production systemd services.
+- [ ] Run read-only IB probe, tiny paper order smoke, Stage 5 Supabase validation, and restart persistence checks against the shadow stack.
 
 Exit criteria:
 
