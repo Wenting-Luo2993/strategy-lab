@@ -38,7 +38,7 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
       queryTable("price_bars", supabaseUrl, supabaseAnonKey, "select=*&order=bar_start.asc&limit=500"),
       queryTable("trades", supabaseUrl, supabaseAnonKey, "select=*&order=entry_time.desc&limit=100"),
       queryTable("operational_metrics", supabaseUrl, supabaseAnonKey, "select=*&order=timestamp.desc&limit=100"),
-      queryTable("strategy_annotations", supabaseUrl, supabaseAnonKey, "select=*&eq.enabled=true&limit=100"),
+      queryTable("strategy_annotations", supabaseUrl, supabaseAnonKey, "select=*&enabled=eq.true&limit=100"),
     ]);
 
     return {
@@ -58,6 +58,8 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
   } catch (error) {
     return {
       ...remoteUnavailableFixture,
+      source: "supabase",
+      status: "unavailable",
       error: error instanceof Error ? error.message : "Supabase dashboard query failed.",
     };
   }

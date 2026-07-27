@@ -287,5 +287,11 @@ function number(value: number | null | undefined, digits: number): string {
 }
 
 function time(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/New_York",
+  }).format(new Date(value));
 }
