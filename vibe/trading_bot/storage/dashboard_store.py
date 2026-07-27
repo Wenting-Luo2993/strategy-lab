@@ -207,6 +207,19 @@ class OrderEvent:
     raw_status: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class StrategyAnnotation:
+    annotation_id: str
+    account_id: str
+    symbol: str
+    strategy: str
+    trading_day: datetime | str
+    annotation_type: str
+    key: str
+    value_json: Dict[str, Any]
+    enabled: bool = True
+
+
 class DashboardStore(_SQLiteStore):
     """Local account, position, equity, and order-event store."""
 
@@ -279,9 +292,25 @@ class DashboardStore(_SQLiteStore):
                 updated_at TEXT NOT NULL
             )
         """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_annotations (
+                annotation_id TEXT PRIMARY KEY,
+                account_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                trading_day TEXT NOT NULL,
+                annotation_type TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value_json TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_equity_account_time ON equity_snapshots(account_id, timestamp DESC)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_positions_account_symbol ON positions(account_id, symbol)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_order_events_account_time ON order_events(account_id, occurred_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_strategy_annotations_symbol_day ON strategy_annotations(symbol, trading_day)")
         conn.commit()
 
     def upsert_account(self, account: AccountRecord) -> None:
@@ -417,12 +446,47 @@ class DashboardStore(_SQLiteStore):
             ))
             conn.commit()
 
+    def upsert_strategy_annotation(self, annotation: StrategyAnnotation) -> None:
+        now = _utc_now_iso()
+        with self._lock:
+            conn = self._get_connection()
+            conn.execute("""
+                INSERT INTO strategy_annotations (
+                    annotation_id, account_id, symbol, strategy, trading_day,
+                    annotation_type, key, value_json, enabled, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(annotation_id) DO UPDATE SET
+                    account_id = excluded.account_id,
+                    symbol = excluded.symbol,
+                    strategy = excluded.strategy,
+                    trading_day = excluded.trading_day,
+                    annotation_type = excluded.annotation_type,
+                    key = excluded.key,
+                    value_json = excluded.value_json,
+                    enabled = excluded.enabled,
+                    updated_at = excluded.updated_at
+            """, (
+                annotation.annotation_id,
+                annotation.account_id,
+                annotation.symbol,
+                annotation.strategy,
+                _iso(annotation.trading_day),
+                annotation.annotation_type,
+                annotation.key,
+                json.dumps(annotation.value_json, sort_keys=True),
+                1 if annotation.enabled else 0,
+                now,
+                now,
+            ))
+            conn.commit()
+
     def get_row(self, table: str, key_column: str, key_value: str) -> Optional[Dict[str, Any]]:
         allowed = {
             "accounts": "account_id",
             "equity_snapshots": "snapshot_id",
             "positions": "position_id",
             "order_events": "event_id",
+            "strategy_annotations": "annotation_id",
         }
         if allowed.get(table) != key_column:
             raise ValueError(f"Unsupported lookup: {table}.{key_column}")
@@ -431,10 +495,15 @@ class DashboardStore(_SQLiteStore):
         cursor = conn.cursor()
         cursor.execute(f"SELECT * FROM {table} WHERE {key_column} = ?", (key_value,))
         row = cursor.fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        result = dict(row)
+        if table == "strategy_annotations":
+            result["value_json"] = json.loads(result["value_json"])
+        return result
 
     def count_rows(self, table: str) -> int:
-        if table not in {"accounts", "equity_snapshots", "positions", "order_events"}:
+        if table not in {"accounts", "equity_snapshots", "positions", "order_events", "strategy_annotations"}:
             raise ValueError(f"Unsupported table: {table}")
         return self._get_connection().execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 

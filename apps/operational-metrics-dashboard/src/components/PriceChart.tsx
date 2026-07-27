@@ -9,15 +9,16 @@ import {
   type IChartApi,
   type UTCTimestamp,
 } from "lightweight-charts";
-import type { PriceBar, Trade } from "@/data/types";
+import type { PriceBar, StrategyAnnotation, Trade } from "@/data/types";
 
 type PriceChartProps = {
   bars: PriceBar[];
   trades: Trade[];
+  annotations: StrategyAnnotation[];
   symbol: string;
 };
 
-export function PriceChart({ bars, trades, symbol }: PriceChartProps) {
+export function PriceChart({ bars, trades, annotations, symbol }: PriceChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
 
@@ -27,7 +28,7 @@ export function PriceChart({ bars, trades, symbol }: PriceChartProps) {
       return;
     }
 
-    const styles = getComputedStyle(document.documentElement);
+    const styles = getComputedStyle(container);
     const chart = createChart(container, {
       height: 330,
       layout: {
@@ -72,6 +73,20 @@ export function PriceChart({ bars, trades, symbol }: PriceChartProps) {
           text: trade.status,
         })),
     );
+    annotations.filter((annotation) => annotation.symbol === symbol).forEach((annotation) => {
+      const price = annotationPrice(annotation);
+      if (price === null) {
+        return;
+      }
+      series.createPriceLine({
+        price,
+        color: annotation.key === "orb_low" ? cssVar(styles, "--loss") : cssVar(styles, "--fresh"),
+        lineWidth: 2,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: annotationLabel(annotation),
+      });
+    });
     chart.timeScale().fitContent();
 
     const resizeObserver = new ResizeObserver((entries) => {
@@ -87,7 +102,7 @@ export function PriceChart({ bars, trades, symbol }: PriceChartProps) {
       chart.remove();
       chartRef.current = null;
     };
-  }, [bars, symbol, trades]);
+  }, [annotations, bars, symbol, trades]);
 
   if (!bars.length) {
     return <div className="grid h-[330px] place-items-center text-sm text-[var(--muted)]">No chart data</div>;
@@ -98,6 +113,16 @@ export function PriceChart({ bars, trades, symbol }: PriceChartProps) {
 
 function toChartTime(value: string): UTCTimestamp {
   return Math.floor(new Date(value).getTime() / 1000) as UTCTimestamp;
+}
+
+function annotationPrice(annotation: StrategyAnnotation): number | null {
+  const price = annotation.value_json.price;
+  return typeof price === "number" && Number.isFinite(price) ? price : null;
+}
+
+function annotationLabel(annotation: StrategyAnnotation): string {
+  const label = annotation.value_json.label;
+  return typeof label === "string" ? label : annotation.key;
 }
 
 function cssVar(styles: CSSStyleDeclaration, name: string): string {

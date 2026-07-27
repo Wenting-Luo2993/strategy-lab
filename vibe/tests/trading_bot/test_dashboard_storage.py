@@ -14,6 +14,7 @@ from vibe.trading_bot.storage.dashboard_store import (
     PriceBarStore,
     PublishOutboxEvent,
     PublishOutboxStore,
+    StrategyAnnotation,
 )
 from vibe.trading_bot.storage.trade_store import TradeStore
 
@@ -109,14 +110,27 @@ def test_dashboard_store_upserts_account_equity_position_and_order_event(tmp_pat
         occurred_at=observed_at,
         raw_status="Filled",
     ))
+    store.upsert_strategy_annotation(StrategyAnnotation(
+        annotation_id="DU123:AAPL:2026-07-20:orb_high",
+        account_id="DU123",
+        symbol="AAPL",
+        strategy="ORB",
+        trading_day="2026-07-20",
+        annotation_type="level",
+        key="orb_high",
+        value_json={"price": 101.25, "label": "ORB High"},
+    ))
 
     assert store.count_rows("accounts") == 1
     assert store.count_rows("equity_snapshots") == 1
     assert store.count_rows("positions") == 1
     assert store.count_rows("order_events") == 1
+    assert store.count_rows("strategy_annotations") == 1
     assert store.get_row("equity_snapshots", "snapshot_id", "eq-1")["timestamp"] == observed_at.isoformat()
     assert store.get_row("positions", "position_id", "DU123:AAPL")["updated_at"] == observed_at.isoformat()
     assert store.get_row("order_events", "event_id", "order-1-filled")["occurred_at"] == observed_at.isoformat()
+    annotation = store.get_row("strategy_annotations", "annotation_id", "DU123:AAPL:2026-07-20:orb_high")
+    assert annotation["value_json"]["price"] == 101.25
     store.close()
 
 

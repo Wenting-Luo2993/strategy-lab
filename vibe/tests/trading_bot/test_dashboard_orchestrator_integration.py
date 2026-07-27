@@ -100,6 +100,12 @@ async def test_order_fill_persists_order_account_position_and_outbox_events(tmp_
     )
 
     await orchestrator._on_order_created(response.order_id)
+    initial_sent_event = orchestrator.dashboard_store.get_row(
+        "order_events",
+        "event_id",
+        f"ORDER_SENT:{response.order_id}",
+    )
+    orchestrator.market_scheduler.advance_time(seconds=2)
     await orchestrator._persist_dashboard_trade_entry(
         symbol="AAPL",
         order_id=response.order_id,
@@ -127,7 +133,12 @@ async def test_order_fill_persists_order_account_position_and_outbox_events(tmp_
 
     assert sent_event["symbol"] == "AAPL"
     assert sent_event["trade_id"] == trade_id
+    assert sent_event["price"] == 100.0
+    assert sent_event["slippage_bps"] is None
+    assert sent_event["occurred_at"] == initial_sent_event["occurred_at"]
     assert filled_event["price"] == response.avg_price
+    assert filled_event["slippage_bps"] is not None
+    assert filled_event["latency_ms"] == 2000.0
     assert filled_event["trade_id"] == trade_id
     assert trade["trade_id"] == trade_id
     assert trade["broker_order_id"] == response.order_id
@@ -139,9 +150,10 @@ async def test_order_fill_persists_order_account_position_and_outbox_events(tmp_
         "fill_quantity",
         "commission",
         "expected_fill_price",
+        "latency_ms",
         "slippage_bps",
     }
-    assert orchestrator.dashboard_outbox_store.count_by_status("pending") == 11
+    assert orchestrator.dashboard_outbox_store.count_by_status("pending") == 12
     assert orchestrator.dashboard_publish_wake_event.is_set()
     orchestrator.dashboard_price_store.close()
     orchestrator.dashboard_store.close()
@@ -208,6 +220,43 @@ async def test_trade_close_updates_trade_and_links_trade_closed_event(tmp_path):
     assert closed_event["trade_id"] == trade_id
     assert closed_event["price"] == exit_response.avg_price
     assert orchestrator.operational_metrics_store.get_metrics(metric_name="slippage_bps")
+    orchestrator.dashboard_price_store.close()
+    orchestrator.dashboard_store.close()
+    orchestrator.dashboard_outbox_store.close()
+    orchestrator.trade_store.close()
+    orchestrator.operational_metrics_store.close()
+
+
+def test_orb_levels_persist_strategy_annotations_and_outbox_events(tmp_path):
+    scheduler = _scheduler()
+    orchestrator = TradingOrchestrator(
+        config=_dashboard_config(tmp_path),
+        ruleset=_ruleset(),
+        market_scheduler=scheduler,
+        testing_mode=True,
+    )
+    trading_day = datetime.now(scheduler.timezone).date()
+    trading_day_text = trading_day.isoformat()
+
+    orchestrator._update_daily_stats("AAPL", 0, {
+        "orb_high": 101.25,
+        "orb_low": 99.75,
+        "orb_range": 1.5,
+        "orb_trading_date": trading_day,
+        "current_bar": {"open": 100.0, "close": 101.0, "high": 101.25, "low": 99.75},
+    })
+
+    annotation = orchestrator.dashboard_store.get_row(
+        "strategy_annotations",
+        "annotation_id",
+        f"DU123:AAPL:{trading_day_text}:orb_high",
+    )
+
+    assert annotation["key"] == "orb_high"
+    assert annotation["value_json"]["price"] == 101.25
+    assert orchestrator.dashboard_store.count_rows("strategy_annotations") == 3
+    assert orchestrator.dashboard_outbox_store.count_by_status("pending") == 3
+    assert orchestrator.dashboard_publish_wake_event.is_set()
     orchestrator.dashboard_price_store.close()
     orchestrator.dashboard_store.close()
     orchestrator.dashboard_outbox_store.close()

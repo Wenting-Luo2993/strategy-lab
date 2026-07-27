@@ -28,6 +28,7 @@ from vibe.trading_bot.storage.dashboard_store import (
     PriceBarStore,
     PublishOutboxEvent,
     PublishOutboxStore,
+    StrategyAnnotation,
 )
 from vibe.trading_bot.publishing.remote_data_publisher import RemoteDataPublisher, SupabaseRestDestination
 import pandas as pd
@@ -117,6 +118,7 @@ class TradingOrchestrator:
         self._dashboard_order_trade_ids: Dict[str, str] = {}
         self._dashboard_symbol_trade_ids: Dict[str, str] = {}
         self._dashboard_trade_row_ids: Dict[str, int] = {}
+        self._dashboard_order_sent_at: Dict[str, datetime] = {}
         self._dashboard_metric_recorded_events: set[str] = set()
         if self.config.dashboard.enabled:
             self.dashboard_price_store = PriceBarStore(db_path=self.config.dashboard.local_price_db_path)
@@ -423,6 +425,7 @@ class TradingOrchestrator:
         event_type: str,
         timestamp: datetime,
         slippage_bps: Optional[float],
+        latency_ms: Optional[float],
     ) -> None:
         if self.operational_metrics_store is None:
             return
@@ -449,6 +452,8 @@ class TradingOrchestrator:
                 samples.append(("expected_fill_price", order.price))
             if slippage_bps is not None:
                 samples.append(("slippage_bps", slippage_bps))
+            if latency_ms is not None:
+                samples.append(("latency_ms", latency_ms))
 
             for metric_name, metric_value in samples:
                 metric_id = self.operational_metrics_store.record_metric(
@@ -628,8 +633,25 @@ class TradingOrchestrator:
             from vibe.trading_bot.utils.datetime_utils import get_market_now
             occurred_at = get_market_now(self.market_scheduler)
             account_id = self._dashboard_account_id()
+            event_id = f"{event_type}:{order_id}"
             fill_price = order.avg_price if order.avg_price > 0 else None
-            if fill_price is not None and order.price not in (None, 0):
+            is_fill_event = event_type in {"ORDER_FILLED", "TRADE_CLOSED"}
+            event_price = fill_price if is_fill_event else order.price
+            latency_ms = None
+            if event_type == "ORDER_SENT":
+                existing_sent_event = self.dashboard_store.get_row("order_events", "event_id", event_id)
+                if existing_sent_event is not None:
+                    occurred_at = datetime.fromisoformat(existing_sent_event["occurred_at"])
+                self._dashboard_order_sent_at[order_id] = occurred_at
+            elif is_fill_event:
+                sent_at = self._dashboard_order_sent_at.get(order_id)
+                if sent_at is None:
+                    sent_event = self.dashboard_store.get_row("order_events", "event_id", f"ORDER_SENT:{order_id}")
+                    if sent_event is not None:
+                        sent_at = datetime.fromisoformat(sent_event["occurred_at"])
+                if sent_at is not None:
+                    latency_ms = max(0.0, (occurred_at - sent_at).total_seconds() * 1000.0)
+            if is_fill_event and fill_price is not None and order.price not in (None, 0):
                 if order.side == "buy":
                     slippage_bps = ((fill_price - order.price) / order.price) * 10000.0
                 else:
@@ -638,19 +660,19 @@ class TradingOrchestrator:
                 slippage_bps = None
             trade_id = self._dashboard_order_trade_ids.get(order_id)
             order_event = OrderEvent(
-                event_id=f"{event_type}:{order_id}",
+                event_id=event_id,
                 account_id=account_id,
                 broker=self._dashboard_broker_name(),
                 broker_order_id=order_id,
                 event_type=event_type,
                 symbol=order.symbol,
                 side=order.side,
-                quantity=order.filled_qty if event_type in {"ORDER_FILLED", "TRADE_CLOSED"} and order.filled_qty > 0 else order.quantity,
+                quantity=order.filled_qty if is_fill_event and order.filled_qty > 0 else order.quantity,
                 trade_id=trade_id,
-                price=fill_price,
+                price=event_price,
                 expected_price=order.price,
                 slippage_bps=slippage_bps,
-                latency_ms=None,
+                latency_ms=latency_ms,
                 occurred_at=occurred_at,
                 raw_status=getattr(order.status, "name", str(order.status)),
             )
@@ -674,18 +696,19 @@ class TradingOrchestrator:
                     "price": order_event.price,
                     "expected_price": order_event.expected_price,
                     "slippage_bps": order_event.slippage_bps,
-                    "latency_ms": None,
+                    "latency_ms": order_event.latency_ms,
                     "occurred_at": occurred_at.isoformat(),
                     "raw_status": order_event.raw_status,
                 },
                 original_event_timestamp=occurred_at,
             )
-            if event_type in {"ORDER_FILLED", "TRADE_CLOSED"}:
+            if is_fill_event:
                 self._record_dashboard_fill_metrics(
                     order=order,
                     event_type=event_type,
                     timestamp=occurred_at,
                     slippage_bps=slippage_bps,
+                    latency_ms=latency_ms,
                 )
         except Exception as exc:
             self.logger.warning("Dashboard order event persistence failed for %s: %s", order_id, exc)
@@ -1054,6 +1077,11 @@ class TradingOrchestrator:
                     "range": metadata["orb_range"],
                     "body_pct": body_pct,
                 }
+                self._persist_dashboard_orb_annotations(
+                    symbol=symbol,
+                    trading_day=current_date,
+                    levels=self._daily_stats["orb_levels"][symbol],
+                )
                 self.logger.info(
                     f"[ORB STORED] {symbol}: High=${metadata['orb_high']:.2f}, "
                     f"Low=${metadata['orb_low']:.2f}, Range=${metadata['orb_range']:.2f}"
@@ -1080,6 +1108,53 @@ class TradingOrchestrator:
                 self._daily_stats["signals_by_symbol"][symbol] += 1
             else:
                 self._daily_stats["signals_by_symbol"][symbol] = 1
+
+    def _persist_dashboard_orb_annotations(self, *, symbol: str, trading_day: str, levels: Dict[str, Any]) -> None:
+        if not self._dashboard_enabled() or self.dashboard_store is None:
+            return
+        try:
+            account_id = self._dashboard_account_id()
+            strategy_name = self.strategy.config.name if self.strategy else "ORB"
+            created_at = datetime.now(self.market_scheduler.timezone)
+            annotations = {
+                "orb_high": {"price": float(levels["high"]), "label": "ORB High"},
+                "orb_low": {"price": float(levels["low"]), "label": "ORB Low"},
+                "orb_range": {"range": float(levels["range"]), "body_pct": float(levels.get("body_pct", 0.0))},
+            }
+            for key, value_json in annotations.items():
+                annotation_id = f"{account_id}:{symbol}:{trading_day}:{key}"
+                annotation = StrategyAnnotation(
+                    annotation_id=annotation_id,
+                    account_id=account_id,
+                    symbol=symbol,
+                    strategy=strategy_name,
+                    trading_day=trading_day,
+                    annotation_type="level" if key in {"orb_high", "orb_low"} else "label",
+                    key=key,
+                    value_json=value_json,
+                    enabled=True,
+                )
+                self.dashboard_store.upsert_strategy_annotation(annotation)
+                self._enqueue_dashboard_event(
+                    event_id=f"strategy_annotation:{annotation_id}",
+                    event_type="upsert",
+                    aggregate_type="strategy_annotation",
+                    aggregate_id=annotation_id,
+                    payload={
+                        "annotation_id": annotation.annotation_id,
+                        "account_id": annotation.account_id,
+                        "symbol": annotation.symbol,
+                        "strategy": annotation.strategy,
+                        "trading_day": annotation.trading_day,
+                        "annotation_type": annotation.annotation_type,
+                        "key": annotation.key,
+                        "value_json": annotation.value_json,
+                        "enabled": annotation.enabled,
+                    },
+                    original_event_timestamp=created_at,
+                )
+        except Exception as exc:
+            self.logger.warning("Dashboard ORB annotation persistence failed for %s: %s", symbol, exc)
 
     async def _check_and_send_orb_notification(self) -> None:
         """Check if ORB levels are ready and send Discord notification once per day.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { loadDashboardData } from "@/data/clientAdapter";
 import type { DashboardData, PriceBar } from "@/data/types";
 import { PriceChart } from "./PriceChart";
@@ -12,6 +12,9 @@ type DashboardAppProps = {
 type View = "live" | "charts" | "operations" | "performance";
 type Theme = "light" | "dark";
 
+const themeStorageKey = "dashboard-theme";
+const themeChangeEvent = "dashboard-theme-change";
+
 const views: { id: View; label: string }[] = [
   { id: "live", label: "Live" },
   { id: "charts", label: "Charts" },
@@ -22,18 +25,7 @@ const views: { id: View; label: string }[] = [
 export function DashboardApp({ initialData }: DashboardAppProps) {
   const [data, setData] = useState(initialData);
   const [view, setView] = useState<View>("live");
-  const [theme, setTheme] = useState<Theme>(() => {
-    if (typeof window === "undefined") {
-      return "light";
-    }
-    const stored = window.localStorage.getItem("dashboard-theme") as Theme | null;
-    return stored ?? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-  });
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem("dashboard-theme", theme);
-  }, [theme]);
+  const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeServerSnapshot);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,7 +50,7 @@ export function DashboardApp({ initialData }: DashboardAppProps) {
   const health = data.status === "unavailable" || (freshnessMinutes !== null && freshnessMinutes > 15) ? "degraded" : "healthy";
 
   return (
-    <main className="dashboard-shell min-h-screen text-[var(--foreground)]">
+    <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
       <header className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-5 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -69,7 +61,7 @@ export function DashboardApp({ initialData }: DashboardAppProps) {
             <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${health === "healthy" ? "border-[var(--health)] text-[var(--health)]" : "border-[var(--warning)] text-[var(--warning)]"}`}>
               {health.toUpperCase()}
             </span>
-            <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+            <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm" onClick={() => setDashboardTheme(theme === "dark" ? "light" : "dark")}>
               {theme === "dark" ? "Light" : "Dark"}
             </button>
           </div>
@@ -98,6 +90,36 @@ export function DashboardApp({ initialData }: DashboardAppProps) {
   );
 }
 
+function subscribeTheme(callback: () => void): () => void {
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  const notify = () => callback();
+  window.addEventListener("storage", notify);
+  window.addEventListener(themeChangeEvent, notify);
+  media.addEventListener("change", notify);
+  return () => {
+    window.removeEventListener("storage", notify);
+    window.removeEventListener(themeChangeEvent, notify);
+    media.removeEventListener("change", notify);
+  };
+}
+
+function getThemeSnapshot(): Theme {
+  const stored = window.localStorage.getItem(themeStorageKey);
+  if (stored === "dark" || stored === "light") {
+    return stored;
+  }
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function getThemeServerSnapshot(): Theme {
+  return "light";
+}
+
+function setDashboardTheme(theme: Theme): void {
+  window.localStorage.setItem(themeStorageKey, theme);
+  window.dispatchEvent(new Event(themeChangeEvent));
+}
+
 function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes }: { data: DashboardData; realizedPnl: number; unrealizedPnl: number; freshnessMinutes: number | null }) {
   const latestEquity = data.equity[0];
   return (
@@ -107,34 +129,40 @@ function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes }: { data
         <Metric label="Realized P&L" value={currency(realizedPnl)} tone={realizedPnl >= 0 ? "profit" : "loss"} />
         <Metric label="Unrealized P&L" value={currency(unrealizedPnl)} tone={unrealizedPnl >= 0 ? "profit" : "loss"} />
       </div>
-      <Panel title="Open positions">
-        <div className="space-y-3">
-          {data.positions.map((position) => (
-            <div key={position.position_id} className="flex items-center justify-between border-b border-[var(--border)] pb-3 last:border-0 last:pb-0">
-              <div>
-                <div className="font-semibold">{position.symbol}</div>
-                <div className="text-sm text-[var(--muted)]">{position.side} · {number(position.quantity, 0)} shares</div>
+      <div className="lg:col-span-2">
+        <Panel title="Open positions">
+          <div className="space-y-3">
+            {data.positions.map((position) => (
+              <div key={position.position_id} className="flex items-center justify-between border-b border-[var(--border)] pb-3 last:border-0 last:pb-0">
+                <div>
+                  <div className="font-semibold">{position.symbol}</div>
+                  <div className="text-sm text-[var(--muted)]">{position.side} · {number(position.quantity, 0)} shares</div>
+                </div>
+                <div className={`text-right font-semibold ${Number(position.unrealized_pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>
+                  {currency(position.unrealized_pnl)}
+                </div>
               </div>
-              <div className={`text-right font-semibold ${Number(position.unrealized_pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>
-                {currency(position.unrealized_pnl)}
-              </div>
-            </div>
-          ))}
-          {!data.positions.length && <EmptyState label="No open positions" />}
-        </div>
-      </Panel>
-      <Panel title="Latest order events">
-        <EventTable data={data} />
-      </Panel>
-      <Panel title="Data freshness">
-        <dl className="grid gap-3 text-sm">
-          <Stat label="Source" value={data.source} />
-          <Stat label="Market state" value={data.status} />
-          <Stat label="Latest equity" value={freshnessMinutes === null ? "--" : `${number(freshnessMinutes, 0)} min ago`} />
-          <Stat label="Generated" value={time(data.generatedAt)} />
-        </dl>
-        {data.error && <p className="mt-4 rounded-md border border-[var(--warning)] p-3 text-sm text-[var(--warning)]">{data.error}</p>}
-      </Panel>
+            ))}
+            {!data.positions.length && <EmptyState label="No open positions" />}
+          </div>
+        </Panel>
+      </div>
+      <div className="lg:col-span-2">
+        <Panel title="Latest order events">
+          <EventTable data={data} />
+        </Panel>
+      </div>
+      <div className="lg:col-span-2">
+        <Panel title="Data freshness">
+          <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <Stat label="Source" value={data.source} />
+            <Stat label="Market state" value={data.status} />
+            <Stat label="Latest equity" value={freshnessMinutes === null ? "--" : `${number(freshnessMinutes, 0)} min ago`} />
+            <Stat label="Generated" value={time(data.generatedAt)} />
+          </dl>
+          {data.error && <p className="mt-4 rounded-md border border-[var(--warning)] p-3 text-sm text-[var(--warning)]">{data.error}</p>}
+        </Panel>
+      </div>
     </section>
   );
 }
@@ -143,7 +171,7 @@ function ChartsView({ data, selectedSymbol, selectedBars }: { data: DashboardDat
   return (
     <section className="grid gap-5 lg:grid-cols-[1.5fr_0.75fr]">
       <Panel title={`${selectedSymbol} · 5m price`}>
-        <PriceChart bars={selectedBars} trades={data.trades} symbol={selectedSymbol} />
+        <PriceChart bars={selectedBars} trades={data.trades} annotations={data.annotations} symbol={selectedSymbol} />
       </Panel>
       <Panel title="Strategy annotations">
         <div className="space-y-3">
@@ -166,8 +194,8 @@ function OperationsView({ data }: { data: DashboardData }) {
     <section className="grid gap-5 lg:grid-cols-2">
       <Panel title="Execution quality">
         <dl className="grid gap-3 text-sm">
-          <Stat label="Average latency" value={`${number(metrics.avgLatency, 0)} ms`} />
-          <Stat label="Worst latency" value={`${number(metrics.maxLatency, 0)} ms`} />
+          <Stat label="Average latency" value={unit(metrics.avgLatency, 0, "ms")} />
+          <Stat label="Worst latency" value={unit(metrics.maxLatency, 0, "ms")} />
           <Stat label="Average slippage" value={`${number(metrics.avgSlippage, 2)} bps`} />
           <Stat label="Worst slippage" value={`${number(metrics.maxSlippage, 2)} bps`} />
         </dl>
@@ -177,9 +205,11 @@ function OperationsView({ data }: { data: DashboardData }) {
           {Object.entries(data.publishStatus).map(([key, value]) => <Stat key={key} label={key.replace("_", " ")} value={number(value, 0)} />)}
         </dl>
       </Panel>
-      <Panel title="Recent order events">
-        <EventTable data={data} />
-      </Panel>
+      <div className="lg:col-span-2">
+        <Panel title="Recent order events">
+          <EventTable data={data} />
+        </Panel>
+      </div>
     </section>
   );
 }
@@ -217,19 +247,23 @@ function PerformanceView({ data }: { data: DashboardData }) {
 function EventTable({ data }: { data: DashboardData }) {
   return (
     <div className="overflow-x-auto">
-      <table className="min-w-full text-left text-sm">
+      <table className="min-w-[820px] text-left text-sm whitespace-nowrap">
         <thead className="text-xs uppercase text-[var(--muted)]">
-          <tr><th className="py-2 pr-3">Time</th><th className="py-2 pr-3">Symbol</th><th className="py-2 pr-3">Event</th><th className="py-2 pr-3 text-right">Slip</th><th className="py-2 pr-3 text-right">Latency</th></tr>
+          <tr><th className="py-2 pr-3">Time ET</th><th className="py-2 pr-3">Symbol</th><th className="py-2 pr-3">Side</th><th className="py-2 pr-3 text-right">Qty</th><th className="py-2 pr-3">Event</th><th className="py-2 pr-3 text-right">Price</th><th className="py-2 pr-3 text-right">Slip bps</th><th className="py-2 pr-3 text-right">Latency</th></tr>
         </thead>
         <tbody className="divide-y divide-[var(--border)]">
           {data.orderEvents.map((event) => (
-            <tr key={event.event_id}><td className="py-3 pr-3 text-[var(--muted)]">{time(event.occurred_at)}</td><td className="py-3 pr-3 font-semibold">{event.symbol}</td><td className="py-3 pr-3">{event.event_type}</td><td className="py-3 pr-3 text-right">{number(event.slippage_bps, 2)}</td><td className="py-3 pr-3 text-right">{number(event.latency_ms, 0)} ms</td></tr>
+            <tr key={event.event_id}><td className="py-3 pr-3 text-[var(--muted)]">{time(event.occurred_at)}</td><td className="py-3 pr-3 font-semibold">{event.symbol}</td><td className="py-3 pr-3 capitalize">{event.side}</td><td className="py-3 pr-3 text-right">{number(event.quantity, 0)}</td><td className="py-3 pr-3">{event.event_type}</td><td className="py-3 pr-3 text-right">{currency(event.price)}</td><td className="py-3 pr-3 text-right">{isFillEvent(event.event_type) ? number(event.slippage_bps, 2) : "--"}</td><td className="py-3 pr-3 text-right">{event.latency_ms === null || event.latency_ms === undefined ? "--" : `${number(event.latency_ms, 0)} ms`}</td></tr>
           ))}
-          {!data.orderEvents.length && <tr><td colSpan={5}><EmptyState label="No order events" /></td></tr>}
+          {!data.orderEvents.length && <tr><td colSpan={8}><EmptyState label="No order events" /></td></tr>}
         </tbody>
       </table>
     </div>
   );
+}
+
+function isFillEvent(eventType: string): boolean {
+  return eventType === "ORDER_FILLED" || eventType === "TRADE_CLOSED";
 }
 
 function Panel({ title, children }: { title: string; children: ReactNode }) {
@@ -284,6 +318,10 @@ function number(value: number | null | undefined, digits: number): string {
     return "--";
   }
   return value.toLocaleString(undefined, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+}
+
+function unit(value: number | null | undefined, digits: number, suffix: string): string {
+  return value === null || value === undefined || !Number.isFinite(value) ? "--" : `${number(value, digits)} ${suffix}`;
 }
 
 function time(value: string): string {

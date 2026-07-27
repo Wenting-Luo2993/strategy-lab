@@ -19,7 +19,8 @@
   --shadow: 0 18px 40px rgba(29, 44, 38, 0.08);
 }
 
-:root[data-theme="dark"] {
+:root[data-theme="dark"],
+.dashboard-shell[data-theme="dark"] {
   color-scheme: dark;
   --background: #151b18;
   --foreground: #eef5f1;
