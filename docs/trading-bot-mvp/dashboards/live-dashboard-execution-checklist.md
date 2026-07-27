@@ -1,7 +1,7 @@
 # Live Dashboard Execution Checklist
 
-**Last Updated:** 2026-07-20  
-**Status:** Stage 5 Validation Prep  
+**Last Updated:** 2026-07-27  
+**Status:** Stage 5 End-to-End Validation In Progress  
 **Related TDS:** [TDS-live-dashboard.md](TDS-live-dashboard.md)
 
 This document is the working implementation tracker for the Phase 1 live trading dashboard. Update checkboxes and stage status here as work progresses; only update the TDS when the approved design itself changes.
@@ -90,7 +90,7 @@ Stage 4 exit criteria:
 
 - [x] Static Next.js build succeeds.
 - [x] Dashboard renders fixture data without requiring broker or Supabase credentials.
-- [ ] Dashboard can read real published paper-trading rows through the configured data adapter.
+- [ ] Dashboard can read real published paper-trading rows through the configured data adapter. Supabase anon/RLS readback passed for accounts, trades, order events, price bars, equity snapshots, positions, and operational metrics on 2026-07-27; dashboard app adapter/browser verification remains open.
 - [x] Light and dark themes are legible for charts, tables, trading states, and health states.
 
 ---
@@ -99,18 +99,18 @@ Stage 4 exit criteria:
 
 Runbook: [Stage 5 Live Dashboard Validation Runbook](stage-5-validation-runbook.md)
 
-- [ ] Run IB paper smoke path with dashboard persistence and publication enabled.
-- [ ] Persist at least one completed 5-minute OHLCV bar for each configured dashboard symbol.
-- [ ] Submit a paper order and verify order event, trade, fill metric, position snapshot, and equity snapshot rows locally.
-- [ ] Publish read model to Supabase or static JSON and verify idempotent remote keys.
+- [x] Run IB paper path with dashboard persistence and publication enabled. On 2026-07-27 the Oracle VM production bot was restarted with Stage 5 enabled, `Dashboard RemoteDataPublisher started`, and the bot ran against IBKR paper Gateway on `127.0.0.1:4002`.
+- [x] Persist at least one completed 5-minute OHLCV bar for each configured dashboard symbol. Stage 5 validation found 2 local `price_bars` rows and 2 Supabase-visible `price_bars` rows for configured symbol `QQQ`.
+- [x] Submit a paper order and verify order event, trade, fill metric, position snapshot, and equity snapshot rows locally. The live bot submitted and filled a paper `SELL 1 QQQ`; local validation found `trades=1`, `order_events=2`, `positions=1`, `equity_snapshots=9`, and `operational_metrics=26`.
+- [x] Publish read model to Supabase or static JSON and verify idempotent remote keys. Supabase validation passed with visible rows: accounts=3, trades=1, order_events=2, price_bars=2, equity_snapshots=9, positions=1, operational_metrics=5; local outbox was fully drained with `{'published': 29}` and unresolved=0.
 - [ ] Build static dashboard and verify charts, positions, equity, trade feed, operations, and performance panels against real published rows.
-- [ ] Simulate remote publish failure and confirm retries, dashboard degraded state, local failure log, cooldown reconciliation, and Discord escalation.
+- [ ] Simulate remote publish failure and confirm retries, dashboard degraded state, local failure log, cooldown reconciliation, and Discord escalation. Partial real failure evidence exists: a Supabase schema mismatch opened the remote publisher circuit breaker, recorded local `publish_failures`, and was recovered after filtering non-schema `reason` metadata from `equity_snapshot` and `position` payloads; dashboard degraded-state UI and Discord escalation still need explicit validation.
 - [ ] Deploy GitHub Pages dashboard and confirm no service credentials are present in browser bundles or public config.
 - [x] Document operator setup, required environment variables, Supabase/RLS setup, local DB locations, recovery steps, and known fallback path.
 
 Stage 5 exit criteria:
 
-- [ ] Phase 1 acceptance criteria are satisfied with real paper-trading data.
-- [ ] The dashboard remains read-only and uses only browser-safe credentials.
+- [ ] Phase 1 acceptance criteria are satisfied with real paper-trading data. Backend read-model generation is validated; static dashboard UI verification against the real rows remains open.
+- [ ] The dashboard remains read-only and uses only browser-safe credentials. Supabase anon/RLS readback is validated; public bundle/config audit remains open.
 - [ ] Operator documentation is sufficient to recover from remote publication outage or Supabase pause.
 - [ ] Implementation status is ready to move from Phase 1 buildout to maintenance and iteration.

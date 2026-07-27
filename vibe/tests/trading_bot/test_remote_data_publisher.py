@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from vibe.trading_bot.publishing.remote_data_publisher import RemoteDataPublisher
+from vibe.trading_bot.publishing.remote_data_publisher import RemoteDataPublisher, SupabaseRestDestination
 from vibe.trading_bot.storage.dashboard_store import PublishOutboxEvent, PublishOutboxStore
 
 
@@ -32,6 +32,39 @@ def _event(event_id: str = "trade:1", next_retry_at: datetime | None = None) -> 
         original_event_timestamp=event_time,
         next_retry_at=next_retry_at or event_time,
     )
+
+
+def test_supabase_destination_filters_non_schema_metadata_for_snapshots():
+    destination = SupabaseRestDestination("https://example.supabase.co", "service-key")
+
+    equity_payload = destination._payload_for_aggregate(
+        "equity_snapshot",
+        {
+            "snapshot_id": "snap-1",
+            "account_id": "acct",
+            "timestamp": "2026-07-27T17:03:38Z",
+            "net_liquidation": 10000,
+            "source": "bot",
+            "reason": "poll",
+        },
+    )
+    position_payload = destination._payload_for_aggregate(
+        "position",
+        {
+            "position_id": "acct:QQQ",
+            "account_id": "acct",
+            "symbol": "QQQ",
+            "quantity": -1,
+            "side": "short",
+            "updated_at": "2026-07-27T17:03:38Z",
+            "reason": "poll",
+        },
+    )
+
+    assert "reason" not in equity_payload
+    assert "reason" not in position_payload
+    assert equity_payload["snapshot_id"] == "snap-1"
+    assert position_payload["position_id"] == "acct:QQQ"
 
 
 @pytest.mark.asyncio
@@ -110,12 +143,13 @@ async def test_prune_published_before_only_deletes_published_rows(tmp_path):
     outbox = PublishOutboxStore(str(tmp_path / "outbox.db"))
     old_time = datetime(2026, 7, 20, 13, 30)
     outbox.enqueue_event(_event("trade:published", old_time))
-    outbox.enqueue_event(_event("trade:pending", old_time))
+    outbox.enqueue_event(_event("trade:pending", datetime.utcnow() + timedelta(days=1)))
     publisher = RemoteDataPublisher(outbox, FakeDestination(), batch_size=1)
 
     await publisher.flush_pending(timeout_seconds=5, max_batches=1)
+    published_row = outbox.get_event("trade:published")
 
-    deleted = publisher.prune_published_before(old_time + timedelta(days=1))
+    deleted = publisher.prune_published_before(datetime.fromisoformat(published_row["published_at"]) + timedelta(seconds=1))
 
     assert deleted == 1
     assert outbox.get_event("trade:published") is None

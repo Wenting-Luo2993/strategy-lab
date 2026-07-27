@@ -1,7 +1,8 @@
 """Validate live dashboard Stage 5 local and optional Supabase state.
 
-This script is read-only. It checks local dashboard SQLite files first, then can
-optionally query the Supabase read model using the browser-safe anonymous key.
+This script checks local dashboard SQLite files first, then can optionally query
+the Supabase read model using the browser-safe anonymous key. The optional
+Supabase publish probe writes only a synthetic dashboard-safe account row.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import os
 import sqlite3
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -40,8 +42,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeframe", default=os.getenv("DASHBOARD_TIMEFRAME", "5m"))
     parser.add_argument("--require-order", action="store_true", help="Require order, trade, metric, equity, and position rows")
     parser.add_argument("--require-supabase", action="store_true", help="Fail unless Supabase read-model rows are reachable")
+    parser.add_argument("--supabase-only", action="store_true", help="Skip local SQLite checks and validate only Supabase connectivity")
+    parser.add_argument("--probe-supabase-publish", action="store_true", help="Upsert a synthetic account row with the service key and read it back with the anon key")
     parser.add_argument("--supabase-url", default=os.getenv("NEXT_PUBLIC_SUPABASE_URL") or os.getenv("SUPABASE_URL"))
     parser.add_argument("--supabase-anon-key", default=os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY") or os.getenv("SUPABASE_ANON_KEY"))
+    parser.add_argument("--supabase-service-key", default=os.getenv("DASHBOARD__SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_SERVICE_KEY"))
+    parser.add_argument("--probe-account-id", default=os.getenv("STAGE5_PROBE_ACCOUNT_ID", "stage5-validation-probe"))
     return parser.parse_args()
 
 
@@ -50,11 +56,21 @@ def main() -> int:
     symbols = [symbol.strip().upper() for symbol in args.symbols.split(",") if symbol.strip()]
     results: list[CheckResult] = []
 
-    results.extend(validate_price_db(Path(args.price_db), symbols, args.timeframe))
-    results.extend(validate_dashboard_db(Path(args.dashboard_db), require_order=args.require_order))
-    results.extend(validate_trades_db(Path(args.trades_db), require_order=args.require_order))
-    results.extend(validate_metrics_db(Path(args.metrics_db), require_order=args.require_order))
-    results.extend(validate_outbox_db(Path(args.outbox_db)))
+    if not args.supabase_only:
+        results.extend(validate_price_db(Path(args.price_db), symbols, args.timeframe))
+        results.extend(validate_dashboard_db(Path(args.dashboard_db), require_order=args.require_order))
+        results.extend(validate_trades_db(Path(args.trades_db), require_order=args.require_order))
+        results.extend(validate_metrics_db(Path(args.metrics_db), require_order=args.require_order))
+        results.extend(validate_outbox_db(Path(args.outbox_db)))
+    if args.probe_supabase_publish:
+        results.extend(
+            validate_supabase_publish_probe(
+                args.supabase_url,
+                args.supabase_service_key,
+                args.supabase_anon_key,
+                args.probe_account_id,
+            )
+        )
     results.extend(validate_supabase(args.supabase_url, args.supabase_anon_key, args.require_supabase))
 
     for result in results:
@@ -154,6 +170,41 @@ def validate_supabase(url: str | None, anon_key: str | None, required: bool) -> 
     return results
 
 
+def validate_supabase_publish_probe(
+    url: str | None,
+    service_key: str | None,
+    anon_key: str | None,
+    account_id: str,
+) -> list[CheckResult]:
+    if not url or not service_key or not anon_key:
+        return [CheckResult("Supabase publish probe", False, "URL, service key, and anon key are required")]
+    now = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "account_id": account_id,
+        "broker": "stage5-validator",
+        "display_name": "Stage 5 Validation Probe",
+        "currency": "USD",
+        "mode": "paper",
+        "updated_at": now,
+    }
+    try:
+        upsert_supabase_row(url, service_key, "accounts", "account_id", payload)
+    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+        return [CheckResult("Supabase publish probe write", False, str(exc))]
+
+    try:
+        rows = query_supabase_count(url, anon_key, "accounts", {"account_id": f"eq.{account_id}"})
+    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+        return [
+            CheckResult("Supabase publish probe write", True, f"upserted account_id={account_id}"),
+            CheckResult("Supabase publish probe anon read", False, str(exc)),
+        ]
+    return [
+        CheckResult("Supabase publish probe write", True, f"upserted account_id={account_id}"),
+        CheckResult("Supabase publish probe anon read", rows == 1, f"{rows} row(s) visible to anon for account_id={account_id}"),
+    ]
+
+
 def validate_table_counts(db_path: Path, label: str, checks: dict[str, int]) -> list[CheckResult]:
     results = [CheckResult(label, True, str(db_path))]
     with connect_readonly(db_path) as conn:
@@ -178,8 +229,11 @@ def scalar(conn: sqlite3.Connection, query: str, params: tuple[Any, ...] = ()) -
     return row[0] if row else None
 
 
-def query_supabase_count(url: str, anon_key: str, table: str) -> int:
-    endpoint = f"{url.rstrip('/')}/rest/v1/{table}?{urlencode({'select': '*'})}"
+def query_supabase_count(url: str, anon_key: str, table: str, filters: dict[str, str] | None = None) -> int:
+    query = {"select": "*"}
+    if filters:
+        query.update(filters)
+    endpoint = f"{url.rstrip('/')}/rest/v1/{table}?{urlencode(query)}"
     request = Request(
         endpoint,
         headers={
@@ -196,6 +250,23 @@ def query_supabase_count(url: str, anon_key: str, table: str) -> int:
             return 0 if total == "*" else int(total)
         payload = json.loads(response.read().decode("utf-8"))
         return len(payload) if isinstance(payload, list) else 0
+
+
+def upsert_supabase_row(url: str, service_key: str, table: str, on_conflict: str, payload: dict[str, Any]) -> None:
+    endpoint = f"{url.rstrip('/')}/rest/v1/{table}?{urlencode({'on_conflict': on_conflict})}"
+    request = Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "apikey": service_key,
+            "Authorization": f"Bearer {service_key}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=minimal",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=10):
+        return
 
 
 if __name__ == "__main__":

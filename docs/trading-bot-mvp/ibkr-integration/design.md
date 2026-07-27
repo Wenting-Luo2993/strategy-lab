@@ -1,7 +1,8 @@
 # IBKR Oracle Cloud Integration Design
 
-**Status**: Draft  
+**Status**: Active implementation tracker  
 **Created**: 2026-07-06  
+**Last Updated**: 2026-07-27  
 **Scope**: Plan Interactive Brokers paper/live execution for the Oracle Cloud trading bot deployment, with special focus on IB Gateway login/session operations.
 
 ---
@@ -146,9 +147,9 @@ For the current MVP, keep this as a planned evolution rather than adding the ser
 | --- | --- | --- | --- |
 | Phase 0: Local Paper Trading Burn-In | Complete | Live API quotes validated for `QQQ`, `GOOGL`, `AMZN`, and `TSLA`; paper market buy/sell filled; non-marketable limit timeout/cancel validated; QQQ position reconciled back to baseline. | Proceed to Phase 1 planning for Oracle VM + IBC. |
 | Phase 1: Oracle VM IBC Deployment | Complete | Oracle VM reachable; 4 GB swap configured; Java, Xvfb, x11vnc, IB Gateway stable, IBC 3.24.1, repo checkout, Python venv, IBC wrapper, and `ibc-gateway.service` are prepared. IBC/Gateway starts in paper mode; host firewall drops non-loopback `4001`/`4002`; readonly cloud smoke passed; paper market buy/sell filled; non-marketable limit timeout/cancel validated; final QQQ position reconciled with zero open orders. | Proceed to Phase 2 cloud trading bot integration and longer burn-in on a larger VM shape. |
-| Phase 2: Cloud Trading Bot Integration | In progress | `trading-bot-phase2.service` is running on the Oracle VM in paper mode with `orb_exp073_paper_burn_in`; strategy execution now routes through the Interactive Brokers execution adapter; `DATA__PRIMARY_PROVIDER=interactive_brokers` opts the bot into IB live market data snapshots instead of Finnhub WebSocket; current paper account is flat with zero open orders/trades. | Observe the next market-session warmup/open using IB market data, confirm live polling creates realtime bars, then continue the longer paper burn-in and VM shape migration. |
-| Phase 3: IBC Hardening | Not started | Reconciliation requirement discovered during Phase 0 order validation. | Add restart/reconciliation runbook, watchdogs, and log rotation. |
-| Phase 4: Dockerized Deployment | Deferred | Docker should follow stable IBC VM operations. | Decide service boundaries after Phase 1/2 burn-in. |
+| Phase 2: Cloud Trading Bot Integration | Complete for paper burn-in MVP | `trading-bot-phase2.service` is running on the Oracle VM in paper mode with `orb_exp073_paper_burn_in`; strategy execution routes through the Interactive Brokers execution adapter; `DATA__PRIMARY_PROVIDER=interactive_brokers` uses IB live/snapshot polling instead of Finnhub WebSocket; Stage 5 dashboard publishing is enabled and validated against Supabase; health API reports alive/ready. Current paper state on 2026-07-27: `QQQ -1`, zero open IB orders. | Continue observing multi-session paper burn-in while preparing the Docker boundary. |
+| Phase 3: IBC Hardening | In progress, sufficient to start Phase 4 planning | `ibc-gateway.service` and `trading-bot-phase2.service` are supervised by systemd; bot startup waits for IB API port `4002`; IBC paper warning handling was fixed with `AcceptNonBrokerageAccountWarning=yes`; Discord notifications cover order events and unresolved dashboard publish states; manual restart/flatten/redeploy/reconcile flow was exercised on 2026-07-27. Remaining gaps: formal restart/reconciliation runbook, watchdog near market open, log rotation, and multi-session recovery evidence. | Start Phase 4 Docker design in parallel, but keep Phase 3 hardening open until the remaining ops runbooks/watchdogs are complete. |
+| Phase 4: Dockerized Deployment | Ready to start | Current VM operations are stable enough to define container boundaries, volumes, health checks, and secret handling. Do not cut over production until paper burn-in and Phase 3 recovery runbooks are proven. | Draft Docker Compose architecture for separate `ib-gateway` and `trading-bot` services, with persisted Gateway settings/logs and health checks. |
 | Phase 5: Live Readiness Review | Deferred | Live trading remains out of scope until paper cloud stability is proven. | Review risk controls and require explicit live-mode approval. |
 
 ### Phase 0: Local Paper Trading Burn-In
@@ -170,7 +171,7 @@ Exit criteria:
 
 ### Phase 1: Oracle VM IBC Deployment
 
-Status: in progress as of 2026-07-08. See `phase-1-oracle-ibc-runbook.md` for Oracle VM setup, IBC/Gateway service configuration, fallback GUI access, and validation commands.
+Status: complete as of 2026-07-09. See `phase-1-oracle-ibc-runbook.md` for Oracle VM setup, IBC/Gateway service configuration, fallback GUI access, and validation commands.
 
 Tasks:
 
@@ -196,7 +197,7 @@ Exit criteria:
 
 ### Phase 2: Cloud Trading Bot Integration
 
-Status: in progress as of 2026-07-09. See `phase-2-cloud-burn-in-runbook.md` for current service configuration, deployed code path, validation evidence, and remaining burn-in tasks.
+Status: complete for the paper burn-in MVP as of 2026-07-27. See `phase-2-cloud-burn-in-runbook.md` for service configuration and validation history.
 
 Current VM/runtime state:
 
@@ -206,12 +207,12 @@ Current VM/runtime state:
 - Active ruleset is `orb_exp073_paper_burn_in`, based on EXP-073 parameters, with `max_shares: 1` for paper burn-in risk control.
 - Execution uses `InteractiveBrokersExecutionEngine`; mock execution is no longer used when `BROKER__BROKER_TYPE=interactive_brokers`.
 - Market data is configured with `DATA__PRIMARY_PROVIDER=interactive_brokers`, `BROKER__IB_MARKET_DATA_TYPE=1`, and a distinct IB data-provider client id derived from the execution client id.
-- Because validation was performed outside market hours, the bot initialized successfully and then slept until next warmup. Next validation must confirm IB polling behavior during market hours.
+- Market-hours validation has now been performed on the Oracle VM. The bot connected to IB Gateway, warmed cache, used Interactive Brokers as the primary real-time provider, generated and filled paper `QQQ` orders, persisted dashboard rows, and published the Stage 5 read model to Supabase.
 
 Tasks:
 
-- Complete next-session market-hours validation with IB realtime data polling: provider connection, snapshot quotes, realtime bar aggregation, and no Yahoo/Finnhub substitution while IB realtime is active.
-- Continue longer paper burn-in and record service uptime, memory/swap pressure, Gateway reconnect behavior, order/fill outcomes, and final account reconciliation.
+- [x] Complete market-hours validation with IB realtime data polling: provider connection, snapshot quotes, realtime bar aggregation, and no Finnhub substitution while IB realtime is active.
+- [ ] Continue longer paper burn-in and record service uptime, memory/swap pressure, Gateway reconnect behavior, order/fill outcomes, and final account reconciliation.
 - Add startup checks that fail closed when Gateway is disconnected, account id mismatches, market data is stale, or Gateway API read-only state conflicts with broker mode.
 - Add broker health and market data provider status into existing system status notifications.
 - Add restart/reconciliation checks before allowing new orders after bot or Gateway restart.
@@ -220,8 +221,8 @@ Tasks:
 
 Exit criteria:
 
-- During paper mode, the orchestrator can complete warmup only when IBC/Gateway and broker account checks pass.
-- During market hours, IB realtime market data feeds the active ORB strategy path and the bot does not depend on Finnhub WebSocket.
+- [x] During paper mode, the orchestrator can complete warmup only when IBC/Gateway and broker account checks pass.
+- [x] During market hours, IB realtime market data feeds the active ORB strategy path and the bot does not depend on Finnhub WebSocket.
 - Broker failures prevent new orders and produce actionable alerts.
 - Restarting the bot or Gateway reconciles positions, open orders, and recent executions before new orders can be submitted.
 - A multi-session paper burn-in completes with documented memory, connectivity, order, and reconciliation results.
@@ -229,22 +230,26 @@ Exit criteria:
 
 ### Phase 3: IBC Hardening
 
+Status: in progress as of 2026-07-27. The current systemd/IBC operating model is stable enough to start Phase 4 design work, but Phase 3 should not be marked complete until the remaining runbooks, watchdogs, and recovery evidence are captured.
+
 Tasks:
 
-- Tune IBC restart windows around IBKR maintenance and the bot's market schedule.
-- Capture and rotate IBC, Gateway, and bot logs.
-- Add a restart/reconciliation runbook for cases where Gateway restarts while positions or orders are open.
-- Keep manual remote desktop access as a fallback for 2FA and unexpected IBKR notices.
-- Add a watchdog that alerts if Gateway is not logged in or the API socket is unavailable near market open.
+- [x] Tune IBC restart windows around IBKR maintenance and the bot's market schedule.
+- [ ] Capture and rotate IBC, Gateway, and bot logs.
+- [ ] Add a restart/reconciliation runbook for cases where Gateway restarts while positions or orders are open.
+- [x] Keep manual remote desktop access as a fallback for 2FA and unexpected IBKR notices.
+- [ ] Add a watchdog that alerts if Gateway is not logged in or the API socket is unavailable near market open.
 
 Exit criteria:
 
-- Routine Gateway restart is handled automatically.
-- Unexpected authentication prompts alert the operator rather than silently failing.
-- Bot startup waits for a confirmed Gateway API session.
-- Operator can recover from an IBC/Gateway failure using the runbook without changing application code.
+- [x] Routine Gateway restart is handled automatically.
+- [ ] Unexpected authentication prompts alert the operator rather than silently failing.
+- [x] Bot startup waits for a confirmed Gateway API session.
+- [ ] Operator can recover from an IBC/Gateway failure using the runbook without changing application code.
 
 ### Phase 4: Dockerized Deployment
+
+Status: ready to start design and local implementation. Keep production on the VM/systemd path until Phase 3 recovery operations and multi-session paper burn-in are proven.
 
 Tasks:
 

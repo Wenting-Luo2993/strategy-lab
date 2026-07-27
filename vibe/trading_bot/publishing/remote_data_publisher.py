@@ -46,6 +46,31 @@ class SupabaseRestDestination:
         "strategy_annotation": "annotation_id",
     }
 
+    PAYLOAD_COLUMNS_BY_AGGREGATE = {
+        "equity_snapshot": {
+            "snapshot_id",
+            "account_id",
+            "timestamp",
+            "net_liquidation",
+            "cash",
+            "buying_power",
+            "realized_pnl",
+            "unrealized_pnl",
+            "source",
+        },
+        "position": {
+            "position_id",
+            "account_id",
+            "symbol",
+            "quantity",
+            "side",
+            "avg_cost",
+            "market_price",
+            "unrealized_pnl",
+            "updated_at",
+        },
+    }
+
     def __init__(self, url: str, service_key: str, request_timeout_seconds: float = 10.0):
         self.url = url.rstrip("/")
         self.service_key = service_key
@@ -60,6 +85,7 @@ class SupabaseRestDestination:
         aggregate_type = event["aggregate_type"]
         table = self.TABLE_BY_AGGREGATE[aggregate_type]
         on_conflict = self.CONFLICT_BY_AGGREGATE[aggregate_type]
+        payload = self._payload_for_aggregate(aggregate_type, event["payload"])
         endpoint = f"{self.url}/rest/v1/{table}?on_conflict={on_conflict}"
         headers = {
             "apikey": self.service_key,
@@ -70,11 +96,17 @@ class SupabaseRestDestination:
         timeout = aiohttp.ClientTimeout(total=self.request_timeout_seconds)
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(endpoint, json=event["payload"], headers=headers) as response:
+            async with session.post(endpoint, json=payload, headers=headers) as response:
                 if 200 <= response.status < 300:
                     return
                 body = await response.text()
                 raise RuntimeError(f"Supabase publish failed: status={response.status} body={body}")
+
+    def _payload_for_aggregate(self, aggregate_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        columns = self.PAYLOAD_COLUMNS_BY_AGGREGATE.get(aggregate_type)
+        if columns is None:
+            return payload
+        return {key: value for key, value in payload.items() if key in columns}
 
 
 @dataclass
