@@ -21,6 +21,14 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+    env:
+      NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
+      NEXT_PUBLIC_DASHBOARD_DATA_SOURCE: ${{ vars.NEXT_PUBLIC_DASHBOARD_DATA_SOURCE || 'fixture' }}
+      NEXT_PUBLIC_DASHBOARD_FIXTURE: ${{ vars.NEXT_PUBLIC_DASHBOARD_FIXTURE || 'live' }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
     defaults:
       run:
         working-directory: apps/operational-metrics-dashboard
@@ -44,13 +52,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Show dashboard build mode
+        run: |
+          echo "NEXT_PUBLIC_DASHBOARD_DATA_SOURCE=${NEXT_PUBLIC_DASHBOARD_DATA_SOURCE}"
+          echo "NEXT_PUBLIC_DASHBOARD_FIXTURE=${NEXT_PUBLIC_DASHBOARD_FIXTURE}"
+          if [ -n "${NEXT_PUBLIC_SUPABASE_URL}" ]; then echo "NEXT_PUBLIC_SUPABASE_URL=set"; else echo "NEXT_PUBLIC_SUPABASE_URL=missing"; fi
+          if [ -n "${NEXT_PUBLIC_SUPABASE_ANON_KEY}" ]; then echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=set"; else echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=missing"; fi
+
       - name: Build static dashboard
-        env:
-          NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
-          NEXT_PUBLIC_DASHBOARD_DATA_SOURCE: ${{ vars.NEXT_PUBLIC_DASHBOARD_DATA_SOURCE || 'fixture' }}
-          NEXT_PUBLIC_DASHBOARD_FIXTURE: ${{ vars.NEXT_PUBLIC_DASHBOARD_FIXTURE || 'live' }}
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
         run: npm run build
 
       - name: Upload Pages artifact
