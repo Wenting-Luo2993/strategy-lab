@@ -48,6 +48,8 @@ curl -fsS http://127.0.0.1:8080/health/ready
 
 The IB API port is not published to the host. The trading bot shares the `ib-gateway` network namespace and connects to `127.0.0.1:4002`.
 
+VNC is not published by the base Compose file. If manual GUI fallback is needed, enable `ENABLE_VNC=true` and add a temporary localhost-only port mapping in a local override file so it does not conflict with the existing VM fallback VNC service.
+
 ## Dashboard Publisher
 
 The Supabase remote data publisher is part of the `trading-bot` process. When `DASHBOARD__ENABLED=true`, `DASHBOARD__REMOTE_PROVIDER=supabase`, and the Supabase URL/service key are configured, the orchestrator starts the in-process `RemoteDataPublisher` worker and drains the local dashboard outbox from `/app/data/local/publish_outbox.db`.

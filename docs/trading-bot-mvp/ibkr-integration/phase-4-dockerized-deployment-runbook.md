@@ -9,7 +9,7 @@
 
 Package the paper trading stack into two operational containers while preserving the current security and recovery model:
 
-- `ib-gateway`: IB Gateway + IBC + Xvfb + optional localhost-only VNC fallback.
+- `ib-gateway`: IB Gateway + IBC + Xvfb + optional localhost-only VNC fallback. The base Compose file does not publish VNC; add a temporary local override only when manual GUI fallback is needed.
 - `trading-bot`: Strategy orchestration, IB broker adapter, health API, SQLite stores, Discord notifications, and the in-process Supabase dashboard publisher worker.
 
 The first Phase 4 milestone is a local/VM shadow deployment that can start Gateway, expose the API only inside the Compose boundary, start the bot after Gateway is API-ready, and preserve data/logs across restarts. Production remains on the existing systemd services until Phase 3 recovery runbooks and multi-session burn-in are complete.
@@ -26,6 +26,7 @@ Benefits:
 
 - Keeps IB Gateway API binding effectively localhost-only from the container pair's point of view.
 - Avoids exposing `4002` on the Docker host.
+- Avoids binding the VM's existing fallback VNC port unless VNC is explicitly enabled through a local override.
 - Avoids adding Docker bridge CIDRs to Gateway trusted IP settings during the first containerization pass.
 
 Tradeoff:
