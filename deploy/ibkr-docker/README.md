@@ -27,6 +27,8 @@ Runtime inputs are intentionally git-ignored:
 - `secrets/trading-bot.env` - real bot runtime environment.
 - `data/`, `logs/`, `state/` - persistent outputs.
 
+The Compose file sets `JAVA_PATH=/opt/java/openjdk/bin` for IBC. IBC expects this value to be a directory containing the `java` executable, not the executable path itself.
+
 ## Start
 
 From the repository root:

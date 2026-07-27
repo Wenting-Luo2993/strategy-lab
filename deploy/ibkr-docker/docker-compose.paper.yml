@@ -19,6 +19,7 @@ services:
       TWS_SETTINGS_PATH: "/opt/ibkr/ibgateway"
       LOG_PATH: "/var/log/ibkr"
       APP: "GATEWAY"
+      JAVA_PATH: "/opt/java/openjdk/bin"
     volumes:
       - ./runtime/ibgateway:/opt/ibkr/ibgateway
       - ./runtime/IBC:/opt/IBC

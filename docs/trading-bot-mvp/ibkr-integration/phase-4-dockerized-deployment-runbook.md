@@ -84,6 +84,8 @@ chmod 600 secrets/ibc.env secrets/trading-bot.env
 
 Then edit the copied files on the deployment host. Do not paste secret values into chat or logs.
 
+The Compose file intentionally overrides `JAVA_PATH=/opt/java/openjdk/bin` for IBC. IBC expects `JAVA_PATH` to be a directory containing `java`; if an inherited VM env file uses the executable path instead, the container will fail with `No java executable found in supplied path .../java`.
+
 ---
 
 ## Build And Start Shadow Stack
