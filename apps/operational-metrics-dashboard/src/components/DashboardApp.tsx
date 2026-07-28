@@ -123,13 +123,13 @@ function setDashboardTheme(theme: Theme): void {
 function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes }: { data: DashboardData; realizedPnl: number; unrealizedPnl: number; freshnessMinutes: number | null }) {
   const latestEquity = data.equity[0];
   return (
-    <section className="grid gap-5 lg:grid-cols-[1.3fr_0.9fr]">
-      <div className="grid gap-4 sm:grid-cols-3 lg:col-span-2">
+    <section className="grid min-w-0 gap-5 lg:grid-cols-[1.3fr_0.9fr]">
+      <div className="grid min-w-0 gap-4 sm:grid-cols-3 lg:col-span-2">
         <Metric label="Net liquidation" value={currency(latestEquity?.net_liquidation)} />
         <Metric label="Realized P&L" value={currency(realizedPnl)} tone={realizedPnl >= 0 ? "profit" : "loss"} />
         <Metric label="Unrealized P&L" value={currency(unrealizedPnl)} tone={unrealizedPnl >= 0 ? "profit" : "loss"} />
       </div>
-      <div className="lg:col-span-2">
+      <div className="min-w-0 lg:col-span-2">
         <Panel title="Open positions">
           <div className="space-y-3">
             {data.positions.map((position) => (
@@ -147,12 +147,12 @@ function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes }: { data
           </div>
         </Panel>
       </div>
-      <div className="lg:col-span-2">
+      <div className="min-w-0 lg:col-span-2">
         <Panel title="Latest order events">
           <EventTable data={data} />
         </Panel>
       </div>
-      <div className="lg:col-span-2">
+      <div className="min-w-0 lg:col-span-2">
         <Panel title="Data freshness">
           <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Source" value={data.source} />
@@ -169,7 +169,7 @@ function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes }: { data
 
 function ChartsView({ data, selectedSymbol, selectedBars }: { data: DashboardData; selectedSymbol: string; selectedBars: PriceBar[] }) {
   return (
-    <section className="grid gap-5 lg:grid-cols-[1.5fr_0.75fr]">
+    <section className="grid min-w-0 gap-5 lg:grid-cols-[1.5fr_0.75fr]">
       <Panel title={`${selectedSymbol} · 5m price`}>
         <PriceChart bars={selectedBars} trades={data.trades} annotations={data.annotations} symbol={selectedSymbol} />
       </Panel>
@@ -191,7 +191,7 @@ function ChartsView({ data, selectedSymbol, selectedBars }: { data: DashboardDat
 function OperationsView({ data }: { data: DashboardData }) {
   const metrics = summarizeOperationalMetrics(data.metrics);
   return (
-    <section className="grid gap-5 lg:grid-cols-2">
+    <section className="grid min-w-0 gap-5 lg:grid-cols-2">
       <Panel title="Execution quality">
         <dl className="grid gap-3 text-sm">
           <Stat label="Average latency" value={unit(metrics.avgLatency, 0, "ms")} />
@@ -205,7 +205,7 @@ function OperationsView({ data }: { data: DashboardData }) {
           {Object.entries(data.publishStatus).map(([key, value]) => <Stat key={key} label={key.replace("_", " ")} value={number(value, 0)} />)}
         </dl>
       </Panel>
-      <div className="lg:col-span-2">
+      <div className="min-w-0 lg:col-span-2">
         <Panel title="Recent order events">
           <EventTable data={data} />
         </Panel>
@@ -220,8 +220,8 @@ function PerformanceView({ data }: { data: DashboardData }) {
   const winners = closedTrades.filter((trade) => Number(trade.pnl ?? 0) > 0).length;
   const winRate = closedTrades.length ? (winners / closedTrades.length) * 100 : null;
   return (
-    <section className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
-      <div className="grid gap-4">
+    <section className="grid min-w-0 gap-5 lg:grid-cols-[0.8fr_1.2fr]">
+      <div className="grid min-w-0 gap-4">
         <Metric label="Total P&L" value={currency(pnl)} tone={pnl >= 0 ? "profit" : "loss"} />
         <Metric label="Closed trades" value={number(closedTrades.length, 0)} />
         <Metric label="Win rate" value={winRate === null ? "--" : `${number(winRate, 1)}%`} />
@@ -246,7 +246,7 @@ function PerformanceView({ data }: { data: DashboardData }) {
 
 function EventTable({ data }: { data: DashboardData }) {
   return (
-    <div className="overflow-x-auto">
+    <div className="w-full max-w-full overflow-x-auto">
       <table className="min-w-[820px] text-left text-sm whitespace-nowrap">
         <thead className="text-xs uppercase text-[var(--muted)]">
           <tr><th className="py-2 pr-3">Time ET</th><th className="py-2 pr-3">Symbol</th><th className="py-2 pr-3">Side</th><th className="py-2 pr-3 text-right">Qty</th><th className="py-2 pr-3">Event</th><th className="py-2 pr-3 text-right">Price</th><th className="py-2 pr-3 text-right">Slip bps</th><th className="py-2 pr-3 text-right">Latency</th></tr>
@@ -267,7 +267,7 @@ function isFillEvent(eventType: string): boolean {
 }
 
 function Panel({ title, children }: { title: string; children: ReactNode }) {
-  return <section className="surface rounded-lg border p-4"><h2 className="mb-4 text-base font-bold">{title}</h2>{children}</section>;
+  return <section className="surface min-w-0 rounded-lg border p-4"><h2 className="mb-4 text-base font-bold">{title}</h2>{children}</section>;
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone?: "profit" | "loss" }) {
