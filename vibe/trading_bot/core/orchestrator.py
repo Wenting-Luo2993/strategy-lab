@@ -2043,6 +2043,15 @@ class TradingOrchestrator:
 
                     # 4. Execute trade if we have a signal
                     if signal_value != 0:  # 1=long, -1=short, 0=no signal
+                        broker_position = await self.exchange.get_position(symbol)
+                        if broker_position is not None and broker_position.quantity != 0:
+                            self.logger.warning(
+                                f"[STRATEGY] {symbol}: No signal - carryover_position_active "
+                                f"({broker_position.side} {broker_position.quantity}). "
+                                "New entries are blocked until the position is flattened."
+                            )
+                            continue
+
                         tp = signal_metadata.get('take_profit')
                         rr = signal_metadata.get('risk_reward')
                         tp_str = f"${tp:.2f}" if tp is not None else "none"
@@ -2131,6 +2140,9 @@ class TradingOrchestrator:
                                         else None
                                     ),
                                 )
+                                if hasattr(self.strategy, "mark_traded_today"):
+                                    trading_date = signal_metadata.get("orb_trading_date") or entry_time.date()
+                                    self.strategy.mark_traded_today(symbol, trading_date)
 
                             else:
                                 self.logger.warning(

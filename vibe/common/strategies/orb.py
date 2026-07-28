@@ -87,6 +87,14 @@ class ORBStrategy(StrategyBase):
         # Resets automatically when trading_date differs from stored date
         self._traded_today: Dict[str, Any] = {}  # symbol -> date
 
+    def mark_traded_today(self, symbol: str, trading_date: Any) -> None:
+        """Record that an entry trade was actually opened for the trading date."""
+        self._traded_today[symbol] = trading_date
+
+    def clear_traded_today(self, symbol: str) -> None:
+        """Clear one-trade-per-day state for a symbol."""
+        self._traded_today.pop(symbol, None)
+
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
         """
         Generate ORB signals for entire DataFrame.
@@ -314,7 +322,6 @@ class ORBStrategy(StrategyBase):
                 "risk_reward": ((tp - current_price) / (current_price - sl)) if (tp is not None and current_price > sl) else None,
             })
 
-            self._traded_today[symbol] = trading_date
             return 1, metadata
 
         # Short breakout
@@ -343,7 +350,6 @@ class ORBStrategy(StrategyBase):
                 "risk_reward": ((current_price - tp) / (sl - current_price)) if (tp is not None and sl > current_price) else None,
             })
 
-            self._traded_today[symbol] = trading_date
             return -1, metadata
 
         # No breakout

@@ -72,6 +72,9 @@ class RuleSetRunner:
             entry_price=entry_price, take_profit=take_profit,
             stop_loss=stop_loss, timestamp=timestamp,
         )
+        if hasattr(self.strategy, "mark_traded_today"):
+            trading_date = timestamp.date() if hasattr(timestamp, "date") else timestamp
+            self.strategy.mark_traded_today(symbol, trading_date)
 
     def close_position(self, symbol: str) -> None:
         self.strategy.close_position(symbol)

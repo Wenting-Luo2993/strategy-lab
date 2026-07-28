@@ -17,6 +17,24 @@
 
 ## Recent Decisions
 
+### Decision: ORB Carryover Positions Are Flattened During Warmup (2026-07-28)
+**Observed issue**: On 2026-07-28, the IB paper account still held a prior-day `QQQ -1` position, but the bot had no same-day order/fill records. ORB strategy logs reported `already_traded_today`, which made a carried broker position look like a clean same-day trade decision.
+
+**Chosen for ORB**: Because ORB is strictly intraday, pre-market/start-of-day warmup should flatten any broker carryover position with a market close order before ORB entries are allowed. After a successful flatten, ORB daily trade state should be clear so the new session starts clean.
+
+**Config direction**: Keep carryover behavior strategy-dependent. `STRATEGY__CARRYOVER_POSITION_POLICY` supports `flatten_at_market_open` for intraday strategies, `block_new_entries` for conservative manual recovery, and `manual_only` for operator-managed strategies.
+
+| Option | Behavior | Pros | Cons | Fit |
+| --- | --- | --- | --- | --- |
+| 1. Flatten at start of day | Close carried broker position during warmup, then start the strategy clean | Correct for strictly intraday strategies; removes stale exposure; avoids muddy `already_traded_today` semantics | Can realize overnight loss/slippage; must only run at planned start-of-day warmup | ORB default |
+| 2. Treat as already traded today | Keep position and block new entries | Avoids accidental double exposure | Conflates prior-day carryover with same-day trade; stale position may persist indefinitely | Rejected for ORB |
+| 3. Managed carryover | Strategy owns the position and applies its normal exits | Useful for swing/multi-day strategies | Requires strategy-specific state reconstruction and risk rules | Future configurable strategy behavior |
+| 4. Policy-based flatten/manual | Config decides flatten, block, or manual handling | Works across strategy families | Needs explicit per-strategy deployment config | General direction |
+
+**Implementation note**: Warmup owns proactive flattening. The trading loop keeps a broker-position backstop that blocks new entries if a carryover survives warmup.
+
+---
+
 ### Decision: Start IB Paper Trading Integration (2026-06-14)
 **Chosen**: Begin Phase 1 of Interactive Brokers integration using Protocol-based broker abstraction
 

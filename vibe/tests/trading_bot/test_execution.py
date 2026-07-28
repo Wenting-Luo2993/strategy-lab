@@ -441,6 +441,37 @@ class TestTradeExecutor:
         assert result.success is True
 
     @pytest.mark.asyncio
+    async def test_close_position_uses_position_price_without_cached_price(self):
+        """Close can use the broker position price when no exchange price is cached."""
+        exchange = MockExchange(initial_capital=10000)
+        await exchange.set_price("AAPL", 150.00)
+
+        manager = OrderManager(exchange=exchange)
+        sizer = PositionSizer(risk_per_trade=100)
+        executor = TradeExecutor(
+            exchange=exchange,
+            order_manager=manager,
+            position_sizer=sizer,
+        )
+
+        await executor.execute_signal(
+            symbol="AAPL",
+            signal=1,
+            entry_price=150.00,
+            stop_price=145.00,
+        )
+        exchange._prices.clear()
+
+        result = await executor.execute_signal(
+            symbol="AAPL",
+            signal=0,
+            entry_price=150.00,
+            stop_price=145.00,
+        )
+
+        assert result.success is True
+
+    @pytest.mark.asyncio
     async def test_short_signal(self):
         """Short signal creates sell order."""
         exchange = MockExchange(initial_capital=10000)

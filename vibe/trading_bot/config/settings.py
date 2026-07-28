@@ -135,6 +135,10 @@ class StrategySettings(BaseSettings):
     use_volume_filter: bool = Field(default=False, description="Require above-average volume for breakout")
     volume_threshold: float = Field(default=1.5, description="Volume must be > average * threshold")
     market_close_time: str = Field(default="16:00", description="Market close time (HH:MM)")
+    carryover_position_policy: str = Field(
+        default="flatten_at_market_open",
+        description="How to handle broker positions carried into a new session: flatten_at_market_open, block_new_entries, or manual_only",
+    )
 
     class Config:
         env_prefix = ""

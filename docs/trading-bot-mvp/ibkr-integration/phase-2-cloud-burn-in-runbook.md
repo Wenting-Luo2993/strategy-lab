@@ -36,6 +36,7 @@ Environment=BROKER__IB_MARKET_DATA_TYPE=1
 Environment=BROKER__IB_CONNECT_TIMEOUT=30
 Environment=BROKER__HEALTH_CHECK_ENABLED=true
 Environment=BROKER__HEALTH_CHECK_SYMBOL=QQQ
+Environment=STRATEGY__CARRYOVER_POSITION_POLICY=flatten_at_market_open
 Environment=DATA__POLL_INTERVAL_WITH_POSITION=60
 Environment=DATA__POLL_INTERVAL_NO_POSITION=60
 TimeoutStartSec=240
@@ -53,6 +54,8 @@ AcceptIncomingConnectionAction=accept
 
 Without `AcceptNonBrokerageAccountWarning=yes`, Gateway can display the paper-account non-brokerage warning after restart and block API clients with IB error `10141`.
 
+`STRATEGY__CARRYOVER_POSITION_POLICY=flatten_at_market_open` is the ORB paper burn-in default. ORB is strictly intraday, so planned start-of-day warmup closes any broker position carried from a prior session with a market close order before new entries are allowed. Intraday restarts skip automatic flattening; if a broker position is still open when a fresh signal appears, the trading loop blocks the new entry and logs `carryover_position_active`. For non-intraday strategies, use a strategy-specific policy such as `block_new_entries` or `manual_only` until managed carryover state reconstruction is implemented.
+
 ## Deployed Code Path
 
 - `InteractiveBrokersExecutionEngine` adapts IB orders/account/positions to the existing execution interface.
@@ -62,6 +65,12 @@ Without `AcceptNonBrokerageAccountWarning=yes`, Gateway can display the paper-ac
 - The active ruleset is `orb_exp073_paper_burn_in`, which caps burn-in orders at one share.
 
 ## Latest Validation Evidence
+
+Confirmed on 2026-07-28:
+
+- Production health checks showed `ibc-gateway.service`, `trading-bot-phase2.service`, and `trading-bot-phase2-start.timer` active; Docker shadow stack was stopped; IB API port `4002`, `/api/health`, and `/health/ready` were healthy.
+- The IB paper account held an existing `QQQ -1` position, but same-day logs showed zero order/fill/submission lines. ORB emitted `already_traded_today`, exposing a carryover semantics issue rather than evidence of a same-day trade.
+- Policy decision: ORB should flatten broker carryovers during start-of-day warmup and then treat the session as clean. Other strategies should configure carryover behavior explicitly.
 
 Confirmed on 2026-07-13:
 

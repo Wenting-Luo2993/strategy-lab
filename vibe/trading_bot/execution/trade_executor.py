@@ -372,13 +372,15 @@ class TradeExecutor:
         close_side = "sell" if position.side == "long" else "buy"
 
         # Get current price
-        if symbol not in self.exchange._prices:
+        close_price = getattr(position, "current_price", None)
+        if not close_price and hasattr(self.exchange, "_prices"):
+            close_price = self.exchange._prices.get(symbol)
+
+        if not close_price:
             return ExecutionResult(
                 success=False,
                 reason="No price available for close",
             )
-
-        close_price = self.exchange._prices[symbol]
 
         # Submit close order
         try:

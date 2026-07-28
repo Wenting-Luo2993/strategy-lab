@@ -15,6 +15,7 @@ from vibe.trading_bot.api.health import set_health_state
 from vibe.trading_bot.notifications.discord import DiscordNotifier
 from vibe.trading_bot.notifications.payloads import SystemStatusPayload
 from vibe.trading_bot.version import BUILD_VERSION
+from vibe.common.models import Position
 
 
 class WarmupPhaseManager(BasePhase):
@@ -75,6 +76,9 @@ class WarmupPhaseManager(BasePhase):
 
         # Step 4: Verify broker health when live/paper broker execution is configured
         warmup_success &= await self._verify_broker_health()
+
+        # Step 4.5: Apply strategy-specific carryover position policy before entries are allowed
+        warmup_success &= await self._apply_carryover_position_policy(send_notification=send_notification)
 
         # Step 5: Run health checks
         health_status, all_healthy = await self._run_health_checks()
@@ -415,6 +419,93 @@ class WarmupPhaseManager(BasePhase):
         except Exception as e:
             self.logger.error("   [!] Interactive Brokers health check failed: %s", e, exc_info=True)
             return False
+
+    async def _apply_carryover_position_policy(self, send_notification: bool) -> bool:
+        """Apply configured policy for broker positions carried into a new trading day.
+
+        ORB is an intraday strategy, so the production default is to flatten carryovers
+        during pre-market warmup. Intraday restarts skip automatic flattening to avoid
+        accidentally closing a same-day recovery position.
+        """
+        policy = getattr(self.config.strategy, "carryover_position_policy", "block_new_entries")
+        policy = (policy or "block_new_entries").strip().lower()
+
+        if policy in {"block_new_entries", "manual_only"}:
+            self.logger.info("Step 4.5/6: Carryover position policy=%s; no warmup flattening", policy)
+            return True
+
+        if policy != "flatten_at_market_open":
+            self.logger.warning(
+                "Step 4.5/6: Unknown carryover_position_policy=%s; blocking entries without flattening",
+                policy,
+            )
+            return True
+
+        if not send_notification:
+            self.logger.info(
+                "Step 4.5/6: Skipping carryover flattening during intraday restart"
+            )
+            return True
+
+        exchange = getattr(self.orchestrator, "exchange", None)
+        if exchange is None:
+            self.logger.info("Step 4.5/6: No exchange available for carryover check")
+            return True
+
+        self.logger.info("Step 4.5/6: Flattening broker carryover positions for intraday ORB policy...")
+        success = True
+
+        for symbol in self.orchestrator.active_symbols:
+            try:
+                position = await exchange.get_position(symbol)
+                if position is None or position.quantity == 0:
+                    self.logger.info("  [OK] %s: no broker carryover position", symbol)
+                    continue
+
+                flattened = await self._flatten_carryover_position(symbol, position)
+                success &= flattened
+
+            except Exception as e:
+                success = False
+                self.logger.error("  [!] Failed to apply carryover policy for %s: %s", symbol, e, exc_info=True)
+
+        return success
+
+    async def _flatten_carryover_position(self, symbol: str, position: Position) -> bool:
+        """Submit a market order to close one broker carryover position."""
+        quantity = abs(int(position.quantity))
+
+        self.logger.warning(
+            "  [CARRYOVER FLATTEN] %s: closing %s %s share(s) at market before ORB entries",
+            symbol,
+            position.side,
+            quantity,
+        )
+
+        result = await self.orchestrator.trade_executor._close_position(symbol)
+        if not result.success:
+            self.logger.error(
+                "  [!] %s carryover flatten failed: %s",
+                symbol,
+                result.reason,
+            )
+            return False
+
+        self.logger.info(
+            "  [OK] %s carryover flattened: order_id=%s filled=%s avg_price=%s",
+            symbol,
+            result.order_id,
+            result.position_size,
+            result.avg_price,
+        )
+
+        strategy = getattr(self.orchestrator, "strategy", None)
+        if strategy is not None:
+            strategy.close_position(symbol)
+            if hasattr(strategy, "clear_traded_today"):
+                strategy.clear_traded_today(symbol)
+
+        return True
 
     async def _send_discord_notification(
         self,
