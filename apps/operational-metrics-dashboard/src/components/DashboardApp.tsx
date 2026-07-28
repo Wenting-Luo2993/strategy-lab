@@ -11,6 +11,7 @@ type DashboardAppProps = {
 
 type View = "live" | "charts" | "operations" | "performance";
 type Theme = "light" | "dark";
+type HealthState = "healthy" | "closed" | "degraded";
 
 const themeStorageKey = "dashboard-theme";
 const themeChangeEvent = "dashboard-theme-change";
@@ -47,7 +48,8 @@ export function DashboardApp({ initialData }: DashboardAppProps) {
   const unrealizedPnl = latestEquity?.unrealized_pnl ?? 0;
   const freshnessReference = data.source === "fixture" ? data.generatedAt : undefined;
   const freshnessMinutes = latestEquity ? minutesSince(latestEquity.timestamp, freshnessReference) : null;
-  const health = data.status === "unavailable" || (freshnessMinutes !== null && freshnessMinutes > 15) ? "degraded" : "healthy";
+  const marketState = deriveMarketState(data.status);
+  const health = deriveHealthState(data.status, marketState, freshnessMinutes);
 
   return (
     <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
@@ -58,7 +60,7 @@ export function DashboardApp({ initialData }: DashboardAppProps) {
             <h1 className="mt-2 text-3xl font-bold">Live Trading Dashboard</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${health === "healthy" ? "border-[var(--health)] text-[var(--health)]" : "border-[var(--warning)] text-[var(--warning)]"}`}>
+            <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${healthBadgeClass(health)}`}>
               {health.toUpperCase()}
             </span>
             <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm" onClick={() => setDashboardTheme(theme === "dark" ? "light" : "dark")}>
@@ -81,7 +83,7 @@ export function DashboardApp({ initialData }: DashboardAppProps) {
           ))}
         </nav>
 
-        {view === "live" && <LiveView data={data} realizedPnl={realizedPnl} unrealizedPnl={unrealizedPnl} freshnessMinutes={freshnessMinutes} />}
+        {view === "live" && <LiveView data={data} realizedPnl={realizedPnl} unrealizedPnl={unrealizedPnl} freshnessMinutes={freshnessMinutes} marketState={marketState} />}
         {view === "charts" && <ChartsView data={data} selectedSymbol={selectedSymbol} selectedBars={selectedBars} />}
         {view === "operations" && <OperationsView data={data} />}
         {view === "performance" && <PerformanceView data={data} />}
@@ -120,7 +122,7 @@ function setDashboardTheme(theme: Theme): void {
   window.dispatchEvent(new Event(themeChangeEvent));
 }
 
-function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes }: { data: DashboardData; realizedPnl: number; unrealizedPnl: number; freshnessMinutes: number | null }) {
+function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes, marketState }: { data: DashboardData; realizedPnl: number; unrealizedPnl: number; freshnessMinutes: number | null; marketState: DashboardData["status"] }) {
   const latestEquity = data.equity[0];
   return (
     <section className="grid min-w-0 gap-5 lg:grid-cols-[1.3fr_0.9fr]">
@@ -156,7 +158,7 @@ function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes }: { data
         <Panel title="Data freshness">
           <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Source" value={data.source} />
-            <Stat label="Market state" value={data.status} />
+            <Stat label="Market state" value={marketState} />
             <Stat label="Latest equity" value={freshnessMinutes === null ? "--" : `${number(freshnessMinutes, 0)} min ago`} />
             <Stat label="Generated" value={time(data.generatedAt)} />
           </dl>
@@ -304,6 +306,51 @@ function average(values: number[]): number | null {
 function minutesSince(timestamp: string, referenceTimestamp?: string): number {
   const referenceTime = referenceTimestamp ? new Date(referenceTimestamp).getTime() : Date.now();
   return Math.max(0, (referenceTime - new Date(timestamp).getTime()) / 60000);
+}
+
+function deriveHealthState(status: DashboardData["status"], marketState: DashboardData["status"], freshnessMinutes: number | null): HealthState {
+  if (status === "unavailable") {
+    return "degraded";
+  }
+  if (marketState === "closed") {
+    return "closed";
+  }
+  return freshnessMinutes !== null && freshnessMinutes > 15 ? "degraded" : "healthy";
+}
+
+function deriveMarketState(status: DashboardData["status"]): DashboardData["status"] {
+  if (status === "unavailable" || status === "empty") {
+    return status;
+  }
+  return isRegularMarketOpen() ? "live" : "closed";
+}
+
+function isRegularMarketOpen(now = new Date()): boolean {
+  const marketParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(now);
+  const weekday = marketParts.find((part) => part.type === "weekday")?.value;
+  if (weekday === "Sat" || weekday === "Sun") {
+    return false;
+  }
+  const hour = Number(marketParts.find((part) => part.type === "hour")?.value ?? "0");
+  const minute = Number(marketParts.find((part) => part.type === "minute")?.value ?? "0");
+  const minutes = hour * 60 + minute;
+  return minutes >= 9 * 60 + 30 && minutes < 16 * 60;
+}
+
+function healthBadgeClass(health: HealthState): string {
+  if (health === "healthy") {
+    return "border-[var(--health)] text-[var(--health)]";
+  }
+  if (health === "closed") {
+    return "border-[var(--muted)] text-[var(--muted)]";
+  }
+  return "border-[var(--warning)] text-[var(--warning)]";
 }
 
 function currency(value: number | null | undefined): string {
