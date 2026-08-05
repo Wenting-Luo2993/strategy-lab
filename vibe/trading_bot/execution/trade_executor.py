@@ -349,6 +349,7 @@ class TradeExecutor:
     async def _close_position(
         self,
         symbol: str,
+        cancel_after_seconds: Optional[float] = None,
     ) -> ExecutionResult:
         """
         Close an open position.
@@ -384,19 +385,38 @@ class TradeExecutor:
 
         # Submit close order
         try:
+            quantity = abs(int(position.quantity))
             response = await self.order_manager.submit_order(
                 symbol=symbol,
                 side=close_side,
-                quantity=abs(int(position.quantity)),
+                quantity=quantity,
                 order_type="market",
                 price=close_price,
+                cancel_after_seconds=cancel_after_seconds,
             )
+
+            actual_filled = response.filled_qty or 0
+
+            if actual_filled == 0:
+                return ExecutionResult(
+                    success=False,
+                    order_id=response.order_id,
+                    reason=f"Close order not filled (status={response.status}): {response.order_id}",
+                    position_size=0,
+                    avg_price=response.avg_price,
+                )
+
+            if actual_filled < quantity:
+                logger.warning(
+                    f"Partial close fill: {symbol} {actual_filled}/{quantity} shares. "
+                    f"OrderManager will continue monitoring {response.order_id}."
+                )
 
             result = ExecutionResult(
                 success=True,
                 order_id=response.order_id,
                 reason=f"Position closed: {response.order_id}",
-                position_size=position.quantity,
+                position_size=actual_filled,
                 avg_price=response.avg_price,
             )
 

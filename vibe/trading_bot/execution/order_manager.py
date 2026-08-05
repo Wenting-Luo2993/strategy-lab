@@ -103,6 +103,9 @@ class ManagedOrder:
     terminal_status: Optional[OrderStatus] = None
     """Final status (FILLED, CANCELLED, REJECTED)."""
 
+    cancel_after_seconds: Optional[float] = None
+    """Optional order-specific timeout override."""
+
 
 class OrderManager:
     """
@@ -162,6 +165,7 @@ class OrderManager:
         price: Optional[float] = None,
         limit_price: Optional[float] = None,
         stop_price: Optional[float] = None,
+        cancel_after_seconds: Optional[float] = None,
     ) -> OrderResponse:
         """
         Submit an order and manage its lifecycle.
@@ -174,6 +178,7 @@ class OrderManager:
             price: Price (for limit/stop)
             limit_price: Limit price (for stop-limit)
             stop_price: Stop price (for stop/stop-limit)
+            cancel_after_seconds: Optional timeout override for this order
 
         Returns:
             OrderResponse from initial submission
@@ -193,6 +198,7 @@ class OrderManager:
         managed = ManagedOrder(
             order_id=response.order_id,
             order=await self.exchange.get_order(response.order_id),
+            cancel_after_seconds=cancel_after_seconds,
         )
         self._orders[response.order_id] = managed
 
@@ -253,9 +259,12 @@ class OrderManager:
                 break
 
             # Check if should retry
-            if not self.retry_policy.should_retry(
-                managed.retry_count, elapsed
-            ):
+            cancel_after_seconds = managed.cancel_after_seconds or self.retry_policy.cancel_after_seconds
+            should_retry = (
+                managed.retry_count < self.retry_policy.max_retries
+                and elapsed < cancel_after_seconds
+            )
+            if not should_retry:
                 # Timeout - cancel the order
                 await self.exchange.cancel_order(order_id)
                 managed.completed_at = datetime.now()

@@ -6,7 +6,8 @@ import asyncio
 import pytest
 from datetime import datetime, timedelta
 
-from vibe.common.models import OrderStatus
+from vibe.common.execution.base import OrderResponse
+from vibe.common.models import OrderStatus, Position
 from vibe.common.risk import PositionSizer
 from vibe.trading_bot.exchange.mock_exchange import MockExchange
 from vibe.trading_bot.execution.order_manager import (
@@ -143,6 +144,25 @@ class TestOrderManager:
         # Should be able to retrieve the order
         managed = manager.get_order(response.order_id)
         assert managed is not None
+
+    @pytest.mark.asyncio
+    async def test_submit_order_accepts_timeout_override(self):
+        """Order-specific timeout is tracked on the managed order."""
+        exchange = MockExchange(initial_capital=10000)
+        await exchange.set_price("AAPL", 150.00)
+
+        manager = OrderManager(exchange=exchange)
+
+        response = await manager.submit_order(
+            symbol="AAPL",
+            side="buy",
+            quantity=10,
+            order_type="market",
+            cancel_after_seconds=360,
+        )
+
+        managed = manager.get_order(response.order_id)
+        assert managed.cancel_after_seconds == 360
 
     @pytest.mark.asyncio
     async def test_get_order_by_id(self):
@@ -470,6 +490,47 @@ class TestTradeExecutor:
         )
 
         assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_close_position_requires_a_fill(self):
+        """Close position reports failure when the close order is not filled."""
+        class UnfilledOrderManager:
+            async def submit_order(self, **kwargs):
+                return OrderResponse(
+                    order_id="close-1",
+                    status=OrderStatus.SUBMITTED,
+                    filled_qty=0.0,
+                    avg_price=0.0,
+                    remaining_qty=kwargs["quantity"],
+                )
+
+        class ExchangeWithShortPosition:
+            async def get_position(self, symbol):
+                return Position(
+                    symbol=symbol,
+                    side="short",
+                    quantity=1,
+                    entry_price=100.0,
+                    current_price=101.0,
+                )
+
+        sizer = PositionSizer(risk_per_trade=100)
+        executor = TradeExecutor(
+            exchange=ExchangeWithShortPosition(),
+            order_manager=UnfilledOrderManager(),
+            position_sizer=sizer,
+        )
+
+        result = await executor.execute_signal(
+            symbol="AAPL",
+            signal=0,
+            entry_price=101.00,
+            stop_price=105.00,
+        )
+
+        assert result.success is False
+        assert result.order_id == "close-1"
+        assert "not filled" in result.reason
 
     @pytest.mark.asyncio
     async def test_short_signal(self):

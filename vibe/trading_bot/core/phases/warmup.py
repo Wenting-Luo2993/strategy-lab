@@ -35,6 +35,7 @@ class WarmupPhaseManager(BasePhase):
     """
 
     WEBSOCKET_PING_TIMEOUT = 70  # Finnhub pings ~60s, wait up to 70s
+    CARRYOVER_FLATTEN_TIMEOUT_SECONDS = 360
 
     async def execute(self, send_notification: bool = True) -> bool:
         """Execute warm-up phase: prefetch data, connect provider, verify health.
@@ -482,7 +483,10 @@ class WarmupPhaseManager(BasePhase):
             quantity,
         )
 
-        result = await self.orchestrator.trade_executor._close_position(symbol)
+        result = await self.orchestrator.trade_executor._close_position(
+            symbol,
+            cancel_after_seconds=self.CARRYOVER_FLATTEN_TIMEOUT_SECONDS,
+        )
         if not result.success:
             self.logger.error(
                 "  [!] %s carryover flatten failed: %s",
