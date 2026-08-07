@@ -49,6 +49,7 @@ operational_metrics:
 
 notifications:
   discord_enabled: true
+  notify_routine: false  # Live dashboard covers routine status/order/daily visibility
   notify_on_order_sent: true
   notify_on_order_filled: true
   notify_on_order_cancelled: true

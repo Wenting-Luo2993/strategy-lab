@@ -1194,8 +1194,11 @@ class TradingOrchestrator:
         """
         from datetime import datetime
 
-        # Check if notifications enabled
-        if not self.config.notifications.discord_webhook_url:
+        # Check if routine notifications enabled
+        if (
+            not self.config.notifications.discord_webhook_url
+            or not getattr(self.config.notifications, "notify_routine", True)
+        ):
             return
 
         # Use market timezone for date comparison
@@ -1276,8 +1279,11 @@ class TradingOrchestrator:
 
     async def _send_daily_summary(self) -> None:
         """Generate and send end-of-day summary to Discord."""
-        if not self.config.notifications.discord_webhook_url:
-            self.logger.debug("Discord webhook not configured, skipping daily summary")
+        if (
+            not self.config.notifications.discord_webhook_url
+            or not getattr(self.config.notifications, "notify_routine", True)
+        ):
+            self.logger.debug("Routine Discord notifications disabled or webhook not configured, skipping daily summary")
             return
 
         try:
@@ -2284,7 +2290,11 @@ class TradingOrchestrator:
 
     async def _on_order_created_notification(self, order_id: str) -> None:
         """Send ORDER_SENT Discord notification when OrderManager submits an order."""
-        if not self.config.notifications.discord_webhook_url:
+        if (
+            not self.config.notifications.discord_webhook_url
+            or not getattr(self.config.notifications, "notify_routine", True)
+            or not self.config.notifications.notify_on_trade
+        ):
             return
         try:
             from vibe.trading_bot.utils.datetime_utils import get_market_now
@@ -2317,7 +2327,11 @@ class TradingOrchestrator:
 
     async def _on_order_filled_notification(self, order_id: str) -> None:
         """Send ORDER_FILLED Discord notification when OrderManager detects a fill."""
-        if not self.config.notifications.discord_webhook_url:
+        if (
+            not self.config.notifications.discord_webhook_url
+            or not getattr(self.config.notifications, "notify_routine", True)
+            or not self.config.notifications.notify_on_trade
+        ):
             return
         try:
             from vibe.trading_bot.utils.datetime_utils import get_market_now
@@ -2417,7 +2431,11 @@ class TradingOrchestrator:
         await self._persist_dashboard_account_and_positions(reason="trade_closed")
 
         # Send TRADE_CLOSED notification with actual fill-based P&L
-        if self.config.notifications.discord_webhook_url:
+        if (
+            self.config.notifications.discord_webhook_url
+            and getattr(self.config.notifications, "notify_routine", True)
+            and self.config.notifications.notify_on_trade
+        ):
             now = get_market_now(self.market_scheduler)
             try:
                 async with discord_notification_context(

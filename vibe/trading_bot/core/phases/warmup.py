@@ -524,8 +524,11 @@ class WarmupPhaseManager(BasePhase):
             all_healthy: Whether all health checks passed
             health_status: Health status details from health monitor
         """
-        if not self.config.notifications.discord_webhook_url:
-            self.logger.debug("Discord webhook URL not configured, skipping warm-up notification")
+        if (
+            not self.config.notifications.discord_webhook_url
+            or not getattr(self.config.notifications, "notify_routine", True)
+        ):
+            self.logger.debug("Routine Discord notifications disabled or webhook not configured, skipping warm-up notification")
             return
 
         try:

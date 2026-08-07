@@ -91,8 +91,27 @@ class TestNotificationSettings:
     def test_defaults(self):
         """Test default values."""
         settings = NotificationSettings()
+        assert settings.notify_routine is True
         assert settings.notify_on_trade is True
         assert settings.notify_on_error is True
+
+    def test_notify_routine_can_be_disabled(self, monkeypatch):
+        """Routine Discord notifications can be disabled independently of errors."""
+        monkeypatch.setenv("NOTIFY_ROUTINE", "false")
+
+        settings = NotificationSettings()
+
+        assert settings.notify_routine is False
+        assert settings.notify_on_error is True
+
+    def test_nested_notify_routine_can_be_disabled(self, monkeypatch):
+        """AppSettings accepts the nested env var used by systemd deployments."""
+        monkeypatch.setenv("NOTIFICATIONS__NOTIFY_ROUTINE", "false")
+
+        settings = AppSettings()
+
+        assert settings.notifications.notify_routine is False
+        assert settings.notifications.notify_on_error is True
 
 
 class TestAppSettings:

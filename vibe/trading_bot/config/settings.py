@@ -149,6 +149,10 @@ class NotificationSettings(BaseSettings):
     """Notification configuration."""
 
     discord_webhook_url: Optional[str] = Field(default=None, description="Discord webhook URL")
+    notify_routine: bool = Field(
+        default=True,
+        description="Notify on routine operational events such as warmup, ORB, and daily summaries",
+    )
     notify_on_trade: bool = Field(default=True, description="Notify on trade execution")
     notify_on_error: bool = Field(default=True, description="Notify on error")
 
