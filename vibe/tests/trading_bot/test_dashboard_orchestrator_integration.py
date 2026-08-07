@@ -79,6 +79,7 @@ def test_completed_bar_persists_price_bar_and_outbox_event(tmp_path):
     orchestrator.trade_store.close()
 
 
+
 @pytest.mark.asyncio
 async def test_order_fill_persists_order_account_position_and_outbox_events(tmp_path):
     orchestrator = TradingOrchestrator(
@@ -155,11 +156,11 @@ async def test_order_fill_persists_order_account_position_and_outbox_events(tmp_
     }
     assert orchestrator.dashboard_outbox_store.count_by_status("pending") == 12
     assert orchestrator.dashboard_publish_wake_event.is_set()
+    orchestrator.operational_metrics_store.close()
     orchestrator.dashboard_price_store.close()
     orchestrator.dashboard_store.close()
     orchestrator.dashboard_outbox_store.close()
     orchestrator.trade_store.close()
-    orchestrator.operational_metrics_store.close()
 
 
 @pytest.mark.asyncio
@@ -227,6 +228,69 @@ async def test_trade_close_updates_trade_and_links_trade_closed_event(tmp_path):
     orchestrator.operational_metrics_store.close()
 
 
+@pytest.mark.asyncio
+async def test_trade_close_recovers_open_trade_after_restart(tmp_path):
+    orchestrator = TradingOrchestrator(
+        config=_dashboard_config(tmp_path),
+        ruleset=_ruleset(),
+        market_scheduler=_scheduler(),
+        testing_mode=True,
+    )
+    await orchestrator.exchange.initialize()
+    orchestrator.exchange.partial_fill_probability = 0.0
+    await orchestrator.exchange.set_price("AAPL", 100.0)
+
+    entry_response = await orchestrator.exchange.submit_order(
+        symbol="AAPL",
+        side="buy",
+        quantity=10,
+        order_type="market",
+        price=100.0,
+    )
+    await orchestrator._persist_dashboard_trade_entry(
+        symbol="AAPL",
+        order_id=entry_response.order_id,
+        signal_value=1,
+        quantity=entry_response.filled_qty,
+        entry_price=entry_response.avg_price,
+        entry_time=datetime(2026, 7, 20, 9, 35),
+    )
+    orchestrator._dashboard_symbol_trade_ids.clear()
+    orchestrator._dashboard_trade_row_ids.clear()
+
+    await orchestrator.exchange.set_price("AAPL", 102.0)
+    exit_response = await orchestrator.exchange.submit_order(
+        symbol="AAPL",
+        side="sell",
+        quantity=10,
+        order_type="market",
+        price=102.0,
+    )
+    await orchestrator._persist_dashboard_trade_exit(
+        symbol="AAPL",
+        order_id=exit_response.order_id,
+        exit_price=exit_response.avg_price,
+        exit_time=datetime(2026, 7, 20, 10, 0),
+        exit_reason="take_profit",
+    )
+
+    trade = orchestrator.trade_store.get_trades(symbol="AAPL", status="closed")[0]
+    closed_event = orchestrator.dashboard_store.get_row(
+        "order_events",
+        "event_id",
+        f"TRADE_CLOSED:{exit_response.order_id}",
+    )
+
+    assert trade["trade_id"] == f"DU123:{entry_response.order_id}"
+    assert trade["exit_reason"] == "take_profit"
+    assert closed_event["trade_id"] == trade["trade_id"]
+    orchestrator.dashboard_price_store.close()
+    orchestrator.dashboard_store.close()
+    orchestrator.dashboard_outbox_store.close()
+    orchestrator.trade_store.close()
+    orchestrator.operational_metrics_store.close()
+
+
 def test_orb_levels_persist_strategy_annotations_and_outbox_events(tmp_path):
     scheduler = _scheduler()
     orchestrator = TradingOrchestrator(
@@ -262,3 +326,65 @@ def test_orb_levels_persist_strategy_annotations_and_outbox_events(tmp_path):
     orchestrator.dashboard_outbox_store.close()
     orchestrator.trade_store.close()
     orchestrator.operational_metrics_store.close()
+
+
+@pytest.mark.asyncio
+async def test_account_position_poll_publishes_flat_snapshot_when_no_position(tmp_path):
+    orchestrator = TradingOrchestrator(
+        config=_dashboard_config(tmp_path),
+        ruleset=_ruleset(),
+        market_scheduler=_scheduler(),
+        testing_mode=True,
+    )
+    await orchestrator.exchange.initialize()
+
+    await orchestrator._persist_dashboard_account_and_positions(reason="poll")
+
+    position = orchestrator.dashboard_store.get_row("positions", "position_id", "DU123:AAPL")
+    outbox_events = orchestrator.dashboard_outbox_store.claim_pending(limit=10, claimed_by="test")
+    outbox_event = next(event for event in outbox_events if event["aggregate_type"] == "position")
+
+    assert position["quantity"] == 0
+    assert position["side"] == "flat"
+    assert outbox_event["payload"]["quantity"] == 0.0
+    assert outbox_event["payload"]["side"] == "flat"
+    orchestrator.dashboard_price_store.close()
+    orchestrator.dashboard_store.close()
+    orchestrator.dashboard_outbox_store.close()
+    orchestrator.trade_store.close()
+
+
+@pytest.mark.asyncio
+async def test_account_position_poll_publishes_equity_unrealized_pnl(tmp_path):
+    orchestrator = TradingOrchestrator(
+        config=_dashboard_config(tmp_path),
+        ruleset=_ruleset(),
+        market_scheduler=_scheduler(),
+        testing_mode=True,
+    )
+    await orchestrator.exchange.initialize()
+    orchestrator.exchange.partial_fill_probability = 0.0
+    await orchestrator.exchange.set_price("AAPL", 100.0)
+    await orchestrator.exchange.submit_order(
+        symbol="AAPL",
+        side="buy",
+        quantity=10,
+        order_type="market",
+        price=100.0,
+    )
+    await orchestrator.exchange.set_price("AAPL", 102.0)
+
+    await orchestrator._persist_dashboard_account_and_positions(reason="poll")
+
+    equity_row = orchestrator.dashboard_store._get_connection().execute(
+        "SELECT unrealized_pnl FROM equity_snapshots ORDER BY timestamp DESC LIMIT 1"
+    ).fetchone()
+    outbox_events = orchestrator.dashboard_outbox_store.claim_pending(limit=10, claimed_by="test")
+    equity_event = next(event for event in outbox_events if event["aggregate_type"] == "equity_snapshot")
+
+    assert equity_row["unrealized_pnl"] > 0
+    assert equity_event["payload"]["unrealized_pnl"] == pytest.approx(equity_row["unrealized_pnl"])
+    orchestrator.dashboard_price_store.close()
+    orchestrator.dashboard_store.close()
+    orchestrator.dashboard_outbox_store.close()
+    orchestrator.trade_store.close()

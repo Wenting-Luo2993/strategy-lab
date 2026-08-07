@@ -112,6 +112,17 @@ export type PublishStatus = {
   published: number;
 };
 
+export type StrategyConfigSummary = {
+  name: string;
+  version: string;
+  description: string;
+  symbols: string[];
+  timeframe: string;
+  strategyType: string;
+  positionSizeMethod: string;
+  maxShares?: number | null;
+};
+
 export type DashboardData = {
   source: DashboardDataSource;
   status: DashboardStatus;

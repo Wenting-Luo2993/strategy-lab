@@ -385,12 +385,19 @@ class TradingOrchestrator:
             return
         try:
             trade_id = self._dashboard_symbol_trade_ids.get(symbol)
-            if trade_id is None:
-                return
-            row_id = self._dashboard_trade_row_ids.get(trade_id)
-            if row_id is None:
-                return
-            row = self.trade_store.get_trade_by_id(row_id)
+            row_id = self._dashboard_trade_row_ids.get(trade_id) if trade_id is not None else None
+            row = self.trade_store.get_trade_by_id(row_id) if row_id is not None else None
+            if row is None:
+                open_trades = self.trade_store.get_trades(symbol=symbol, status="open", limit=1)
+                if not open_trades:
+                    return
+                row = open_trades[0]
+                row_id = int(row["id"])
+                trade_id = row.get("trade_id")
+                if trade_id is None:
+                    return
+                self._dashboard_symbol_trade_ids[symbol] = trade_id
+                self._dashboard_trade_row_ids[trade_id] = row_id
             if row is None:
                 return
             entry_price = float(row["entry_price"])
@@ -544,6 +551,47 @@ class TradingOrchestrator:
                 currency=getattr(self.config.broker, "ib_currency", "USD"),
                 mode=getattr(self.config.broker, "mode", "paper"),
             )
+            position_records = []
+            total_unrealized_pnl = 0.0
+            for symbol in self.active_symbols:
+                position = await self.exchange.get_position(symbol)
+                if position is None:
+                    quantity = 0.0
+                    side = "flat"
+                    avg_cost = None
+                    market_price = None
+                    unrealized_pnl = None
+                else:
+                    quantity = position.quantity
+                    side = position.side if position.quantity != 0 else "flat"
+                    avg_cost = position.entry_price
+                    market_price = position.current_price
+                    unrealized_pnl = position.unrealized_pnl
+                    total_unrealized_pnl += float(unrealized_pnl or 0.0)
+                position_record = PositionSnapshot(
+                    position_id=f"{account_id}:{symbol}",
+                    account_id=account_id,
+                    symbol=symbol,
+                    quantity=quantity,
+                    side=side,
+                    avg_cost=avg_cost,
+                    market_price=market_price,
+                    unrealized_pnl=unrealized_pnl,
+                    updated_at=observed_at,
+                )
+                position_payload = {
+                    "position_id": position_record.position_id,
+                    "account_id": account_id,
+                    "symbol": symbol,
+                    "quantity": quantity,
+                    "side": side,
+                    "avg_cost": avg_cost,
+                    "market_price": market_price,
+                    "unrealized_pnl": unrealized_pnl,
+                    "updated_at": observed_at.isoformat(),
+                    "reason": reason,
+                }
+                position_records.append((position_record, position_payload))
             snapshot = EquitySnapshot(
                 snapshot_id=f"{account_id}:{observed_at.isoformat()}",
                 account_id=account_id,
@@ -552,7 +600,7 @@ class TradingOrchestrator:
                 cash=account.cash,
                 buying_power=account.buying_power,
                 realized_pnl=account.total_pnl,
-                unrealized_pnl=None,
+                unrealized_pnl=total_unrealized_pnl,
                 source=broker_name,
             )
             self.dashboard_store.upsert_account(account_record)
@@ -578,46 +626,21 @@ class TradingOrchestrator:
                     "cash": account.cash,
                     "buying_power": account.buying_power,
                     "realized_pnl": account.total_pnl,
-                    "unrealized_pnl": None,
+                    "unrealized_pnl": total_unrealized_pnl,
                     "source": broker_name,
                     "reason": reason,
                 },
                 original_event_timestamp=observed_at,
             )
 
-            for symbol in self.active_symbols:
-                position = await self.exchange.get_position(symbol)
-                if position is None:
-                    continue
-                position_record = PositionSnapshot(
-                    position_id=f"{account_id}:{symbol}",
-                    account_id=account_id,
-                    symbol=symbol,
-                    quantity=position.quantity,
-                    side=position.side,
-                    avg_cost=position.entry_price,
-                    market_price=position.current_price,
-                    unrealized_pnl=position.unrealized_pnl,
-                    updated_at=observed_at,
-                )
+            for position_record, position_payload in position_records:
                 self.dashboard_store.upsert_position(position_record)
                 self._enqueue_dashboard_event(
-                    event_id=f"position:{account_id}:{symbol}:{observed_at.isoformat()}",
+                    event_id=f"position:{account_id}:{position_record.symbol}:{observed_at.isoformat()}",
                     event_type="upsert",
                     aggregate_type="position",
                     aggregate_id=position_record.position_id,
-                    payload={
-                        "position_id": position_record.position_id,
-                        "account_id": account_id,
-                        "symbol": symbol,
-                        "quantity": position.quantity,
-                        "side": position.side,
-                        "avg_cost": position.entry_price,
-                        "market_price": position.current_price,
-                        "unrealized_pnl": position.unrealized_pnl,
-                        "updated_at": observed_at.isoformat(),
-                        "reason": reason,
-                    },
+                    payload=position_payload,
                     original_event_timestamp=observed_at,
                 )
         except Exception as exc:

@@ -2,16 +2,28 @@
 
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { loadDashboardData } from "@/data/clientAdapter";
-import type { DashboardData, PriceBar } from "@/data/types";
+import type { DashboardData, Position, PriceBar, StrategyAnnotation, StrategyConfigSummary } from "@/data/types";
 import { PriceChart } from "./PriceChart";
 
 type DashboardAppProps = {
   initialData: DashboardData;
+  strategyConfig: StrategyConfigSummary | null;
 };
 
 type View = "live" | "charts" | "operations" | "performance";
 type Theme = "light" | "dark";
 type HealthState = "healthy" | "closed" | "degraded";
+type ChartRange = "3d" | "5d" | "10d" | "30d" | "all";
+type DerivedClosedTrade = {
+  id: string;
+  symbol: string;
+  side: string;
+  quantity: number;
+  entryPrice: number | null;
+  exitPrice: number | null;
+  exitTime: string;
+  pnl: number | null;
+};
 
 const themeStorageKey = "dashboard-theme";
 const themeChangeEvent = "dashboard-theme-change";
@@ -23,33 +35,70 @@ const views: { id: View; label: string }[] = [
   { id: "performance", label: "Performance" },
 ];
 
-export function DashboardApp({ initialData }: DashboardAppProps) {
+const chartRanges: { id: ChartRange; label: string }[] = [
+  { id: "3d", label: "Current + 2 days" },
+  { id: "5d", label: "5 days" },
+  { id: "10d", label: "10 days" },
+  { id: "30d", label: "30 days" },
+  { id: "all", label: "All" },
+];
+
+const orderEventPageSize = 10;
+
+export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps) {
+  const isLiveDataSource = process.env.NEXT_PUBLIC_DASHBOARD_DATA_SOURCE === "supabase";
   const [data, setData] = useState(initialData);
+  const [isLoading, setIsLoading] = useState(isLiveDataSource);
   const [view, setView] = useState<View>("live");
   const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeServerSnapshot);
 
   useEffect(() => {
     let cancelled = false;
-    loadDashboardData().then((loaded) => {
-      if (!cancelled) {
-        setData(loaded);
-      }
-    });
+    if (!isLiveDataSource) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    loadDashboardData()
+      .then((loaded) => {
+        if (!cancelled) {
+          setData(loaded);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setData(unavailableClientData(error instanceof Error ? error.message : "Dashboard data source failed to respond."));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isLiveDataSource]);
 
   const latestEquity = data.equity[0];
+  const activePositions = activePositionsFor(data.positions, latestEquity?.timestamp);
   const symbols = [...new Set(data.priceBars.map((bar) => bar.symbol))];
-  const selectedSymbol = symbols[0] ?? data.positions[0]?.symbol ?? "QQQ";
+  const selectedSymbol = symbols[0] ?? activePositions[0]?.symbol ?? "QQQ";
   const selectedBars = data.priceBars.filter((bar) => bar.symbol === selectedSymbol);
-  const realizedPnl = latestEquity?.realized_pnl ?? 0;
-  const unrealizedPnl = latestEquity?.unrealized_pnl ?? 0;
+  const realizedPnl = realizedPnlFor(data);
+  const unrealizedPnl = unrealizedPnlFor(latestEquity, activePositions);
   const freshnessReference = data.source === "fixture" ? data.generatedAt : undefined;
   const freshnessMinutes = latestEquity ? minutesSince(latestEquity.timestamp, freshnessReference) : null;
   const marketState = deriveMarketState(data.status);
   const health = deriveHealthState(data.status, marketState, freshnessMinutes);
+
+  if (isLoading) {
+    return <LoadingDashboard theme={theme} />;
+  }
+
+  if (isLiveDataSource && data.status === "unavailable") {
+    return <ErrorDashboard theme={theme} message={data.error ?? "Dashboard data source failed to respond."} />;
+  }
 
   return (
     <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
@@ -83,8 +132,8 @@ export function DashboardApp({ initialData }: DashboardAppProps) {
           ))}
         </nav>
 
-        {view === "live" && <LiveView data={data} realizedPnl={realizedPnl} unrealizedPnl={unrealizedPnl} freshnessMinutes={freshnessMinutes} marketState={marketState} />}
-        {view === "charts" && <ChartsView data={data} selectedSymbol={selectedSymbol} selectedBars={selectedBars} />}
+        {view === "live" && <LiveView data={data} activePositions={activePositions} realizedPnl={realizedPnl} unrealizedPnl={unrealizedPnl} freshnessMinutes={freshnessMinutes} marketState={marketState} />}
+        {view === "charts" && <ChartsView data={data} selectedSymbol={selectedSymbol} selectedBars={selectedBars} strategyConfig={strategyConfig} />}
         {view === "operations" && <OperationsView data={data} />}
         {view === "performance" && <PerformanceView data={data} />}
       </div>
@@ -122,7 +171,50 @@ function setDashboardTheme(theme: Theme): void {
   window.dispatchEvent(new Event(themeChangeEvent));
 }
 
-function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes, marketState }: { data: DashboardData; realizedPnl: number; unrealizedPnl: number; freshnessMinutes: number | null; marketState: DashboardData["status"] }) {
+function LoadingDashboard({ theme }: { theme: Theme }) {
+  return (
+    <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
+      <header className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] backdrop-blur">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-5 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">Supabase · live</p>
+            <h1 className="mt-2 text-3xl font-bold">Live Trading Dashboard</h1>
+          </div>
+          <span className="rounded-md border border-[var(--muted)] px-3 py-2 text-sm font-semibold text-[var(--muted)]">LOADING</span>
+        </div>
+      </header>
+      <div className="mx-auto grid w-full max-w-7xl gap-5 px-5 py-6 sm:px-8">
+        <div className="grid gap-4 sm:grid-cols-3">
+          <SkeletonBlock height="88px" />
+          <SkeletonBlock height="88px" />
+          <SkeletonBlock height="88px" />
+        </div>
+        <SkeletonBlock height="180px" />
+        <SkeletonBlock height="330px" />
+      </div>
+    </main>
+  );
+}
+
+function ErrorDashboard({ theme, message }: { theme: Theme; message: string }) {
+  return (
+    <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
+      <div className="mx-auto grid min-h-screen w-full max-w-3xl place-items-center px-5 py-10">
+        <section className="surface rounded-lg border p-6">
+          <p className="text-xs font-semibold uppercase text-[var(--warning)]">Live data unavailable</p>
+          <h1 className="mt-2 text-2xl font-bold">Dashboard data source failed</h1>
+          <p className="mt-3 text-sm text-[var(--muted)]">{message}</p>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function SkeletonBlock({ height }: { height: string }) {
+  return <div className="surface animate-pulse rounded-lg border bg-[var(--surface-muted)]" style={{ height }} />;
+}
+
+function LiveView({ data, activePositions, realizedPnl, unrealizedPnl, freshnessMinutes, marketState }: { data: DashboardData; activePositions: Position[]; realizedPnl: number; unrealizedPnl: number; freshnessMinutes: number | null; marketState: DashboardData["status"] }) {
   const latestEquity = data.equity[0];
   return (
     <section className="grid min-w-0 gap-5 lg:grid-cols-[1.3fr_0.9fr]">
@@ -134,18 +226,19 @@ function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes, marketSt
       <div className="min-w-0 lg:col-span-2">
         <Panel title="Open positions">
           <div className="space-y-3">
-            {data.positions.map((position) => (
+            {activePositions.map((position) => (
               <div key={position.position_id} className="flex items-center justify-between border-b border-[var(--border)] pb-3 last:border-0 last:pb-0">
                 <div>
                   <div className="font-semibold">{position.symbol}</div>
                   <div className="text-sm text-[var(--muted)]">{position.side} · {number(position.quantity, 0)} shares</div>
+                  <div className="text-xs text-[var(--muted)]">Updated {time(position.updated_at)}</div>
                 </div>
                 <div className={`text-right font-semibold ${Number(position.unrealized_pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>
                   {currency(position.unrealized_pnl)}
                 </div>
               </div>
             ))}
-            {!data.positions.length && <EmptyState label="No open positions" />}
+            {!activePositions.length && <EmptyState label="No open positions" />}
           </div>
         </Panel>
       </div>
@@ -169,23 +262,49 @@ function LiveView({ data, realizedPnl, unrealizedPnl, freshnessMinutes, marketSt
   );
 }
 
-function ChartsView({ data, selectedSymbol, selectedBars }: { data: DashboardData; selectedSymbol: string; selectedBars: PriceBar[] }) {
+function ChartsView({ data, selectedSymbol, selectedBars, strategyConfig }: { data: DashboardData; selectedSymbol: string; selectedBars: PriceBar[]; strategyConfig: StrategyConfigSummary | null }) {
+  const [chartRange, setChartRange] = useState<ChartRange>("3d");
+  const [fullscreen, setFullscreen] = useState(false);
+  const visibleBars = filterBarsForRange(selectedBars, chartRange);
+  const visibleAnnotations = latestCompleteAnnotationsForSymbol(data.annotations, selectedSymbol);
+  const visibleOrderEvents = orderEventsForBars(data.orderEvents, selectedSymbol, visibleBars);
+
   return (
     <section className="grid min-w-0 gap-5 lg:grid-cols-[1.5fr_0.75fr]">
       <Panel title={`${selectedSymbol} · 5m price`}>
-        <PriceChart bars={selectedBars} trades={data.trades} annotations={data.annotations} symbol={selectedSymbol} />
-      </Panel>
-      <Panel title="Strategy annotations">
-        <div className="space-y-3">
-          {data.annotations.map((annotation) => (
-            <div key={annotation.annotation_id} className="rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-3">
-              <div className="text-sm font-semibold">{annotation.symbol} · {annotation.key}</div>
-              <pre className="mt-2 overflow-x-auto text-xs text-[var(--muted)]">{JSON.stringify(annotation.value_json, null, 2)}</pre>
-            </div>
-          ))}
-          {!data.annotations.length && <EmptyState label="No annotations" />}
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
+            Range
+            <select
+              value={chartRange}
+              onChange={(event) => setChartRange(event.target.value as ChartRange)}
+              className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[var(--foreground)]"
+            >
+              {chartRanges.map((range) => <option key={range.id} value={range.id}>{range.label}</option>)}
+            </select>
+          </label>
+          <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm font-semibold" onClick={() => setFullscreen(true)}>
+            Fullscreen
+          </button>
         </div>
+        <PriceChart bars={visibleBars} orderEvents={visibleOrderEvents} annotations={visibleAnnotations} symbol={selectedSymbol} />
       </Panel>
+      <Panel title="Strategy definition">
+        <StrategySummary data={data} selectedSymbol={selectedSymbol} selectedBars={selectedBars} visibleAnnotations={visibleAnnotations} strategyConfig={strategyConfig} />
+      </Panel>
+      {fullscreen && (
+        <div className="fixed inset-0 z-50 bg-[rgba(0,0,0,0.72)] p-3 sm:p-6">
+          <div className="surface flex h-full min-w-0 flex-col rounded-lg border p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-base font-bold">{selectedSymbol} · 5m price</h2>
+              <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm font-semibold" onClick={() => setFullscreen(false)}>
+                Close
+              </button>
+            </div>
+            <PriceChart bars={visibleBars} orderEvents={visibleOrderEvents} annotations={visibleAnnotations} symbol={selectedSymbol} height="calc(100vh - 150px)" />
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -208,8 +327,13 @@ function OperationsView({ data }: { data: DashboardData }) {
         </dl>
       </Panel>
       <div className="min-w-0 lg:col-span-2">
-        <Panel title="Recent order events">
-          <EventTable data={data} />
+        <Panel title="Operational data">
+          <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <Stat label="Order events" value={number(data.orderEvents.length, 0)} />
+            <Stat label="Price bars" value={number(data.priceBars.length, 0)} />
+            <Stat label="Annotations" value={number(data.annotations.length, 0)} />
+            <Stat label="Metrics" value={number(data.metrics.length, 0)} />
+          </dl>
         </Panel>
       </div>
     </section>
@@ -217,10 +341,11 @@ function OperationsView({ data }: { data: DashboardData }) {
 }
 
 function PerformanceView({ data }: { data: DashboardData }) {
-  const closedTrades = data.trades.filter((trade) => trade.status === "closed");
-  const pnl = data.trades.reduce((total, trade) => total + Number(trade.pnl ?? 0), 0);
-  const winners = closedTrades.filter((trade) => Number(trade.pnl ?? 0) > 0).length;
-  const winRate = closedTrades.length ? (winners / closedTrades.length) * 100 : null;
+  const closedTrades = closedTradesFromOrderEvents(data.orderEvents);
+  const pnl = closedTrades.reduce((total, trade) => total + Number(trade.pnl ?? 0), 0);
+  const tradesWithPnl = closedTrades.filter((trade) => trade.pnl !== null);
+  const winners = tradesWithPnl.filter((trade) => Number(trade.pnl) > 0).length;
+  const winRate = tradesWithPnl.length ? (winners / tradesWithPnl.length) * 100 : null;
   return (
     <section className="grid min-w-0 gap-5 lg:grid-cols-[0.8fr_1.2fr]">
       <div className="grid min-w-0 gap-4">
@@ -235,9 +360,10 @@ function PerformanceView({ data }: { data: DashboardData }) {
               <tr><th className="py-2 pr-3">Symbol</th><th className="py-2 pr-3">Status</th><th className="py-2 pr-3 text-right">Qty</th><th className="py-2 pr-3 text-right">P&L</th></tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
-              {data.trades.map((trade) => (
-                <tr key={trade.trade_id}><td className="py-3 pr-3 font-semibold">{trade.symbol}</td><td className="py-3 pr-3">{trade.status}</td><td className="py-3 pr-3 text-right">{number(trade.quantity, 0)}</td><td className={`py-3 pr-3 text-right font-semibold ${Number(trade.pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>{currency(trade.pnl)}</td></tr>
+              {closedTrades.map((trade) => (
+                <tr key={trade.id}><td className="py-3 pr-3 font-semibold">{trade.symbol}</td><td className="py-3 pr-3">closed</td><td className="py-3 pr-3 text-right">{number(trade.quantity, 0)}</td><td className={`py-3 pr-3 text-right font-semibold ${Number(trade.pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>{currency(trade.pnl)}</td></tr>
               ))}
+              {!closedTrades.length && <tr><td colSpan={4}><EmptyState label="No closed trades" /></td></tr>}
             </tbody>
           </table>
         </div>
@@ -247,21 +373,190 @@ function PerformanceView({ data }: { data: DashboardData }) {
 }
 
 function EventTable({ data }: { data: DashboardData }) {
+  const [page, setPage] = useState(0);
+  const events = [...data.orderEvents].sort((left, right) => new Date(right.occurred_at).getTime() - new Date(left.occurred_at).getTime());
+  const totalPages = Math.max(1, Math.ceil(events.length / orderEventPageSize));
+  const currentPage = Math.min(page, totalPages - 1);
+  const pageEvents = events.slice(currentPage * orderEventPageSize, (currentPage + 1) * orderEventPageSize);
+
   return (
-    <div className="w-full max-w-full overflow-x-auto">
-      <table className="min-w-[820px] text-left text-sm whitespace-nowrap">
-        <thead className="text-xs uppercase text-[var(--muted)]">
-          <tr><th className="py-2 pr-3">Time ET</th><th className="py-2 pr-3">Symbol</th><th className="py-2 pr-3">Side</th><th className="py-2 pr-3 text-right">Qty</th><th className="py-2 pr-3">Event</th><th className="py-2 pr-3 text-right">Price</th><th className="py-2 pr-3 text-right">Slip bps</th><th className="py-2 pr-3 text-right">Latency</th></tr>
-        </thead>
-        <tbody className="divide-y divide-[var(--border)]">
-          {data.orderEvents.map((event) => (
-            <tr key={event.event_id}><td className="py-3 pr-3 text-[var(--muted)]">{time(event.occurred_at)}</td><td className="py-3 pr-3 font-semibold">{event.symbol}</td><td className="py-3 pr-3 capitalize">{event.side}</td><td className="py-3 pr-3 text-right">{number(event.quantity, 0)}</td><td className="py-3 pr-3">{event.event_type}</td><td className="py-3 pr-3 text-right">{currency(event.price)}</td><td className="py-3 pr-3 text-right">{isFillEvent(event.event_type) ? number(event.slippage_bps, 2) : "--"}</td><td className="py-3 pr-3 text-right">{event.latency_ms === null || event.latency_ms === undefined ? "--" : `${number(event.latency_ms, 0)} ms`}</td></tr>
-          ))}
-          {!data.orderEvents.length && <tr><td colSpan={8}><EmptyState label="No order events" /></td></tr>}
-        </tbody>
-      </table>
+    <div>
+      <div className="w-full max-w-full overflow-x-auto">
+        <table className="min-w-[820px] text-left text-sm whitespace-nowrap">
+          <thead className="text-xs uppercase text-[var(--muted)]">
+            <tr><th className="py-2 pr-3">Time ET</th><th className="py-2 pr-3">Symbol</th><th className="py-2 pr-3">Side</th><th className="py-2 pr-3 text-right">Qty</th><th className="py-2 pr-3">Event</th><th className="py-2 pr-3 text-right">Price</th><th className="py-2 pr-3 text-right">Slip bps</th><th className="py-2 pr-3 text-right">Latency</th></tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--border)]">
+            {pageEvents.map((event) => (
+              <tr key={event.event_id}><td className="py-3 pr-3 text-[var(--muted)]">{time(event.occurred_at)}</td><td className="py-3 pr-3 font-semibold">{event.symbol}</td><td className="py-3 pr-3 capitalize">{event.side}</td><td className="py-3 pr-3 text-right">{number(event.quantity, 0)}</td><td className="py-3 pr-3">{event.event_type}</td><td className="py-3 pr-3 text-right">{currency(event.price)}</td><td className="py-3 pr-3 text-right">{isFillEvent(event.event_type) ? number(event.slippage_bps, 2) : "--"}</td><td className="py-3 pr-3 text-right">{event.latency_ms === null || event.latency_ms === undefined ? "--" : `${number(event.latency_ms, 0)} ms`}</td></tr>
+            ))}
+            {!events.length && <tr><td colSpan={8}><EmptyState label="No order events" /></td></tr>}
+          </tbody>
+        </table>
+      </div>
+      {events.length > orderEventPageSize && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--muted)]">
+          <span>Showing {currentPage * orderEventPageSize + 1}-{Math.min(events.length, (currentPage + 1) * orderEventPageSize)} of {events.length}</span>
+          <div className="flex gap-2">
+            <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 font-semibold disabled:opacity-50" disabled={currentPage === 0} onClick={() => setPage((value) => Math.max(0, value - 1))}>Previous</button>
+            <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 font-semibold disabled:opacity-50" disabled={currentPage >= totalPages - 1} onClick={() => setPage((value) => Math.min(totalPages - 1, value + 1))}>Next</button>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+function StrategySummary({ data, selectedSymbol, selectedBars, visibleAnnotations, strategyConfig }: { data: DashboardData; selectedSymbol: string; selectedBars: PriceBar[]; visibleAnnotations: StrategyAnnotation[]; strategyConfig: StrategyConfigSummary | null }) {
+  const latestAnnotation = visibleAnnotations[0] ?? data.annotations.find((annotation) => annotation.symbol === selectedSymbol);
+  const latestTrade = data.trades.find((trade) => trade.symbol === selectedSymbol && trade.strategy);
+  const strategyName = strategyConfig?.name ?? latestAnnotation?.strategy ?? latestTrade?.strategy ?? "Unknown";
+  const tradingDay = latestAnnotation?.trading_day ?? "--";
+  const timeframe = strategyConfig?.timeframe ?? selectedBars[0]?.timeframe ?? "--";
+  const rulesetVersion = strategyConfig?.version ?? "--";
+
+  return (
+    <dl className="grid gap-3 text-sm">
+      <Stat label="Strategy" value={strategyName} />
+      <Stat label="Type" value={strategyConfig?.strategyType ?? "--"} />
+      <Stat label="Symbol" value={selectedSymbol} />
+      <Stat label="Timeframe" value={timeframe} />
+      <Stat label="Trading day" value={tradingDay} />
+      <Stat label="Ruleset version" value={rulesetVersion} />
+      <Stat label="Position sizing" value={strategyConfig ? `${strategyConfig.positionSizeMethod}${strategyConfig.maxShares ? ` · max ${strategyConfig.maxShares}` : ""}` : "--"} />
+      <Stat label="Chart levels" value={visibleAnnotations.length ? visibleAnnotations.map((annotation) => annotation.key.replace("orb_", "ORB ")).join(" / ") : "--"} />
+    </dl>
+  );
+}
+
+function activePositionsFor(positions: Position[], latestEquityTimestamp: string | undefined): Position[] {
+  return positions
+    .filter((position) => Math.abs(Number(position.quantity)) > 0)
+    .filter((position) => latestEquityTimestamp === undefined || minutesSince(position.updated_at, latestEquityTimestamp) <= 20)
+    .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
+}
+
+function filterBarsForRange(bars: PriceBar[], range: ChartRange): PriceBar[] {
+  if (range === "all" || bars.length === 0) {
+    return bars;
+  }
+  const days = Number(range.replace("d", ""));
+  const latest = bars.reduce((latestTime, bar) => Math.max(latestTime, new Date(bar.bar_start).getTime()), 0);
+  const cutoff = latest - (days - 1) * 24 * 60 * 60 * 1000;
+  return bars.filter((bar) => new Date(bar.bar_start).getTime() >= cutoff);
+}
+
+function latestCompleteAnnotationsForSymbol(annotations: StrategyAnnotation[], symbol: string): StrategyAnnotation[] {
+  const symbolAnnotations = annotations.filter((annotation) => annotation.symbol === symbol && annotation.enabled);
+  const byDay = new Map<string, StrategyAnnotation[]>();
+  symbolAnnotations.forEach((annotation) => {
+    const existing = byDay.get(annotation.trading_day) ?? [];
+    existing.push(annotation);
+    byDay.set(annotation.trading_day, existing);
+  });
+  const latestCompleteDay = [...byDay.entries()]
+    .filter(([, dayAnnotations]) => hasLevelAnnotation(dayAnnotations, "orb_high") && hasLevelAnnotation(dayAnnotations, "orb_low"))
+    .sort(([left], [right]) => right.localeCompare(left))[0];
+  return latestCompleteDay ? latestCompleteDay[1].filter((annotation) => annotation.key === "orb_high" || annotation.key === "orb_low") : [];
+}
+
+function hasLevelAnnotation(annotations: StrategyAnnotation[], key: string): boolean {
+  return annotations.some((annotation) => annotation.key === key && typeof annotation.value_json.price === "number");
+}
+
+function orderEventsForBars(orderEvents: DashboardData["orderEvents"], symbol: string, bars: PriceBar[]): DashboardData["orderEvents"] {
+  if (bars.length === 0) {
+    return [];
+  }
+  const first = new Date(bars[0].bar_start).getTime();
+  const last = new Date(bars[bars.length - 1].bar_start).getTime();
+  return orderEvents.filter((event) => event.symbol === symbol && isChartMarkerEvent(event.event_type) && isBetween(new Date(event.occurred_at).getTime(), first, last));
+}
+
+function isChartMarkerEvent(eventType: string): boolean {
+  return eventType === "ORDER_FILLED" || eventType === "TRADE_CLOSED";
+}
+
+function closedTradesFromOrderEvents(orderEvents: DashboardData["orderEvents"]): DerivedClosedTrade[] {
+  const closeEvents = orderEvents
+    .filter((event) => event.event_type === "TRADE_CLOSED")
+    .sort((left, right) => new Date(left.occurred_at).getTime() - new Date(right.occurred_at).getTime());
+  const closeOrderIds = new Set(closeEvents.map((event) => event.broker_order_id));
+  const entryEvents = orderEvents
+    .filter((event) => event.event_type === "ORDER_FILLED" && !closeOrderIds.has(event.broker_order_id))
+    .sort((left, right) => new Date(left.occurred_at).getTime() - new Date(right.occurred_at).getTime());
+  const usedEntryEventIds = new Set<string>();
+
+  return closeEvents.map((closeEvent) => {
+    const entryEvent = findEntryEventForClose(closeEvent, entryEvents, usedEntryEventIds);
+    if (entryEvent) {
+      usedEntryEventIds.add(entryEvent.event_id);
+    }
+    const pnl = realizedPnlFromEvents(entryEvent, closeEvent);
+    return {
+      id: closeEvent.event_id,
+      symbol: closeEvent.symbol,
+      side: entryEvent?.side ?? closeEvent.side,
+      quantity: closeEvent.quantity,
+      entryPrice: entryEvent?.price ?? null,
+      exitPrice: closeEvent.price,
+      exitTime: closeEvent.occurred_at,
+      pnl,
+    };
+  }).reverse();
+}
+
+function findEntryEventForClose(closeEvent: DashboardData["orderEvents"][number], entryEvents: DashboardData["orderEvents"], usedEntryEventIds: Set<string>): DashboardData["orderEvents"][number] | undefined {
+  const closeTime = new Date(closeEvent.occurred_at).getTime();
+  return [...entryEvents]
+    .reverse()
+    .find((entryEvent) => {
+      if (usedEntryEventIds.has(entryEvent.event_id)) {
+        return false;
+      }
+      const sameTrade = closeEvent.trade_id && entryEvent.trade_id === closeEvent.trade_id;
+      const plausiblePriorEntry = entryEvent.symbol === closeEvent.symbol && new Date(entryEvent.occurred_at).getTime() <= closeTime;
+      return Boolean(sameTrade) || plausiblePriorEntry;
+    });
+}
+
+function realizedPnlFromEvents(entryEvent: DashboardData["orderEvents"][number] | undefined, closeEvent: DashboardData["orderEvents"][number]): number | null {
+  if (!entryEvent || entryEvent.price === null || closeEvent.price === null) {
+    return null;
+  }
+  const quantity = closeEvent.quantity || entryEvent.quantity;
+  if (entryEvent.side === "sell" || entryEvent.side === "short") {
+    return (entryEvent.price - closeEvent.price) * quantity;
+  }
+  return (closeEvent.price - entryEvent.price) * quantity;
+}
+
+function realizedPnlFor(data: DashboardData): number {
+  const brokerValue = data.equity[0]?.realized_pnl;
+  if (brokerValue !== null && brokerValue !== undefined && Number.isFinite(brokerValue) && brokerValue !== 0) {
+    return brokerValue;
+  }
+  const eventValue = closedTradesFromOrderEvents(data.orderEvents).reduce((total, trade) => total + Number(trade.pnl ?? 0), 0);
+  if (eventValue !== 0) {
+    return eventValue;
+  }
+  const tradeValue = data.trades
+    .filter((trade) => trade.status === "closed")
+    .reduce((total, trade) => total + Number(trade.pnl ?? 0), 0);
+  return tradeValue !== 0 ? tradeValue : brokerValue ?? 0;
+}
+
+function unrealizedPnlFor(latestEquity: DashboardData["equity"][number] | undefined, activePositions: Position[]): number {
+  const brokerValue = latestEquity?.unrealized_pnl;
+  if (brokerValue !== null && brokerValue !== undefined && Number.isFinite(brokerValue) && brokerValue !== 0) {
+    return brokerValue;
+  }
+  const positionValue = activePositions.reduce((total, position) => total + Number(position.unrealized_pnl ?? 0), 0);
+  return positionValue !== 0 ? positionValue : brokerValue ?? 0;
+}
+
+function isBetween(value: number, min: number, max: number): boolean {
+  return value >= min && value <= max;
 }
 
 function isFillEvent(eventType: string): boolean {
@@ -379,4 +674,22 @@ function time(value: string): string {
     minute: "2-digit",
     timeZone: "America/New_York",
   }).format(new Date(value));
+}
+
+function unavailableClientData(error: string): DashboardData {
+  return {
+    source: "supabase",
+    status: "unavailable",
+    generatedAt: new Date().toISOString(),
+    account: null,
+    equity: [],
+    positions: [],
+    orderEvents: [],
+    priceBars: [],
+    trades: [],
+    metrics: [],
+    annotations: [],
+    publishStatus: { pending: 0, failed: 0, publishing: 0, dead_letter: 0, published: 0 },
+    error,
+  };
 }

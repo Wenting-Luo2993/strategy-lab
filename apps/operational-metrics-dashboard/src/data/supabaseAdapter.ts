@@ -1,4 +1,3 @@
-import { remoteUnavailableFixture } from "./fixtures";
 import type {
   Account,
   DashboardData,
@@ -26,7 +25,7 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !supabaseAnonKey) {
-    return remoteUnavailableFixture;
+    return unavailableDashboardData("Supabase read endpoint is not configured.");
   }
 
   try {
@@ -35,7 +34,7 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
       queryTable("equity_snapshots", supabaseUrl, supabaseAnonKey, "select=*&order=timestamp.desc&limit=50"),
       queryTable("positions", supabaseUrl, supabaseAnonKey, "select=*&order=updated_at.desc&limit=50"),
       queryTable("order_events", supabaseUrl, supabaseAnonKey, "select=*&order=occurred_at.desc&limit=50"),
-      queryTable("price_bars", supabaseUrl, supabaseAnonKey, "select=*&order=bar_start.asc&limit=500"),
+      queryTable("price_bars", supabaseUrl, supabaseAnonKey, "select=*&order=bar_start.desc&limit=2000"),
       queryTable("trades", supabaseUrl, supabaseAnonKey, "select=*&order=entry_time.desc&limit=100"),
       queryTable("operational_metrics", supabaseUrl, supabaseAnonKey, "select=*&order=timestamp.desc&limit=100"),
       queryTable("strategy_annotations", supabaseUrl, supabaseAnonKey, "select=*&enabled=eq.true&limit=100"),
@@ -49,20 +48,33 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
       equity,
       positions,
       orderEvents,
-      priceBars,
+      priceBars: priceBars.sort((left, right) => new Date(left.bar_start).getTime() - new Date(right.bar_start).getTime()),
       trades,
       metrics,
       annotations,
       publishStatus: { pending: 0, failed: 0, publishing: 0, dead_letter: 0, published: 0 },
     };
   } catch (error) {
-    return {
-      ...remoteUnavailableFixture,
-      source: "supabase",
-      status: "unavailable",
-      error: error instanceof Error ? error.message : "Supabase dashboard query failed.",
-    };
+    return unavailableDashboardData(error instanceof Error ? error.message : "Supabase dashboard query failed.");
   }
+}
+
+function unavailableDashboardData(error: string): DashboardData {
+  return {
+    source: "supabase",
+    status: "unavailable",
+    generatedAt: new Date().toISOString(),
+    account: null,
+    equity: [],
+    positions: [],
+    orderEvents: [],
+    priceBars: [],
+    trades: [],
+    metrics: [],
+    annotations: [],
+    publishStatus: { pending: 0, failed: 0, publishing: 0, dead_letter: 0, published: 0 },
+    error,
+  };
 }
 
 async function queryTable<TableName extends keyof TableMap>(
