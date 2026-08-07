@@ -119,8 +119,10 @@ export type StrategyConfigSummary = {
   symbols: string[];
   timeframe: string;
   strategyType: string;
+  breakoutEvaluation?: string | null;
   positionSizeMethod: string;
   maxShares?: number | null;
+  maxPositionPct?: number | null;
 };
 
 export type DashboardData = {

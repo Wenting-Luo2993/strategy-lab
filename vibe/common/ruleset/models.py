@@ -241,6 +241,10 @@ class ORBStrategyParams(BaseModel):
         default=0.0,
         description="Minimum body percentage for valid breakout candle (0.0 = no filter)",
     )
+    breakout_evaluation: Literal["wick", "body"] = Field(
+        default="wick",
+        description="Use candle wicks or body extremes to evaluate breakout levels",
+    )
     entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
     entry_mode: str = Field(
         default="no_validation_simple",
@@ -294,11 +298,17 @@ class PositionSizeConfig(BaseModel):
         default=None,
         description="Maximum shares cap (optional)",
     )
+    max_position_pct: Optional[float] = Field(
+        default=None,
+        description="Maximum notional position size as percentage of account value (optional)",
+    )
 
     @model_validator(mode="after")
     def validate_value(self) -> "PositionSizeConfig":
         if self.value <= 0:
             raise ValueError("value must be positive")
+        if self.max_position_pct is not None and not (0 < self.max_position_pct <= 1):
+            raise ValueError("max_position_pct must be between 0 and 1")
         return self
 
 

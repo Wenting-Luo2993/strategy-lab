@@ -19,8 +19,10 @@ export function getActiveRulesetSummary(): StrategyConfigSummary | null {
     symbols: inlineList(source, "symbols"),
     timeframe: nestedScalar(source, "instruments", "timeframe") ?? "--",
     strategyType: nestedScalar(source, "strategy", "type") ?? "--",
+    breakoutEvaluation: nestedScalar(source, "strategy", "breakout_evaluation"),
     positionSizeMethod: nestedScalar(source, "position_size", "method") ?? "--",
     maxShares: numberValue(nestedScalar(source, "position_size", "max_shares")),
+    maxPositionPct: numberValue(nestedScalar(source, "position_size", "max_position_pct")),
   };
 }
 

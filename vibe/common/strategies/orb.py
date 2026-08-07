@@ -8,14 +8,14 @@ End-of-day exit for open positions
 """
 
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Literal
 from datetime import time
 import pandas as pd
 import numpy as np
 from pydantic import Field
 
 from vibe.common.strategies.base import StrategyBase, StrategyConfig
-from vibe.common.indicators.orb_levels import ORBCalculator
+from vibe.common.indicators.orb_levels import ORBCalculator, ORBLevels
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,10 @@ class ORBStrategyConfig(StrategyConfig):
     orb_body_pct_filter: float = Field(
         default=0.5,
         description="Minimum body percentage for valid breakout candle",
+    )
+    breakout_evaluation: Literal["wick", "body"] = Field(
+        default="wick",
+        description="Breakout evaluation mode: wick or body",
     )
     entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
     take_profit_multiplier: float = Field(default=2.0, description="TP = ORB_Range * multiplier")
@@ -117,6 +121,10 @@ class ORBStrategy(StrategyBase):
             for idx, (_, row) in enumerate(daily_df.iterrows()):
                 bar_time = row["timestamp"].time()
 
+                # Only evaluate breakouts after the opening range is established.
+                if self.orb_calculator._is_in_opening_window(row["timestamp"]):
+                    continue
+
                 # Check time filter
                 if bar_time >= self.entry_cutoff:
                     continue
@@ -126,15 +134,44 @@ class ORBStrategy(StrategyBase):
                     if not self._check_volume_filter(daily_df, idx):
                         continue
 
+                long_broke, short_broke = self._breakout_flags(
+                    levels=levels,
+                    bar_open=float(row["open"]),
+                    bar_high=float(row["high"]),
+                    bar_low=float(row["low"]),
+                    current_price=float(row["close"]),
+                )
+
                 # Long breakout
-                if self.orb_calculator.is_long_breakout(row["close"], levels):
+                if long_broke:
                     signals.loc[_] = 1
 
                 # Short breakout
-                elif self.orb_calculator.is_short_breakout(row["close"], levels):
+                elif short_broke:
                     signals.loc[_] = -1
 
         return signals
+
+    def _breakout_flags(
+        self,
+        levels: ORBLevels,
+        bar_open: float,
+        bar_high: float,
+        bar_low: float,
+        current_price: float,
+    ) -> Tuple[bool, bool]:
+        if self.config.breakout_evaluation == "body":
+            breakout_high = max(bar_open, current_price)
+            breakout_low = min(bar_open, current_price)
+        else:
+            breakout_high = bar_high
+            breakout_low = bar_low
+
+        tick_size = 0.01
+        return (
+            breakout_high >= levels.high + tick_size,
+            breakout_low <= levels.low - tick_size,
+        )
 
     def _get_orb_calculator(self, symbol: str) -> ORBCalculator:
         """Get or create a per-symbol ORBCalculator instance."""
@@ -276,14 +313,18 @@ class ORBStrategy(StrategyBase):
             "bar_time": bar_time.strftime("%H:%M"),
         }
 
-        # Intrabar breakout detection: use bar high/low with a 1-tick offset.
+        # Intrabar breakout detection: use the configured price source with a 1-tick offset.
         # QC places stop-market orders at OR_high+$0.01 (long) and OR_low-$0.01
         # (short), so merely touching OR_high does NOT trigger a fill.
         # Using levels.high + TICK_SIZE avoids false positives on bars that
         # only graze the ORB level and then close on the other side.
-        _TICK = 0.01
-        long_broke  = bar_high >= levels.high + _TICK
-        short_broke = bar_low  <= levels.low  - _TICK
+        long_broke, short_broke = self._breakout_flags(
+            levels=levels,
+            bar_open=bar_open,
+            bar_high=bar_high,
+            bar_low=bar_low,
+            current_price=current_price,
+        )
 
         # Tie-break when both levels are breached in the same bar.
         # LEAN's heuristic: the side that moved further from bar open fired first.

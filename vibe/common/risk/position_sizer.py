@@ -36,6 +36,7 @@ class PositionSizer:
         risk_per_trade: Optional[float] = None,
         risk_pct: Optional[float] = None,
         max_position_size: Optional[float] = None,
+        max_position_pct: Optional[float] = None,
     ):
         """
         Initialize position sizer with risk parameters.
@@ -44,10 +45,12 @@ class PositionSizer:
             risk_per_trade: Fixed dollar amount to risk per trade (e.g., $100)
             risk_pct: Risk as percentage of account (e.g., 0.01 for 1%)
             max_position_size: Maximum position size in shares
+            max_position_pct: Maximum notional position size as percentage of account value
         """
         self.risk_per_trade = risk_per_trade
         self.risk_pct = risk_pct
         self.max_position_size = max_position_size
+        self.max_position_pct = max_position_pct
 
         # Validate that at least one risk method is specified
         if risk_per_trade is None and risk_pct is None:
@@ -76,6 +79,11 @@ class PositionSizer:
             and max_position_size <= 0
         ):
             raise ValueError("max_position_size must be positive")
+
+        if max_position_pct is not None and (
+            max_position_pct <= 0 or max_position_pct > 1
+        ):
+            raise ValueError("max_position_pct must be between 0 and 1")
 
     def calculate(
         self,
@@ -136,6 +144,13 @@ class PositionSizer:
             if position_size > self.max_position_size:
                 position_size = self.max_position_size
                 sizing_method += f" (capped at max {self.max_position_size:.0f} shares)"
+
+        if self.max_position_pct is not None:
+            max_notional = account_value * self.max_position_pct
+            max_notional_size = max_notional / entry_price
+            if position_size > max_notional_size:
+                position_size = max_notional_size
+                sizing_method += f" (capped at {self.max_position_pct * 100:.0f}% capital)"
 
         # Round down to whole shares (no fractional shares)
         position_size = int(position_size)

@@ -61,6 +61,22 @@ class TestPositionSizer:
 
         assert result.size == 10
 
+    def test_max_position_pct_limit(self):
+        """Position size capped by maximum notional percentage of account."""
+        sizer = PositionSizer(
+            risk_per_trade=1000,
+            max_position_pct=0.5,
+        )
+
+        result = sizer.calculate(
+            entry_price=100,
+            stop_price=90,
+            account_value=10000,
+        )
+
+        assert result.size == 50
+        assert "50% capital" in result.reasoning
+
     def test_short_position_sizing(self):
         """Position sized correctly for short entries."""
         sizer = PositionSizer(risk_per_trade=100)

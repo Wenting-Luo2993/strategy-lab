@@ -421,12 +421,24 @@ function StrategySummary({ data, selectedSymbol, selectedBars, visibleAnnotation
       <Stat label="Type" value={strategyConfig?.strategyType ?? "--"} />
       <Stat label="Symbol" value={selectedSymbol} />
       <Stat label="Timeframe" value={timeframe} />
+      <Stat label="Breakout" value={strategyConfig?.breakoutEvaluation ?? "--"} />
       <Stat label="Trading day" value={tradingDay} />
       <Stat label="Ruleset version" value={rulesetVersion} />
-      <Stat label="Position sizing" value={strategyConfig ? `${strategyConfig.positionSizeMethod}${strategyConfig.maxShares ? ` · max ${strategyConfig.maxShares}` : ""}` : "--"} />
+      <Stat label="Position sizing" value={strategyConfig ? positionSizingLabel(strategyConfig) : "--"} />
       <Stat label="Chart levels" value={visibleAnnotations.length ? visibleAnnotations.map((annotation) => annotation.key.replace("orb_", "ORB ")).join(" / ") : "--"} />
     </dl>
   );
+}
+
+function positionSizingLabel(strategyConfig: StrategyConfigSummary): string {
+  const caps = [];
+  if (strategyConfig.maxShares) {
+    caps.push(`max ${strategyConfig.maxShares}`);
+  }
+  if (strategyConfig.maxPositionPct) {
+    caps.push(`max ${(strategyConfig.maxPositionPct * 100).toFixed(0)}% capital`);
+  }
+  return [strategyConfig.positionSizeMethod, ...caps].join(" · ");
 }
 
 function activePositionsFor(positions: Position[], latestEquityTimestamp: string | undefined): Position[] {

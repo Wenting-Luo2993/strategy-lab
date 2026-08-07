@@ -1,6 +1,6 @@
 name: orb_exp073_paper_burn_in
-version: "1.0.0"
-description: "Paper burn-in ruleset based on EXP-073: QQQ 5m, no TP, breakeven-plus-ticks trailing stop, 1-share cap"
+version: "1.1.0"
+description: "Paper burn-in ruleset based on EXP-073: QQQ 5m, no TP, breakeven-plus-ticks trailing stop, 50% capital cap"
 
 instruments:
   symbols: [QQQ]
@@ -11,6 +11,7 @@ strategy:
   orb_start_time: "09:30"
   orb_duration_minutes: 5
   orb_body_pct_filter: 0.5
+  breakout_evaluation: wick
   entry_cutoff_time: "15:00"
   entry_mode: no_validation_simple
   one_trade_per_day: true
@@ -20,7 +21,7 @@ strategy:
 position_size:
   method: max_loss_pct
   value: 0.01
-  max_shares: 1
+  max_position_pct: 0.5
 
 exit:
   eod: true

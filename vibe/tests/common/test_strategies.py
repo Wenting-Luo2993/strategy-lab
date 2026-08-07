@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, time
 
+from vibe.common.ruleset.loader import RuleSetLoader
 from vibe.common.strategies.base import StrategyBase, StrategyConfig, ExitSignal
 from vibe.common.strategies.orb import ORBStrategy, ORBStrategyConfig
 from vibe.common.indicators.orb_levels import ORBCalculator
@@ -255,6 +256,51 @@ class TestORBStrategy:
         # Should have at least one long signal
         assert (signals == 1).any()
 
+    def test_generate_signals_wick_breakout_allows_body_inside_range(self):
+        """Batch wick evaluation uses high/low for breakout detection."""
+        config = ORBStrategyConfig(name="ORB", breakout_evaluation="wick")
+        strategy = ORBStrategy(config=config)
+        df = pd.DataFrame({
+            "timestamp": [
+                datetime(2024, 1, 15, 9, 30),
+                datetime(2024, 1, 15, 9, 35),
+                datetime(2024, 1, 15, 9, 40),
+            ],
+            "open": [100.0, 100.0, 100.0],
+            "high": [101.0, 101.02, 100.5],
+            "low": [99.0, 99.5, 99.5],
+            "close": [100.0, 100.0, 100.0],
+            "volume": [1000000, 1000000, 1000000],
+            "ATR_14": [1.5, 1.5, 1.5],
+        })
+
+        signals = strategy.generate_signals(df)
+
+        assert signals.iloc[0] == 0
+        assert signals.iloc[1] == 1
+
+    def test_generate_signals_body_breakout_requires_open_or_close_beyond_level(self):
+        """Batch body evaluation ignores wick-only breakouts."""
+        config = ORBStrategyConfig(name="ORB", breakout_evaluation="body")
+        strategy = ORBStrategy(config=config)
+        df = pd.DataFrame({
+            "timestamp": [
+                datetime(2024, 1, 15, 9, 30),
+                datetime(2024, 1, 15, 9, 35),
+                datetime(2024, 1, 15, 9, 40),
+            ],
+            "open": [100.0, 100.0, 100.0],
+            "high": [101.0, 101.02, 100.5],
+            "low": [99.0, 99.5, 99.5],
+            "close": [100.0, 100.0, 100.0],
+            "volume": [1000000, 1000000, 1000000],
+            "ATR_14": [1.5, 1.5, 1.5],
+        })
+
+        signals = strategy.generate_signals(df)
+
+        assert not signals.any()
+
     def test_generate_signals_time_filter(self):
         """Test ORB respects entry cutoff time."""
         df = self._create_market_day_df(breakout_direction="up")
@@ -278,7 +324,7 @@ class TestORBStrategy:
         # Create bar that breaks above ORB_High
         current_bar = {
             "timestamp": df.iloc[15]["timestamp"],
-            "open": levels.high + 0.5,
+            "open": levels.high - 0.5,
             "high": levels.high + 1.0,
             "low": levels.high - 0.5,
             "close": levels.high + 0.8,
@@ -306,7 +352,7 @@ class TestORBStrategy:
         # Create bar that breaks below ORB_Low
         current_bar = {
             "timestamp": df.iloc[15]["timestamp"],
-            "open": levels.low - 0.5,
+            "open": levels.low + 0.5,
             "high": levels.low + 0.5,
             "low": levels.low - 1.0,
             "close": levels.low - 0.8,
@@ -321,6 +367,130 @@ class TestORBStrategy:
 
         assert signal == -1
         assert metadata["signal"] == "short_breakout"
+
+    def test_incremental_signal_wick_breakout_allows_body_inside_range(self):
+        """Wick evaluation uses high/low for breakout detection."""
+        config = ORBStrategyConfig(name="ORB", orb_body_pct_filter=0.0, breakout_evaluation="wick")
+        strategy = ORBStrategy(config=config)
+        df = self._create_market_day_df(breakout_direction="up")
+        levels = strategy.orb_calculator.calculate(df)
+        midpoint = (levels.high + levels.low) / 2
+        current_bar = {
+            "timestamp": df.iloc[15]["timestamp"],
+            "open": midpoint,
+            "high": levels.high + 1.0,
+            "low": midpoint,
+            "close": midpoint,
+            "volume": 2000000,
+        }
+
+        signal, metadata = strategy.generate_signal_incremental(
+            symbol="AAPL",
+            current_bar=current_bar,
+            df_context=df.iloc[:15],
+        )
+
+        assert signal == 1
+        assert metadata["signal"] == "long_breakout"
+
+    def test_incremental_signal_body_breakout_requires_open_or_close_beyond_level(self):
+        """Body evaluation ignores wick-only breakouts."""
+        config = ORBStrategyConfig(name="ORB", orb_body_pct_filter=0.0, breakout_evaluation="body")
+        strategy = ORBStrategy(config=config)
+        df = self._create_market_day_df(breakout_direction="up")
+        levels = strategy.orb_calculator.calculate(df)
+        midpoint = (levels.high + levels.low) / 2
+        current_bar = {
+            "timestamp": df.iloc[15]["timestamp"],
+            "open": midpoint,
+            "high": levels.high + 1.0,
+            "low": midpoint,
+            "close": midpoint,
+            "volume": 2000000,
+        }
+
+        signal, metadata = strategy.generate_signal_incremental(
+            symbol="AAPL",
+            current_bar=current_bar,
+            df_context=df.iloc[:15],
+        )
+
+        assert signal == 0
+        assert metadata["reason"] == "no_breakout"
+
+    def test_ruleset_breakout_evaluation_is_backward_compatible(self):
+        """Rulesets without breakout_evaluation default to wick mode."""
+        ruleset = RuleSetLoader.from_yaml_str("""
+name: legacy_orb
+version: "1.0.0"
+description: Legacy ORB ruleset
+instruments:
+  symbols: [QQQ]
+  timeframe: 5m
+strategy:
+  type: orb
+  orb_start_time: "09:30"
+  orb_duration_minutes: 5
+  orb_body_pct_filter: 0.5
+  entry_cutoff_time: "15:00"
+position_size:
+  method: max_loss_pct
+  value: 0.01
+  max_shares: 1
+exit:
+  eod: true
+  eod_time: "15:55"
+  stop_loss:
+    method: orb_level
+trade_filter:
+  volume_confirmation: false
+  volume_threshold: 1.5
+mtf_validation:
+  enabled: false
+  timeframe: 30m
+  condition: trend_aligned
+""")
+
+        assert ruleset.strategy.breakout_evaluation == "wick"
+        assert ruleset.position_size.max_position_pct is None
+
+    def test_ruleset_accepts_body_breakout_and_position_pct_cap(self):
+        """New breakout and capital-cap settings are optional additions."""
+        ruleset = RuleSetLoader.from_yaml_str("""
+name: body_orb
+version: "1.0.0"
+description: Body-confirmed ORB ruleset
+instruments:
+  symbols: [QQQ]
+  timeframe: 5m
+strategy:
+  type: orb
+  orb_start_time: "09:30"
+  orb_duration_minutes: 5
+  orb_body_pct_filter: 0.5
+  breakout_evaluation: body
+  entry_cutoff_time: "15:00"
+position_size:
+  method: max_loss_pct
+  value: 0.01
+  max_position_pct: 0.5
+exit:
+  eod: true
+  eod_time: "15:55"
+  stop_loss:
+    method: orb_level
+trade_filter:
+  volume_confirmation: false
+  volume_threshold: 1.5
+mtf_validation:
+  enabled: false
+  timeframe: 30m
+  condition: trend_aligned
+""")
+
+        assert ruleset.strategy.breakout_evaluation == "body"
+        assert ruleset.position_size.max_shares is None
+        assert ruleset.position_size.max_position_pct == 0.5
 
     def test_no_signal_with_insufficient_data(self):
         """Test no signal with insufficient data."""

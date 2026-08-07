@@ -788,12 +788,15 @@ class TradingOrchestrator:
                 # Risk pct driven by ruleset if available, else default 1%
                 risk_pct = 0.01
                 max_shares = None
+                max_position_pct = None
                 if self.ruleset and self.ruleset.position_size.method == "max_loss_pct":
                     risk_pct = self.ruleset.position_size.value
                     max_shares = self.ruleset.position_size.max_shares
+                    max_position_pct = self.ruleset.position_size.max_position_pct
                 position_sizer = PositionSizer(
                     risk_pct=risk_pct,
                     max_position_size=max_shares,
+                    max_position_pct=max_position_pct,
                 )
 
                 # Create order manager with retry policy
@@ -845,6 +848,7 @@ class TradingOrchestrator:
                         orb_start_time=orb_params.orb_start_time,
                         orb_duration_minutes=orb_params.orb_duration_minutes,
                         orb_body_pct_filter=orb_params.orb_body_pct_filter,
+                        breakout_evaluation=orb_params.breakout_evaluation,
                         entry_cutoff_time=orb_params.entry_cutoff_time,
                         take_profit_multiplier=tp_multiplier,
                         stop_loss_at_level=stop_at_level,
@@ -856,6 +860,7 @@ class TradingOrchestrator:
                         f"Strategy config from ruleset '{self.ruleset.name}': "
                         f"ORB {orb_params.orb_start_time}+{orb_params.orb_duration_minutes}m, "
                         f"body_filter={orb_params.orb_body_pct_filter:.0%}, "
+                        f"breakout={orb_params.breakout_evaluation}, "
                         f"tp={'disabled' if tp_multiplier == 0 else f'{tp_multiplier}x'}, "
                         f"sl={'orb_level' if stop_at_level else 'atr'}"
                     )
@@ -2093,13 +2098,31 @@ class TradingOrchestrator:
                             stop_price = signal_metadata.get('stop_loss', 0.0)
                             stop_distance = abs(entry_price - stop_price) if stop_price else 0
                             risk_pct = 0.01
+                            max_shares = None
+                            max_position_pct = None
                             if self.ruleset and self.ruleset.position_size:
                                 risk_pct = self.ruleset.position_size.value
+                                max_shares = self.ruleset.position_size.max_shares
+                                max_position_pct = self.ruleset.position_size.max_position_pct
                             risk_amount = self.config.trading.initial_capital * risk_pct
-                            est_shares = int(risk_amount / stop_distance) if stop_distance > 0 else 0
+                            risk_shares = int(risk_amount / stop_distance) if stop_distance > 0 else 0
+                            est_shares = risk_shares
+                            cap_details = []
+                            if max_shares is not None and est_shares > max_shares:
+                                est_shares = max_shares
+                                cap_details.append(f"max_shares={max_shares}")
+                            if max_position_pct is not None and entry_price > 0:
+                                max_notional_shares = int(
+                                    (self.config.trading.initial_capital * max_position_pct) / entry_price
+                                )
+                                if est_shares > max_notional_shares:
+                                    est_shares = max_notional_shares
+                                    cap_details.append(f"max_position={max_position_pct * 100:.0f}%")
+                            cap_msg = f", caps={','.join(cap_details)}" if cap_details else ""
                             self.logger.info(
                                 f"[SIZING] {symbol}: risk={risk_pct*100:.1f}% (${risk_amount:.0f}), "
-                                f"stop_distance=${stop_distance:.2f}, est_shares={est_shares}, "
+                                f"stop_distance=${stop_distance:.2f}, risk_shares={risk_shares}, "
+                                f"est_shares={est_shares}{cap_msg}, "
                                 f"est_cost=${est_shares * entry_price:.0f}"
                             )
                             result = await self.trade_executor.execute_signal(
