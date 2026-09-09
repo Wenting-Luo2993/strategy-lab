@@ -1,21 +1,33 @@
 # Active Context
 
 ## Current Focus Area
-**Current Work**: 🚀 **Interactive Brokers (IB) Paper Trading Integration** — Enabling live trading execution against IB paper accounts
+**Current Work**: 🔬 **Backtest Research Pipeline** — Making backtest results trustworthy before generating more of them. Increment **P0 (contracts and identity)** complete.
 
-**Next Priority**: ORB 2026 H1 re-validation planning and paper-trading quality monitoring design
+**Next Priority**: P1 (metric normalization) and P3 (session calendar + split manifest planner), which can run in parallel worktrees. P2 (execution realism) must land before any new research is generated.
 
-**Context**: 
-- Core execution and research tracking infrastructure in place
-- Broker abstraction foundation added for IB integration
-- P0 smoke path now exists for IB paper: market data -> order submission -> fill event -> operational metrics
-- Operational metrics support local SQLite plus optional Supabase free-tier remote DB for Vercel dashboard work
-- P1/P2 dashboard scaffold added at `apps/operational-metrics-dashboard` and validated with build/lint
-- Target completion: Q3 2026 (12 weeks)
+**Context**:
+- A design review found that current results cannot be trusted for reasons unrelated to strategy quality: stale sweep caches keyed on ruleset *filename*, runs completing without validation, metrics that disagree with themselves, calendar-day splits, and a tautological correctness check.
+- Full plan: `docs/backtest-research-summaries/2026-09-09-backtest-pipeline-implementation-plan.md` (increments P0-P14, three parallel lanes).
+- ⚠️ **Existing ORB results predate this work** and are stamped `legacy-uncontrolled`. Do not cite them as validated.
+- Prior work (IB paper trading, operational metrics dashboard, ROES) is unchanged and remains in place.
 
 ---
 
 ## Recent Decisions
+
+### Decision: Research Pipeline Contracts Land Before Any Fixes (2026-09-09)
+**Chosen**: Ship `vibe/research_pipeline/` as a contracts-only package first — canonical hashing, run lifecycle, contract models, `RunFingerprint`, OneDrive-safe DB paths, `ResearchStore` protocol. See [ADR-018](adrs/adr-018-research-pipeline-contracts.md).
+
+**Reasoning**: Five workstreams need the same vocabulary. Without it they cannot run in parallel, and storage built before an identity definition just persists ambiguity faster.
+
+**Key guarantees now structural, not conventional**: no `RUNNING -> COMPLETED` edge (validation cannot be skipped); no `VALIDATION_FAILED -> COMPLETED` edge; `cache_key() == fingerprint`; causal features cannot declare look-ahead; `static_declared` universes must disclose survivorship bias.
+
+### Decision: Cross-Sectional Yes, Portfolio Simulation Deferred (2026-09-09)
+**Chosen**: Multi-symbol *cross-sectional* evidence (P5b) is in scope; *portfolio* simulation (P10b) is deferred and tracked.
+
+**Blocker worth remembering**: portfolio simulation is gated on the buying-power fix (defect E3). `_position_size` has no cash bound, so a portfolio backtest on today's engine would silently lever to whatever the signals demand — meaningless, not merely inaccurate. Details: [portfolio-simulation-constraint.md](features/portfolio-simulation-constraint.md).
+
+---
 
 ### Decision: ORB Carryover Positions Are Flattened During Warmup (2026-07-28)
 **Observed issue**: On 2026-07-28, the IB paper account still held a prior-day `QQQ -1` position, but the bot had no same-day order/fill records. ORB strategy logs reported `already_traded_today`, which made a carried broker position look like a clean same-day trade decision.

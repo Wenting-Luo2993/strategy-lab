@@ -26,6 +26,8 @@ This document is an index of all architectural decisions. Full details are in in
 | [014](adrs/adr-014-roes-pluggable-execution.md) | Realistic Order Execution Simulator (ROES) - Pluggable Architecture | ✅ Accepted | High | 2026-05-31 |
 | [015](adrs/adr-015-roes-default-legacy-opt-in-realistic.md) | ROES Execution Mode Contract (Default Legacy, Explicit Realistic Opt-In) | ✅ Accepted | Critical | 2026-06-04 |
 | [016](adrs/adr-016-research-journal-framework-adoption.md) | Research Journal Framework as Canonical Research Workflow | ✅ Accepted | High | 2026-06-04 |
+| [017](adrs/adr-017-broker-abstraction-protocol.md) | Broker Abstraction Protocol | ✅ Accepted | High | 2026-06-12 |
+| [018](adrs/adr-018-research-pipeline-contracts.md) | Research Pipeline Contracts and Run Identity | ✅ Accepted | Critical | 2026-09-09 |
 
 ---
 
@@ -33,8 +35,8 @@ This document is an index of all architectural decisions. Full details are in in
 
 ### By Impact Level
 
-**Critical**: 007 (remove TP gate), 008 (pause paper trading)
-**High**: 001 (backtester), 003 (Polygon), 006 (regime framework), 011 (memory bank), 014 (ROES), 016 (research journal)
+**Critical**: 007 (remove TP gate), 008 (pause paper trading), 018 (research pipeline contracts)
+**High**: 001 (backtester), 003 (Polygon), 006 (regime framework), 011 (memory bank), 014 (ROES), 016 (research journal), 017 (broker abstraction)
 **Medium**: 002 (timezone), 004 (Discord), 005 (phases), 009 (asyncio), 012 (copilot), 013 (file sizes)
 **Low**: 010 (YAML config)
 
@@ -43,8 +45,8 @@ This document is an index of all architectural decisions. Full details are in in
 **Infrastructure**: 001, 009, 010, 014, 015
 **Data & Providers**: 002, 003
 **Trading Strategy**: 006, 007, 008
-**Research Workflow**: 016
-**Operations**: 004, 005
+**Research Workflow**: 016, 018
+**Operations**: 004, 005, 017
 **Documentation**: 011, 012, 013
 
 ---
