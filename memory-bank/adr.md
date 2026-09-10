@@ -28,6 +28,7 @@ This document is an index of all architectural decisions. Full details are in in
 | [016](adrs/adr-016-research-journal-framework-adoption.md) | Research Journal Framework as Canonical Research Workflow | ✅ Accepted | High | 2026-06-04 |
 | [017](adrs/adr-017-broker-abstraction-protocol.md) | Broker Abstraction Protocol | ✅ Accepted | High | 2026-06-12 |
 | [018](adrs/adr-018-research-pipeline-contracts.md) | Research Pipeline Contracts and Run Identity | ✅ Accepted | Critical | 2026-09-09 |
+| [019](adrs/adr-019-declared-execution-semantics.md) | Declared Execution Semantics with Always-On Measurement | ✅ Accepted | Critical | 2026-09-09 |
 
 ---
 
@@ -35,14 +36,14 @@ This document is an index of all architectural decisions. Full details are in in
 
 ### By Impact Level
 
-**Critical**: 007 (remove TP gate), 008 (pause paper trading), 018 (research pipeline contracts)
+**Critical**: 007 (remove TP gate), 008 (pause paper trading), 018 (research pipeline contracts), 019 (declared execution semantics)
 **High**: 001 (backtester), 003 (Polygon), 006 (regime framework), 011 (memory bank), 014 (ROES), 016 (research journal), 017 (broker abstraction)
 **Medium**: 002 (timezone), 004 (Discord), 005 (phases), 009 (asyncio), 012 (copilot), 013 (file sizes)
 **Low**: 010 (YAML config)
 
 ### By Category
 
-**Infrastructure**: 001, 009, 010, 014, 015
+**Infrastructure**: 001, 009, 010, 014, 015, 019
 **Data & Providers**: 002, 003
 **Trading Strategy**: 006, 007, 008
 **Research Workflow**: 016, 018

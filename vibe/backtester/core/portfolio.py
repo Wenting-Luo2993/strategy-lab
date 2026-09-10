@@ -3,6 +3,13 @@ from datetime import datetime, time
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from vibe.backtester.core.execution_realism import (
+    BuyingPowerError,
+    ExecutionRealismConfig,
+    GapFillPolicy,
+    IntrabarExitResolution,
+    clamp_to_bar,
+)
 from vibe.backtester.core.fill_simulator import FillResult
 from vibe.common.models.bar import Bar
 from vibe.common.models.trade import Trade
@@ -30,17 +37,67 @@ class PortfolioManager:
     Records initial_risk and exit_reason on every closed Trade.
     """
 
-    def __init__(self, initial_capital: float, trailing_stop_config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        initial_capital: float,
+        trailing_stop_config: Optional[Dict[str, Any]] = None,
+        execution_realism: Optional[ExecutionRealismConfig] = None,
+    ) -> None:
         self.initial_capital = initial_capital
         self.cash = initial_capital
         self.positions: Dict[str, Position] = {}
         self.equity_curve: List[Tuple[datetime, float]] = []
         self.trade_history: List[Trade] = []
         self.trailing_stop_config = trailing_stop_config
+        # Defaults to legacy semantics per ADR-015, so existing results are
+        # reproduced exactly unless a caller opts in.
+        self.execution_realism = execution_realism or ExecutionRealismConfig.legacy()
+
+        # Always measured, in every mode. A legacy run still reports how much
+        # of its result rests on optimistic assumptions.
+        self.ambiguous_exit_bars = 0
+        self.gap_through_exits = 0
+        self.min_cash = initial_capital
+        self.max_gross_exposure_ratio = 0.0
+
+    def _record_cash(self) -> None:
+        self.min_cash = min(self.min_cash, self.cash)
+
+    def gross_exposure(self, prices: Dict[str, float]) -> float:
+        """Absolute market value of open positions."""
+        return sum(
+            abs(pos.quantity) * prices[sym]
+            for sym, pos in self.positions.items()
+            if sym in prices
+        )
+
+    def assert_buying_power(self, notional: float) -> None:
+        """Reject a position the account could not fund.
+
+        Only enforced when explicitly enabled. Position sizing currently has no
+        cash bound (``BacktestEngine._position_size``), so undeclared leverage
+        is otherwise indistinguishable from edge.
+        """
+        if not self.execution_realism.enforce_buying_power:
+            return
+        equity = self.cash + sum(
+            pos.quantity * pos.entry_price
+            for pos in self.positions.values()
+            if pos.side == "buy"
+        )
+        limit = equity * self.execution_realism.max_gross_leverage
+        if notional > limit:
+            raise BuyingPowerError(
+                f"Order notional {notional:,.2f} exceeds buying power "
+                f"{limit:,.2f} (equity {equity:,.2f} x max leverage "
+                f"{self.execution_realism.max_gross_leverage}). Reduce size or "
+                f"raise max_gross_leverage deliberately."
+            )
 
     def open_position(
         self, fill: FillResult, stop_price: float, timestamp: datetime, take_profit: Optional[float] = None
     ) -> None:
+        self.assert_buying_power(abs(fill.filled_qty) * fill.avg_price)
         self.positions[fill.symbol] = Position(
             symbol=fill.symbol,
             quantity=fill.filled_qty,
@@ -56,6 +113,7 @@ class PortfolioManager:
             self.cash -= fill.filled_qty * fill.avg_price
         else:  # short (sell)
             self.cash += fill.filled_qty * fill.avg_price
+        self._record_cash()
 
     def add_to_position(
         self, fill: FillResult, timestamp: datetime
@@ -100,6 +158,7 @@ class PortfolioManager:
             self.cash -= fill.filled_qty * fill.avg_price
         else:  # short (sell)
             self.cash += fill.filled_qty * fill.avg_price
+        self._record_cash()
 
     def close_position(
         self, fill: FillResult, exit_reason: str, timestamp: datetime
@@ -124,18 +183,29 @@ class PortfolioManager:
             self.cash += fill.filled_qty * fill.avg_price
         else:  # closing short (buy back)
             self.cash -= fill.filled_qty * fill.avg_price
+        self._record_cash()
 
     def check_exits(
         self, current_bars: Dict[str, Bar], clock
     ) -> None:
-        """
-        Check take-profit, stop-loss, and EOD exit for all open positions.
-        Exit priority: TP > Stop > EOD
-        Stop/TP trigger: bar.close must cross the level (not intrabar wick).
-        clock must have a .now() method returning a timezone-aware datetime.
+        """Check take-profit, stop-loss, and EOD exit for all open positions.
+
+        Triggers are **intrabar**: they use ``bar.high``/``bar.low``, not
+        ``bar.close``. A resting stop or limit order would have been hit by the
+        wick, so this is correct, but note that an earlier version of this
+        docstring claimed otherwise.
+
+        When a single bar touches both the stop and the target, the true order
+        of events is unknowable from OHLC. Resolution follows
+        ``execution_realism.intrabar_exit_resolution``; every such bar is
+        counted in ``ambiguous_exit_bars`` regardless of mode.
+
+        Exit priority when unambiguous: TP/Stop (whichever triggered) > EOD.
+        ``clock`` must have a ``.now()`` returning a timezone-aware datetime.
         """
         local_time = clock.now().astimezone(_ET).time()
         is_eod = local_time >= _EOD_CUTOFF
+        policy = self.execution_realism
 
         for symbol in list(self.positions.keys()):
             bar = current_bars.get(symbol)
@@ -146,49 +216,82 @@ class PortfolioManager:
             # Update stop from trailing rules before evaluating exits.
             self._maybe_update_trailing_stop(pos=pos, bar=bar)
 
-            # Check take-profit first (highest priority)
-            if pos.take_profit is not None:
-                long_tp  = pos.side == "buy"  and bar.high >= pos.take_profit
-                short_tp = pos.side == "sell" and bar.low  <= pos.take_profit
-                
-                if long_tp:
-                    fill = FillResult(
-                        symbol=symbol, side="sell",
-                        filled_qty=pos.quantity, avg_price=pos.take_profit,
-                    )
-                    self.close_position(fill, exit_reason="TP", timestamp=clock.now())
-                    continue
-                elif short_tp:
-                    fill = FillResult(
-                        symbol=symbol, side="buy",
-                        filled_qty=pos.quantity, avg_price=pos.take_profit,
-                    )
-                    self.close_position(fill, exit_reason="TP", timestamp=clock.now())
-                    continue
+            is_long = pos.side == "buy"
+            if is_long:
+                tp_hit = pos.take_profit is not None and bar.high >= pos.take_profit
+                stop_hit = bar.low <= pos.stop_price
+            else:
+                tp_hit = pos.take_profit is not None and bar.low <= pos.take_profit
+                stop_hit = bar.high >= pos.stop_price
 
-            # Check stop-loss
-            long_stop  = pos.side == "buy"  and bar.low  <= pos.stop_price
-            short_stop = pos.side == "sell" and bar.high >= pos.stop_price
+            if tp_hit and stop_hit:
+                self.ambiguous_exit_bars += 1
+                if policy.intrabar_exit_resolution is IntrabarExitResolution.OPTIMISTIC:
+                    stop_hit = False
+                else:
+                    tp_hit = False
 
-            if long_stop:
-                fill = FillResult(
-                    symbol=symbol, side="sell",
-                    filled_qty=pos.quantity, avg_price=pos.stop_price,
+            if tp_hit:
+                self._close_at_level(
+                    pos=pos, bar=bar, level=pos.take_profit,
+                    reason="TP", clock=clock,
                 )
-                self.close_position(fill, exit_reason="STOP", timestamp=clock.now())
-            elif short_stop:
-                fill = FillResult(
-                    symbol=symbol, side="buy",
-                    filled_qty=pos.quantity, avg_price=pos.stop_price,
+                continue
+            if stop_hit:
+                self._close_at_level(
+                    pos=pos, bar=bar, level=pos.stop_price,
+                    reason="STOP", clock=clock,
                 )
-                self.close_position(fill, exit_reason="STOP", timestamp=clock.now())
-            elif is_eod:
-                close_side = "sell" if pos.side == "buy" else "buy"
-                fill = FillResult(
-                    symbol=symbol, side=close_side,
-                    filled_qty=pos.quantity, avg_price=bar.close,
+                continue
+            if is_eod:
+                close_side = "sell" if is_long else "buy"
+                self.close_position(
+                    FillResult(
+                        symbol=symbol, side=close_side,
+                        filled_qty=pos.quantity, avg_price=bar.close,
+                    ),
+                    exit_reason="EOD",
+                    timestamp=clock.now(),
                 )
-                self.close_position(fill, exit_reason="EOD", timestamp=clock.now())
+
+    def _close_at_level(
+        self, pos: Position, bar: Bar, level: float, reason: str, clock
+    ) -> None:
+        """Close ``pos`` at ``level``, adjusted for gaps and clamped to the bar.
+
+        Filling exactly at the trigger price assumes the market paused there to
+        accommodate us. When the bar *opened* beyond the level, a resting order
+        would have filled at the open instead. For a stop that is materially
+        worse, and is the entire cost of gap risk.
+
+        The gap is counted in every mode, but only *repriced* under
+        ``GapFillPolicy.AT_OPEN``, so legacy runs stay bit-comparable while
+        still reporting how often the assumption mattered.
+        """
+        is_long = pos.side == "buy"
+        # For a long, a stop is below and a target above; inverted for a short.
+        level_is_below = (is_long and reason == "STOP") or (
+            not is_long and reason == "TP"
+        )
+        gapped_through = bar.open < level if level_is_below else bar.open > level
+
+        price = level
+        if gapped_through:
+            self.gap_through_exits += 1
+            if self.execution_realism.gap_fill_policy is GapFillPolicy.AT_OPEN:
+                # A fill outside the traded range is a price that never existed.
+                price = clamp_to_bar(bar.open, bar.low, bar.high)
+
+        self.close_position(
+            FillResult(
+                symbol=pos.symbol,
+                side="sell" if is_long else "buy",
+                filled_qty=pos.quantity,
+                avg_price=price,
+            ),
+            exit_reason=reason,
+            timestamp=clock.now(),
+        )
 
     def _maybe_update_trailing_stop(self, pos: Position, bar: Bar) -> None:
         """Update stop price based on configured trailing stop logic."""
@@ -261,4 +364,15 @@ class PortfolioManager:
             for sym, pos in self.positions.items()
             if sym in current_bars
         )
-        self.equity_curve.append((timestamp, self.cash + position_value))
+        equity = self.cash + position_value
+        self.equity_curve.append((timestamp, equity))
+
+        # Peak leverage is evidence, not a setting. Recorded even when
+        # enforcement is off, so an unfunded strategy is visible after the fact.
+        if equity > 0:
+            gross = self.gross_exposure(
+                {sym: bar.close for sym, bar in current_bars.items()}
+            )
+            self.max_gross_exposure_ratio = max(
+                self.max_gross_exposure_ratio, gross / equity
+            )

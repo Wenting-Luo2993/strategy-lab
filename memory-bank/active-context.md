@@ -1,19 +1,28 @@
 # Active Context
 
 ## Current Focus Area
-**Current Work**: 🔬 **Backtest Research Pipeline** — Making backtest results trustworthy before generating more of them. Increment **P0 (contracts and identity)** complete.
+**Current Work**: 🔬 **Backtest Research Pipeline** — Making backtest results trustworthy before generating more of them. Increments **P0 (contracts)**, **P2 (execution realism)**, **P3 (splits)**, and **P7 (SQLite store)** complete. 191 tests passing.
 
-**Next Priority**: P1 (metric normalization) and P3 (session calendar + split manifest planner), which can run in parallel worktrees. P2 (execution realism) must land before any new research is generated.
+**Next Priority**: P1 (metric normalization), then P4 (warmup-aware segment execution) and P5 (leakage harness). ⚠️ P1's golden-file fixture (F13) is **blocked**: no parquet data is present in this worktree, so the current QQQ ORB result cannot be frozen for comparison. Either point `BACKTEST__DATA_DIR` at real data or substitute synthetic fixtures.
 
 **Context**:
 - A design review found that current results cannot be trusted for reasons unrelated to strategy quality: stale sweep caches keyed on ruleset *filename*, runs completing without validation, metrics that disagree with themselves, calendar-day splits, and a tautological correctness check.
 - Full plan: `docs/backtest-research-summaries/2026-09-09-backtest-pipeline-implementation-plan.md` (increments P0-P14, three parallel lanes).
 - ⚠️ **Existing ORB results predate this work** and are stamped `legacy-uncontrolled`. Do not cite them as validated.
+- ⚠️ `BacktestEngine` does not yet pass `ExecutionRealismConfig` to `PortfolioManager`, so realism is available but not yet reachable from a normal engine run. That wiring is part of the engine increment.
+- Pre-existing unrelated test failures (24, verified against HEAD in a clean worktree): mostly missing parquet data plus flaky `trading_bot` ordering. Not caused by pipeline work.
 - Prior work (IB paper trading, operational metrics dashboard, ROES) is unchanged and remains in place.
 
 ---
 
 ## Recent Decisions
+
+### Decision: Execution Assumptions Are Declared and Always Measured (2026-09-09)
+**Chosen**: Add `ExecutionRealismConfig` (`vibe/backtester/core/execution_realism.py`). Behaviour stays legacy by default per ADR-015, but ambiguity/gap/leverage **counters run in every mode**. See [ADR-019](adrs/adr-019-declared-execution-semantics.md).
+
+**Reasoning**: Three defects flattered results invisibly — take-profit was checked before stop-loss on the same bar (every ambiguous bar became a win), exits filled at untraded prices after gaps, and position sizing had no cash bound. Changing the defaults outright would invalidate every existing baseline; leaving them alone would keep the optimism hidden. Recording `ambiguous_exit_bars`, `gap_through_exits`, `min_cash`, and `max_gross_exposure_ratio` regardless of mode makes the assumption visible without changing a single historical number.
+
+**Also fixed**: `check_exits`' docstring claimed exits triggered on `bar.close`. They never did — they use intrabar wicks.
 
 ### Decision: Research Pipeline Contracts Land Before Any Fixes (2026-09-09)
 **Chosen**: Ship `vibe/research_pipeline/` as a contracts-only package first — canonical hashing, run lifecycle, contract models, `RunFingerprint`, OneDrive-safe DB paths, `ResearchStore` protocol. See [ADR-018](adrs/adr-018-research-pipeline-contracts.md).
