@@ -1,11 +1,13 @@
 """Tests for broker contracts and operational metrics."""
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.ib_paper_smoke import optional_float, parse_market_data_type, parse_symbols
 from vibe.trading_bot.brokers.base import BrokerOrder, FillEvent
+from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
 from vibe.trading_bot.storage.metrics_store import MetricsStore
 from vibe.trading_bot.storage.operational_metrics import OperationalMetricsRecorder
 
@@ -42,6 +44,36 @@ def test_limit_order_requires_limit_price():
         BrokerOrder(symbol="AAPL", side="buy", quantity=1, order_type="limit")
 
 
+def test_account_summary_prefers_unknown_currency_base_total(tmp_path):
+    broker = InteractiveBrokersAPI(
+        execution_db_path=str(tmp_path / "executions.db"),
+        account_base_currency=None,
+    )
+    values = [
+        SimpleNamespace(
+            tag="NetLiquidation",
+            account="DU123",
+            currency="BASE",
+            value="15000",
+        ),
+        SimpleNamespace(
+            tag="NetLiquidation",
+            account="DU123",
+            currency="USD",
+            value="10000",
+        ),
+    ]
+
+    value, currency = broker._find_account_summary_value(
+        values,
+        "NetLiquidation",
+        "DU123",
+    )
+
+    assert value == "15000"
+    assert currency is None
+
+
 def test_buy_fill_event_slippage_and_latency():
     submitted_at = datetime.utcnow()
     filled_at = submitted_at + timedelta(milliseconds=250)
@@ -53,6 +85,9 @@ def test_buy_fill_event_slippage_and_latency():
         quantity=1,
         avg_fill_price=101.0,
         expected_price=100.0,
+        benchmark_price=100.0,
+        benchmark_version=2,
+        benchmark_valid=True,
         submitted_at=submitted_at,
         filled_at=filled_at,
     )
@@ -71,6 +106,9 @@ def test_sell_fill_event_slippage_is_adverse_when_fill_below_expected():
         quantity=1,
         avg_fill_price=99.0,
         expected_price=100.0,
+        benchmark_price=100.0,
+        benchmark_version=2,
+        benchmark_valid=True,
         submitted_at=submitted_at,
         filled_at=submitted_at,
     )
@@ -94,6 +132,10 @@ async def test_operational_metrics_recorder_records_fill_event(tmp_path):
         submitted_at=submitted_at,
         filled_at=submitted_at + timedelta(milliseconds=125),
         commission=0.5,
+        benchmark_type="executable_quote",
+        benchmark_price=100.0,
+        benchmark_version=2,
+        benchmark_valid=True,
     )
 
     await recorder.record_fill_event(event)
@@ -105,3 +147,51 @@ async def test_operational_metrics_recorder_records_fill_event(tmp_path):
     assert "slippage_bps" in metric_names
     assert "latency_ms" in metric_names
     assert "commission" in metric_names
+
+
+@pytest.mark.asyncio
+async def test_operational_metrics_recorder_preserves_partials_and_invalid_benchmarks(tmp_path):
+    store = MetricsStore(str(tmp_path / "metrics.db"))
+    recorder = OperationalMetricsRecorder(local_store=store)
+    submitted_at = datetime.utcnow()
+    event = FillEvent(
+        broker_order_id="ib-partial",
+        symbol="AAPL",
+        side="buy",
+        quantity=3,
+        avg_fill_price=101.0,
+        expected_price=100.0,
+        submitted_at=submitted_at,
+        filled_at=submitted_at + timedelta(milliseconds=200),
+        benchmark_version=1,
+        benchmark_valid=True,
+        executions=(
+            {
+                "execution_id": "part-1",
+                "broker_order_id": "ib-partial",
+                "quantity": 1,
+                "price": 100.5,
+                "filled_at": submitted_at + timedelta(milliseconds=100),
+                "commission": None,
+            },
+            {
+                "execution_id": "part-2",
+                "broker_order_id": "ib-partial",
+                "quantity": 2,
+                "price": 101.25,
+                "filled_at": submitted_at + timedelta(milliseconds=200),
+                "commission": 0.75,
+                "commission_currency": "USD",
+            },
+        ),
+    )
+
+    await recorder.record_fill_event(event)
+    metrics = store.get_metrics(metric_type="trade")
+
+    assert len([item for item in metrics if item["metric_name"] == "actual_fill_price"]) == 2
+    assert len([item for item in metrics if item["metric_name"] == "fill_quantity"]) == 2
+    assert len([item for item in metrics if item["metric_name"] == "commission"]) == 1
+    assert not any(item["metric_name"].startswith("slippage") for item in metrics)
+    assert not any(item["metric_name"] == "expected_fill_price" for item in metrics)
+    assert all(item["dimensions"]["slippage_valid"] == "false" for item in metrics)
