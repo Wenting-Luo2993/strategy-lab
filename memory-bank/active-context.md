@@ -3,19 +3,27 @@
 ## Current Focus Area
 **Current Work**: 🔬 **Backtest Research Pipeline** — Making backtest results trustworthy before generating more of them. Increments **P0 (contracts)**, **P2 (execution realism)**, **P3 (splits)**, and **P7 (SQLite store)** complete. 191 tests passing.
 
-**Next Priority**: P1 (metric normalization), then P4 (warmup-aware segment execution) and P5 (leakage harness). ⚠️ P1's golden-file fixture (F13) is **blocked**: no parquet data is present in this worktree, so the current QQQ ORB result cannot be frozen for comparison. Either point `BACKTEST__DATA_DIR` at real data or substitute synthetic fixtures.
+**Next Priority**: P1 (metric normalization), then P4 (warmup-aware segment execution) and P5 (leakage harness). P1's golden-file fixture (F13) is **unblocked** — market data now resolves automatically (see below).
 
 **Context**:
 - A design review found that current results cannot be trusted for reasons unrelated to strategy quality: stale sweep caches keyed on ruleset *filename*, runs completing without validation, metrics that disagree with themselves, calendar-day splits, and a tautological correctness check.
 - Full plan: `docs/backtest-research-summaries/2026-09-09-backtest-pipeline-implementation-plan.md` (increments P0-P14, three parallel lanes).
 - ⚠️ **Existing ORB results predate this work** and are stamped `legacy-uncontrolled`. Do not cite them as validated.
 - ⚠️ `BacktestEngine` does not yet pass `ExecutionRealismConfig` to `PortfolioManager`, so realism is available but not yet reachable from a normal engine run. That wiring is part of the engine increment.
-- Pre-existing unrelated test failures (24, verified against HEAD in a clean worktree): mostly missing parquet data plus flaky `trading_bot` ordering. Not caused by pipeline work.
+- **Market data inventory**: `vibe/data/parquet` holds 1-minute bars for **5 symbols only** (AMZN, GOOGL, MSFT, QQQ, TSLA), 2018-05-01 → 2026-04-27, ~781k rows each. Source `.csv.zst` files are in `data/databento`. Note `data/parquet/QQQ.parquet` is a *different*, daily-bar file and is not usable for intraday ORB. P5b cross-sectional scope is therefore 5 names, not 25+.
+- Pre-existing unrelated test failures: 14 (trading_bot, ruleset models, sweep tracker, ORB indicator reset). Verified against HEAD in a clean worktree.
 - Prior work (IB paper trading, operational metrics dashboard, ROES) is unchanged and remains in place.
 
 ---
 
 ## Recent Decisions
+
+### Decision: Market Data Location Is Resolved, Not Hardcoded (2026-09-11)
+**Chosen**: Added `vibe/backtester/data/paths.py`. Resolution order is explicit argument → `BACKTEST__DATA_DIR` → `<repo root>/vibe/data/parquet` → `<main worktree>/vibe/data/parquet`. Absolute paths are honoured; relative paths resolve against the **repository root, never the working directory**.
+
+**Reasoning**: `Path("vibe/data/parquet")` was hardcoded in ~10 places and resolved against the cwd, so backtests only ran when launched from the repo root. Worse, `data/` is gitignored, so every new worktree began with no market data and every backtest there failed with a bare `FileNotFoundError` from inside pandas. The main-worktree fallback lets worktrees share the one downloaded copy, which is what gitignoring the data already implied.
+
+**Effect**: full suite went from 24 failures / 1315 passed to **14 failures / 1450 passed**; 10 of the "pre-existing failures" were only this path bug, and 7 loader tests stopped silently skipping. A real ORB backtest (QQQ, 2023 H1, 123 trades) now runs from a worktree, which unblocks P1's golden file.
 
 ### Decision: Execution Assumptions Are Declared and Always Measured (2026-09-09)
 **Chosen**: Add `ExecutionRealismConfig` (`vibe/backtester/core/execution_realism.py`). Behaviour stays legacy by default per ADR-015, but ambiguity/gap/leverage **counters run in every mode**. See [ADR-019](adrs/adr-019-declared-execution-semantics.md).

@@ -4,6 +4,7 @@ from typing import Optional
 
 import pandas as pd
 
+from vibe.backtester.data.paths import available_symbols, resolve_market_data_dir
 from vibe.common.data.base import DataProvider
 from vibe.common.models.bar import Bar
 
@@ -16,13 +17,30 @@ class ParquetLoader(DataProvider):
     get_bars / get_current_price / get_bar calls are pure in-memory slices.
 
     Parquet files are produced by scripts/convert_databento.py.
-    Path configured via BACKTEST__DATA_DIR in .env.
+    Location resolves via vibe.backtester.data.paths (BACKTEST__DATA_DIR, the
+    repository default, then the main worktree); pass data_dir to override.
     """
 
-    def __init__(self, data_dir: Path, symbols: list[str]) -> None:
+    def __init__(
+        self, data_dir: Path | str | None = None, symbols: list[str] | None = None
+    ) -> None:
+        resolved = resolve_market_data_dir(data_dir)
+        self.data_dir = resolved
+        requested = list(symbols or [])
+
+        missing = [
+            sym for sym in requested if not (resolved / f"{sym}.parquet").exists()
+        ]
+        if missing:
+            present = available_symbols(resolved)
+            raise FileNotFoundError(
+                f"No parquet data for {', '.join(missing)} in {resolved}. "
+                f"Available: {', '.join(present) if present else '(none)'}."
+            )
+
         self._data: dict[str, pd.DataFrame] = {
-            sym: pd.read_parquet(data_dir / f"{sym}.parquet")
-            for sym in symbols
+            sym: pd.read_parquet(resolved / f"{sym}.parquet")
+            for sym in requested
         }
 
     async def get_bars(

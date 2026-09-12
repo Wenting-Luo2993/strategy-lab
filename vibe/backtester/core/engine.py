@@ -78,12 +78,14 @@ class BacktestEngine:
     def __init__(
         self,
         ruleset: StrategyRuleSet,
-        data_dir: Path,
+        data_dir: Path | str | None = None,
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 2,
         execution_config: Optional[ExecutionConfig] = None,
     ) -> None:
         self.ruleset = ruleset
+        # None defers to vibe.backtester.data.paths, which honours
+        # BACKTEST__DATA_DIR and falls back to the main worktree's shared copy.
         self.data_dir = data_dir
         self.initial_capital = initial_capital
         self.slippage_ticks = slippage_ticks
