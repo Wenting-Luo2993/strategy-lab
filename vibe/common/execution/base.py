@@ -4,7 +4,7 @@ Abstract execution engine interface for order execution and management.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from vibe.common.models import Order, OrderStatus, Position, AccountState
 
@@ -34,6 +34,9 @@ class ExecutionEngine(ABC):
         quantity: float,
         order_type: str = "limit",
         price: Optional[float] = None,
+        limit_price: Optional[float] = None,
+        stop_price: Optional[float] = None,
+        lifecycle_metadata: Optional[Dict[str, Any]] = None,
     ) -> OrderResponse:
         """
         Submit an order for execution.

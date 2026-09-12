@@ -322,6 +322,7 @@ class StrategyBase(ABC):
         stop_loss: float,
         timestamp: Any,
         trailing_stop: Optional[Dict[str, Any]] = None,
+        quantity: Optional[float] = None,
     ) -> None:
         """
         Track an open position.
@@ -342,6 +343,7 @@ class StrategyBase(ABC):
             "initial_stop_loss": stop_loss,
             "trailing_stop": trailing_stop,
             "timestamp": timestamp,
+            "quantity": quantity,
         }
 
     def close_position(self, symbol: str) -> None:

@@ -3,6 +3,7 @@ Position data model for tracking open positions.
 """
 
 from datetime import datetime
+from typing import Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -20,6 +21,14 @@ class Position(BaseModel):
     opened_at: datetime = Field(default_factory=datetime.now, description="Position open time")
     unrealized_pnl: float = Field(default=0.0, description="Unrealized P&L")
     unrealized_pnl_pct: float = Field(default=0.0, description="Unrealized P&L percentage")
+    instrument_currency: Optional[str] = Field(
+        default=None,
+        description="Broker-reported instrument currency",
+    )
+    unrealized_pnl_currency: Optional[str] = Field(
+        default=None,
+        description="Broker-reported currency of unrealized P&L",
+    )
 
     # Keep these for backward compatibility but deprecated
     pnl: float = Field(default=0.0, description="Unrealized P&L (deprecated: use unrealized_pnl)")

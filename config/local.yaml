@@ -35,6 +35,10 @@ broker:
   ib_account_id: null
   ib_exchange: "SMART"
   ib_currency: "USD"
+  ib_account_base_currency: "CAD"
+  ib_model_code: ""
+  ib_account_data_timeout_seconds: 5.0
+  ib_execution_db_path: "./data/local/ib_executions.db"
 
 operational_metrics:
   enabled: true

@@ -23,6 +23,10 @@ class Trade(BaseModel):
     exit_time: Optional[datetime] = Field(default=None, description="Exit time (None if still open)")
     pnl: Optional[float] = Field(default=None, description="Realized P&L")
     pnl_pct: Optional[float] = Field(default=None, description="Realized P&L percentage")
+    pnl_currency: Optional[str] = Field(
+        default=None,
+        description="Currency of realized P&L; never inferred from account base currency",
+    )
     commission: float = Field(default=0.0, description="Total commission")
     strategy: Optional[str] = Field(default=None, description="Strategy name")
     initial_risk: Optional[float] = Field(default=None, description="Dollar risk at entry: abs(entry_price - stop_loss) * quantity")
