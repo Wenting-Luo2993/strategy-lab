@@ -14,6 +14,12 @@ Core data models used throughout the system:
 - **Signal**: Trading signal from strategies
 - **AccountState**: Account state and statistics
 
+`Order` also carries broker execution IDs, immutable decision/submission/fill
+timestamps, benchmark metadata, and reported trade/commission currencies.
+`AccountState` distinguishes the account base currency from per-field monetary
+currencies and separates authoritative broker P&L from local diagnostic P&L.
+`Position` preserves broker-reported instrument and unrealized-P&L currencies.
+
 All models are built with Pydantic for validation and serialization.
 
 ### `execution/`

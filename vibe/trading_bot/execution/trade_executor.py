@@ -5,7 +5,7 @@ Integrates Position Sizer, Stop Loss Manager, Order Manager, and Exchange.
 
 import logging
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from vibe.common.models import Order, OrderStatus, Position
 from vibe.common.risk import PositionSizer
@@ -48,6 +48,12 @@ class ExecutionResult:
 
     avg_price: float = 0.0
     """Actual average fill price from exchange (includes slippage)."""
+
+    remaining_position_size: float = 0.0
+    """Quantity still open after this execution."""
+
+    fully_closed: bool = False
+    """Whether a close execution left the broker position flat."""
 
 
 class SimpleRiskManager:
@@ -185,6 +191,8 @@ class TradeExecutor:
 
         # Trade tracking
         self._open_trades: Dict[str, ExecutionResult] = {}
+        self._pending_entries: Dict[str, Dict[str, Any]] = {}
+        self._pending_closes: Dict[str, str] = {}
 
     async def execute_signal(
         self,
@@ -217,6 +225,21 @@ class TradeExecutor:
         # Handle close signal
         if signal == 0:
             return await self._close_position(symbol)
+
+        pending_entry = next(
+            (
+                order_id
+                for order_id, context in self._pending_entries.items()
+                if context["symbol"] == symbol
+            ),
+            None,
+        )
+        if pending_entry is not None:
+            return ExecutionResult(
+                success=False,
+                order_id=pending_entry,
+                reason=f"Entry order already pending for {symbol}: {pending_entry}",
+            )
 
         # Determine side
         if signal > 0:
@@ -293,9 +316,21 @@ class TradeExecutor:
                 quantity=int(size_result.size),
                 order_type="market",
                 price=entry_price,
+                lifecycle_metadata={
+                    "strategy_name": strategy_name,
+                    "stop_price": stop_price,
+                    "take_profit": take_profit,
+                },
             )
 
             actual_filled = response.filled_qty or 0
+            self._pending_entries[response.order_id] = {
+                "symbol": symbol,
+                "side": side,
+                "stop_price": stop_price,
+                "take_profit": take_profit,
+                "strategy_name": strategy_name,
+            }
 
             if actual_filled == 0:
                 result = ExecutionResult(
@@ -323,8 +358,10 @@ class TradeExecutor:
                 avg_price=response.avg_price,
             )
 
+            was_open = symbol in self._open_trades
             self._open_trades[symbol] = result
-            self.risk_manager.register_position()
+            if not was_open:
+                self.risk_manager.register_position()
 
             if self._on_execution:
                 self._on_execution(result)
@@ -350,6 +387,7 @@ class TradeExecutor:
         self,
         symbol: str,
         cancel_after_seconds: Optional[float] = None,
+        exit_reason: Optional[str] = None,
     ) -> ExecutionResult:
         """
         Close an open position.
@@ -361,6 +399,13 @@ class TradeExecutor:
             ExecutionResult
         """
         # Check if position exists
+        pending_close = self._pending_closes.get(symbol)
+        if pending_close is not None:
+            return ExecutionResult(
+                success=False,
+                order_id=pending_close,
+                reason=f"Close order already pending for {symbol}: {pending_close}",
+            )
         position = await self.exchange.get_position(symbol)
         if position is None or position.quantity == 0:
             return ExecutionResult(
@@ -393,9 +438,13 @@ class TradeExecutor:
                 order_type="market",
                 price=close_price,
                 cancel_after_seconds=cancel_after_seconds,
+                lifecycle_metadata={"exit_reason": exit_reason}
+                if exit_reason
+                else None,
             )
 
             actual_filled = response.filled_qty or 0
+            self._pending_closes[symbol] = response.order_id
 
             if actual_filled == 0:
                 return ExecutionResult(
@@ -415,16 +464,46 @@ class TradeExecutor:
             result = ExecutionResult(
                 success=True,
                 order_id=response.order_id,
-                reason=f"Position closed: {response.order_id}",
+                reason=f"Close fill received: {response.order_id}",
                 position_size=actual_filled,
                 avg_price=response.avg_price,
             )
 
-            if symbol in self._open_trades:
-                del self._open_trades[symbol]
-            self.risk_manager.close_position()
+            remaining_position = await self.exchange.get_position(symbol)
+            remaining_quantity = (
+                float(remaining_position.quantity)
+                if remaining_position is not None
+                else 0.0
+            )
+            result.remaining_position_size = remaining_quantity
+            result.fully_closed = remaining_quantity <= 0
 
-            logger.info(f"Position closed: {symbol}")
+            if result.fully_closed:
+                self._pending_closes.pop(symbol, None)
+                self._open_trades.pop(symbol, None)
+                self.risk_manager.close_position()
+                result.reason = f"Position closed: {response.order_id}"
+                logger.info(f"Position closed: {symbol}")
+            else:
+                self._open_trades[symbol] = ExecutionResult(
+                    success=True,
+                    order_id=response.order_id,
+                    reason="Position remains open after partial close",
+                    position_size=remaining_quantity,
+                    avg_price=remaining_position.entry_price,
+                    remaining_position_size=remaining_quantity,
+                )
+                result.reason = (
+                    f"Position partially closed: {actual_filled} filled, "
+                    f"{remaining_quantity} remaining"
+                )
+                logger.info(
+                    "Position partially closed: %s filled=%s remaining=%s",
+                    symbol,
+                    actual_filled,
+                    remaining_quantity,
+                )
+
             return result
 
         except Exception as e:
@@ -443,6 +522,49 @@ class TradeExecutor:
             Dictionary of symbol -> ExecutionResult
         """
         return self._open_trades.copy()
+
+    def get_pending_entry(self, order_id: str) -> Optional[Dict[str, Any]]:
+        """Return entry context retained while a submitted order may still fill."""
+        context = self._pending_entries.get(order_id)
+        return dict(context) if context is not None else None
+
+    def clear_pending_entry(self, order_id: str) -> None:
+        """Forget entry context after its first fill is projected or cancellation."""
+        self._pending_entries.pop(order_id, None)
+
+    def clear_pending_close(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        order_id: Optional[str] = None,
+    ) -> None:
+        """Clear a logical close after it finishes or its replacement cancels."""
+        if symbol is not None:
+            self._pending_closes.pop(symbol, None)
+            return
+        for pending_symbol, pending_order_id in list(self._pending_closes.items()):
+            if pending_order_id == order_id:
+                self._pending_closes.pop(pending_symbol, None)
+
+    async def refresh_open_trade(self, symbol: str, order_id: Optional[str] = None) -> None:
+        """Refresh cumulative quantity and weighted entry from broker position state."""
+        position = await self.exchange.get_position(symbol)
+        if position is None or position.quantity <= 0:
+            if symbol in self._open_trades:
+                self._open_trades.pop(symbol, None)
+                self.risk_manager.close_position()
+            return
+        previous = self._open_trades.get(symbol)
+        self._open_trades[symbol] = ExecutionResult(
+            success=True,
+            order_id=order_id or (previous.order_id if previous else None),
+            reason="Open trade synchronized from broker fills",
+            position_size=float(position.quantity),
+            avg_price=float(position.entry_price),
+            remaining_position_size=float(position.quantity),
+        )
+        if previous is None:
+            self.risk_manager.register_position()
 
     async def get_realized_pnl(self) -> float:
         """

@@ -5,7 +5,7 @@ objects in the context of market trading. All functions ensure proper timezone
 handling to avoid subtle bugs from naive datetime objects.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -86,3 +86,17 @@ def format_market_time(
         >>> # formatted is "2026-02-28 09:30:00"
     """
     return dt.strftime(fmt)
+
+
+def get_utc_now() -> datetime:
+    """Return a timezone-aware UTC timestamp."""
+    return datetime.now(timezone.utc)
+
+
+def ensure_timezone_aware(dt: datetime, assumed_timezone) -> datetime:
+    """Return an aware datetime, interpreting legacy naive values in the supplied timezone."""
+    if dt.tzinfo is not None:
+        return dt
+    if hasattr(assumed_timezone, "localize"):
+        return assumed_timezone.localize(dt)
+    return dt.replace(tzinfo=assumed_timezone)

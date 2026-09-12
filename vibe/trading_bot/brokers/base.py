@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Protocol
 
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["market", "limit", "stop"]
+BenchmarkType = Literal["executable_quote", "limit_price", "stop_quote", "legacy"]
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,9 @@ class BrokerQuote:
     ask: Optional[float]
     last: Optional[float]
     market_price: float
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    # The exchange/provider observation time. Missing is intentionally distinct
+    # from "received now" because an undated quote is not a valid benchmark.
+    timestamp: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -36,7 +39,18 @@ class BrokerOrder:
     strategy_order_id: Optional[str] = None
     broker_order_id: Optional[str] = None
     status: str = "created"
+    decision_at: Optional[datetime] = None
     submitted_at: Optional[datetime] = None
+    benchmark_type: Optional[BenchmarkType] = None
+    benchmark_price: Optional[float] = None
+    quote_bid: Optional[float] = None
+    quote_ask: Optional[float] = None
+    quote_midpoint: Optional[float] = None
+    benchmark_version: int = 2
+    strategy_name: Optional[str] = None
+    strategy_stop_price: Optional[float] = None
+    take_profit: Optional[float] = None
+    exit_reason: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:
@@ -59,7 +73,23 @@ class FillEvent:
     expected_price: Optional[float]
     submitted_at: datetime
     filled_at: datetime
-    commission: float = 0.0
+    commission: Optional[float] = None
+    execution_id: Optional[str] = None
+    permanent_order_id: Optional[str] = None
+    account_id: Optional[str] = None
+    instrument_currency: Optional[str] = None
+    commission_currency: Optional[str] = None
+    decision_at: Optional[datetime] = None
+    benchmark_type: Optional[BenchmarkType] = None
+    benchmark_price: Optional[float] = None
+    quote_bid: Optional[float] = None
+    quote_ask: Optional[float] = None
+    quote_midpoint: Optional[float] = None
+    stop_price: Optional[float] = None
+    limit_price: Optional[float] = None
+    benchmark_version: int = 2
+    benchmark_valid: bool = False
+    executions: tuple[Dict[str, Any], ...] = ()
     raw_status: str = "filled"
 
     @property
@@ -67,21 +97,41 @@ class FillEvent:
         return max((self.filled_at - self.submitted_at).total_seconds() * 1000.0, 0.0)
 
     @property
+    def decision_to_submission_latency_ms(self) -> Optional[float]:
+        if self.decision_at is None:
+            return None
+        return max((self.submitted_at - self.decision_at).total_seconds() * 1000.0, 0.0)
+
+    @property
+    def submission_to_fill_latency_ms(self) -> float:
+        return self.latency_ms
+
+    @property
     def slippage(self) -> Optional[float]:
-        if self.expected_price is None:
+        benchmark = self.benchmark_price
+        if (
+            self.benchmark_version != 2
+            or benchmark is None
+            or not self.benchmark_valid
+        ):
             return None
         if self.side == "buy":
-            return self.avg_fill_price - self.expected_price
-        return self.expected_price - self.avg_fill_price
+            return self.avg_fill_price - benchmark
+        return benchmark - self.avg_fill_price
 
     @property
     def slippage_bps(self) -> Optional[float]:
-        if self.expected_price in (None, 0):
+        benchmark = self.benchmark_price
+        if (
+            self.benchmark_version != 2
+            or benchmark in (None, 0)
+            or not self.benchmark_valid
+        ):
             return None
         slippage = self.slippage
         if slippage is None:
             return None
-        return (slippage / self.expected_price) * 10000.0
+        return (slippage / benchmark) * 10000.0
 
 
 @dataclass(frozen=True)
@@ -93,6 +143,8 @@ class BrokerPosition:
     avg_cost: float
     market_price: Optional[float] = None
     unrealized_pnl: Optional[float] = None
+    instrument_currency: Optional[str] = None
+    unrealized_pnl_currency: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -103,8 +155,15 @@ class BrokerAccount:
     net_liquidation: Optional[float]
     cash: Optional[float]
     buying_power: Optional[float]
-    currency: str = "USD"
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    currency: Optional[str] = None
+    net_liquidation_currency: Optional[str] = None
+    cash_currency: Optional[str] = None
+    buying_power_currency: Optional[str] = None
+    realized_pnl: Optional[float] = None
+    realized_pnl_currency: Optional[str] = None
+    unrealized_pnl: Optional[float] = None
+    unrealized_pnl_currency: Optional[str] = None
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class BrokerAPI(Protocol):

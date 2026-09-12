@@ -2,7 +2,7 @@
 Account state data model for tracking account information.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -13,6 +13,7 @@ class AccountState(BaseModel):
     Validates all account values and enforces business rules.
     """
 
+    account_id: Optional[str] = Field(default=None, description="Broker account identifier")
     cash: float = Field(..., description="Available cash balance")
     equity: float = Field(..., description="Total account equity")
     buying_power: float = Field(..., description="Buying power (available for trades)")
@@ -22,7 +23,26 @@ class AccountState(BaseModel):
     losing_trades: int = Field(default=0, description="Number of losing trades")
     win_rate: float = Field(default=0.0, description="Win rate percentage (0-100)")
     total_pnl: float = Field(default=0.0, description="Total realized P&L")
-    timestamp: datetime = Field(default_factory=datetime.now, description="Account state timestamp")
+    base_currency: Optional[str] = Field(default=None, description="Account base currency")
+    cash_currency: Optional[str] = None
+    equity_currency: Optional[str] = None
+    buying_power_currency: Optional[str] = None
+    realized_pnl: Optional[float] = Field(default=None, description="Authoritative broker realized P&L")
+    realized_pnl_currency: Optional[str] = None
+    unrealized_pnl: Optional[float] = Field(default=None, description="Authoritative broker unrealized P&L")
+    unrealized_pnl_currency: Optional[str] = None
+    local_realized_pnl: Optional[float] = Field(
+        default=None,
+        description="Optional locally-derived realized P&L diagnostic",
+    )
+    local_realized_pnl_currency: Optional[str] = None
+    broker_cash: Optional[float] = Field(default=None, description="Unmodified broker cash value")
+    broker_equity: Optional[float] = Field(default=None, description="Unmodified broker net liquidation")
+    broker_buying_power: Optional[float] = Field(default=None, description="Unmodified broker buying power")
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Account state timestamp",
+    )
 
     @field_validator("cash")
     @classmethod

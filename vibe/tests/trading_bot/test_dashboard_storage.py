@@ -1,6 +1,9 @@
 """Tests for live dashboard persistence stores."""
 
 from datetime import datetime, timedelta
+import sqlite3
+
+import pytest
 
 from vibe.common.models import Trade
 from vibe.trading_bot.config.settings import AppSettings
@@ -222,6 +225,265 @@ def test_publish_outbox_refreshes_pending_payload(tmp_path):
 
     assert store.count_by_status("pending") == 1
     assert event["payload"]["trade_id"] == "DU123:1"
+    store.close()
+
+
+def test_publish_outbox_requeues_update_arriving_during_publish(tmp_path):
+    store = PublishOutboxStore(str(tmp_path / "publish_outbox.db"))
+    event_time = datetime(2026, 7, 20, 13, 30)
+    event_id = "trade:partial"
+    store.enqueue_event(PublishOutboxEvent(
+        event_id=event_id,
+        event_type="upsert",
+        aggregate_type="trade",
+        aggregate_id="partial",
+        destination="supabase",
+        payload={"quantity": 6, "closed_quantity": 4},
+        original_event_timestamp=event_time,
+        next_retry_at=event_time,
+    ))
+    claimed = store.claim_pending(1, "publisher", now=event_time)[0]
+
+    assert store.enqueue_event(PublishOutboxEvent(
+        event_id=event_id,
+        event_type="upsert",
+        aggregate_type="trade",
+        aggregate_id="partial",
+        destination="supabase",
+        payload={"quantity": 0, "closed_quantity": 10},
+        original_event_timestamp=event_time,
+        next_retry_at=event_time,
+    ))
+    assert store.mark_published(
+        event_id,
+        expected_payload_version=claimed["payload_version"],
+    )
+
+    current = store.get_event(event_id)
+    assert current["status"] == "pending"
+    assert current["payload"] == {"quantity": 0, "closed_quantity": 10}
+    assert current["successor_version"] == 1
+    successors = store.get_event_successors(event_id)
+    assert [row["publication_version"] for row in successors] == [1, 2]
+    assert successors[0]["status"] == "published"
+    assert successors[0]["payload"] == {"quantity": 6, "closed_quantity": 4}
+    assert store.claim_pending(1, "successor", now=event_time)[0]["event_id"] == current["event_id"]
+    store.close()
+
+
+def test_outbox_supersedes_older_unpublished_successors(tmp_path):
+    store = PublishOutboxStore(str(tmp_path / "publish_outbox.db"))
+    now = datetime(2026, 7, 20, 13, 30)
+
+    def enqueue(version):
+        return store.enqueue_event(PublishOutboxEvent(
+            event_id="trade:ordered",
+            event_type="upsert",
+            aggregate_type="trade",
+            aggregate_id="ordered",
+            destination="supabase",
+            payload={"version": version},
+            original_event_timestamp=now,
+            next_retry_at=now,
+        ))
+
+    enqueue(1)
+    first = store.claim_pending(1, "worker", now=now)[0]
+    store.mark_dead_letter(
+        first["event_id"],
+        "v1 failed",
+        expected_payload_version=first["payload_version"],
+    )
+    enqueue(2)
+    second = store.claim_pending(1, "worker", now=now)[0]
+    store.mark_failed(
+        second["event_id"],
+        "v2 failed",
+        now,
+        expected_payload_version=second["payload_version"],
+    )
+    enqueue(3)
+
+    rows = store.get_event_successors("trade:ordered")
+    assert [row["status"] for row in rows] == [
+        "dead_letter",
+        "superseded",
+        "pending",
+    ]
+    claimed = store.claim_pending(10, "worker", now=now)
+    assert [event["payload"]["version"] for event in claimed] == [3]
+    store.close()
+
+
+def test_dead_letter_can_enqueue_identical_immutable_retry_successor(tmp_path):
+    store = PublishOutboxStore(str(tmp_path / "publish_outbox.db"))
+    now = datetime(2026, 7, 20, 13, 30)
+    event = PublishOutboxEvent(
+        event_id="trade:retry",
+        event_type="upsert",
+        aggregate_type="trade",
+        aggregate_id="retry",
+        destination="supabase",
+        payload={"trade_id": "retry"},
+        original_event_timestamp=now,
+        next_retry_at=now,
+    )
+    store.enqueue_event(event)
+    claimed = store.claim_pending(1, "worker", now=now)[0]
+    store.mark_dead_letter(
+        claimed["event_id"],
+        "temporary outage",
+        expected_payload_version=claimed["payload_version"],
+    )
+
+    assert store.enqueue_event(event)
+    successors = store.get_event_successors("trade:retry")
+    assert [row["status"] for row in successors] == [
+        "dead_letter",
+        "pending",
+    ]
+    assert successors[1]["payload"] == successors[0]["payload"]
+    store.close()
+
+
+def test_accounts_currency_rebuild_recovers_interrupted_legacy_table(tmp_path):
+    path = tmp_path / "dashboard.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE accounts (
+            account_id TEXT PRIMARY KEY,
+            broker TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            currency TEXT,
+            mode TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE accounts_legacy_currency (
+            account_id TEXT PRIMARY KEY,
+            broker TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO accounts_legacy_currency VALUES
+            ('legacy', 'ib', 'Legacy', 'CAD', 'paper', 't0', 't0');
+        INSERT INTO accounts_legacy_currency VALUES
+            ('current', 'ib', 'Stale current', 'USD', 'paper', 't0', 't0');
+        INSERT INTO accounts VALUES
+            ('current', 'ib', 'Current', NULL, 'paper', 't1', 't1');
+    """)
+    conn.close()
+
+    store = DashboardStore(str(path))
+    rows = store._get_connection().execute(
+        "SELECT account_id, currency FROM accounts ORDER BY account_id"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("current", None),
+        ("legacy", "CAD"),
+    ]
+    assert store._get_connection().execute(
+        "SELECT 1 FROM sqlite_master WHERE name = 'accounts_legacy_currency'"
+    ).fetchone() is None
+    store.close()
+
+    rerun = DashboardStore(str(path))
+    assert rerun.count_rows("accounts") == 2
+    currency_column = next(
+        row
+        for row in rerun._get_connection().execute("PRAGMA table_info(accounts)")
+        if row["name"] == "currency"
+    )
+    assert currency_column["notnull"] == 0
+    rerun.close()
+
+
+def test_accounts_currency_migration_rolls_back_and_recovers_after_failure(
+    tmp_path,
+):
+    path = tmp_path / "dashboard.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE accounts (
+            account_id TEXT PRIMARY KEY,
+            broker TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            currency TEXT,
+            mode TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE accounts_legacy_currency (
+            account_id TEXT PRIMARY KEY,
+            broker TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            mode TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        INSERT INTO accounts_legacy_currency VALUES
+            ('legacy', 'ib', 'Legacy', 'CAD', 'paper', 't0', 't0');
+        CREATE TRIGGER interrupt_accounts_migration
+        BEFORE INSERT ON accounts
+        WHEN NEW.account_id = 'legacy'
+        BEGIN SELECT RAISE(ABORT, 'migration interrupted'); END;
+    """)
+    conn.close()
+
+    with pytest.raises(sqlite3.IntegrityError, match="migration interrupted"):
+        DashboardStore(str(path))
+
+    interrupted = sqlite3.connect(path)
+    assert interrupted.execute(
+        "SELECT COUNT(*) FROM accounts_legacy_currency"
+    ).fetchone()[0] == 1
+    assert interrupted.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 0
+    interrupted.execute("DROP TRIGGER interrupt_accounts_migration")
+    interrupted.commit()
+    interrupted.close()
+
+    recovered = DashboardStore(str(path))
+    assert recovered.get_row(
+        "accounts", "account_id", "legacy"
+    )["currency"] == "CAD"
+    recovered.close()
+
+    rerun = DashboardStore(str(path))
+    assert rerun.count_rows("accounts") == 1
+    rerun.close()
+
+
+def test_equity_snapshot_provenance_is_backward_compatible(tmp_path):
+    store = DashboardStore(str(tmp_path / "dashboard.db"))
+    historical = EquitySnapshot(
+        snapshot_id="historical",
+        account_id="A",
+        timestamp=datetime(2025, 1, 1),
+        realized_pnl=10,
+    )
+    broker = EquitySnapshot(
+        snapshot_id="broker",
+        account_id="A",
+        timestamp=datetime(2026, 1, 1),
+        realized_pnl=20,
+        pnl_provenance="broker",
+        realized_pnl_provenance="broker",
+        pnl_version=2,
+    )
+
+    store.upsert_equity_snapshot(historical)
+    store.upsert_equity_snapshot(broker)
+
+    assert store.get_row(
+        "equity_snapshots", "snapshot_id", "historical"
+    )["pnl_provenance"] is None
+    current = store.get_row("equity_snapshots", "snapshot_id", "broker")
+    assert current["realized_pnl_provenance"] == "broker"
+    assert current["pnl_version"] == 2
     store.close()
 
 

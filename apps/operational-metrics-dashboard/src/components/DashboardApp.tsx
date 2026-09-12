@@ -2,6 +2,18 @@
 
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { loadDashboardData } from "@/data/clientAdapter";
+import {
+  activePositionsFor,
+  aggregatePnlByCurrency,
+  closedTradesFor,
+  dashboardAccounts,
+  dashboardDataForAccount,
+  netLiquidationFor,
+  realizedPnlPresentationFor,
+  unrealizedPnlPresentationFor,
+  type PnlPresentation,
+} from "@/data/dashboardSelectors";
+import { formatCurrency } from "@/data/formatters";
 import type { DashboardData, Position, PriceBar, StrategyAnnotation, StrategyConfigSummary } from "@/data/types";
 import { PriceChart } from "./PriceChart";
 
@@ -14,17 +26,6 @@ type View = "live" | "charts" | "operations" | "performance";
 type Theme = "light" | "dark";
 type HealthState = "healthy" | "closed" | "degraded";
 type ChartRange = "3d" | "5d" | "10d" | "30d" | "all";
-type DerivedClosedTrade = {
-  id: string;
-  symbol: string;
-  side: string;
-  quantity: number;
-  entryPrice: number | null;
-  exitPrice: number | null;
-  exitTime: string;
-  pnl: number | null;
-};
-
 const themeStorageKey = "dashboard-theme";
 const themeChangeEvent = "dashboard-theme-change";
 
@@ -44,12 +45,17 @@ const chartRanges: { id: ChartRange; label: string }[] = [
 ];
 
 const orderEventPageSize = 10;
+const tradePageSize = 25;
 
 export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps) {
   const isLiveDataSource = process.env.NEXT_PUBLIC_DASHBOARD_DATA_SOURCE === "supabase";
   const [data, setData] = useState(initialData);
   const [isLoading, setIsLoading] = useState(isLiveDataSource);
   const [view, setView] = useState<View>("live");
+  const accounts = dashboardAccounts(data);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
+    accounts[0]?.account_id ?? null,
+  );
   const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getThemeServerSnapshot);
 
   useEffect(() => {
@@ -80,14 +86,21 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
     };
   }, [isLiveDataSource]);
 
-  const latestEquity = data.equity[0];
-  const activePositions = activePositionsFor(data.positions, latestEquity?.timestamp);
-  const symbols = [...new Set(data.priceBars.map((bar) => bar.symbol))];
+  const effectiveSelectedAccountId = accounts.some(
+    (account) => account.account_id === selectedAccountId,
+  ) ? selectedAccountId : accounts[0]?.account_id ?? null;
+  const scopedData = dashboardDataForAccount(data, effectiveSelectedAccountId);
+  const latestEquity = scopedData.equity[0];
+  const activePositions = activePositionsFor(scopedData.positions);
+  const symbols = [...new Set(scopedData.priceBars.map((bar) => bar.symbol))];
   const selectedSymbol = symbols[0] ?? activePositions[0]?.symbol ?? "QQQ";
-  const selectedBars = data.priceBars.filter((bar) => bar.symbol === selectedSymbol);
-  const realizedPnl = realizedPnlFor(data);
-  const unrealizedPnl = unrealizedPnlFor(latestEquity, activePositions);
-  const freshnessReference = data.source === "fixture" ? data.generatedAt : undefined;
+  const selectedBars = scopedData.priceBars.filter((bar) => bar.symbol === selectedSymbol);
+  const realizedPnl = realizedPnlPresentationFor(scopedData);
+  const unrealizedPnl = unrealizedPnlPresentationFor(
+    latestEquity,
+    activePositions,
+  );
+  const freshnessReference = scopedData.source === "fixture" ? scopedData.generatedAt : undefined;
   const freshnessMinutes = latestEquity ? minutesSince(latestEquity.timestamp, freshnessReference) : null;
   const marketState = deriveMarketState(data.status);
   const health = deriveHealthState(data.status, marketState, freshnessMinutes);
@@ -105,10 +118,27 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
       <header className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-5 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase text-[var(--muted)]">{data.account?.broker ?? "Fixture"} · {data.account?.mode ?? data.source}</p>
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">{scopedData.account?.broker ?? "Fixture"} · {scopedData.account?.mode ?? scopedData.source}</p>
             <h1 className="mt-2 text-3xl font-bold">Live Trading Dashboard</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {accounts.length > 1 && (
+              <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
+                Account
+                <select
+                  aria-label="Account"
+                  value={effectiveSelectedAccountId ?? ""}
+                  onChange={(event) => setSelectedAccountId(event.target.value)}
+                  className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-[var(--foreground)]"
+                >
+                  {accounts.map((account) => (
+                    <option key={account.account_id} value={account.account_id}>
+                      {account.display_name} ({account.account_id})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${healthBadgeClass(health)}`}>
               {health.toUpperCase()}
             </span>
@@ -132,10 +162,10 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
           ))}
         </nav>
 
-        {view === "live" && <LiveView data={data} activePositions={activePositions} realizedPnl={realizedPnl} unrealizedPnl={unrealizedPnl} freshnessMinutes={freshnessMinutes} marketState={marketState} />}
-        {view === "charts" && <ChartsView data={data} selectedSymbol={selectedSymbol} selectedBars={selectedBars} strategyConfig={strategyConfig} />}
-        {view === "operations" && <OperationsView data={data} />}
-        {view === "performance" && <PerformanceView data={data} />}
+        {view === "live" && <LiveView data={scopedData} activePositions={activePositions} realizedPnl={realizedPnl} unrealizedPnl={unrealizedPnl} freshnessMinutes={freshnessMinutes} marketState={marketState} />}
+        {view === "charts" && <ChartsView data={scopedData} selectedSymbol={selectedSymbol} selectedBars={selectedBars} strategyConfig={strategyConfig} />}
+        {view === "operations" && <OperationsView data={scopedData} />}
+        {view === "performance" && <PerformanceView data={scopedData} />}
       </div>
     </main>
   );
@@ -214,14 +244,14 @@ function SkeletonBlock({ height }: { height: string }) {
   return <div className="surface animate-pulse rounded-lg border bg-[var(--surface-muted)]" style={{ height }} />;
 }
 
-function LiveView({ data, activePositions, realizedPnl, unrealizedPnl, freshnessMinutes, marketState }: { data: DashboardData; activePositions: Position[]; realizedPnl: number; unrealizedPnl: number; freshnessMinutes: number | null; marketState: DashboardData["status"] }) {
-  const latestEquity = data.equity[0];
+function LiveView({ data, activePositions, realizedPnl, unrealizedPnl, freshnessMinutes, marketState }: { data: DashboardData; activePositions: Position[]; realizedPnl: PnlPresentation; unrealizedPnl: PnlPresentation; freshnessMinutes: number | null; marketState: DashboardData["status"] }) {
+  const netLiquidation = netLiquidationFor(data);
   return (
     <section className="grid min-w-0 gap-5 lg:grid-cols-[1.3fr_0.9fr]">
       <div className="grid min-w-0 gap-4 sm:grid-cols-3 lg:col-span-2">
-        <Metric label="Net liquidation" value={currency(latestEquity?.net_liquidation)} />
-        <Metric label="Realized P&L" value={currency(realizedPnl)} tone={realizedPnl >= 0 ? "profit" : "loss"} />
-        <Metric label="Unrealized P&L" value={currency(unrealizedPnl)} tone={unrealizedPnl >= 0 ? "profit" : "loss"} />
+        <Metric label="Net liquidation" value={formatCurrency(netLiquidation.value, netLiquidation.currency)} />
+        <Metric label={realizedPnl.label} value={formatCurrency(realizedPnl.value, realizedPnl.currency)} tone={realizedPnl.value === null ? undefined : realizedPnl.value >= 0 ? "profit" : "loss"} />
+        <Metric label={unrealizedPnl.label} value={formatCurrency(unrealizedPnl.value, unrealizedPnl.currency)} tone={unrealizedPnl.value === null ? undefined : unrealizedPnl.value >= 0 ? "profit" : "loss"} />
       </div>
       <div className="min-w-0 lg:col-span-2">
         <Panel title="Open positions">
@@ -234,7 +264,7 @@ function LiveView({ data, activePositions, realizedPnl, unrealizedPnl, freshness
                   <div className="text-xs text-[var(--muted)]">Updated {time(position.updated_at)}</div>
                 </div>
                 <div className={`text-right font-semibold ${Number(position.unrealized_pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>
-                  {currency(position.unrealized_pnl)}
+                  {formatCurrency(position.unrealized_pnl, position.unrealized_pnl_currency)}
                 </div>
               </div>
             ))}
@@ -341,15 +371,22 @@ function OperationsView({ data }: { data: DashboardData }) {
 }
 
 function PerformanceView({ data }: { data: DashboardData }) {
-  const closedTrades = closedTradesFromOrderEvents(data.orderEvents);
-  const pnl = closedTrades.reduce((total, trade) => total + Number(trade.pnl ?? 0), 0);
+  const [page, setPage] = useState(0);
+  const closedTrades = closedTradesFor(data);
   const tradesWithPnl = closedTrades.filter((trade) => trade.pnl !== null);
+  const { value: pnl, currency: pnlCurrency } = aggregatePnlByCurrency(tradesWithPnl);
   const winners = tradesWithPnl.filter((trade) => Number(trade.pnl) > 0).length;
   const winRate = tradesWithPnl.length ? (winners / tradesWithPnl.length) * 100 : null;
+  const totalPages = Math.max(1, Math.ceil(closedTrades.length / tradePageSize));
+  const currentPage = Math.min(page, totalPages - 1);
+  const pageTrades = closedTrades.slice(
+    currentPage * tradePageSize,
+    (currentPage + 1) * tradePageSize,
+  );
   return (
     <section className="grid min-w-0 gap-5 lg:grid-cols-[0.8fr_1.2fr]">
       <div className="grid min-w-0 gap-4">
-        <Metric label="Total P&L" value={currency(pnl)} tone={pnl >= 0 ? "profit" : "loss"} />
+        <Metric label="Collected realized P&L (all history)" value={formatCurrency(pnl, pnlCurrency)} tone={pnl === null ? undefined : pnl >= 0 ? "profit" : "loss"} />
         <Metric label="Closed trades" value={number(closedTrades.length, 0)} />
         <Metric label="Win rate" value={winRate === null ? "--" : `${number(winRate, 1)}%`} />
       </div>
@@ -360,13 +397,36 @@ function PerformanceView({ data }: { data: DashboardData }) {
               <tr><th className="py-2 pr-3">Symbol</th><th className="py-2 pr-3">Status</th><th className="py-2 pr-3 text-right">Qty</th><th className="py-2 pr-3 text-right">P&L</th></tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
-              {closedTrades.map((trade) => (
-                <tr key={trade.id}><td className="py-3 pr-3 font-semibold">{trade.symbol}</td><td className="py-3 pr-3">closed</td><td className="py-3 pr-3 text-right">{number(trade.quantity, 0)}</td><td className={`py-3 pr-3 text-right font-semibold ${Number(trade.pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>{currency(trade.pnl)}</td></tr>
+              {pageTrades.map((trade) => (
+                <tr key={trade.id}><td className="py-3 pr-3 font-semibold">{trade.symbol}</td><td className="py-3 pr-3">closed</td><td className="py-3 pr-3 text-right">{number(trade.quantity, 0)}</td><td className={`py-3 pr-3 text-right font-semibold ${Number(trade.pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>{formatCurrency(trade.pnl, trade.currency)}</td></tr>
               ))}
               {!closedTrades.length && <tr><td colSpan={4}><EmptyState label="No closed trades" /></td></tr>}
             </tbody>
           </table>
         </div>
+        {closedTrades.length > tradePageSize && (
+          <div className="mt-4 flex items-center justify-between gap-3 border-t border-[var(--border)] pt-4 text-sm">
+            <span className="text-[var(--muted)]">
+              {currentPage * tradePageSize + 1}-{Math.min((currentPage + 1) * tradePageSize, closedTrades.length)} of {closedTrades.length}
+            </span>
+            <div className="flex gap-2">
+              <button
+                className="rounded-md border border-[var(--border)] px-3 py-1.5 disabled:opacity-40"
+                disabled={currentPage === 0}
+                onClick={() => setPage((value) => Math.max(0, value - 1))}
+              >
+                Previous
+              </button>
+              <button
+                className="rounded-md border border-[var(--border)] px-3 py-1.5 disabled:opacity-40"
+                disabled={currentPage >= totalPages - 1}
+                onClick={() => setPage((value) => Math.min(totalPages - 1, value + 1))}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </Panel>
     </section>
   );
@@ -388,7 +448,7 @@ function EventTable({ data }: { data: DashboardData }) {
           </thead>
           <tbody className="divide-y divide-[var(--border)]">
             {pageEvents.map((event) => (
-              <tr key={event.event_id}><td className="py-3 pr-3 text-[var(--muted)]">{time(event.occurred_at)}</td><td className="py-3 pr-3 font-semibold">{event.symbol}</td><td className="py-3 pr-3 capitalize">{event.side}</td><td className="py-3 pr-3 text-right">{number(event.quantity, 0)}</td><td className="py-3 pr-3">{event.event_type}</td><td className="py-3 pr-3 text-right">{currency(event.price)}</td><td className="py-3 pr-3 text-right">{isFillEvent(event.event_type) ? number(event.slippage_bps, 2) : "--"}</td><td className="py-3 pr-3 text-right">{event.latency_ms === null || event.latency_ms === undefined ? "--" : `${number(event.latency_ms, 0)} ms`}</td></tr>
+              <tr key={event.event_id}><td className="py-3 pr-3 text-[var(--muted)]">{time(event.occurred_at)}</td><td className="py-3 pr-3 font-semibold">{event.symbol}</td><td className="py-3 pr-3 capitalize">{event.side}</td><td className="py-3 pr-3 text-right">{number(event.quantity, 0)}</td><td className="py-3 pr-3">{event.event_type}</td><td className="py-3 pr-3 text-right">{formatCurrency(event.price, event.trade_currency)}</td><td className="py-3 pr-3 text-right">{isFillEvent(event.event_type) && event.slippage_valid ? number(event.slippage_bps, 2) : "--"}</td><td className="py-3 pr-3 text-right">{event.latency_ms === null || event.latency_ms === undefined ? "--" : `${number(event.latency_ms, 0)} ms`}</td></tr>
             ))}
             {!events.length && <tr><td colSpan={8}><EmptyState label="No order events" /></td></tr>}
           </tbody>
@@ -441,13 +501,6 @@ function positionSizingLabel(strategyConfig: StrategyConfigSummary): string {
   return [strategyConfig.positionSizeMethod, ...caps].join(" · ");
 }
 
-function activePositionsFor(positions: Position[], latestEquityTimestamp: string | undefined): Position[] {
-  return positions
-    .filter((position) => Math.abs(Number(position.quantity)) > 0)
-    .filter((position) => latestEquityTimestamp === undefined || minutesSince(position.updated_at, latestEquityTimestamp) <= 20)
-    .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
-}
-
 function filterBarsForRange(bars: PriceBar[], range: ChartRange): PriceBar[] {
   if (range === "all" || bars.length === 0) {
     return bars;
@@ -489,90 +542,12 @@ function isChartMarkerEvent(eventType: string): boolean {
   return eventType === "ORDER_FILLED" || eventType === "TRADE_CLOSED";
 }
 
-function closedTradesFromOrderEvents(orderEvents: DashboardData["orderEvents"]): DerivedClosedTrade[] {
-  const closeEvents = orderEvents
-    .filter((event) => event.event_type === "TRADE_CLOSED")
-    .sort((left, right) => new Date(left.occurred_at).getTime() - new Date(right.occurred_at).getTime());
-  const closeOrderIds = new Set(closeEvents.map((event) => event.broker_order_id));
-  const entryEvents = orderEvents
-    .filter((event) => event.event_type === "ORDER_FILLED" && !closeOrderIds.has(event.broker_order_id))
-    .sort((left, right) => new Date(left.occurred_at).getTime() - new Date(right.occurred_at).getTime());
-  const usedEntryEventIds = new Set<string>();
-
-  return closeEvents.map((closeEvent) => {
-    const entryEvent = findEntryEventForClose(closeEvent, entryEvents, usedEntryEventIds);
-    if (entryEvent) {
-      usedEntryEventIds.add(entryEvent.event_id);
-    }
-    const pnl = realizedPnlFromEvents(entryEvent, closeEvent);
-    return {
-      id: closeEvent.event_id,
-      symbol: closeEvent.symbol,
-      side: entryEvent?.side ?? closeEvent.side,
-      quantity: closeEvent.quantity,
-      entryPrice: entryEvent?.price ?? null,
-      exitPrice: closeEvent.price,
-      exitTime: closeEvent.occurred_at,
-      pnl,
-    };
-  }).reverse();
-}
-
-function findEntryEventForClose(closeEvent: DashboardData["orderEvents"][number], entryEvents: DashboardData["orderEvents"], usedEntryEventIds: Set<string>): DashboardData["orderEvents"][number] | undefined {
-  const closeTime = new Date(closeEvent.occurred_at).getTime();
-  return [...entryEvents]
-    .reverse()
-    .find((entryEvent) => {
-      if (usedEntryEventIds.has(entryEvent.event_id)) {
-        return false;
-      }
-      const sameTrade = closeEvent.trade_id && entryEvent.trade_id === closeEvent.trade_id;
-      const plausiblePriorEntry = entryEvent.symbol === closeEvent.symbol && new Date(entryEvent.occurred_at).getTime() <= closeTime;
-      return Boolean(sameTrade) || plausiblePriorEntry;
-    });
-}
-
-function realizedPnlFromEvents(entryEvent: DashboardData["orderEvents"][number] | undefined, closeEvent: DashboardData["orderEvents"][number]): number | null {
-  if (!entryEvent || entryEvent.price === null || closeEvent.price === null) {
-    return null;
-  }
-  const quantity = closeEvent.quantity || entryEvent.quantity;
-  if (entryEvent.side === "sell" || entryEvent.side === "short") {
-    return (entryEvent.price - closeEvent.price) * quantity;
-  }
-  return (closeEvent.price - entryEvent.price) * quantity;
-}
-
-function realizedPnlFor(data: DashboardData): number {
-  const brokerValue = data.equity[0]?.realized_pnl;
-  if (brokerValue !== null && brokerValue !== undefined && Number.isFinite(brokerValue) && brokerValue !== 0) {
-    return brokerValue;
-  }
-  const eventValue = closedTradesFromOrderEvents(data.orderEvents).reduce((total, trade) => total + Number(trade.pnl ?? 0), 0);
-  if (eventValue !== 0) {
-    return eventValue;
-  }
-  const tradeValue = data.trades
-    .filter((trade) => trade.status === "closed")
-    .reduce((total, trade) => total + Number(trade.pnl ?? 0), 0);
-  return tradeValue !== 0 ? tradeValue : brokerValue ?? 0;
-}
-
-function unrealizedPnlFor(latestEquity: DashboardData["equity"][number] | undefined, activePositions: Position[]): number {
-  const brokerValue = latestEquity?.unrealized_pnl;
-  if (brokerValue !== null && brokerValue !== undefined && Number.isFinite(brokerValue) && brokerValue !== 0) {
-    return brokerValue;
-  }
-  const positionValue = activePositions.reduce((total, position) => total + Number(position.unrealized_pnl ?? 0), 0);
-  return positionValue !== 0 ? positionValue : brokerValue ?? 0;
-}
-
 function isBetween(value: number, min: number, max: number): boolean {
   return value >= min && value <= max;
 }
 
 function isFillEvent(eventType: string): boolean {
-  return eventType === "ORDER_FILLED" || eventType === "TRADE_CLOSED";
+  return eventType === "ORDER_FILLED";
 }
 
 function Panel({ title, children }: { title: string; children: ReactNode }) {
@@ -603,7 +578,14 @@ function summarizeOperationalMetrics(metrics: DashboardData["metrics"]) {
 }
 
 function valuesFor(metrics: DashboardData["metrics"], name: string): number[] {
-  return metrics.filter((metric) => metric.metric_name === name).map((metric) => metric.metric_value).filter(Number.isFinite);
+  return metrics
+    .filter((metric) => metric.metric_name === name)
+    .filter((metric) => name !== "slippage_bps" || (
+      metric.dimensions?.slippage_version === "2"
+      && metric.dimensions?.slippage_valid === "true"
+    ))
+    .map((metric) => metric.metric_value)
+    .filter(Number.isFinite);
 }
 
 function average(values: number[]): number | null {
@@ -658,13 +640,6 @@ function healthBadgeClass(health: HealthState): string {
     return "border-[var(--muted)] text-[var(--muted)]";
   }
   return "border-[var(--warning)] text-[var(--warning)]";
-}
-
-function currency(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "--";
-  }
-  return value.toLocaleString(undefined, { style: "currency", currency: "USD", maximumFractionDigits: 2 });
 }
 
 function number(value: number | null | undefined, digits: number): string {

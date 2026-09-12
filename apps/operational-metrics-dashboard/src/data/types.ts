@@ -1,5 +1,6 @@
 export type DashboardDataSource = "fixture" | "supabase";
 export type DashboardStatus = "live" | "closed" | "empty" | "unavailable";
+export type EquityPnlProvenance = "broker" | "local" | "legacy" | "unknown" | (string & {});
 
 export type Account = {
   account_id: string;
@@ -19,6 +20,21 @@ export type EquitySnapshot = {
   buying_power: number | null;
   realized_pnl: number | null;
   unrealized_pnl: number | null;
+  base_currency?: string | null;
+  net_liquidation_currency?: string | null;
+  cash_currency?: string | null;
+  buying_power_currency?: string | null;
+  realized_pnl_currency?: string | null;
+  unrealized_pnl_currency?: string | null;
+  pnl_provenance?: EquityPnlProvenance | null;
+  realized_pnl_provenance?: EquityPnlProvenance | null;
+  unrealized_pnl_provenance?: EquityPnlProvenance | null;
+  pnl_version?: number | null;
+  local_realized_pnl?: number | null;
+  local_realized_pnl_currency?: string | null;
+  granularity?: string;
+  period_start?: string | null;
+  event_type?: string | null;
   source: string;
 };
 
@@ -31,6 +47,8 @@ export type Position = {
   avg_cost: number | null;
   market_price: number | null;
   unrealized_pnl: number | null;
+  instrument_currency?: string | null;
+  unrealized_pnl_currency?: string | null;
   updated_at: string;
 };
 
@@ -51,6 +69,16 @@ export type OrderEvent = {
   latency_ms?: number | null;
   occurred_at: string;
   raw_status?: string | null;
+  execution_id?: string | null;
+  permanent_order_id?: string | null;
+  trade_currency?: string | null;
+  commission?: number | null;
+  commission_currency?: string | null;
+  benchmark_type?: string | null;
+  benchmark_price?: number | null;
+  slippage_amount?: number | null;
+  slippage_version?: number;
+  slippage_valid?: boolean;
 };
 
 export type PriceBar = {
@@ -83,9 +111,11 @@ export type Trade = {
   strategy?: string | null;
   exit_reason?: string | null;
   broker_order_id?: string | null;
+  pnl_currency?: string | null;
 };
 
 export type OperationalMetric = {
+  metric_id?: string;
   metric_name: string;
   metric_value: number;
   dimensions: Record<string, string> | null;
@@ -130,6 +160,7 @@ export type DashboardData = {
   status: DashboardStatus;
   generatedAt: string;
   account: Account | null;
+  accounts?: Account[];
   equity: EquitySnapshot[];
   positions: Position[];
   orderEvents: OrderEvent[];
