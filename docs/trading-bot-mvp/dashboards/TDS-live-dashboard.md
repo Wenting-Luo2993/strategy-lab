@@ -190,6 +190,9 @@ Outbox requirements:
 - Keep retry state durable so restarts resume where the bot left off.
 - Preserve original business timestamps in both the source row and outbox payload; retries and cooldown reconciliation must never replace them with publish/retry time.
 - Mark rows `dead_letter` only after configured retry/cooldown thresholds are exceeded.
+- Retain confirmed `published` rows for seven days by default and prune them in
+  bounded batches. Rows in pending, publishing, failed, or dead-letter state
+  are never eligible.
 
 Timestamp preservation rules:
 
@@ -275,6 +278,23 @@ Required behaviour:
 | updated_at | timestamptz | Last update. |
 
 Phase 1 stores one account but all account-scoped records reference `account_id`.
+
+Monetary fields carry explicit currency columns. `accounts.currency` is the
+account base currency; instrument/trade and commission currency are stored on
+execution/position rows. IB `BASE` values are resolved only when the configured
+account base currency is known.
+
+### 8.2a Equity retention
+
+- Keep raw snapshots for 14 days.
+- Keep one final snapshot per configurable five-minute market-time bucket from
+  14 through 90 days.
+- Keep one final snapshot per market trading day beyond 90 days.
+- Preserve event-associated raw snapshots.
+- Insert aggregate replacements and delete eligible raw rows in one SQLite
+  transaction. An interrupted transaction rolls back both operations.
+- Use deterministic aggregate IDs and per-account indexes so repeated runs are
+  idempotent and accounts never share buckets.
 
 ### 8.2 trades
 

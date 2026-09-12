@@ -155,6 +155,35 @@ export CLOUD_PROVIDER="azure"
 
 # Phase 5 Notifications
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+```
+
+### IB monetary and operational data
+
+- `BROKER__IB_CURRENCY` is the instrument/order currency (for example `USD` for QQQ).
+- `BROKER__IB_ACCOUNT_BASE_CURRENCY` is the account base currency (the reviewed paper account uses `CAD`). It is required to resolve IB values reported as `BASE`; a missing value remains unknown rather than being labeled USD.
+- `BROKER__IB_MODEL_CODE` scopes IB account-wide P&L (blank means the whole account), and `BROKER__IB_ACCOUNT_DATA_TIMEOUT_SECONDS` bounds account/P&L reads.
+- `BROKER__IB_EXECUTION_DB_PATH` stores the local durable IB order/execution journal (default `./data/local/ib_executions.db`).
+- Account snapshots keep balances from a bounded IB account-summary request and source realized/unrealized P&L from IB's supported `reqPnL` account/model feed, cancelling each subscription after use. Account-wide P&L is labeled only with the resolved account base currency.
+- IB execution and commission callbacks are journaled by `execId` before in-process consumers run. The default empty `ib_insync` commission placeholder is not treated as a report: commission is ready only when a populated report has the matching `execId`. Late callbacks and the broker's historical fill cache update the same durable execution across restart. Startup hydrates restored open orders into lifecycle monitoring so later partial/full fills update trade and strategy state, while duplicate-symbol submissions remain blocked.
+- Partial entry/retry fills update one logical trade's cumulative quantity and weighted entry. Partial closes retain broker, strategy, and dashboard state with the remaining quantity; the trade closes only after the broker position is flat. Per-order close watermarks are committed atomically with trade updates so restart recovery and late commission callbacks cannot reapply a persisted partial close.
+- After the executor and strategy initialize, durable executions are replayed through per-execution lifecycle watermarks. This reconstructs open/closed trades and managed strategy positions after a crash without double-applying entry or close fills.
+- Execution rows are keyed by broker execution ID. Partial fills remain separate, retries/restarts are idempotent, missing metrics are rebuilt from durable execution rows, and `TRADE_CLOSED` remains a lifecycle event without generating another execution metric.
+- Position P&L recalculated from instrument prices is labeled in instrument currency; broker-provided account-base P&L remains separate. Missing source currencies stay unknown.
+- New authoritative equity P&L observations carry `broker` provenance and P&L schema version 2. Historical rows without provenance remain unknown and are never relabeled as broker values.
+- Slippage version 2 uses a timestamped live IB tick-by-tick BidAsk quote for market/stop orders and the submitted limit for limit orders. Delayed, frozen, undated, or stale IB quotes are rejected as execution benchmarks. Historical version-1 slippage remains stored but is invalid for execution-quality analysis.
+
+Dashboard retention defaults:
+
+- Published outbox rows: 7 days, deleted in batches of 500; pending, publishing, failed, and dead-letter rows are never pruned. A durable publication ledger prevents pruned execution events from being recreated on restart, while the non-prunable per-aggregate version-watermark table keeps allocation monotonic across prune/restart and concurrent local publishers. Every changed payload is an immutable ordered successor; older unpublished versions are permanently superseded, and an in-flight predecessor must finish before its successor can publish. Supabase returns the fenced row so stale/rejected writes are recorded as superseded, never published.
+- Raw equity snapshots: 14 days.
+- Five-minute equity snapshots: through 90 days.
+- Daily final snapshots: beyond 90 days.
+- Non-poll event snapshots are retained. Equity bucketing uses `America/New_York` by default. Late observations advance an aggregate close only when newer, and daily promotion discovers every historical intermediate granularity so bucket-size configuration changes cannot strand old aggregates. Aggregate upsert and source deletion are separate idempotent outbox commands; local source rows are removed only after both remote operations are confirmed.
+
+Configure these through `DASHBOARD__LOCAL_RETENTION_DAYS`,
+`DASHBOARD__OUTBOX_PRUNE_BATCH_SIZE`, `DASHBOARD__EQUITY_RAW_RETENTION_DAYS`,
+`DASHBOARD__EQUITY_FIVE_MINUTE_RETENTION_DAYS`,
+`DASHBOARD__EQUITY_BUCKET_MINUTES`, and `DASHBOARD__EQUITY_MARKET_TIMEZONE`.
 
 ## Phase 5: Orchestration and Deployment Features
 
@@ -238,6 +267,9 @@ pytest vibe/tests/e2e/test_full_cycle.py
 
 # Run with coverage
 pytest vibe/tests/trading_bot/ --cov=vibe.trading_bot --cov-report=html
+
+# Focused operational-data requirements
+pytest vibe/tests/trading_bot/test_operational_data_requirements.py
 ```
 
 Test coverage includes:
