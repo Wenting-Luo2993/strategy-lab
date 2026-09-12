@@ -8,7 +8,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from vibe.common.models import Order, OrderStatus, Position, AccountState
@@ -143,6 +143,7 @@ class MockExchange(ExecutionEngine):
         price: Optional[float] = None,
         limit_price: Optional[float] = None,
         stop_price: Optional[float] = None,
+        lifecycle_metadata: Optional[dict] = None,
     ) -> OrderResponse:
         """
         Submit an order for execution.
@@ -165,27 +166,64 @@ class MockExchange(ExecutionEngine):
         if side not in ("buy", "sell"):
             raise ValueError("side must be 'buy' or 'sell'")
 
-        # Resolve current price: use provided price (market orders pass entry_price),
-        # fall back to tracked price (limit/stop orders rely on previously set price).
-        # Real exchanges know the market price internally; we mirror that by accepting
-        # the price from the caller and keeping our tracking up to date.
-        current_price = price if (price is not None and price > 0) else self._prices.get(symbol)
+        # ``price`` is the order price for conditional orders, not the market
+        # price. Only market orders may use it as an execution-price fallback.
+        tracked_price = self._prices.get(symbol)
+        current_price = (
+            price
+            if order_type == "market" and price is not None and price > 0
+            else tracked_price
+        )
         if current_price is None:
-            raise ValueError(f"No price available for {symbol} — pass price= for market orders")
+            raise ValueError(
+                f"No market price available for {symbol}; call set_price first"
+            )
 
         # Keep price tracking current for account equity calculations
         self._prices[symbol] = current_price
 
+        decision_at = datetime.now(timezone.utc)
+        if order_type == "limit":
+            benchmark_price = limit_price if limit_price is not None else price
+            benchmark_type = "limit_price"
+        elif order_type == "stop":
+            benchmark_price = current_price
+            benchmark_type = "stop_quote"
+        else:
+            benchmark_price = current_price
+            benchmark_type = "executable_quote"
+
         # Create order
+        if order_type == "limit":
+            order_price = limit_price if limit_price is not None else price
+        elif order_type == "stop":
+            order_price = stop_price if stop_price is not None else price
+        else:
+            order_price = current_price
+        if order_price is None:
+            raise ValueError(f"{order_type} orders require an order price")
         order_id = f"ord_{uuid.uuid4().hex[:8]}"
         order = Order(
             order_id=order_id,
             symbol=symbol,
             side=side,
             quantity=quantity,
-            price=price or current_price,
+            price=order_price,
             order_type=order_type,
             status=OrderStatus.CREATED,
+            decision_at=decision_at,
+            submitted_at=decision_at,
+            benchmark_type=benchmark_type,
+            benchmark_price=benchmark_price,
+            quote_bid=current_price,
+            quote_ask=current_price,
+            quote_midpoint=current_price,
+            stop_price=stop_price if stop_price is not None else (price if order_type == "stop" else None),
+            limit_price=limit_price if limit_price is not None else (price if order_type == "limit" else None),
+            benchmark_version=2,
+            benchmark_valid=benchmark_price is not None,
+            trade_currency="USD",
+            commission_currency="USD",
         )
 
         managed = ManagedOrder(order=order)
@@ -337,6 +375,8 @@ class MockExchange(ExecutionEngine):
         # Calculate commission
         trade_value = fill_qty * fill_price
         commission = trade_value * self.commission_pct
+        filled_at = datetime.now(timezone.utc)
+        execution_id = f"mock-{uuid.uuid4().hex}"
 
         # Update cash
         if order.side == "buy":
@@ -350,6 +390,23 @@ class MockExchange(ExecutionEngine):
         order.filled_qty += fill_qty
         order.avg_price = (old_cost + fill_qty * fill_price) / order.filled_qty
         order.commission += commission
+        order.execution_id = execution_id
+        order.execution_ids.append(execution_id)
+        order.filled_at = filled_at
+        order.executions.append({
+            "execution_id": execution_id,
+            "broker_order_id": order_id,
+            "permanent_order_id": order_id,
+            "account_id": "mock",
+            "symbol": order.symbol,
+            "side": order.side,
+            "quantity": fill_qty,
+            "price": fill_price,
+            "filled_at": filled_at,
+            "trade_currency": "USD",
+            "commission": commission,
+            "commission_currency": "USD",
+        })
         order.status = (
             OrderStatus.FILLED
             if order.filled_qty >= order.quantity
@@ -491,12 +548,28 @@ class MockExchange(ExecutionEngine):
         equity = self.cash + position_value
         portfolio_value = self.initial_capital + (equity - self.initial_capital)
 
+        unrealized_pnl = sum(
+            (
+                (self._prices.get(symbol, data["entry_price"]) - data["entry_price"])
+                if data["side"] == "long"
+                else (data["entry_price"] - self._prices.get(symbol, data["entry_price"]))
+            ) * data["quantity"]
+            for symbol, data in self._positions.items()
+        )
         return AccountState(
             cash=self.cash,
             equity=equity,
             buying_power=self.cash,
             portfolio_value=portfolio_value,
-            timestamp=datetime.now(),
+            base_currency="USD",
+            cash_currency="USD",
+            equity_currency="USD",
+            buying_power_currency="USD",
+            realized_pnl=0.0,
+            realized_pnl_currency="USD",
+            unrealized_pnl=unrealized_pnl,
+            unrealized_pnl_currency="USD",
+            timestamp=datetime.now(timezone.utc),
         )
 
     async def get_order(self, order_id: str) -> Optional[Order]:
