@@ -165,14 +165,31 @@ class CooldownPhaseManager(BasePhase):
         # We cannot execute trades after market close; this is a signal that EOD exit missed something
         self._warn_open_positions()
 
-        await self._flush_dashboard_publisher()
-
-        # Disconnect from provider first (closes current tick log handle cleanly)
-        await self._disconnect_provider()
-
-        # Rotate tick log AFTER disconnect so the new file handle is not
-        # immediately closed by disconnect()
-        await self._rotate_tick_logs()
+        try:
+            await self._flush_dashboard_publisher()
+            retention_maintenance = getattr(
+                self.orchestrator, "run_dashboard_retention_maintenance", None
+            )
+            if retention_maintenance is not None:
+                try:
+                    retention_maintenance()
+                except Exception as exc:
+                    self.logger.exception(
+                        "Dashboard retention maintenance failed during cooldown: %s",
+                        exc,
+                    )
+        finally:
+            # Provider cleanup and rotation are mandatory even when optional
+            # publication/retention maintenance fails.
+            try:
+                await self._disconnect_provider()
+            except Exception as exc:
+                self.logger.exception("Provider disconnect failed during cooldown: %s", exc)
+            finally:
+                try:
+                    await self._rotate_tick_logs()
+                except Exception as exc:
+                    self.logger.exception("Tick log rotation failed during cooldown: %s", exc)
 
     def _warn_open_positions(self) -> None:
         """Log a warning if any positions are still open at market close.
@@ -205,6 +222,21 @@ class CooldownPhaseManager(BasePhase):
         if publisher is None:
             return
         try:
+            dashboard_store = getattr(self.orchestrator, "dashboard_store", None)
+            source_stores = [
+                store
+                for store in (
+                    dashboard_store,
+                    getattr(self.orchestrator, "dashboard_price_store", None),
+                    getattr(self.orchestrator, "trade_store", None),
+                )
+                if store is not None and hasattr(store, "iter_publish_events")
+            ]
+            if source_stores:
+                publisher.reconcile_sources(
+                    source_stores,
+                    get_market_now(self.market_scheduler).date().isoformat(),
+                )
             result = await publisher.flush_pending(timeout_seconds=30.0, max_batches=5)
             summary = publisher.publish_cooldown_summary()
             self.logger.info(

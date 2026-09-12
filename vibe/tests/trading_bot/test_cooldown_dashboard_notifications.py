@@ -87,3 +87,32 @@ async def test_cooldown_does_not_send_dashboard_publish_alert_when_clear(monkeyp
     await manager._flush_dashboard_publisher()
 
     assert sent_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_retention_failure_does_not_skip_disconnect_or_log_rotation(monkeypatch):
+    manager = _manager({"published": 0, "failed": 0, "pending": 0, "dead_letter": 0})
+    manager.orchestrator.strategy = None
+    calls = []
+
+    async def flush():
+        calls.append("flush")
+
+    async def disconnect():
+        calls.append("disconnect")
+
+    async def rotate():
+        calls.append("rotate")
+
+    def fail_retention():
+        calls.append("retention")
+        raise RuntimeError("retention failed")
+
+    manager.orchestrator.run_dashboard_retention_maintenance = fail_retention
+    monkeypatch.setattr(manager, "_flush_dashboard_publisher", flush)
+    monkeypatch.setattr(manager, "_disconnect_provider", disconnect)
+    monkeypatch.setattr(manager, "_rotate_tick_logs", rotate)
+
+    await manager._complete_cooldown()
+
+    assert calls == ["flush", "retention", "disconnect", "rotate"]
