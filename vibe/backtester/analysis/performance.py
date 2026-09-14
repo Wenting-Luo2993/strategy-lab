@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -117,6 +117,7 @@ class PerformanceAnalyzer:
         end_date: datetime,
         ruleset_name: str,
         ruleset_version: str,
+        execution_diagnostics: Optional[Dict[str, float]] = None,
     ) -> BacktestResult:
         overall = PerformanceAnalyzer._calc_convexity(trades)
         by_year = PerformanceAnalyzer._calc_by_year(trades)
@@ -132,6 +133,7 @@ class PerformanceAnalyzer:
             end_date=end_date.date().isoformat(),
             ruleset_name=ruleset_name,
             ruleset_version=ruleset_version,
+            execution_diagnostics=dict(execution_diagnostics or {}),
         )
 
     @staticmethod

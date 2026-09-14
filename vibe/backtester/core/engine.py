@@ -8,6 +8,7 @@ import pandas as pd
 from vibe.backtester.core.clock import SimulatedClock
 from vibe.backtester.core.fill_simulator import FillSimulator, FillResult
 from vibe.backtester.core.portfolio import PortfolioManager
+from vibe.backtester.core.execution_realism import ExecutionRealismConfig, EXECUTION_MODEL_VERSION
 from vibe.backtester.core.execution.config import ExecutionConfig
 from vibe.backtester.core.execution.simulator import ExecutionSimulator
 from vibe.backtester.core.execution.pending_queue import PendingOrderQueue
@@ -82,6 +83,7 @@ class BacktestEngine:
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 2,
         execution_config: Optional[ExecutionConfig] = None,
+        execution_realism: Optional[ExecutionRealismConfig] = None,
     ) -> None:
         self.ruleset = ruleset
         # None defers to vibe.backtester.data.paths, which honours
@@ -90,6 +92,9 @@ class BacktestEngine:
         self.initial_capital = initial_capital
         self.slippage_ticks = slippage_ticks
         self.execution_config = execution_config
+        # None means legacy semantics, so existing runs stay bit-identical.
+        # Pass ExecutionRealismConfig.realistic() to opt into honest exits.
+        self.execution_realism = execution_realism or ExecutionRealismConfig.legacy()
         self.pending_orders: list[Order] = []
 
     def run(
@@ -178,6 +183,7 @@ class BacktestEngine:
         portfolio = PortfolioManager(
             self.initial_capital,
             trailing_stop_config=trailing_stop_config,
+            execution_realism=self.execution_realism,
         )
         runner = RuleSetRunner(self.ruleset)
         
@@ -369,6 +375,13 @@ class BacktestEngine:
             end_date=end_date,
             ruleset_name=self.ruleset.name,
             ruleset_version=self.ruleset.version,
+            execution_diagnostics={
+                "ambiguous_exit_bars": float(portfolio.ambiguous_exit_bars),
+                "gap_through_exits": float(portfolio.gap_through_exits),
+                "min_cash": float(portfolio.min_cash),
+                "max_gross_exposure_ratio": float(portfolio.max_gross_exposure_ratio),
+                "execution_model_version": float(EXECUTION_MODEL_VERSION),
+            },
         )
 
     def _position_size(

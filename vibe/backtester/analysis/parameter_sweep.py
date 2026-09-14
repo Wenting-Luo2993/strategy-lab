@@ -21,6 +21,7 @@ from vibe.backtester.analysis.metrics import BacktestResult
 from vibe.backtester.analysis.regime_research.features import FeatureEngine
 from vibe.backtester.analysis.scoring import composite_score, calculate_tail_ratio
 from vibe.backtester.data.parquet_loader import ParquetLoader
+from vibe.backtester.data.paths import resolve_market_data_dir
 from vibe.common.ruleset.models import StrategyRuleSet
 
 logger = logging.getLogger(__name__)
@@ -132,7 +133,7 @@ class ParameterSweep:
     def __init__(
         self,
         base_ruleset_path: Path | str,
-        data_dir: Path | str,
+        data_dir: Path | str | None,
         parameters: List[ParameterDefinition],
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 5,
@@ -143,14 +144,15 @@ class ParameterSweep:
         
         Args:
             base_ruleset_path: Path to base ruleset YAML file
-            data_dir: Path to Parquet data directory
+            data_dir: Parquet data directory, or None to resolve automatically
+                      (BACKTEST__DATA_DIR, repo default, then main worktree)
             parameters: List of parameters to sweep
             initial_capital: Starting capital for each backtest
             slippage_ticks: Slippage simulation (ticks)
             sweep_mode: "one_at_a_time" (vary one param at a time) or "grid" (Cartesian product)
         """
         self.base_ruleset_path = Path(base_ruleset_path)
-        self.data_dir = Path(data_dir)
+        self.data_dir = resolve_market_data_dir(data_dir)
         self.parameters = parameters
         self.initial_capital = initial_capital
         self.slippage_ticks = slippage_ticks

@@ -55,3 +55,11 @@ class BacktestResult:
     end_date: str
     ruleset_name: str
     ruleset_version: str
+    execution_diagnostics: Dict[str, float] = field(default_factory=dict)
+    """Always-recorded execution honesty counters.
+
+    Populated regardless of whether realism behaviour is enabled, so a legacy
+    run still reports how much of its result rests on ambiguous assumptions:
+    ``ambiguous_exit_bars``, ``gap_through_exits``, ``min_cash``,
+    ``max_gross_exposure_ratio``, ``execution_model_version``.
+    """

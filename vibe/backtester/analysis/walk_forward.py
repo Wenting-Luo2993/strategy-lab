@@ -15,6 +15,7 @@ import pandas as pd
 
 from vibe.backtester.core.engine import BacktestEngine
 from vibe.backtester.analysis.metrics import BacktestResult
+from vibe.backtester.data.paths import resolve_market_data_dir
 from vibe.common.ruleset.models import StrategyRuleSet
 
 logger = logging.getLogger(__name__)
@@ -112,12 +113,12 @@ class WalkForwardEngine:
     def __init__(
         self,
         ruleset: StrategyRuleSet,
-        data_dir: Path,
+        data_dir: Path | str | None = None,
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 5,
     ):
         self.ruleset = ruleset
-        self.data_dir = data_dir
+        self.data_dir = resolve_market_data_dir(data_dir)
         self.initial_capital = initial_capital
         self.slippage_ticks = slippage_ticks
     
