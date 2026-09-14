@@ -2,7 +2,7 @@
 
 from typing import Optional, List
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 class TradingSettings(BaseSettings):
@@ -72,11 +72,27 @@ class BrokerSettings(BaseSettings):
     ib_client_id: int = Field(default=1, description="IB client id")
     ib_account_id: Optional[str] = Field(default=None, description="IB account id")
     ib_exchange: str = Field(default="SMART", description="IB routing exchange")
-    ib_currency: str = Field(default="USD", description="IB account/order currency")
+    ib_currency: str = Field(default="USD", description="IB instrument and order currency")
+    ib_account_base_currency: Optional[str] = Field(
+        default=None,
+        description="IB account base currency; required to resolve BASE account-summary values",
+    )
+    ib_model_code: str = Field(
+        default="",
+        description="IB model code for account-wide reqPnL; blank selects the whole account",
+    )
+    ib_account_data_timeout_seconds: float = Field(
+        default=5.0,
+        description="Bounded wait for IB account summary and reqPnL updates",
+    )
     ib_market_data_type: int = Field(default=1, description="IB market data type: 1 live, 2 frozen, 3 delayed, 4 delayed frozen")
     ib_connect_timeout: float = Field(default=20.0, description="IB API connection timeout in seconds")
     ib_connect_max_retries: int = Field(default=3, description="Max IB API connection attempts before failing closed")
     ib_connect_retry_delay_seconds: float = Field(default=2.0, description="Delay between IB API connection retry attempts")
+    ib_execution_db_path: str = Field(
+        default="./data/local/ib_executions.db",
+        description="Durable local IB execution and commission callback journal",
+    )
     health_check_enabled: bool = Field(default=True, description="Enable IB broker health checks during warmup")
     health_check_symbol: Optional[str] = Field(default=None, description="Symbol used for IB warmup quote validation")
 
@@ -116,7 +132,20 @@ class DashboardSettings(BaseSettings):
     supabase_service_key: Optional[str] = Field(default=None, description="Bot-only Supabase service key")
     supabase_anon_key: Optional[str] = Field(default=None, description="Browser read-only Supabase anon key")
     publish_interval_seconds: int = Field(default=30, description="Dashboard publish batch interval")
-    local_retention_days: int = Field(default=3, description="Local dashboard row retention window after publication")
+    local_retention_days: int = Field(default=7, ge=0, description="Published outbox retention window in days")
+    outbox_prune_batch_size: int = Field(default=500, gt=0, description="Maximum published outbox rows pruned per transaction")
+    equity_raw_retention_days: int = Field(default=14, ge=0, description="Days to retain raw equity snapshots")
+    equity_five_minute_retention_days: int = Field(default=90, gt=0, description="Days to retain five-minute equity snapshots")
+    equity_bucket_minutes: int = Field(default=5, gt=0, description="Intermediate equity downsampling bucket size")
+    equity_market_timezone: str = Field(default="America/New_York", description="Timezone used for equity retention buckets")
+    position_market_price_threshold: float = Field(default=0.01, ge=0, description="Minimum market-price change to publish")
+    position_unrealized_pnl_threshold: float = Field(default=0.01, ge=0, description="Minimum unrealized-P&L change to publish")
+
+    @model_validator(mode="after")
+    def validate_retention_tiers(self):
+        if self.equity_five_minute_retention_days <= self.equity_raw_retention_days:
+            raise ValueError("equity five-minute retention must exceed raw retention")
+        return self
 
     class Config:
         env_prefix = ""

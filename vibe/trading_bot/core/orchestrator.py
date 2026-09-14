@@ -2,7 +2,8 @@
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
@@ -36,7 +37,7 @@ from vibe.trading_bot.exchange.mock_exchange import MockExchange
 from vibe.trading_bot.exchange.ib_exchange import InteractiveBrokersExecutionEngine
 from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
 from vibe.trading_bot.execution.order_manager import OrderManager, OrderRetryPolicy
-from vibe.trading_bot.execution.trade_executor import TradeExecutor
+from vibe.trading_bot.execution.trade_executor import ExecutionResult, TradeExecutor
 from vibe.common.models import Trade
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
@@ -48,6 +49,25 @@ from vibe.trading_bot.notifications.payloads import (
     TradeClosedPayload,
     SystemStatusPayload,
 )
+
+
+def _iso_datetime(value: datetime | str) -> str:
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+def _as_aware_datetime(value: datetime | str | None) -> Optional[datetime]:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def _elapsed_ms(start: datetime | str | None, end: datetime | str | None) -> Optional[float]:
+    start_dt = _as_aware_datetime(start)
+    end_dt = _as_aware_datetime(end)
+    if start_dt is None or end_dt is None:
+        return None
+    return max((end_dt - start_dt).total_seconds() * 1000.0, 0.0)
 from vibe.trading_bot.notifications.helper import discord_notification_context
 from vibe.trading_bot.version import BUILD_VERSION
 from vibe.trading_bot.core.phases import WarmupPhaseManager, CooldownPhaseManager
@@ -115,11 +135,15 @@ class TradingOrchestrator:
         self.dashboard_outbox_store: Optional[PublishOutboxStore] = None
         self.remote_data_publisher: Optional[RemoteDataPublisher] = None
         self.dashboard_publish_wake_event = asyncio.Event()
+        self._resolved_dashboard_account_id: Optional[str] = None
         self._dashboard_order_trade_ids: Dict[str, str] = {}
         self._dashboard_symbol_trade_ids: Dict[str, str] = {}
         self._dashboard_trade_row_ids: Dict[str, int] = {}
         self._dashboard_order_sent_at: Dict[str, datetime] = {}
-        self._dashboard_metric_recorded_events: set[str] = set()
+        self._dashboard_exit_order_progress: Dict[str, tuple[float, float]] = {}
+        self._pending_exit_reasons: Dict[str, str] = {}
+        self._position_publication_process_id = uuid.uuid4().hex
+        self._positions_published_this_process: set[str] = set()
         if self.config.dashboard.enabled:
             self.dashboard_price_store = PriceBarStore(db_path=self.config.dashboard.local_price_db_path)
             self.dashboard_store = DashboardStore(db_path=self.config.dashboard.local_dashboard_db_path)
@@ -140,6 +164,9 @@ class TradingOrchestrator:
             self._max_backoff_seconds = 900  # 15 minutes max backoff (production)
         self.data_manager: Optional[DataManager] = None
         self.exchange = self._create_execution_engine()
+        add_execution_listener = getattr(self.exchange, "add_execution_listener", None)
+        if add_execution_listener is not None:
+            add_execution_listener(self._ingest_durable_ib_execution)
         self.trade_executor: Optional[TradeExecutor] = None
         self.strategy: Optional[ORBStrategy] = None
         self.indicator_engine: Optional[IncrementalIndicatorEngine] = None
@@ -209,10 +236,14 @@ class TradingOrchestrator:
                     account_id=broker_config.ib_account_id,
                     exchange=broker_config.ib_exchange,
                     currency=broker_config.ib_currency,
+                    account_base_currency=broker_config.ib_account_base_currency,
+                    model_code=broker_config.ib_model_code,
+                    account_data_timeout_seconds=broker_config.ib_account_data_timeout_seconds,
                     market_data_type=broker_config.ib_market_data_type,
                     connect_timeout=broker_config.ib_connect_timeout,
                     connect_max_retries=broker_config.ib_connect_max_retries,
                     connect_retry_delay_seconds=broker_config.ib_connect_retry_delay_seconds,
+                    execution_db_path=broker_config.ib_execution_db_path,
                 )
             )
         return MockExchange()
@@ -235,6 +266,7 @@ class TradingOrchestrator:
         return (
             self.config.dashboard.account_id
             or self.config.broker.ib_account_id
+            or self._resolved_dashboard_account_id
             or "default"
         )
 
@@ -262,7 +294,23 @@ class TradingOrchestrator:
             wake_event=self.dashboard_publish_wake_event,
             batch_size=25,
             poll_interval_seconds=self.config.dashboard.publish_interval_seconds,
+            published_retention_days=self.config.dashboard.local_retention_days,
+            prune_batch_size=self.config.dashboard.outbox_prune_batch_size,
         )
+        source_stores = [
+            store
+            for store in (self.dashboard_store, self.dashboard_price_store, self.trade_store)
+            if store is not None
+        ]
+        if source_stores:
+            from vibe.trading_bot.utils.datetime_utils import get_market_date
+
+            reconciled = self.remote_data_publisher.reconcile_sources(
+                source_stores,
+                get_market_date(self.market_scheduler),
+            )
+            if reconciled:
+                self.logger.info("Reconciled %s durable execution publish events", reconciled)
         await self.remote_data_publisher.start()
         self.logger.info("Dashboard RemoteDataPublisher started")
 
@@ -275,11 +323,11 @@ class TradingOrchestrator:
         aggregate_id: str,
         payload: Dict[str, Any],
         original_event_timestamp: datetime | str,
-    ) -> None:
+    ) -> bool:
         if self.dashboard_outbox_store is None:
-            return
+            return False
         try:
-            self.dashboard_outbox_store.enqueue_event(PublishOutboxEvent(
+            enqueued = self.dashboard_outbox_store.enqueue_event(PublishOutboxEvent(
                 event_id=event_id,
                 event_type=event_type,
                 aggregate_type=aggregate_type,
@@ -289,8 +337,10 @@ class TradingOrchestrator:
                 original_event_timestamp=original_event_timestamp,
             ))
             self.dashboard_publish_wake_event.set()
+            return enqueued or self.dashboard_outbox_store.is_published(event_id)
         except Exception as exc:
             self.logger.warning("Dashboard outbox enqueue failed for %s: %s", event_id, exc)
+            return False
 
     def _trade_payload_from_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -306,6 +356,7 @@ class TradingOrchestrator:
             "status": row.get("status"),
             "pnl": row.get("pnl"),
             "pnl_pct": row.get("pnl_pct"),
+            "pnl_currency": row.get("pnl_currency"),
             "strategy": row.get("strategy"),
             "exit_reason": row.get("exit_reason"),
             "broker_order_id": row.get("broker_order_id"),
@@ -343,6 +394,88 @@ class TradingOrchestrator:
             return None
         try:
             account_id = self._dashboard_account_id()
+            order = await self.exchange.get_order(order_id)
+            executions = list(getattr(order, "executions", []) or [])
+            if executions:
+                projected_row = None
+                for execution in sorted(
+                    executions,
+                    key=lambda item: (
+                        _as_aware_datetime(item.get("filled_at"))
+                        or datetime.min.replace(tzinfo=timezone.utc),
+                        str(item.get("execution_id") or ""),
+                    ),
+                ):
+                    projected_row, _ = (
+                        self.trade_store.apply_entry_execution_projection(
+                            execution_id=str(execution["execution_id"]),
+                            broker_order_id=str(
+                                execution.get("broker_order_id") or order_id
+                            ),
+                            # Dashboard account scoping is authoritative. Mock
+                            # execution IDs use an internal "mock" account tag
+                            # that must not create a second logical account.
+                            account_id=account_id,
+                            symbol=str(execution.get("symbol") or symbol),
+                            side=str(execution.get("side") or order.side),
+                            quantity=float(execution["quantity"]),
+                            price=float(execution["price"]),
+                            entry_time=(
+                                _as_aware_datetime(execution.get("filled_at"))
+                                or entry_time
+                            ),
+                            pnl_currency=execution.get("trade_currency"),
+                            strategy=self.strategy.config.name
+                            if self.strategy
+                            else "orb",
+                        )
+                    )
+                if projected_row is None:
+                    return None
+                trade_id = str(projected_row["trade_id"])
+                row_id = int(projected_row["id"])
+                self._dashboard_order_trade_ids[order_id] = trade_id
+                self._dashboard_symbol_trade_ids[symbol] = trade_id
+                self._dashboard_trade_row_ids[trade_id] = row_id
+                self._enqueue_trade_row(trade_id, entry_time)
+                await self._record_dashboard_order_event("ORDER_SENT", order_id)
+                await self._record_dashboard_order_event("ORDER_FILLED", order_id)
+                return trade_id
+
+            existing = self.trade_store.get_trades(
+                symbol=symbol,
+                status="open",
+                account_id=account_id,
+                limit=1,
+            )
+            if existing:
+                row = existing[0]
+                row_id = int(row["id"])
+                trade_id = row.get("trade_id")
+                position = await self.exchange.get_position(symbol)
+                cumulative_quantity = (
+                    float(position.quantity) if position is not None else float(row["quantity"]) + quantity
+                )
+                weighted_entry = (
+                    float(position.entry_price)
+                    if position is not None
+                    else (
+                        float(row["entry_price"]) * float(row["quantity"])
+                        + entry_price * quantity
+                    ) / cumulative_quantity
+                )
+                self.trade_store.update_trade(
+                    row_id,
+                    quantity=cumulative_quantity,
+                    entry_price=weighted_entry,
+                    broker_order_id=order_id,
+                )
+                if trade_id is not None:
+                    self._dashboard_order_trade_ids[order_id] = trade_id
+                    self._dashboard_symbol_trade_ids[symbol] = trade_id
+                    self._dashboard_trade_row_ids[trade_id] = row_id
+                    self._enqueue_trade_row(trade_id, entry_time)
+                return trade_id
             trade_id = f"{account_id}:{order_id}"
             trade_side = "buy" if signal_value == 1 else "sell"
             trade = Trade(
@@ -352,6 +485,7 @@ class TradingOrchestrator:
                 quantity=quantity,
                 entry_price=entry_price,
                 entry_time=entry_time,
+                pnl_currency=getattr(order, "trade_currency", None),
                 strategy=self.strategy.config.name if self.strategy else "orb",
             )
             row_id = self.trade_store.insert_trade(trade)
@@ -380,6 +514,8 @@ class TradingOrchestrator:
         exit_price: float,
         exit_time: datetime,
         exit_reason: str,
+        filled_quantity: Optional[float] = None,
+        remaining_quantity: float = 0.0,
     ) -> None:
         if not self.config.dashboard.enabled:
             return
@@ -388,7 +524,12 @@ class TradingOrchestrator:
             row_id = self._dashboard_trade_row_ids.get(trade_id) if trade_id is not None else None
             row = self.trade_store.get_trade_by_id(row_id) if row_id is not None else None
             if row is None:
-                open_trades = self.trade_store.get_trades(symbol=symbol, status="open", limit=1)
+                open_trades = self.trade_store.get_trades(
+                    symbol=symbol,
+                    status="open",
+                    account_id=self._dashboard_account_id(),
+                    limit=1,
+                )
                 if not open_trades:
                     return
                 row = open_trades[0]
@@ -400,93 +541,541 @@ class TradingOrchestrator:
                 self._dashboard_trade_row_ids[trade_id] = row_id
             if row is None:
                 return
-            entry_price = float(row["entry_price"])
-            quantity = float(row["quantity"])
-            if row["side"] == "buy":
-                pnl = (exit_price - entry_price) * quantity
-                pnl_pct = ((exit_price - entry_price) / entry_price) * 100 if entry_price else 0.0
-            else:
-                pnl = (entry_price - exit_price) * quantity
-                pnl_pct = ((entry_price - exit_price) / entry_price) * 100 if entry_price else 0.0
-            self.trade_store.update_trade(
-                row_id,
-                exit_price=exit_price,
-                exit_time=exit_time.isoformat(),
-                status="closed",
-                pnl=pnl,
-                pnl_pct=pnl_pct,
-                exit_reason=exit_reason,
-                broker_order_id=order_id,
+            cumulative_order_quantity = (
+                float(filled_quantity)
+                if filled_quantity is not None
+                else float(row["quantity"])
             )
+            updated_row = self.trade_store.apply_exit_projection(
+                trade_row_id=row_id,
+                trade_id=trade_id,
+                order_id=order_id,
+                cumulative_quantity=cumulative_order_quantity,
+                cumulative_avg_price=exit_price,
+                remaining_quantity=remaining_quantity,
+                exit_time=exit_time,
+                exit_reason=exit_reason,
+            )
+            if updated_row is None:
+                return
+            is_flat = remaining_quantity <= 0
             self._dashboard_order_trade_ids[order_id] = trade_id
+            self._dashboard_exit_order_progress[order_id] = (
+                cumulative_order_quantity,
+                exit_price * cumulative_order_quantity,
+            )
             self._enqueue_trade_row(trade_id, exit_time)
-            await self._record_dashboard_order_event("TRADE_CLOSED", order_id)
-            self._dashboard_symbol_trade_ids.pop(symbol, None)
+            await self._record_dashboard_order_event("ORDER_FILLED", order_id)
+            if is_flat:
+                await self._record_dashboard_order_event("TRADE_CLOSED", order_id)
+                self._dashboard_symbol_trade_ids.pop(symbol, None)
         except Exception as exc:
             self.logger.warning("Dashboard trade exit persistence failed for %s: %s", order_id, exc)
+
+    async def _sync_open_trade_after_entry_fill(self, order: Any) -> None:
+        """Project later entry/retry fills onto the existing logical trade."""
+        position = await self.exchange.get_position(order.symbol)
+        if position is None:
+            return
+        tracked = self.strategy.get_position(order.symbol) if self.strategy is not None else None
+        pending_entry = (
+            self.trade_executor.get_pending_entry(order.order_id)
+            if self.trade_executor is not None
+            else None
+        )
+        open_trades = (
+            self.trade_store.get_trades(
+                symbol=order.symbol,
+                status="open",
+                account_id=self._dashboard_account_id(),
+                limit=1,
+            )
+            if self.config.dashboard.enabled
+            else []
+        )
+        row = open_trades[0] if open_trades else None
+        projected_side = (
+            row["side"]
+            if row is not None
+            else tracked.get("side")
+            if tracked is not None
+            else pending_entry.get("side")
+            if pending_entry is not None
+            else None
+        )
+        if projected_side != order.side:
+            return
+
+        if tracked is not None:
+            tracked["quantity"] = float(position.quantity)
+            tracked["entry_price"] = float(position.entry_price)
+        elif self.strategy is not None and pending_entry is not None:
+            entry_time = order.filled_at or datetime.now(timezone.utc)
+            trailing_stop = getattr(
+                getattr(self.ruleset, "exit", None),
+                "trailing_stop",
+                None,
+            )
+            self.strategy.track_position(
+                symbol=order.symbol,
+                side=order.side,
+                entry_price=float(position.entry_price),
+                take_profit=pending_entry.get("take_profit"),
+                stop_loss=pending_entry.get("stop_price"),
+                timestamp=entry_time,
+                quantity=float(position.quantity),
+                trailing_stop=(
+                    trailing_stop.model_dump()
+                    if trailing_stop is not None
+                    else None
+                ),
+            )
+            if hasattr(self.strategy, "mark_traded_today"):
+                self.strategy.mark_traded_today(order.symbol, entry_time.date())
+
+        if not self.config.dashboard.enabled:
+            if pending_entry is not None and self.trade_executor is not None:
+                self.trade_executor.clear_pending_entry(order.order_id)
+            return
+        if row is None:
+            await self._persist_dashboard_trade_entry(
+                symbol=order.symbol,
+                order_id=order.order_id,
+                signal_value=1 if order.side == "buy" else -1,
+                quantity=float(position.quantity),
+                entry_price=float(position.entry_price),
+                entry_time=order.filled_at or datetime.now(timezone.utc),
+            )
+            if pending_entry is not None and self.trade_executor is not None:
+                self.trade_executor.clear_pending_entry(order.order_id)
+            return
+        row_id = int(row["id"])
+        trade_id = row.get("trade_id")
+        self.trade_store.update_trade(
+            row_id,
+            quantity=float(position.quantity),
+            entry_price=float(position.entry_price),
+            broker_order_id=order.order_id,
+        )
+        if trade_id is not None:
+            self._dashboard_order_trade_ids[order.order_id] = trade_id
+            self._dashboard_symbol_trade_ids[order.symbol] = trade_id
+            self._dashboard_trade_row_ids[trade_id] = row_id
+            self._enqueue_trade_row(
+                trade_id,
+                order.filled_at or datetime.now(timezone.utc),
+            )
+        if pending_entry is not None and self.trade_executor is not None:
+            self.trade_executor.clear_pending_entry(order.order_id)
+
+    async def _sync_open_trade_after_exit_fill(self, order: Any) -> None:
+        """Apply asynchronous close/retry fills and close state only when flat."""
+        if not order.filled_qty:
+            return
+        exit_reason = self._pending_exit_reasons.get(
+            order.symbol,
+            "broker_close_fill",
+        )
+        tracked = self.strategy.get_position(order.symbol) if self.strategy is not None else None
+        open_trades = (
+            self.trade_store.get_trades(
+                symbol=order.symbol,
+                status="open",
+                account_id=self._dashboard_account_id(),
+                limit=1,
+            )
+            if self.config.dashboard.enabled
+            else []
+        )
+        tracked_side = (
+            open_trades[0]["side"]
+            if open_trades
+            else tracked.get("side")
+            if tracked is not None
+            else None
+        )
+        if tracked_side is None or tracked_side == order.side:
+            return
+        position = await self.exchange.get_position(order.symbol)
+        remaining_quantity = float(position.quantity) if position is not None else 0.0
+        if remaining_quantity <= 0:
+            if self.strategy is not None:
+                self.strategy.close_position(order.symbol)
+            if self.trade_executor is not None:
+                self.trade_executor.clear_pending_close(symbol=order.symbol)
+        elif tracked is not None:
+            tracked["quantity"] = remaining_quantity
+            tracked["entry_price"] = float(position.entry_price)
+
+        if not self.config.dashboard.enabled:
+            if remaining_quantity <= 0:
+                self._pending_exit_reasons.pop(order.symbol, None)
+            return
+        exit_time = order.filled_at or datetime.now(timezone.utc)
+        await self._persist_dashboard_trade_exit(
+            symbol=order.symbol,
+            order_id=order.order_id,
+            exit_price=float(order.avg_price or order.price),
+            exit_time=exit_time,
+            exit_reason=exit_reason,
+            filled_quantity=float(order.filled_qty),
+            remaining_quantity=remaining_quantity,
+        )
+        if remaining_quantity <= 0:
+            self._pending_exit_reasons.pop(order.symbol, None)
 
     def _record_dashboard_fill_metrics(
         self,
         *,
-        order: Any,
-        event_type: str,
-        timestamp: datetime,
-        slippage_bps: Optional[float],
-        latency_ms: Optional[float],
+        event: OrderEvent,
     ) -> None:
         if self.operational_metrics_store is None:
             return
         try:
-            metric_key = f"{event_type}:{order.order_id}"
-            if metric_key in self._dashboard_metric_recorded_events:
+            if event.execution_id is None:
                 return
-            account_id = self._dashboard_account_id()
             dimensions = {
-                "account_id": account_id,
-                "broker": self._dashboard_broker_name(),
-                "symbol": order.symbol,
-                "side": order.side,
-                "broker_order_id": order.order_id,
-                "event_type": event_type,
-                "status": getattr(order.status, "name", str(order.status)),
+                "account_id": event.account_id,
+                "broker": event.broker,
+                "symbol": event.symbol,
+                "side": event.side,
+                "execution_id": event.execution_id,
+                "broker_order_id": event.broker_order_id,
+                "permanent_order_id": event.permanent_order_id or "",
+                "event_type": event.event_type,
+                "status": event.raw_status or "",
+                "trade_currency": event.trade_currency or "unknown",
+                "commission_currency": event.commission_currency or "unknown",
+                "slippage_version": str(event.slippage_version),
+                "slippage_valid": str(event.slippage_valid).lower(),
             }
             samples = [
-                ("actual_fill_price", order.avg_price),
-                ("fill_quantity", order.filled_qty),
-                ("commission", order.commission),
+                ("actual_fill_price", event.price),
+                ("fill_quantity", event.quantity),
+                ("commission", event.commission),
             ]
-            if order.price not in (None, 0):
-                samples.append(("expected_fill_price", order.price))
-            if slippage_bps is not None:
-                samples.append(("slippage_bps", slippage_bps))
+            if event.benchmark_price not in (None, 0):
+                samples.append(("expected_fill_price", event.benchmark_price))
+            if event.slippage_amount is not None:
+                samples.append(("slippage", event.slippage_amount))
+            if event.slippage_bps is not None:
+                samples.append(("slippage_bps", event.slippage_bps))
+            latency_ms = event.submission_to_fill_latency_ms
+            if latency_ms is None:
+                latency_ms = _elapsed_ms(event.submitted_at, event.filled_at or event.occurred_at)
             if latency_ms is not None:
                 samples.append(("latency_ms", latency_ms))
 
             for metric_name, metric_value in samples:
-                metric_id = self.operational_metrics_store.record_metric(
+                if metric_value is None:
+                    continue
+                aggregate_id = f"{event.execution_id}:{metric_name}"
+                self.operational_metrics_store.record_metric(
                     metric_type=MetricType.TRADE.value,
                     metric_name=metric_name,
-                    metric_value=float(metric_value or 0.0),
+                    metric_value=float(metric_value),
                     dimensions=dimensions,
-                    timestamp=timestamp.isoformat(),
+                    timestamp=_iso_datetime(event.filled_at or event.occurred_at),
+                    idempotency_key=aggregate_id,
                 )
-                aggregate_id = f"{metric_name}:{order.order_id}:{metric_id}"
                 self._enqueue_dashboard_event(
                     event_id=f"metric:{aggregate_id}",
                     event_type="upsert",
                     aggregate_type="metric",
                     aggregate_id=aggregate_id,
                     payload={
+                        "metric_id": aggregate_id,
                         "metric_name": metric_name,
-                        "metric_value": float(metric_value or 0.0),
+                        "metric_value": float(metric_value),
                         "dimensions": dimensions,
-                        "timestamp": timestamp.isoformat(),
+                        "timestamp": _iso_datetime(event.filled_at or event.occurred_at),
                     },
-                    original_event_timestamp=timestamp,
+                    original_event_timestamp=event.filled_at or event.occurred_at,
                 )
-            self._dashboard_metric_recorded_events.add(metric_key)
         except Exception as exc:
-            self.logger.warning("Dashboard fill metric persistence failed for %s: %s", order.order_id, exc)
+            self.logger.warning("Dashboard fill metric persistence failed for %s: %s", event.execution_id, exc)
+
+    def _ingest_durable_ib_execution(self, execution: Dict[str, Any]) -> None:
+        """Project one durable IB execution or commission correction idempotently."""
+        if self.dashboard_store is None and self.operational_metrics_store is None:
+            return
+        try:
+            if execution.get("account_id"):
+                self._resolved_dashboard_account_id = str(execution["account_id"])
+            metadata = execution.get("order_metadata") or {}
+            benchmark_price = metadata.get("benchmark_price")
+            benchmark_version = int(metadata.get("benchmark_version") or 1)
+            benchmark_valid = (
+                benchmark_version == 2 and benchmark_price not in (None, 0)
+            )
+            execution_price = float(execution["price"])
+            slippage_amount = None
+            slippage_bps = None
+            if benchmark_valid:
+                benchmark = float(benchmark_price)
+                slippage_amount = (
+                    execution_price - benchmark
+                    if execution["side"] == "buy"
+                    else benchmark - execution_price
+                )
+                slippage_bps = (slippage_amount / benchmark) * 10000.0
+            filled_at = execution["filled_at"]
+            submitted_at = metadata.get("submitted_at")
+            decision_at = metadata.get("decision_at")
+            event_id = f"EXECUTION:{execution['execution_id']}"
+            existing_event = self.dashboard_store.get_row(
+                "order_events", "event_id", event_id
+            ) if self.dashboard_store is not None else None
+            event = OrderEvent(
+                event_id=event_id,
+                execution_id=str(execution["execution_id"]),
+                account_id=(
+                    execution.get("account_id")
+                    or getattr(self.config.broker, "ib_account_id", None)
+                    or "unknown"
+                ),
+                broker="interactive_brokers",
+                broker_order_id=str(execution["broker_order_id"]),
+                permanent_order_id=execution.get("permanent_order_id"),
+                event_type="ORDER_FILLED",
+                symbol=execution["symbol"],
+                side=execution["side"],
+                quantity=float(execution["quantity"]),
+                trade_id=(
+                    self._dashboard_order_trade_ids.get(str(execution["broker_order_id"]))
+                    or (existing_event or {}).get("trade_id")
+                ),
+                price=execution_price,
+                expected_price=benchmark_price,
+                benchmark_type=metadata.get("benchmark_type"),
+                benchmark_price=benchmark_price,
+                quote_bid=metadata.get("quote_bid"),
+                quote_ask=metadata.get("quote_ask"),
+                quote_midpoint=metadata.get("quote_midpoint"),
+                stop_price=metadata.get("stop_price"),
+                limit_price=metadata.get("limit_price"),
+                trade_currency=execution.get("trade_currency"),
+                commission=execution.get("commission"),
+                commission_currency=execution.get("commission_currency"),
+                decision_at=decision_at,
+                submitted_at=submitted_at,
+                filled_at=filled_at,
+                decision_to_submission_latency_ms=_elapsed_ms(decision_at, submitted_at),
+                submission_to_fill_latency_ms=_elapsed_ms(submitted_at, filled_at),
+                latency_ms=_elapsed_ms(submitted_at, filled_at),
+                slippage_amount=slippage_amount,
+                slippage_bps=slippage_bps,
+                slippage_version=benchmark_version,
+                slippage_valid=benchmark_valid,
+                occurred_at=filled_at,
+                raw_status="Filled",
+            )
+            if self._dashboard_enabled():
+                self._persist_and_publish_order_event(event)
+            self._record_dashboard_fill_metrics(event=event)
+        except Exception as exc:
+            self.logger.exception(
+                "Durable IB execution projection failed for %s: %s",
+                execution.get("execution_id"),
+                exc,
+            )
+
+    def _recover_durable_execution_projections(self) -> None:
+        """Repair execution projections and metrics across crash boundaries."""
+        list_executions = getattr(self.exchange, "list_durable_executions", None)
+        if list_executions is not None:
+            for execution in list_executions():
+                self._ingest_durable_ib_execution(execution)
+        if self.dashboard_store is not None:
+            for event in self.dashboard_store.iter_execution_order_events():
+                self._record_dashboard_fill_metrics(event=event)
+
+    async def _recover_durable_lifecycle_projections(self) -> None:
+        """Replay durable executions into trades and live strategy state."""
+        list_executions = getattr(self.exchange, "list_durable_executions", None)
+        if (
+            list_executions is None
+            or self.trade_executor is None
+            or self.strategy is None
+        ):
+            return
+
+        executions = sorted(
+            list_executions(),
+            key=lambda item: (
+                (
+                    _as_aware_datetime(item.get("filled_at"))
+                    or datetime.min.replace(tzinfo=timezone.utc)
+                ).astimezone(timezone.utc),
+                str(item.get("execution_id") or ""),
+            ),
+        )
+        positions: Dict[tuple[str, str], Dict[str, Any]] = {}
+        close_progress: Dict[str, tuple[float, float]] = {}
+
+        for execution in executions:
+            execution_id = str(execution["execution_id"])
+            order_id = str(execution["broker_order_id"])
+            account_id = str(
+                execution.get("account_id")
+                or getattr(self.config.broker, "ib_account_id", None)
+                or self._dashboard_account_id()
+            )
+            symbol = str(execution["symbol"])
+            side = str(execution["side"])
+            quantity = abs(float(execution["quantity"]))
+            price = float(execution["price"])
+            filled_at = _as_aware_datetime(execution.get("filled_at"))
+            if filled_at is None:
+                raise RuntimeError(
+                    f"Durable execution {execution_id} is missing filled_at"
+                )
+            metadata = execution.get("order_metadata") or {}
+            key = (account_id, symbol)
+            state = positions.setdefault(
+                key,
+                {
+                    "signed_quantity": 0.0,
+                    "avg_price": 0.0,
+                    "entry_metadata": {},
+                    "last_order_id": order_id,
+                    "opened_at": filled_at,
+                },
+            )
+            signed_fill = quantity if side == "buy" else -quantity
+            previous_signed = float(state["signed_quantity"])
+            is_entry = (
+                previous_signed == 0
+                or (previous_signed > 0 and signed_fill > 0)
+                or (previous_signed < 0 and signed_fill < 0)
+            )
+
+            if is_entry:
+                row, _ = self.trade_store.apply_entry_execution_projection(
+                    execution_id=execution_id,
+                    broker_order_id=order_id,
+                    account_id=account_id,
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    price=price,
+                    entry_time=filled_at,
+                    pnl_currency=execution.get("trade_currency"),
+                    strategy=metadata.get("strategy_name")
+                    or self.strategy.config.name,
+                )
+                previous_quantity = abs(previous_signed)
+                total_quantity = previous_quantity + quantity
+                state["avg_price"] = (
+                    float(state["avg_price"]) * previous_quantity
+                    + price * quantity
+                ) / total_quantity
+                state["entry_metadata"] = {
+                    **state["entry_metadata"],
+                    **metadata,
+                }
+                if previous_quantity == 0:
+                    state["opened_at"] = filled_at
+                trade_id = str(row["trade_id"])
+                self._dashboard_symbol_trade_ids[symbol] = trade_id
+                self._dashboard_order_trade_ids[order_id] = trade_id
+                self._dashboard_trade_row_ids[trade_id] = int(row["id"])
+            else:
+                open_rows = self.trade_store.get_trades(
+                    symbol=symbol,
+                    status="open",
+                    account_id=account_id,
+                    limit=1,
+                )
+                if open_rows:
+                    row = open_rows[0]
+                    cumulative_quantity, cumulative_notional = close_progress.get(
+                        order_id,
+                        (0.0, 0.0),
+                    )
+                    cumulative_quantity += quantity
+                    cumulative_notional += quantity * price
+                    close_progress[order_id] = (
+                        cumulative_quantity,
+                        cumulative_notional,
+                    )
+                    remaining_quantity = abs(previous_signed + signed_fill)
+                    if not self.trade_store.has_execution_lifecycle_projection(
+                        execution_id
+                    ):
+                        self.trade_store.apply_exit_projection(
+                            trade_row_id=int(row["id"]),
+                            trade_id=str(row["trade_id"]),
+                            order_id=order_id,
+                            cumulative_quantity=cumulative_quantity,
+                            cumulative_avg_price=(
+                                cumulative_notional / cumulative_quantity
+                            ),
+                            remaining_quantity=remaining_quantity,
+                            exit_time=filled_at,
+                            exit_reason=metadata.get("exit_reason")
+                            or "recovered_broker_close",
+                        )
+                        self.trade_store.mark_execution_lifecycle_projection(
+                            execution_id=execution_id,
+                            action="exit",
+                            trade_id=str(row["trade_id"]),
+                            trade_row_id=int(row["id"]),
+                        )
+                    self._dashboard_order_trade_ids[order_id] = str(
+                        row["trade_id"]
+                    )
+
+            new_signed = previous_signed + signed_fill
+            if previous_signed and new_signed and (
+                (previous_signed > 0) != (new_signed > 0)
+            ):
+                # Strategy orders are not allowed to reverse through zero.
+                self.logger.error(
+                    "Ignoring unsupported recovered position reversal for %s",
+                    symbol,
+                )
+                new_signed = 0.0
+            state["signed_quantity"] = new_signed
+            state["last_order_id"] = order_id
+
+        for (_, symbol), state in positions.items():
+            signed_quantity = float(state["signed_quantity"])
+            if abs(signed_quantity) <= 1e-9:
+                continue
+            quantity = abs(signed_quantity)
+            side = "buy" if signed_quantity > 0 else "sell"
+            metadata = state["entry_metadata"]
+            stop_price = metadata.get("strategy_stop_price")
+            if stop_price is None:
+                stop_price = metadata.get("stop_price")
+            if stop_price is None:
+                # Unknown historical risk levels must not create an immediate
+                # price-triggered exit; EOD management remains active.
+                stop_price = 0.0 if side == "buy" else float("inf")
+            self.strategy.track_position(
+                symbol=symbol,
+                side=side,
+                entry_price=float(state["avg_price"]),
+                take_profit=metadata.get("take_profit"),
+                stop_loss=float(stop_price),
+                timestamp=state["opened_at"],
+                quantity=quantity,
+            )
+            if hasattr(self.strategy, "mark_traded_today"):
+                self.strategy.mark_traded_today(
+                    symbol,
+                    state["opened_at"].date(),
+                )
+            self.trade_executor._open_trades[symbol] = ExecutionResult(
+                success=True,
+                order_id=str(state["last_order_id"]),
+                reason="Recovered from durable broker executions",
+                position_size=quantity,
+                avg_price=float(state["avg_price"]),
+                remaining_position_size=quantity,
+            )
+            self.trade_executor.risk_manager.register_position()
 
     def _persist_dashboard_price_bar(self, symbol: str, bar_dict: dict) -> None:
         if not self.config.dashboard.enabled or self.dashboard_price_store is None:
@@ -543,31 +1132,67 @@ class TradingOrchestrator:
         broker_name = self._dashboard_broker_name()
         try:
             account = await self.exchange.get_account()
-            observed_at = account.timestamp
+            if getattr(account, "account_id", None):
+                self._resolved_dashboard_account_id = account.account_id
+            account_id = self._dashboard_account_id()
+            from vibe.trading_bot.utils.datetime_utils import ensure_timezone_aware
+
+            observed_at = ensure_timezone_aware(account.timestamp, self.market_scheduler.timezone)
+            base_currency = account.base_currency
             account_record = AccountRecord(
                 account_id=account_id,
                 broker=broker_name,
                 display_name=account_id,
-                currency=getattr(self.config.broker, "ib_currency", "USD"),
+                currency=base_currency,
                 mode=getattr(self.config.broker, "mode", "paper"),
             )
             position_records = []
-            total_unrealized_pnl = 0.0
             for symbol in self.active_symbols:
-                position = await self.exchange.get_position(symbol)
+                position_snapshot_getter = getattr(
+                    self.exchange,
+                    "get_position_snapshot",
+                    None,
+                )
+                broker_position = (
+                    await position_snapshot_getter(symbol)
+                    if position_snapshot_getter is not None
+                    else None
+                )
+                position = (
+                    None
+                    if position_snapshot_getter is not None
+                    else await self.exchange.get_position(symbol)
+                )
+                position_source = broker_position or position
                 if position is None:
-                    quantity = 0.0
-                    side = "flat"
-                    avg_cost = None
-                    market_price = None
-                    unrealized_pnl = None
+                    if broker_position is None:
+                        quantity = 0.0
+                        side = "flat"
+                        avg_cost = None
+                        market_price = None
+                        unrealized_pnl = None
+                    else:
+                        quantity = abs(float(broker_position.quantity))
+                        side = "long" if broker_position.quantity > 0 else "short"
+                        avg_cost = broker_position.avg_cost
+                        market_price = broker_position.market_price
+                        unrealized_pnl = broker_position.unrealized_pnl
                 else:
                     quantity = position.quantity
                     side = position.side if position.quantity != 0 else "flat"
                     avg_cost = position.entry_price
                     market_price = position.current_price
                     unrealized_pnl = position.unrealized_pnl
-                    total_unrealized_pnl += float(unrealized_pnl or 0.0)
+                instrument_currency = (
+                    getattr(position_source, "instrument_currency", None)
+                    if position_source is not None
+                    else None
+                )
+                unrealized_pnl_currency = (
+                    getattr(position_source, "unrealized_pnl_currency", None)
+                    if position_source is not None
+                    else None
+                )
                 position_record = PositionSnapshot(
                     position_id=f"{account_id}:{symbol}",
                     account_id=account_id,
@@ -578,6 +1203,8 @@ class TradingOrchestrator:
                     market_price=market_price,
                     unrealized_pnl=unrealized_pnl,
                     updated_at=observed_at,
+                    instrument_currency=instrument_currency,
+                    unrealized_pnl_currency=unrealized_pnl_currency,
                 )
                 position_payload = {
                     "position_id": position_record.position_id,
@@ -588,19 +1215,87 @@ class TradingOrchestrator:
                     "avg_cost": avg_cost,
                     "market_price": market_price,
                     "unrealized_pnl": unrealized_pnl,
+                    "instrument_currency": position_record.instrument_currency,
+                    "unrealized_pnl_currency": position_record.unrealized_pnl_currency,
                     "updated_at": observed_at.isoformat(),
                     "reason": reason,
                 }
                 position_records.append((position_record, position_payload))
+            closed_trades = self.trade_store.get_trades(
+                status="closed",
+                account_id=account_id,
+                limit=10000,
+            )
+            partially_closed_trades = [
+                trade
+                for trade in self.trade_store.get_trades(
+                    status="open",
+                    account_id=account_id,
+                    limit=10000,
+                )
+                if float(trade.get("closed_quantity") or 0.0) > 0
+                and trade.get("pnl") is not None
+            ]
+            realized_trades = [*closed_trades, *partially_closed_trades]
+            pnl_currencies = {
+                trade.get("pnl_currency")
+                for trade in realized_trades
+                if trade.get("pnl") is not None and trade.get("pnl_currency")
+            }
+            all_realized_currencies_known = all(
+                trade.get("pnl_currency")
+                for trade in realized_trades
+                if trade.get("pnl") is not None
+            )
+            local_realized_pnl = (
+                sum(
+                    float(trade["pnl"])
+                    for trade in realized_trades
+                    if trade.get("pnl") is not None
+                )
+                if len(pnl_currencies) == 1 and all_realized_currencies_known
+                else None
+            )
+            local_realized_pnl_currency = (
+                next(iter(pnl_currencies))
+                if len(pnl_currencies) == 1 and all_realized_currencies_known
+                else None
+            )
             snapshot = EquitySnapshot(
                 snapshot_id=f"{account_id}:{observed_at.isoformat()}",
                 account_id=account_id,
                 timestamp=observed_at,
-                net_liquidation=account.equity,
-                cash=account.cash,
-                buying_power=account.buying_power,
-                realized_pnl=account.total_pnl,
-                unrealized_pnl=total_unrealized_pnl,
+                net_liquidation=account.broker_equity if account.broker_equity is not None else account.equity,
+                cash=account.broker_cash if account.broker_cash is not None else account.cash,
+                buying_power=(
+                    account.broker_buying_power
+                    if account.broker_buying_power is not None
+                    else account.buying_power
+                ),
+                realized_pnl=account.realized_pnl,
+                unrealized_pnl=account.unrealized_pnl,
+                base_currency=account.base_currency,
+                net_liquidation_currency=account.equity_currency,
+                cash_currency=account.cash_currency,
+                buying_power_currency=account.buying_power_currency,
+                realized_pnl_currency=account.realized_pnl_currency,
+                unrealized_pnl_currency=account.unrealized_pnl_currency,
+                pnl_provenance=(
+                    "broker"
+                    if account.realized_pnl is not None
+                    or account.unrealized_pnl is not None
+                    else None
+                ),
+                realized_pnl_provenance=(
+                    "broker" if account.realized_pnl is not None else None
+                ),
+                unrealized_pnl_provenance=(
+                    "broker" if account.unrealized_pnl is not None else None
+                ),
+                pnl_version=2,
+                local_realized_pnl=local_realized_pnl,
+                local_realized_pnl_currency=local_realized_pnl_currency,
+                event_type=reason,
                 source=broker_name,
             )
             self.dashboard_store.upsert_account(account_record)
@@ -622,11 +1317,26 @@ class TradingOrchestrator:
                     "snapshot_id": snapshot.snapshot_id,
                     "account_id": account_id,
                     "timestamp": observed_at.isoformat(),
-                    "net_liquidation": account.equity,
-                    "cash": account.cash,
-                    "buying_power": account.buying_power,
-                    "realized_pnl": account.total_pnl,
-                    "unrealized_pnl": total_unrealized_pnl,
+                    "net_liquidation": snapshot.net_liquidation,
+                    "cash": snapshot.cash,
+                    "buying_power": snapshot.buying_power,
+                    "realized_pnl": account.realized_pnl,
+                    "unrealized_pnl": account.unrealized_pnl,
+                    "base_currency": snapshot.base_currency,
+                    "net_liquidation_currency": snapshot.net_liquidation_currency,
+                    "cash_currency": snapshot.cash_currency,
+                    "buying_power_currency": snapshot.buying_power_currency,
+                    "realized_pnl_currency": snapshot.realized_pnl_currency,
+                    "unrealized_pnl_currency": snapshot.unrealized_pnl_currency,
+                    "pnl_provenance": snapshot.pnl_provenance,
+                    "realized_pnl_provenance": snapshot.realized_pnl_provenance,
+                    "unrealized_pnl_provenance": snapshot.unrealized_pnl_provenance,
+                    "pnl_version": snapshot.pnl_version,
+                    "local_realized_pnl": snapshot.local_realized_pnl,
+                    "local_realized_pnl_currency": snapshot.local_realized_pnl_currency,
+                    "granularity": snapshot.granularity,
+                    "period_start": None,
+                    "event_type": reason,
                     "source": broker_name,
                     "reason": reason,
                 },
@@ -634,15 +1344,36 @@ class TradingOrchestrator:
             )
 
             for position_record, position_payload in position_records:
-                self.dashboard_store.upsert_position(position_record)
-                self._enqueue_dashboard_event(
-                    event_id=f"position:{account_id}:{position_record.symbol}:{observed_at.isoformat()}",
+                first_observation = (
+                    position_record.position_id
+                    not in self._positions_published_this_process
+                )
+                changed = self.dashboard_store.upsert_position_if_changed(
+                    position_record,
+                    market_price_threshold=self.config.dashboard.position_market_price_threshold,
+                    unrealized_pnl_threshold=self.config.dashboard.position_unrealized_pnl_threshold,
+                )
+                needs_publication = self.dashboard_store.position_needs_publication(
+                    position_record.position_id
+                )
+                if not changed and not needs_publication and not first_observation:
+                    continue
+                enqueued = self._enqueue_dashboard_event(
+                    event_id=(
+                        f"position-startup:{self._position_publication_process_id}:"
+                        f"{position_record.position_id}"
+                        if first_observation and not needs_publication
+                        else f"position:{position_record.position_id}"
+                    ),
                     event_type="upsert",
                     aggregate_type="position",
                     aggregate_id=position_record.position_id,
                     payload=position_payload,
                     original_event_timestamp=observed_at,
                 )
+                if enqueued:
+                    self.dashboard_store.mark_position_enqueued(position_record.position_id)
+                    self._positions_published_this_process.add(position_record.position_id)
         except Exception as exc:
             self.logger.warning("Dashboard account/position persistence failed: %s", exc)
 
@@ -656,85 +1387,198 @@ class TradingOrchestrator:
             from vibe.trading_bot.utils.datetime_utils import get_market_now
             occurred_at = get_market_now(self.market_scheduler)
             account_id = self._dashboard_account_id()
-            event_id = f"{event_type}:{order_id}"
             fill_price = order.avg_price if order.avg_price > 0 else None
-            is_fill_event = event_type in {"ORDER_FILLED", "TRADE_CLOSED"}
-            event_price = fill_price if is_fill_event else order.price
-            latency_ms = None
             if event_type == "ORDER_SENT":
+                event_id = f"{event_type}:{order_id}"
                 existing_sent_event = self.dashboard_store.get_row("order_events", "event_id", event_id)
                 if existing_sent_event is not None:
                     occurred_at = datetime.fromisoformat(existing_sent_event["occurred_at"])
                 self._dashboard_order_sent_at[order_id] = occurred_at
-            elif is_fill_event:
-                sent_at = self._dashboard_order_sent_at.get(order_id)
-                if sent_at is None:
-                    sent_event = self.dashboard_store.get_row("order_events", "event_id", f"ORDER_SENT:{order_id}")
-                    if sent_event is not None:
-                        sent_at = datetime.fromisoformat(sent_event["occurred_at"])
-                if sent_at is not None:
-                    latency_ms = max(0.0, (occurred_at - sent_at).total_seconds() * 1000.0)
-            if is_fill_event and fill_price is not None and order.price not in (None, 0):
-                if order.side == "buy":
-                    slippage_bps = ((fill_price - order.price) / order.price) * 10000.0
-                else:
-                    slippage_bps = ((order.price - fill_price) / order.price) * 10000.0
-            else:
-                slippage_bps = None
             trade_id = self._dashboard_order_trade_ids.get(order_id)
+            if event_type == "ORDER_FILLED":
+                executions = list(getattr(order, "executions", []) or [])
+                if not executions:
+                    execution_id = getattr(order, "execution_id", None)
+                    if self._dashboard_broker_name() == "interactive_brokers" and not execution_id:
+                        raise RuntimeError(f"IB order {order_id} has no execution ID")
+                    executions = [{
+                        "execution_id": execution_id or f"{self._dashboard_broker_name()}:{order_id}:aggregate",
+                        "broker_order_id": order_id,
+                        "permanent_order_id": getattr(order, "permanent_order_id", None),
+                        "account_id": getattr(order, "account_id", None),
+                        "symbol": order.symbol,
+                        "side": order.side,
+                        "quantity": order.filled_qty,
+                        "price": fill_price,
+                        "filled_at": getattr(order, "filled_at", None) or occurred_at,
+                        "trade_currency": getattr(order, "trade_currency", None),
+                        "commission": order.commission,
+                        "commission_currency": getattr(order, "commission_currency", None),
+                    }]
+                for execution in executions:
+                    execution_id = str(execution["execution_id"])
+                    execution_price = float(execution["price"])
+                    benchmark_price = getattr(order, "benchmark_price", None)
+                    slippage_amount = None
+                    slippage_bps = None
+                    benchmark_valid = bool(
+                        getattr(order, "benchmark_valid", False)
+                        and benchmark_price not in (None, 0)
+                    )
+                    if benchmark_valid:
+                        if order.side == "buy":
+                            slippage_amount = execution_price - benchmark_price
+                        else:
+                            slippage_amount = benchmark_price - execution_price
+                        slippage_bps = (slippage_amount / benchmark_price) * 10000.0
+                    fill_at = execution.get("filled_at") or getattr(order, "filled_at", None) or occurred_at
+                    submitted_at = getattr(order, "submitted_at", None)
+                    decision_at = getattr(order, "decision_at", None)
+                    order_event = OrderEvent(
+                        event_id=f"EXECUTION:{execution_id}",
+                        execution_id=execution_id,
+                        account_id=execution.get("account_id") or account_id,
+                        broker=self._dashboard_broker_name(),
+                        broker_order_id=str(execution.get("broker_order_id") or order_id),
+                        permanent_order_id=execution.get("permanent_order_id"),
+                        event_type=event_type,
+                        symbol=execution.get("symbol") or order.symbol,
+                        side=execution.get("side") or order.side,
+                        quantity=float(execution.get("quantity") or 0.0),
+                        trade_id=trade_id,
+                        price=execution_price,
+                        expected_price=benchmark_price,
+                        benchmark_type=getattr(order, "benchmark_type", None),
+                        benchmark_price=benchmark_price,
+                        quote_bid=getattr(order, "quote_bid", None),
+                        quote_ask=getattr(order, "quote_ask", None),
+                        quote_midpoint=getattr(order, "quote_midpoint", None),
+                        stop_price=getattr(order, "stop_price", None),
+                        limit_price=getattr(order, "limit_price", None),
+                        trade_currency=execution.get("trade_currency") or getattr(order, "trade_currency", None),
+                        commission=(
+                            float(execution["commission"])
+                            if execution.get("commission") is not None
+                            else None
+                        ),
+                        commission_currency=execution.get("commission_currency"),
+                        decision_at=decision_at,
+                        submitted_at=submitted_at,
+                        filled_at=fill_at,
+                        decision_to_submission_latency_ms=_elapsed_ms(decision_at, submitted_at),
+                        submission_to_fill_latency_ms=_elapsed_ms(submitted_at, fill_at),
+                        latency_ms=_elapsed_ms(submitted_at, fill_at),
+                        slippage_amount=slippage_amount,
+                        slippage_bps=slippage_bps,
+                        slippage_version=int(getattr(order, "benchmark_version", 2)),
+                        slippage_valid=benchmark_valid,
+                        occurred_at=fill_at,
+                        raw_status=getattr(order.status, "name", str(order.status)),
+                    )
+                    self._persist_and_publish_order_event(order_event)
+                    self._record_dashboard_fill_metrics(event=order_event)
+                return
+
             order_event = OrderEvent(
-                event_id=event_id,
+                event_id=f"{event_type}:{order_id}",
                 account_id=account_id,
                 broker=self._dashboard_broker_name(),
                 broker_order_id=order_id,
                 event_type=event_type,
                 symbol=order.symbol,
                 side=order.side,
-                quantity=order.filled_qty if is_fill_event and order.filled_qty > 0 else order.quantity,
+                quantity=order.filled_qty if event_type == "TRADE_CLOSED" and order.filled_qty > 0 else order.quantity,
                 trade_id=trade_id,
-                price=event_price,
-                expected_price=order.price,
-                slippage_bps=slippage_bps,
-                latency_ms=latency_ms,
+                price=fill_price if event_type == "TRADE_CLOSED" else order.price,
+                trade_currency=getattr(order, "trade_currency", None),
+                expected_price=None,
+                slippage_version=2,
+                slippage_valid=False,
                 occurred_at=occurred_at,
                 raw_status=getattr(order.status, "name", str(order.status)),
             )
-            self.dashboard_store.upsert_order_event(order_event)
-            self._enqueue_dashboard_event(
-                event_id=f"order_event:{order_event.event_id}",
-                event_type="upsert",
-                aggregate_type="order_event",
-                aggregate_id=order_event.event_id,
-                payload={
-                    "event_id": order_event.event_id,
-                    "account_id": account_id,
-                    "broker": order_event.broker,
-                    "broker_order_id": order_id,
-                    "strategy_order_id": None,
-                    "trade_id": trade_id,
-                    "event_type": event_type,
-                    "symbol": order.symbol,
-                    "side": order.side,
-                    "quantity": order_event.quantity,
-                    "price": order_event.price,
-                    "expected_price": order_event.expected_price,
-                    "slippage_bps": order_event.slippage_bps,
-                    "latency_ms": order_event.latency_ms,
-                    "occurred_at": occurred_at.isoformat(),
-                    "raw_status": order_event.raw_status,
-                },
-                original_event_timestamp=occurred_at,
-            )
-            if is_fill_event:
-                self._record_dashboard_fill_metrics(
-                    order=order,
-                    event_type=event_type,
-                    timestamp=occurred_at,
-                    slippage_bps=slippage_bps,
-                    latency_ms=latency_ms,
-                )
+            self._persist_and_publish_order_event(order_event)
         except Exception as exc:
             self.logger.warning("Dashboard order event persistence failed for %s: %s", order_id, exc)
+
+    def run_dashboard_retention_maintenance(self) -> None:
+        """Stage and advance crash-safe local/remote dashboard retention."""
+        if self.dashboard_store is not None:
+            from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+            result = self.dashboard_store.downsample_equity_snapshots(
+                now=get_market_now(self.market_scheduler),
+                raw_retention_days=self.config.dashboard.equity_raw_retention_days,
+                five_minute_retention_days=self.config.dashboard.equity_five_minute_retention_days,
+                five_minute_bucket_minutes=self.config.dashboard.equity_bucket_minutes,
+                market_timezone=self.config.dashboard.equity_market_timezone,
+            )
+            self.logger.info(
+                "Equity retention staged: aggregated=%s retained=%s removed=%s",
+                result.aggregated,
+                result.retained,
+                result.removed,
+            )
+            removed = self._advance_equity_retention_jobs()
+            if removed:
+                self.logger.info(
+                    "Equity retention finalized after remote confirmation: removed=%s",
+                    removed,
+                )
+        if self.remote_data_publisher is not None:
+            self.remote_data_publisher.run_retention_maintenance(force=True)
+
+    def _advance_equity_retention_jobs(self) -> int:
+        if self.dashboard_store is None or self.dashboard_outbox_store is None:
+            return 0
+        removed = 0
+        for job in self.dashboard_store.pending_equity_retention_jobs():
+            aggregate_id = job["aggregate_snapshot_id"]
+            aggregate_event_id = f"equity_snapshot:{aggregate_id}"
+            payload = self.dashboard_store.equity_snapshot_payload(aggregate_id)
+            if payload is None:
+                continue
+            if not self.dashboard_outbox_store.is_published(aggregate_event_id, payload):
+                self._enqueue_dashboard_event(
+                    event_id=aggregate_event_id,
+                    event_type="upsert",
+                    aggregate_type="equity_snapshot",
+                    aggregate_id=aggregate_id,
+                    payload=payload,
+                    original_event_timestamp=payload["timestamp"],
+                )
+                continue
+
+            delete_event_id = f"equity_retention_delete:{job['job_id']}"
+            delete_payload = {"snapshot_ids": job["source_snapshot_ids"]}
+            if not self.dashboard_outbox_store.is_published(delete_event_id, delete_payload):
+                self._enqueue_dashboard_event(
+                    event_id=delete_event_id,
+                    event_type="delete",
+                    aggregate_type="equity_snapshot_delete",
+                    aggregate_id=job["job_id"],
+                    payload=delete_payload,
+                    original_event_timestamp=datetime.now(timezone.utc),
+                )
+                continue
+
+            removed += self.dashboard_store.complete_equity_retention_job(job["job_id"])
+        return removed
+
+    def _persist_and_publish_order_event(self, event: OrderEvent) -> None:
+        self.dashboard_store.upsert_order_event(event)
+        payload = {
+            key: _iso_datetime(value) if isinstance(value, datetime) else value
+            for key, value in event.__dict__.items()
+        }
+        self._enqueue_dashboard_event(
+            event_id=f"order_event:{event.event_id}",
+            event_type="upsert",
+            aggregate_type="order_event",
+            aggregate_id=event.event_id,
+            payload=payload,
+            original_event_timestamp=event.occurred_at,
+        )
 
     async def initialize(self) -> bool:
         """Initialize all components in correct order.
@@ -776,6 +1620,7 @@ class TradingOrchestrator:
             # 2. Initialize exchange
             try:
                 await self.exchange.initialize()
+                self._recover_durable_execution_projections()
                 self.logger.info("Exchange initialized")
             except Exception as e:
                 self.logger.error(f"Failed to initialize exchange: {e}")
@@ -882,6 +1727,17 @@ class TradingOrchestrator:
                         f"duration={self.config.strategy.orb_duration_minutes}m"
                     )
                 self.strategy = ORBStrategy(config=strategy_config)
+                await self._recover_durable_lifecycle_projections()
+                list_open_orders = getattr(self.exchange, "list_open_orders", None)
+                if list_open_orders is not None and self.trade_executor is not None:
+                    restored_count = self.trade_executor.order_manager.restore_open_orders(
+                        list_open_orders()
+                    )
+                    if restored_count:
+                        self.logger.info(
+                            "Restored %s open broker orders into lifecycle monitoring",
+                            restored_count,
+                        )
             except Exception as e:
                 self.logger.error(f"Failed to initialize strategy: {e}")
                 raise
@@ -1003,6 +1859,9 @@ class TradingOrchestrator:
 
             # 8.5. Start dashboard remote publisher if configured.
             await self._start_dashboard_publisher()
+            # Publish the first broker-observed account/position state once per
+            # process even when the market is closed and no trading cycle runs.
+            await self._persist_dashboard_account_and_positions(reason="startup")
 
             # 9. Provider connection now handled in warm-up phase (Step 2)
             # Removed old duplicate connection code that was causing rate limiting
@@ -2186,6 +3045,7 @@ class TradingOrchestrator:
                                     take_profit=signal_metadata.get("take_profit"),
                                     stop_loss=stop_price,
                                     timestamp=entry_time,
+                                    quantity=result.position_size,
                                     trailing_stop=(
                                         self.ruleset.exit.trailing_stop.model_dump()
                                         if self.ruleset and self.ruleset.exit.trailing_stop
@@ -2362,11 +3222,22 @@ class TradingOrchestrator:
     async def _on_order_filled(self, order_id: str) -> None:
         """Record and notify ORDER_FILLED events."""
         await self._record_dashboard_order_event("ORDER_FILLED", order_id)
+        order = await self.exchange.get_order(order_id)
+        if order is not None and self.trade_executor is not None:
+            await self.trade_executor.refresh_open_trade(order.symbol, order_id)
+        if order is not None:
+            await self._sync_open_trade_after_entry_fill(order)
+            await self._sync_open_trade_after_exit_fill(order)
         await self._persist_dashboard_account_and_positions(reason="order_filled")
         await self._on_order_filled_notification(order_id)
 
     async def _on_order_cancelled(self, order_id: str) -> None:
         """Record ORDER_CANCELLED events."""
+        if self.trade_executor is not None:
+            self.trade_executor.clear_pending_entry(order_id)
+            order = await self.exchange.get_order(order_id)
+            if order is not None:
+                self.trade_executor.clear_pending_close(symbol=order.symbol)
         await self._record_dashboard_order_event("ORDER_CANCELLED", order_id)
 
     async def _close_position_with_notification(
@@ -2379,9 +3250,17 @@ class TradingOrchestrator:
         """Close a position and send TRADE_CLOSED Discord notification."""
         from vibe.trading_bot.utils.datetime_utils import get_market_now
 
-        close_result = await self.trade_executor._close_position(symbol)
+        self._pending_exit_reasons[symbol] = exit_reason
+        close_result = await self.trade_executor._close_position(
+            symbol,
+            exit_reason=exit_reason,
+        )
 
         if not close_result.success:
+            # An accepted zero-fill order remains asynchronous and still owns
+            # this reason. Only a pre-submission failure has no order ID.
+            if not close_result.order_id:
+                self._pending_exit_reasons.pop(symbol, None)
             self.logger.warning(f"[EXIT FAILED] {symbol}: {close_result.reason}")
             return
 
@@ -2391,19 +3270,36 @@ class TradingOrchestrator:
         # Use actual exit fill price from exchange (includes slippage).
         # Falls back to bar close price if unavailable.
         actual_exit_price = close_result.avg_price if close_result.avg_price > 0 else current_price
-        slippage_dollars_exit = (current_price - actual_exit_price) * quantity  # positive = slipped against us
-        commission_est_exit = actual_exit_price * quantity * 0.001
+        exit_order = await self.exchange.get_order(close_result.order_id)
+        benchmark_price = (
+            getattr(exit_order, "benchmark_price", None)
+            if exit_order is not None
+            else None
+        )
+        close_side = "sell" if pos["side"] == "buy" else "buy"
+        if benchmark_price is None:
+            slippage_dollars_exit = None
+        else:
+            per_share_slippage = (
+                actual_exit_price - benchmark_price
+                if close_side == "buy"
+                else benchmark_price - actual_exit_price
+            )
+            slippage_dollars_exit = per_share_slippage * quantity
+        commission_est_exit = getattr(exit_order, "commission", 0.0) if exit_order is not None else 0.0
 
         pnl_per_share = (actual_exit_price - entry_price) if pos["side"] == "buy" \
             else (entry_price - actual_exit_price)
         pnl_total = pnl_per_share * quantity
         pnl_pct = (pnl_per_share / entry_price) * 100 if entry_price > 0 else 0.0
 
+        lifecycle_label = "TRADE CLOSED" if close_result.fully_closed else "TRADE PARTIALLY CLOSED"
         self.logger.info(
-            f"[TRADE CLOSED] {symbol}: {exit_reason} | "
+            f"[{lifecycle_label}] {symbol}: {exit_reason} | "
             f"Bar: ${current_price:.2f} | Fill: ${actual_exit_price:.2f} | "
             f"Entry (fill): ${entry_price:.2f} | {quantity} shares | "
-            f"Slippage: ${slippage_dollars_exit:+.2f} | Commission: ~${commission_est_exit:.2f} | "
+            f"Slippage: {slippage_dollars_exit if slippage_dollars_exit is not None else 'unavailable'} | "
+            f"Commission: {commission_est_exit:.2f} | "
             f"P&L (fills): ${pnl_total:+.2f} ({pnl_pct:+.2f}%)"
         )
 
@@ -2418,17 +3314,31 @@ class TradingOrchestrator:
         except Exception as _acct_err:
             self.logger.warning(f"Could not read account state after exit: {_acct_err}")
 
-        # Remove from strategy position tracking
-        self.strategy.close_position(symbol)
-
         await self._persist_dashboard_trade_exit(
             symbol=symbol,
             order_id=close_result.order_id,
             exit_price=actual_exit_price,
             exit_time=get_market_now(self.market_scheduler),
             exit_reason=exit_reason,
+            filled_quantity=quantity,
+            remaining_quantity=close_result.remaining_position_size,
         )
-        await self._persist_dashboard_account_and_positions(reason="trade_closed")
+        await self._persist_dashboard_account_and_positions(
+            reason="trade_closed" if close_result.fully_closed else "partial_close"
+        )
+
+        if not close_result.fully_closed:
+            pos["quantity"] = close_result.remaining_position_size
+            self.logger.info(
+                "[POSITION RETAINED] %s: %s shares remain open",
+                symbol,
+                close_result.remaining_position_size,
+            )
+            return
+
+        # Remove strategy state only after the broker confirms the position is flat.
+        self.strategy.close_position(symbol)
+        self._pending_exit_reasons.pop(symbol, None)
 
         # Send TRADE_CLOSED notification with actual fill-based P&L
         if (

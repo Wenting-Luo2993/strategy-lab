@@ -1,12 +1,13 @@
 """Unit tests for the Interactive Brokers execution adapter."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
 from vibe.common.models import OrderStatus
 from vibe.trading_bot.brokers.base import (
     BrokerAccount,
+    BrokerOrder,
     BrokerPosition,
     BrokerQuote,
     FillEvent,
@@ -32,6 +33,7 @@ class FakeBroker:
             ask=100.05,
             last=100.0,
             market_price=100.0,
+            timestamp=datetime.now(timezone.utc),
         )
 
     async def submit_order(self, order):
@@ -79,6 +81,8 @@ class FakeBroker:
                 quantity=1,
                 avg_cost=99.5,
                 market_price=100.25,
+                instrument_currency="CAD",
+                unrealized_pnl_currency="CAD",
             )
         ]
 
@@ -113,6 +117,48 @@ async def test_account_and_position_mapping():
     assert position.quantity == 1
     assert position.entry_price == 99.5
     assert position.current_price == 100.25
+    assert position.instrument_currency == "CAD"
+    assert position.unrealized_pnl_currency == "CAD"
+
+
+@pytest.mark.asyncio
+async def test_locally_recalculated_position_pnl_uses_instrument_currency():
+    class CadAccountUsdInstrumentBroker(FakeBroker):
+        async def get_account_info(self):
+            return BrokerAccount(
+                account_id="DU-CAD",
+                net_liquidation=10000,
+                cash=9000,
+                buying_power=20000,
+                currency="CAD",
+                unrealized_pnl=13.5,
+                unrealized_pnl_currency="CAD",
+            )
+
+        async def get_positions(self):
+            return [
+                BrokerPosition(
+                    symbol="QQQ",
+                    quantity=10,
+                    avg_cost=100,
+                    market_price=101,
+                    unrealized_pnl=13.5,
+                    instrument_currency="USD",
+                    unrealized_pnl_currency="CAD",
+                )
+            ]
+
+    engine = InteractiveBrokersExecutionEngine(
+        CadAccountUsdInstrumentBroker()
+    )
+
+    broker_snapshot = await engine.get_position_snapshot("QQQ")
+    local_position = await engine.get_position("QQQ")
+
+    assert broker_snapshot.unrealized_pnl == 13.5
+    assert broker_snapshot.unrealized_pnl_currency == "CAD"
+    assert local_position.unrealized_pnl == 10
+    assert local_position.unrealized_pnl_currency == "USD"
 
 
 @pytest.mark.asyncio
@@ -121,3 +167,30 @@ async def test_cancel_unknown_order_raises():
 
     with pytest.raises(ValueError, match="Unknown order"):
         await engine.cancel_order("missing")
+
+
+@pytest.mark.asyncio
+async def test_initialize_blocks_duplicate_symbol_for_restored_open_ib_order():
+    class BrokerWithOpenOrder(FakeBroker):
+        def list_open_orders(self):
+            return [{
+                "order": BrokerOrder(
+                    symbol="QQQ",
+                    side="buy",
+                    quantity=1,
+                    broker_order_id="existing",
+                    status="submitted",
+                ),
+                "filled_qty": 0.0,
+                "avg_price": 0.0,
+            }]
+
+    engine = InteractiveBrokersExecutionEngine(BrokerWithOpenOrder())
+    await engine.initialize()
+
+    restored = engine.list_open_orders()
+    assert len(restored) == 1
+    assert restored[0].order_id == "existing"
+    assert restored[0].status == OrderStatus.SUBMITTED
+    with pytest.raises(RuntimeError, match="refusing duplicate"):
+        await engine.submit_order("QQQ", "buy", 1, "market")

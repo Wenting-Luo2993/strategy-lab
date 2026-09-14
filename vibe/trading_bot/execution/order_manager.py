@@ -106,6 +106,9 @@ class ManagedOrder:
     cancel_after_seconds: Optional[float] = None
     """Optional order-specific timeout override."""
 
+    restored: bool = False
+    """Whether monitoring resumed from broker state after process recovery."""
+
 
 class OrderManager:
     """
@@ -149,12 +152,54 @@ class OrderManager:
         self._orders: Dict[str, ManagedOrder] = {}
         self._monitoring_tasks: Dict[str, asyncio.Task] = {}
 
+    def restore_open_orders(self, orders: List[Order]) -> int:
+        """Hydrate recovered broker orders without replaying creation/fill events.
+
+        The current filled quantity is the callback baseline. Only fills that
+        arrive after recovery are emitted into the normal lifecycle callbacks.
+        """
+        restored = 0
+        for order in orders:
+            if order.order_id in self._orders:
+                continue
+            if order.status not in {
+                OrderStatus.CREATED,
+                OrderStatus.PENDING,
+                OrderStatus.SUBMITTED,
+                OrderStatus.PARTIAL,
+            }:
+                continue
+            self._orders[order.order_id] = ManagedOrder(
+                order_id=order.order_id,
+                order=order,
+                submitted_at=datetime.now(),
+                filled_qty=float(order.filled_qty or 0.0),
+                restored=True,
+            )
+            self._monitoring_tasks[order.order_id] = asyncio.create_task(
+                self._monitor_order(order.order_id)
+            )
+            restored += 1
+        return restored
+
     def _emit_callback(self, callback: Optional[Callable[[str], Awaitable[None]]], order_id: str) -> None:
         if callback is None:
             return
         result = callback(order_id)
         if inspect.isawaitable(result):
             asyncio.create_task(result)
+
+    async def _emit_callback_ordered(
+        self,
+        callback: Optional[Callable[[str], Awaitable[None]]],
+        order_id: str,
+    ) -> None:
+        """Run lifecycle callbacks in order when terminal events race fills."""
+        if callback is None:
+            return
+        result = callback(order_id)
+        if inspect.isawaitable(result):
+            await result
 
     async def submit_order(
         self,
@@ -166,6 +211,7 @@ class OrderManager:
         limit_price: Optional[float] = None,
         stop_price: Optional[float] = None,
         cancel_after_seconds: Optional[float] = None,
+        lifecycle_metadata: Optional[dict] = None,
     ) -> OrderResponse:
         """
         Submit an order and manage its lifecycle.
@@ -184,7 +230,7 @@ class OrderManager:
             OrderResponse from initial submission
         """
         # Submit to exchange
-        response = await self.exchange.submit_order(
+        submission = dict(
             symbol=symbol,
             side=side,
             quantity=quantity,
@@ -193,11 +239,15 @@ class OrderManager:
             limit_price=limit_price,
             stop_price=stop_price,
         )
+        if lifecycle_metadata is not None:
+            submission["lifecycle_metadata"] = lifecycle_metadata
+        response = await self.exchange.submit_order(**submission)
 
         # Track the order
         managed = ManagedOrder(
             order_id=response.order_id,
             order=await self.exchange.get_order(response.order_id),
+            filled_qty=float(response.filled_qty or 0.0),
             cancel_after_seconds=cancel_after_seconds,
         )
         self._orders[response.order_id] = managed
@@ -217,6 +267,8 @@ class OrderManager:
             managed.terminal_status = OrderStatus.FILLED
             self._emit_callback(self._on_order_filled, response.order_id)
         else:
+            if response.filled_qty > 0:
+                self._emit_callback(self._on_order_filled, response.order_id)
             task = asyncio.create_task(
                 self._monitor_order(response.order_id)
             )
@@ -245,15 +297,19 @@ class OrderManager:
                 logger.warning(f"Order not found: {order_id}")
                 break
 
+            previous_filled = managed.filled_qty
             current_filled = order.filled_qty
             managed.filled_qty = current_filled
+            if current_filled > previous_filled:
+                await self._emit_callback_ordered(
+                    self._on_order_filled,
+                    order_id,
+                )
 
             # Check if fully filled
             if current_filled >= order.quantity:
                 managed.completed_at = datetime.now()
                 managed.terminal_status = OrderStatus.FILLED
-
-                self._emit_callback(self._on_order_filled, order_id)
 
                 logger.info(f"Order filled: {order_id}")
                 break
@@ -265,12 +321,41 @@ class OrderManager:
                 and elapsed < cancel_after_seconds
             )
             if not should_retry:
-                # Timeout - cancel the order
-                await self.exchange.cancel_order(order_id)
+                # A fill may win the race with cancellation. The exchange
+                # reconstructs its order from the durable execution journal
+                # before returning the terminal cancellation response.
+                cancellation = await self.exchange.cancel_order(order_id)
+                refreshed = await self.exchange.get_order(order_id)
+                terminal_order = refreshed or order
+                confirmed_filled = max(
+                    float(getattr(cancellation, "filled_qty", 0.0) or 0.0),
+                    float(terminal_order.filled_qty or 0.0),
+                )
+                if confirmed_filled > managed.filled_qty:
+                    managed.filled_qty = confirmed_filled
+                    await self._emit_callback_ordered(
+                        self._on_order_filled,
+                        order_id,
+                    )
                 managed.completed_at = datetime.now()
-                managed.terminal_status = OrderStatus.CANCELLED
+                if (
+                    getattr(cancellation, "status", None) == OrderStatus.FILLED
+                    or confirmed_filled >= float(terminal_order.quantity)
+                    or getattr(terminal_order, "status", None)
+                    == OrderStatus.FILLED
+                ):
+                    managed.terminal_status = OrderStatus.FILLED
+                    logger.info(
+                        "Order filled while cancellation was in flight: %s",
+                        order_id,
+                    )
+                    break
 
-                self._emit_callback(self._on_order_cancelled, order_id)
+                managed.terminal_status = OrderStatus.CANCELLED
+                await self._emit_callback_ordered(
+                    self._on_order_cancelled,
+                    order_id,
+                )
 
                 logger.info(
                     f"Order cancelled after timeout: {order_id}"
@@ -278,7 +363,9 @@ class OrderManager:
                 break
 
             # Retry if partial fill
-            if current_filled > 0:
+            if current_filled > 0 and (
+                not managed.restored or current_filled > previous_filled
+            ):
                 delay = self.retry_policy.get_delay(
                     managed.retry_count
                 )
@@ -292,15 +379,39 @@ class OrderManager:
 
                 await asyncio.sleep(delay)
 
-                # Resubmit for remaining quantity
-                remaining = order.quantity - current_filled
                 try:
-                    # Cancel the original partial order to prevent background
-                    # fills from accumulating (would cause duplicate cash debits)
-                    try:
-                        await self.exchange.cancel_order(order_id)
-                    except Exception:
-                        pass  # Already cancelled or fully filled
+                    # Do not calculate a replacement from the pre-cancel
+                    # snapshot. A fill can arrive while cancellation is in
+                    # flight, so cancellation must be terminal and executions
+                    # must be re-read by the exchange first.
+                    cancellation = await self.exchange.cancel_order(order_id)
+                    if cancellation.status not in {
+                        OrderStatus.CANCELLED,
+                        OrderStatus.FILLED,
+                    }:
+                        raise RuntimeError(
+                            f"Cancellation not terminal for order {order_id}"
+                        )
+                    refreshed = await self.exchange.get_order(order_id)
+                    if refreshed is None:
+                        raise RuntimeError(
+                            f"Cannot confirm post-cancel state for order {order_id}"
+                        )
+                    confirmed_filled = max(
+                        float(cancellation.filled_qty or 0.0),
+                        float(refreshed.filled_qty or 0.0),
+                    )
+                    if confirmed_filled > current_filled:
+                        await self._emit_callback_ordered(
+                            self._on_order_filled,
+                            order_id,
+                        )
+                    managed.filled_qty = confirmed_filled
+                    remaining = max(float(order.quantity) - confirmed_filled, 0.0)
+                    if remaining <= 0:
+                        managed.completed_at = datetime.now()
+                        managed.terminal_status = OrderStatus.FILLED
+                        break
 
                     # Submit via OrderManager (proper tracking + new monitoring task)
                     await self.submit_order(

@@ -3,7 +3,8 @@ Order data model and status enumerations.
 """
 
 from enum import IntEnum
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
@@ -32,10 +33,32 @@ class Order(BaseModel):
     price: float = Field(..., description="Order price")
     order_type: str = Field(default="limit", description="Order type: limit, market, stop")
     status: OrderStatus = Field(default=OrderStatus.CREATED, description="Order status")
-    created_at: datetime = Field(default_factory=datetime.now, description="Order creation time")
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Order creation time",
+    )
     filled_qty: float = Field(default=0.0, description="Quantity filled")
     avg_price: float = Field(default=0.0, description="Average fill price")
     commission: float = Field(default=0.0, description="Commission paid")
+    execution_id: Optional[str] = Field(default=None, description="Primary broker execution ID")
+    execution_ids: List[str] = Field(default_factory=list, description="Distinct broker execution IDs")
+    permanent_order_id: Optional[str] = Field(default=None, description="Broker permanent order ID")
+    account_id: Optional[str] = Field(default=None, description="Broker account ID")
+    trade_currency: Optional[str] = Field(default=None, description="Instrument/trade currency")
+    commission_currency: Optional[str] = Field(default=None, description="Broker-reported commission currency")
+    decision_at: Optional[datetime] = Field(default=None, description="Immutable order decision timestamp")
+    submitted_at: Optional[datetime] = Field(default=None, description="Broker submission timestamp")
+    filled_at: Optional[datetime] = Field(default=None, description="Latest fill timestamp")
+    benchmark_type: Optional[str] = Field(default=None, description="Execution benchmark type")
+    benchmark_price: Optional[float] = Field(default=None, description="Execution benchmark price")
+    quote_bid: Optional[float] = None
+    quote_ask: Optional[float] = None
+    quote_midpoint: Optional[float] = None
+    stop_price: Optional[float] = None
+    limit_price: Optional[float] = None
+    benchmark_version: int = Field(default=1, description="Slippage benchmark definition version")
+    benchmark_valid: bool = Field(default=False, description="Whether slippage is valid for analysis")
+    executions: List[dict] = Field(default_factory=list, description="One item per distinct broker execution")
 
     @field_validator("side")
     @classmethod

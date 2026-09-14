@@ -21,6 +21,7 @@ class OperationalMetric:
     value: float
     dimensions: Dict[str, str] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.utcnow)
+    idempotency_key: Optional[str] = None
 
 
 class RemoteMetricsSink(Protocol):
@@ -46,6 +47,9 @@ class SupabaseRestMetricsSink:
             raise ImportError("aiohttp is required for SupabaseRestMetricsSink") from exc
 
         payload = {
+            "metric_id": metric.idempotency_key or (
+                f"legacy:{metric.name}:{metric.timestamp.isoformat()}"
+            ),
             "metric_name": metric.name,
             "metric_value": metric.value,
             "dimensions": metric.dimensions,
@@ -91,36 +95,78 @@ class OperationalMetricsRecorder:
                 metric_value=metric.value,
                 dimensions=metric.dimensions,
                 timestamp=metric.timestamp.isoformat(),
+                idempotency_key=metric.idempotency_key,
             )
 
         if self.remote_sink is not None:
             await self.remote_sink.record_metric(metric)
 
     async def record_fill_event(self, event: FillEvent) -> None:
-        """Record expected fill, actual fill, slippage, commission, and latency."""
-        dimensions = {
-            "broker": "interactive_brokers",
+        """Record each execution independently; never collapse partial fills."""
+        executions = list(event.executions) or [{
+            "execution_id": event.execution_id,
+            "broker_order_id": event.broker_order_id,
             "symbol": event.symbol,
             "side": event.side,
-            "broker_order_id": event.broker_order_id,
-            "status": event.raw_status,
-        }
-
-        metrics = [
-            OperationalMetric("actual_fill_price", event.avg_fill_price, dimensions, event.filled_at),
-            OperationalMetric("fill_quantity", event.quantity, dimensions, event.filled_at),
-            OperationalMetric("latency_ms", event.latency_ms, dimensions, event.filled_at),
-            OperationalMetric("commission", event.commission, dimensions, event.filled_at),
-        ]
-
-        if event.expected_price is not None:
-            metrics.extend(
-                [
-                    OperationalMetric("expected_fill_price", event.expected_price, dimensions, event.filled_at),
-                    OperationalMetric("slippage", event.slippage or 0.0, dimensions, event.filled_at),
-                    OperationalMetric("slippage_bps", event.slippage_bps or 0.0, dimensions, event.filled_at),
-                ]
-            )
-
-        for metric in metrics:
-            await self.record_metric(metric)
+            "quantity": event.quantity,
+            "price": event.avg_fill_price,
+            "filled_at": event.filled_at,
+            "trade_currency": event.instrument_currency,
+            "commission": event.commission,
+            "commission_currency": event.commission_currency,
+        }]
+        benchmark_valid = (
+            event.benchmark_version == 2
+            and event.benchmark_valid
+            and event.benchmark_price not in (None, 0)
+        )
+        for execution in executions:
+            execution_id = execution.get("execution_id")
+            identity = str(execution_id) if execution_id else f"legacy:{event.broker_order_id}"
+            filled_at = execution.get("filled_at") or event.filled_at
+            if isinstance(filled_at, str):
+                filled_at = datetime.fromisoformat(filled_at)
+            price = float(execution.get("price") or event.avg_fill_price)
+            quantity = float(execution.get("quantity") or 0.0)
+            dimensions = {
+                "account_id": str(
+                    execution.get("account_id") or event.account_id or ""
+                ),
+                "broker": "interactive_brokers",
+                "symbol": execution.get("symbol") or event.symbol,
+                "side": execution.get("side") or event.side,
+                "broker_order_id": str(execution.get("broker_order_id") or event.broker_order_id),
+                "execution_id": str(execution_id or event.broker_order_id),
+                "status": event.raw_status,
+                "trade_currency": execution.get("trade_currency") or event.instrument_currency or "unknown",
+                "commission_currency": execution.get("commission_currency") or "unknown",
+                "slippage_version": str(event.benchmark_version),
+                "slippage_valid": str(benchmark_valid).lower(),
+            }
+            latency_ms = max((filled_at - event.submitted_at).total_seconds() * 1000.0, 0.0)
+            metrics = [
+                OperationalMetric("actual_fill_price", price, dimensions, filled_at, f"{identity}:actual_fill_price"),
+                OperationalMetric("fill_quantity", quantity, dimensions, filled_at, f"{identity}:fill_quantity"),
+                OperationalMetric("latency_ms", latency_ms, dimensions, filled_at, f"{identity}:latency_ms"),
+            ]
+            commission = execution.get("commission")
+            if commission is not None:
+                metrics.append(
+                    OperationalMetric(
+                        "commission",
+                        float(commission),
+                        dimensions,
+                        filled_at,
+                        f"{identity}:commission",
+                    )
+                )
+            if benchmark_valid:
+                benchmark = float(event.benchmark_price)
+                slippage = price - benchmark if event.side == "buy" else benchmark - price
+                metrics.extend([
+                    OperationalMetric("expected_fill_price", benchmark, dimensions, filled_at, f"{identity}:expected_fill_price"),
+                    OperationalMetric("slippage", slippage, dimensions, filled_at, f"{identity}:slippage"),
+                    OperationalMetric("slippage_bps", (slippage / benchmark) * 10000.0, dimensions, filled_at, f"{identity}:slippage_bps"),
+                ])
+            for metric in metrics:
+                await self.record_metric(metric)

@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 
@@ -64,6 +64,7 @@ class MetricsStore:
                 metric_name TEXT NOT NULL,
                 metric_value REAL NOT NULL,
                 dimensions TEXT,
+                idempotency_key TEXT,
                 timestamp TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
@@ -79,6 +80,13 @@ class MetricsStore:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_timestamp ON metrics(timestamp)
         """)
+        columns = {row["name"] for row in cursor.execute("PRAGMA table_info(metrics)")}
+        if "idempotency_key" not in columns:
+            cursor.execute("ALTER TABLE metrics ADD COLUMN idempotency_key TEXT")
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_idempotency_key
+            ON metrics(idempotency_key)
+        """)
 
         conn.commit()
 
@@ -89,6 +97,7 @@ class MetricsStore:
         metric_value: float,
         dimensions: Optional[Dict[str, str]] = None,
         timestamp: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
     ) -> int:
         """Record a metric.
 
@@ -111,7 +120,7 @@ class MetricsStore:
             conn = self._get_connection()
             cursor = conn.cursor()
 
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             if timestamp is None:
                 timestamp = now
 
@@ -119,18 +128,32 @@ class MetricsStore:
 
             cursor.execute("""
                 INSERT INTO metrics (
-                    metric_type, metric_name, metric_value, dimensions, timestamp, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    metric_type, metric_name, metric_value, dimensions, idempotency_key,
+                    timestamp, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(idempotency_key) DO UPDATE SET
+                    metric_type = excluded.metric_type,
+                    metric_name = excluded.metric_name,
+                    metric_value = excluded.metric_value,
+                    dimensions = excluded.dimensions,
+                    timestamp = excluded.timestamp
             """, (
                 metric_type,
                 metric_name,
                 metric_value,
                 dimensions_json,
+                idempotency_key,
                 timestamp,
                 now,
             ))
 
             conn.commit()
+            if idempotency_key:
+                row = conn.execute(
+                    "SELECT id FROM metrics WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                ).fetchone()
+                return int(row["id"])
             return cursor.lastrowid
 
     def get_metrics(
