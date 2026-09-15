@@ -71,27 +71,54 @@ class PortfolioManager:
             if sym in prices
         )
 
-    def assert_buying_power(self, notional: float) -> None:
-        """Reject a position the account could not fund.
+    def equity_basis(self) -> float:
+        """Equity used for funding decisions: cash plus long positions at cost.
 
-        Only enforced when explicitly enabled. Position sizing currently has no
-        cash bound (``BacktestEngine._position_size``), so undeclared leverage
-        is otherwise indistinguishable from edge.
+        Entry cost is used rather than mark-to-market so the figure does not
+        move intrabar, which keeps a sizing decision and the assertion that
+        validates it from disagreeing within the same bar.
         """
-        if not self.execution_realism.enforce_buying_power:
-            return
-        equity = self.cash + sum(
+        return self.cash + sum(
             pos.quantity * pos.entry_price
             for pos in self.positions.values()
             if pos.side == "buy"
         )
-        limit = equity * self.execution_realism.max_gross_leverage
-        if notional > limit:
+
+    def committed_notional(self) -> float:
+        """Absolute notional already committed to open positions, at cost."""
+        return sum(
+            abs(pos.quantity) * pos.entry_price for pos in self.positions.values()
+        )
+
+    def available_buying_power(self) -> Optional[float]:
+        """Funds available for a new position, or None when unenforced.
+
+        ``None`` means "do not gate" rather than "zero available", so callers
+        must handle it explicitly instead of silently treating an unenforced
+        account as broke.
+        """
+        if not self.execution_realism.enforce_buying_power:
+            return None
+        limit = self.equity_basis() * self.execution_realism.max_gross_leverage
+        return max(0.0, limit - self.committed_notional())
+
+    def assert_buying_power(self, notional: float) -> None:
+        """Fail loudly on a position the account could not fund.
+
+        This is a backstop, not the gate. Sizing is expected to have already
+        clamped the order via ``available_buying_power``; reaching this error
+        means something bypassed sizing, so it must raise rather than clamp.
+        """
+        available = self.available_buying_power()
+        if available is None:
+            return
+        if notional > available + 1e-6:
             raise BuyingPowerError(
-                f"Order notional {notional:,.2f} exceeds buying power "
-                f"{limit:,.2f} (equity {equity:,.2f} x max leverage "
-                f"{self.execution_realism.max_gross_leverage}). Reduce size or "
-                f"raise max_gross_leverage deliberately."
+                f"Order notional {notional:,.2f} exceeds available buying power "
+                f"{available:,.2f} (equity {self.equity_basis():,.2f} x max "
+                f"leverage {self.execution_realism.max_gross_leverage}, less "
+                f"{self.committed_notional():,.2f} already committed). Position "
+                f"sizing should have clamped this order."
             )
 
     def open_position(

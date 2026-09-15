@@ -9,6 +9,7 @@ from vibe.backtester.core.clock import SimulatedClock
 from vibe.backtester.core.fill_simulator import FillSimulator, FillResult
 from vibe.backtester.core.portfolio import PortfolioManager
 from vibe.backtester.core.execution_realism import ExecutionRealismConfig, EXECUTION_MODEL_VERSION
+from vibe.common.risk.position_sizer import PositionSizer
 from vibe.backtester.core.execution.config import ExecutionConfig
 from vibe.backtester.core.execution.simulator import ExecutionSimulator
 from vibe.backtester.core.execution.pending_queue import PendingOrderQueue
@@ -96,6 +97,14 @@ class BacktestEngine:
         # Pass ExecutionRealismConfig.realistic() to opt into honest exits.
         self.execution_realism = execution_realism or ExecutionRealismConfig.legacy()
         self.pending_orders: list[Order] = []
+        # Counts of orders reduced by each cap, reported in execution_diagnostics.
+        self.sizing_caps: dict[str, int] = {}
+        config = ruleset.position_size
+        self._position_sizer = PositionSizer(
+            risk_pct=config.value,
+            max_position_size=getattr(config, "max_shares", None),
+            max_position_pct=getattr(config, "max_position_pct", None),
+        )
 
     def run(
         self,
@@ -191,6 +200,7 @@ class BacktestEngine:
         pending_queue = PendingOrderQueue()
         pending_order_meta: dict[str, dict[str, float | None]] = {}
         self.pending_orders = []
+        self.sizing_caps = {}
 
         # 5. Event loop with bar_index counter
         prev_date = None
@@ -259,6 +269,7 @@ class BacktestEngine:
                         capital=portfolio.cash,
                         entry_price=entry_price,
                         stop_price=stop_price,
+                        buying_power=portfolio.available_buying_power(),
                     )
                     if quantity > 0:
                         # Create Order with signal_bar_index for latency tracking
@@ -381,16 +392,84 @@ class BacktestEngine:
                 "min_cash": float(portfolio.min_cash),
                 "max_gross_exposure_ratio": float(portfolio.max_gross_exposure_ratio),
                 "execution_model_version": float(EXECUTION_MODEL_VERSION),
+                "orders_capped_by_buying_power": float(
+                    self.sizing_caps.get("buying_power", 0)
+                ),
+                "orders_capped_by_declared_limits": float(
+                    self.sizing_caps.get("max_position_size", 0)
+                    + self.sizing_caps.get("max_position_pct", 0)
+                ),
             },
         )
 
     def _position_size(
-        self, capital: float, entry_price: float, stop_price: float
+        self,
+        capital: float,
+        entry_price: float,
+        stop_price: float,
+        buying_power: float | None = None,
     ) -> int:
-        """Risk position_size.value% of capital per trade based on stop distance."""
+        """Size a position with the same sizer live trading uses.
+
+        Routing through ``PositionSizer`` keeps declared ruleset caps
+        (``max_shares``, ``max_position_pct``) honoured identically in
+        simulation and live, which the previous inline formula ignored
+        outright.
+
+        ``buying_power`` is None under legacy semantics, where sizing stays
+        unbounded and bit-identical to prior results. The legacy path also
+        keeps its one-share floor and its tolerance of non-positive capital,
+        both of which are wrong but load-bearing for historical comparisons.
+        """
         risk_pct = self.ruleset.position_size.value
-        risk_dollars = capital * risk_pct
         stop_distance = abs(entry_price - stop_price)
         if stop_distance <= 0:
             return 0
-        return max(1, int(risk_dollars / stop_distance))
+
+        if buying_power is None:
+            risk_dollars = capital * risk_pct
+            size = max(1, int(risk_dollars / stop_distance))
+            return self._apply_declared_caps(size, capital, entry_price)
+
+        if capital <= 0:
+            # Funded sizing cannot express "trade anyway on negative equity".
+            return 0
+
+        result = self._position_sizer.calculate(
+            entry_price=entry_price,
+            stop_price=stop_price,
+            account_value=capital,
+            buying_power=buying_power,
+        )
+        if result.was_capped:
+            self.sizing_caps[result.capped_by] = (
+                self.sizing_caps.get(result.capped_by, 0) + 1
+            )
+        return int(result.size)
+
+    def _apply_declared_caps(
+        self, size: int, capital: float, entry_price: float
+    ) -> int:
+        """Honour max_shares / max_position_pct even under legacy semantics.
+
+        These are explicit ruleset declarations, so ignoring them was a defect
+        rather than a legacy behaviour worth preserving. No ruleset in the repo
+        currently sets either, so this changes no existing result.
+        """
+        config = self.ruleset.position_size
+        max_shares = getattr(config, "max_shares", None)
+        max_position_pct = getattr(config, "max_position_pct", None)
+
+        if max_shares is not None and size > max_shares:
+            size = int(max_shares)
+            self.sizing_caps["max_position_size"] = (
+                self.sizing_caps.get("max_position_size", 0) + 1
+            )
+        if max_position_pct is not None and entry_price > 0 and capital > 0:
+            max_size = int((capital * max_position_pct) / entry_price)
+            if size > max_size:
+                size = max_size
+                self.sizing_caps["max_position_pct"] = (
+                    self.sizing_caps.get("max_position_pct", 0) + 1
+                )
+        return max(0, size)

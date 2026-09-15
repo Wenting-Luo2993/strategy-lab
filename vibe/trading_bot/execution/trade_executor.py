@@ -287,6 +287,7 @@ class TradeExecutor:
                 entry_price=entry_price,
                 stop_price=stop_price,
                 account_value=account.equity,
+                buying_power=account.buying_power,
             )
 
             if size_result.size == 0:
@@ -297,6 +298,16 @@ class TradeExecutor:
                 if self._on_execution:
                     self._on_execution(result)
                 return result
+
+            if size_result.was_capped:
+                # Worth a warning rather than a debug line: the trade is no
+                # longer risking the configured percentage, so its R-multiple
+                # will not match the strategy's assumptions.
+                logger.warning(
+                    f"Position for {symbol} reduced from "
+                    f"{size_result.requested_size:.0f} to {size_result.size} shares "
+                    f"by {size_result.capped_by}. {size_result.reasoning}"
+                )
 
         except Exception as e:
             result = ExecutionResult(

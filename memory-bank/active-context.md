@@ -18,6 +18,38 @@
 
 ## Recent Decisions
 
+### Decision: Buying Power Gates Sizing In Both Simulation And Live (2026-09-14)
+**Chosen**: Position sizing consults available buying power and **clamps** the order to what the account can fund, counting every clamp. Relying on the broker to reject was rejected as a contract: you learn after the signal, at the exchange, with no record of why.
+
+Three layers, deliberately separated:
+1. **Gate** — `PositionSizer.calculate(..., buying_power=...)` clamps size; `PositionSizeResult` gains `requested_size` and `capped_by` so a clamp is measurable rather than silent.
+2. **Assert** — `PortfolioManager.assert_buying_power` stays a hard `BuyingPowerError`. Given the gate it should be unreachable, so it now means *sizing was bypassed*, not *the strategy wants too much*.
+3. **Measure** — `orders_capped_by_buying_power` and `orders_capped_by_declared_limits` report in `execution_diagnostics` on every run.
+
+**Measured effect** (ORB, QQQ, 2019-01-02 → 2023-12-29, identical 1256 trades):
+
+| | legacy | funded |
+|---|---|---|
+| total P&L | $4,423,656 | **$232,983** |
+| min cash | -$26,657,576 | **+$0.12** |
+| peak leverage | 10.82x | **1.01x** |
+| orders clamped | 0 | 1234 of 1256 |
+| **expectancy** | **0.3262R** | **0.3252R** |
+
+**The headline**: absolute P&L was overstated **19x**, while expectancy moved 0.3%. The edge is real; the scale was fiction. Trade count is identical, so the gate rescales results rather than invalidating the strategy. Over a *losing* window the same clamping shrinks the loss, so the invariant is "magnitude moves toward zero", not "P&L falls".
+
+**Backtester specifics**:
+- `BacktestEngine._position_size` now routes through the **same `PositionSizer` the live bot uses**, which closes the sim-to-live divergence at its root rather than patching one side.
+- Declared ruleset caps (`max_shares`, `max_position_pct`) are honoured **unconditionally** — ignoring explicit config was a defect, not a legacy behaviour worth preserving. No ruleset in the repo sets either, so this changes no existing result.
+- Buying-power clamping remains **behind `enforce_buying_power`** per ADR-019, so legacy runs stay bit-identical. Under legacy the old one-share floor and negative-capital tolerance are deliberately preserved; both are wrong but load-bearing for historical comparison.
+- `equity_basis()` / `committed_notional()` / `available_buying_power()` give the gate and the assertion one shared definition, so they cannot disagree. `available_buying_power()` returns `None` for "unenforced" rather than `0.0`, forcing callers to distinguish that from "broke".
+
+**Live specifics**: `trade_executor.py` now passes `account.buying_power` — already fetched into `AccountState`, previously unused — and logs a **warning** when a position is clamped, because a clamped trade is no longer risking the configured percentage and its R-multiple will not match the strategy's assumptions.
+
+**Known caveat**: `max_gross_exposure_ratio` can still read slightly above 1.0 (measured 1.01) under funded sizing. That is mark-to-market drift after entry — a short moving against you raises gross exposure while lowering equity — not a sizing failure. Sizing is bounded at cost, at entry time.
+
+**Also fixed**: `PositionSizer.calculate`'s `existing_position_size` was documented as preventing over-leverage but never used in the body. Broker buying power is already net of open positions, so subtracting them again would halve every follow-on position; the parameter is now documented as deliberately not applied, and a test pins that.
+
 ### Finding: ORB Backtests Have Been Running At Up To 10.8x Unfunded Leverage (2026-09-11)
 **Measured**: With the realism toggle now reachable from `BacktestEngine`, a legacy ORB (`orb_production`) run on QQQ over 2019-01-02 → 2023-12-29 (1256 trades) reports:
 

@@ -128,16 +128,33 @@ class TestEndToEndReporting:
         second = self._run()
         assert [t.pnl for t in first.trades] == [t.pnl for t in second.trades]
 
-    def test_realistic_run_rejects_orb_unfunded_leverage(self):
+    def test_realistic_run_clamps_orb_to_funded_size(self):
         """ORB's sizer ignores cash, and on real data it overshoots badly.
 
-        With $100k capital this ruleset tries to open roughly $158k of stock -
-        about 1.58x gross leverage that the legacy engine funded silently. The
-        realistic config is supposed to make that impossible to miss, so the
-        run must fail loudly rather than quietly report leveraged returns.
+        With $100k capital this ruleset wants roughly $158k of stock - about
+        1.58x gross leverage that the legacy engine funded silently. Under
+        realistic semantics the position is cut to what the account can fund
+        rather than aborting the run, and every cut is counted.
         """
-        with pytest.raises(BuyingPowerError):
-            self._run(execution_realism=ExecutionRealismConfig.realistic())
+        result = self._run(execution_realism=ExecutionRealismConfig.realistic())
+        assert result.execution_diagnostics["orders_capped_by_buying_power"] > 0
+
+    def test_realistic_run_never_exceeds_its_capital(self):
+        """Cash must never go negative; leverage must stay near 1x.
+
+        The ratio is allowed slightly above 1.0 because it is measured
+        mark-to-market after entry: a short moving against you raises gross
+        exposure while lowering equity, which is real drift rather than a
+        sizing failure. Sizing itself is bounded at cost, at entry time.
+        """
+        result = self._run(execution_realism=ExecutionRealismConfig.realistic())
+        assert result.execution_diagnostics["min_cash"] >= -1e-6
+        assert result.execution_diagnostics["max_gross_exposure_ratio"] < 1.1
+
+    def test_legacy_run_still_exceeds_its_capital(self):
+        """The contrast is the point: legacy silently borrows, realistic cannot."""
+        result = self._run()
+        assert result.execution_diagnostics["max_gross_exposure_ratio"] > 1.0
 
     def test_realistic_run_never_improves_on_legacy_pnl(self):
         """Honesty can only cost money: gaps fill at the open, never better.
@@ -146,7 +163,7 @@ class TestEndToEndReporting:
         3 in 1256 trades over 2019-2023, since the strategy is flat overnight.
         Buying-power enforcement is disabled here on purpose, to isolate the
         gap-pricing change from the position-sizing defect it would otherwise
-        mask. See test_realistic_run_rejects_orb_unfunded_leverage for sizing.
+        mask. See test_realistic_run_clamps_orb_to_funded_size for sizing.
         """
         gaps_only = replace(
             ExecutionRealismConfig.realistic(), enforce_buying_power=False
@@ -162,3 +179,31 @@ class TestEndToEndReporting:
         """The counter must expose the overshoot even when it is permitted."""
         result = self._run()
         assert result.execution_diagnostics["max_gross_exposure_ratio"] > 1.0
+
+    def test_gating_preserves_the_edge_but_not_the_headline_pnl(self):
+        """The gate rescales results; it does not invalidate the strategy.
+
+        Over 2019-2023 the same 1256 trades produce $4.42M unfunded versus
+        $233k funded - a 19x overstatement - while expectancy moves only from
+        0.3262R to 0.3252R. R-multiples normalise by risk, so they were the
+        honest metric all along; every capital-denominated figure was not.
+
+        The invariant is that magnitude shrinks toward zero, not that P&L
+        falls: over a losing window, funded sizing shrinks the loss too.
+        """
+        legacy = self._run()
+        realistic = self._run(execution_realism=ExecutionRealismConfig.realistic())
+
+        assert len(realistic.trades) == len(legacy.trades)
+        assert realistic.overall.expectancy_r == pytest.approx(
+            legacy.overall.expectancy_r, rel=0.05
+        )
+        assert abs(realistic.overall.total_pnl) < abs(legacy.overall.total_pnl)
+
+    def test_gap_comparison_isolates_gap_pricing_from_sizing(self):
+        """Buying-power clamping would otherwise confound the comparison."""
+        gaps_only = replace(
+            ExecutionRealismConfig.realistic(), enforce_buying_power=False
+        )
+        result = self._run(execution_realism=gaps_only)
+        assert result.execution_diagnostics["orders_capped_by_buying_power"] == 0

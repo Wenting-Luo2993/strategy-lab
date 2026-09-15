@@ -20,6 +20,22 @@ class PositionSizeResult:
     reasoning: str
     """Explanation of sizing decision."""
 
+    requested_size: float = 0.0
+    """Size implied by risk alone, before any cap was applied."""
+
+    capped_by: Optional[str] = None
+    """Which limit reduced the position, if any.
+
+    One of ``"max_position_size"``, ``"max_position_pct"``,
+    ``"buying_power"``, or ``None``. Recorded so a clamp is a measurable
+    event rather than a silent change of risk profile: a position cut by
+    buying power is no longer risking the configured percentage.
+    """
+
+    @property
+    def was_capped(self) -> bool:
+        return self.capped_by is not None
+
 
 class PositionSizer:
     """
@@ -91,6 +107,7 @@ class PositionSizer:
         stop_price: float,
         account_value: float,
         existing_position_size: float = 0.0,
+        buying_power: Optional[float] = None,
     ) -> PositionSizeResult:
         """
         Calculate position size based on risk parameters.
@@ -98,12 +115,23 @@ class PositionSizer:
         Uses the specified risk method (fixed dollar or percentage) and
         the stop-loss distance to determine optimal position size.
 
+        Risk-based sizing is unbounded by construction: as the stop tightens,
+        the implied size grows without limit. Every cap below exists to bound
+        it, and ``buying_power`` is the only one that reflects what the
+        account can actually fund.
+
         Args:
             entry_price: Entry price for the trade
             stop_price: Stop-loss price
             account_value: Current account value
-            existing_position_size: Existing position size to account for
-                (prevents over-leverage)
+            existing_position_size: Existing position size in shares. Accepted
+                for call compatibility but deliberately NOT subtracted from
+                buying power: a broker's reported buying power is already net
+                of open positions, so doing so would double-count them.
+            buying_power: Funds actually available to open the position. When
+                supplied, the position is clamped so its notional never
+                exceeds it. When ``None``, no affordability check is made and
+                the caller is asserting that funding is guaranteed elsewhere.
 
         Returns:
             PositionSizeResult with calculated size and details
@@ -120,6 +148,8 @@ class PositionSizer:
             raise ValueError("account_value must be positive")
         if existing_position_size < 0:
             raise ValueError("existing_position_size must be non-negative")
+        if buying_power is not None and buying_power < 0:
+            raise ValueError("buying_power must be non-negative")
 
         # Calculate stop loss distance
         stop_distance = abs(entry_price - stop_price)
@@ -138,11 +168,14 @@ class PositionSizer:
 
         # Calculate position size: position_size = risk_amount / stop_distance
         position_size = risk_amount / stop_distance
+        requested_size = position_size
+        capped_by: Optional[str] = None
 
         # Apply maximum position size limit if specified
         if self.max_position_size is not None:
             if position_size > self.max_position_size:
                 position_size = self.max_position_size
+                capped_by = "max_position_size"
                 sizing_method += f" (capped at max {self.max_position_size:.0f} shares)"
 
         if self.max_position_pct is not None:
@@ -150,7 +183,17 @@ class PositionSizer:
             max_notional_size = max_notional / entry_price
             if position_size > max_notional_size:
                 position_size = max_notional_size
+                capped_by = "max_position_pct"
                 sizing_method += f" (capped at {self.max_position_pct * 100:.0f}% capital)"
+
+        # Affordability is the last and most binding cap: the others express
+        # policy, this one expresses what the account can actually fund.
+        if buying_power is not None:
+            affordable_size = buying_power / entry_price
+            if position_size > affordable_size:
+                position_size = affordable_size
+                capped_by = "buying_power"
+                sizing_method += f" (capped by ${buying_power:,.2f} buying power)"
 
         # Round down to whole shares (no fractional shares)
         position_size = int(position_size)
@@ -162,6 +205,8 @@ class PositionSizer:
         return PositionSizeResult(
             size=position_size,
             risk_amount=risk_amount,
+            requested_size=requested_size,
+            capped_by=capped_by,
             reasoning=(
                 f"Risk: {sizing_method}, "
                 f"Stop distance: ${stop_distance:.2f}, "

@@ -307,7 +307,7 @@ class TestBuyingPower:
                 enforce_buying_power=True
             )
         )
-        with pytest.raises(BuyingPowerError, match="exceeds buying power"):
+        with pytest.raises(BuyingPowerError, match="exceeds available buying power"):
             open_long(pm, entry=100.0, stop=99.0, tp=None, qty=10_000)
 
     def test_enforcement_allows_funded_position(self):
