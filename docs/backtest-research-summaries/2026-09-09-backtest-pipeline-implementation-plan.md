@@ -1,7 +1,7 @@
 # Backtest Pipeline Reliability and Research Storage Plan
 
 **Date:** September 9, 2026  
-**Status:** Draft for discussion  
+**Status:** In implementation — see [§18 Execution Status](#18-execution-status)  
 **Scope:** Backtest validation, time-series splitting, look-ahead controls,
 out-of-sample evaluation, and consolidated research storage
 
@@ -66,6 +66,13 @@ out-of-sample evaluation, and consolidated research storage
 - [15. Resolved Decisions](#15-resolved-decisions)
 - [16. Remaining Open Items](#16-remaining-open-items)
 - [17. Design Review Log](#17-design-review-log)
+- [18. Execution Status](#18-execution-status)
+  - [Status at a glance](#status-at-a-glance)
+  - [Increment status](#increment-status)
+  - [Partial increments: what is missing](#partial-increments-what-is-missing)
+  - [Unplanned work](#unplanned-work)
+  - [Findings that change the plan](#findings-that-change-the-plan)
+  - [Recommended next increment](#recommended-next-increment)
 
 ## 1. Objective
 
@@ -1300,3 +1307,140 @@ above. The following recommendations were **not** adopted, with reasons.
 | Treat the existing acceptance criterion "equity = cash + sum(mark-to-market)" as a strong check | Rejected | Confirmed tautological, since equity is computed that way. Replaced with three reconciliation identities. |
 | Add deflated Sharpe / probability of backtest overfitting | Deferred | Recording `n_candidates_evaluated` now is enough to compute corrections later. Building them now is disproportionate for a single-developer project. |
 | Model corporate actions, survivorship, and delisting now | Partially adopted | Full point-in-time universe reconstruction is deferred, but survivorship is not ignored: every run declares `universe_type` and `survivorship_bias`, `static_declared` studies are permanently badged as biased, and only `point_in_time_screened` is blocked. Multi-symbol work is explicitly in scope (P5b, P10b). |
+
+## 18. Execution Status
+
+**Last updated:** September 15, 2026  
+**Branch:** `wentingluo/user/plan-backtest-pipeline`
+
+This section tracks implementation against §13. It is the authoritative view of
+what exists; the increment table in §13 describes intent, not state.
+
+Status values are deliberately strict. **Complete** means the increment's full
+declared scope is implemented and tested. An increment missing any part of its
+scope is **Partial**, however substantial the delivered portion — the point of
+this section is to make gaps visible rather than to show progress.
+
+### Status at a glance
+
+| State | Increments |
+| --- | --- |
+| Complete | P0, P3 |
+| Partial | P2, P7 |
+| Not started | P1, P4, P5, P5b, P6, P8, P9, P10, P10b, P11, P12, P13, P14 |
+
+Two of the nine increments required by the "minimum bar before trusting a
+result" (P0-P6, P9, P10) are complete. **No result produced today should be
+treated as trustworthy**, because P1 and P6 are both outstanding: metrics are
+not yet normalized, and no gate prevents a bad run from reaching `COMPLETED`.
+
+### Increment status
+
+| # | Increment | Status | Commit | Evidence |
+| --- | --- | --- | --- | --- |
+| P0 | Contracts and identity | **Complete** | `73264f4` | `vibe/research_pipeline/`: `hashing.py`, `lifecycle.py`, `contracts.py`, `identity.py`, `paths.py`, `store.py`. 102 tests. ADR-018. DB path guard keeps the database out of OneDrive. |
+| P1 | Metric normalization | **Not started** | — | Blocks P6 and P9. Now the highest-value increment; see below. |
+| P2 | Execution realism and accounting | **Partial** | `f84c34f`, `3955621`, `fa43842` | E1, E2, E3 closed and reachable from a normal engine run; counters reported on every run via `BacktestResult.execution_diagnostics`. ADR-019. 67 tests. |
+| P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
+| P4 | Warmup-aware segment execution | **Not started** | — | Blocks P5, P5b, P9. |
+| P5 | Feature declarations and leakage harness | **Not started** | — | |
+| P5b | Cross-sectional universe | **Not started** | — | Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
+| P6 | Validation gates and lifecycle | **Not started** | — | Until this lands, nothing enforces the plan's central promise that bad metrics cannot reach `COMPLETED`. |
+| P7 | SQLite store and importer | **Partial** | `f84c34f` | `storage/schema.py`, `storage/sqlite_store.py`: forward-only migrations, terminal-state triggers, UUIDv7 IDs, `run_evidence`, outbox table, concurrent-writer handling. 19 tests. |
+| P8 | Local MJS viewer | **Not started** | — | |
+| P9 | Optimizer/selector seam and nested walk-forward | **Not started** | — | |
+| P10 | Final-holdout lock | **Not started** | — | The OOS range is currently protected by convention only. |
+| P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
+| P11 | Registry migration to `ResearchStore` | **Not started** | — | |
+| P12 | Supabase publisher and reconciliation | **Not started** | — | |
+| P13 | `/research` route | **Not started** | — | |
+| P14 | YAML retirement | **Not started** | — | Gated on P11 and P12 being validated. |
+
+### Partial increments: what is missing
+
+**P2 — Execution realism.** Delivered: E1 intrabar exit ordering, E2
+gap-through fills, E3 undeclared leverage and unbounded cash. Outstanding:
+
+- **E4, no cost model on the exit side.** `fill_simulator.py` still uses
+  `commission=0.0`. Every reported P&L is gross of commission.
+- **`RunEvidence` ledger checksums.** The contract exists (P0) and the store can
+  persist it (P7), but nothing computes the two checksums during a run, so the
+  reproducibility acceptance criterion is not yet testable.
+- **The three reconciliation identities** are specified but unimplemented.
+- **Fixtures F5-F8 and F10** are not written. P2's realism work is currently
+  pinned by hand-written unit tests instead.
+
+**P7 — SQLite store.** Delivered: schema, migrations, store operations,
+lifecycle triggers, outbox. Outstanding:
+
+- **The importer.** No YAML-tree import, no hash-parity check, no
+  `legacy-uncontrolled` stamping. This is the larger half of the increment and
+  it blocks P11 and P14.
+- **Dual-write** to the existing registry.
+- **Fixture F11.**
+
+### Unplanned work
+
+Two items outside §13 were necessary and are worth recording, because neither
+was visible when the plan was written.
+
+**Market data path resolution** (`02e0b55`). `Path("vibe/data/parquet")` was
+hardcoded in roughly ten places and resolved against the working directory,
+while `data/` is gitignored — so no worktree could run a backtest at all. Added
+`vibe/backtester/data/paths.py` with explicit → environment → repo → main
+worktree resolution. This turned out to be blocking: the full suite went from
+24 failures to 14, because ten "pre-existing failures" were only this bug.
+Without it, P1's golden file could not have been produced from a worktree.
+17 tests.
+
+**Buying-power gating in the live bot** (`fa43842`). Strictly outside this
+plan's scope, but the same defect: the live bot fetched IB's `BuyingPower` into
+`AccountState` and never consulted it, relying on the broker to reject
+unfundable orders. Both paths now gate through the same `PositionSizer`, which
+is what stops the simulator and live trading from diverging again.
+
+### Findings that change the plan
+
+Measurements taken during implementation that alter assumptions above.
+
+**Absolute metrics from every historical ORB backtest are inflated roughly
+19x.** With buying power enforced, ORB on QQQ over 2019-2023 produces identical
+trades but $232,983 of P&L instead of $4,423,656; cash reached -$26.7M and
+10.82x leverage before the gate. Expectancy moved only from 0.3262R to 0.3252R.
+
+Two consequences for this plan:
+
+1. **R-multiple metrics survived; capital-denominated metrics did not.** This
+   strengthens the §7 argument for normalized metric definitions, and means P1
+   must treat units as a correctness property rather than presentation.
+2. **Stored research records need re-baselining, not just migration.** P7's
+   importer and §4's "legacy record contamination" handling must assume every
+   imported absolute metric is wrong, not merely uncontrolled.
+
+**E1 cannot affect `orb_production`.** Measured `ambiguous_exit_bars == 0` over
+1256 trades, because the ruleset sets `take_profit.multiplier: 0` and therefore
+has no take-profit to race the stop. E1 remains live for any take-profit-bearing
+variant, so the counter stays, but it is not a current source of error.
+
+**Gap-through exits are rare but real:** 3 in 1256 trades, low precisely
+because ORB is flat overnight. A strategy holding overnight would see far more.
+
+**Live trading confirms `GapFillPolicy.AT_OPEN` is correct.** Exits are native
+IB `StopOrder`s, so a gap fills at the market open and never at the stop price.
+The legacy `AT_LEVEL` behaviour is not reproducible in live trading. Separately,
+take-profit is **not** a broker-side bracket or OCO, so the exchange does not
+resolve intrabar ambiguity either — the legacy optimistic assumption has no live
+justification.
+
+### Recommended next increment
+
+**P1, metric normalization.** It is the last unstarted prerequisite on Lane A,
+it blocks both P6 and P9, and the 19x finding above makes it more urgent than
+when the plan was written: every stored absolute metric is currently wrong, and
+P1 is where that gets defined away rather than patched.
+
+P1 also has a hard ordering constraint from §13 — it changes existing numbers,
+so it must land **before** any new research is generated and **after** the F13
+golden file is frozen. Freezing F13 is therefore the immediate first task, and
+it is now possible because market data resolves correctly from a worktree.
+
