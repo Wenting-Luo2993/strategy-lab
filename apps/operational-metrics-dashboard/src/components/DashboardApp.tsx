@@ -15,6 +15,7 @@ import {
 } from "@/data/dashboardSelectors";
 import { formatCurrency } from "@/data/formatters";
 import type { DashboardData, Position, PriceBar, StrategyAnnotation, StrategyConfigSummary } from "@/data/types";
+import { EquityCurveChart, TradePnlChart } from "./PerformanceCharts";
 import { PriceChart } from "./PriceChart";
 
 type DashboardAppProps = {
@@ -22,7 +23,7 @@ type DashboardAppProps = {
   strategyConfig: StrategyConfigSummary | null;
 };
 
-type View = "live" | "charts" | "operations" | "performance";
+type View = "summary" | "charts" | "operations";
 type Theme = "light" | "dark";
 type HealthState = "healthy" | "closed" | "degraded";
 type ChartRange = "3d" | "5d" | "10d" | "30d" | "all";
@@ -30,10 +31,9 @@ const themeStorageKey = "dashboard-theme";
 const themeChangeEvent = "dashboard-theme-change";
 
 const views: { id: View; label: string }[] = [
-  { id: "live", label: "Live" },
+  { id: "summary", label: "Summary" },
   { id: "charts", label: "Charts" },
   { id: "operations", label: "Operations" },
-  { id: "performance", label: "Performance" },
 ];
 
 const chartRanges: { id: ChartRange; label: string }[] = [
@@ -51,7 +51,7 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
   const isLiveDataSource = process.env.NEXT_PUBLIC_DASHBOARD_DATA_SOURCE === "supabase";
   const [data, setData] = useState(initialData);
   const [isLoading, setIsLoading] = useState(isLiveDataSource);
-  const [view, setView] = useState<View>("live");
+  const [view, setView] = useState<View>("summary");
   const accounts = dashboardAccounts(data);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(
     accounts[0]?.account_id ?? null,
@@ -162,10 +162,9 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
           ))}
         </nav>
 
-        {view === "live" && <LiveView data={scopedData} activePositions={activePositions} realizedPnl={realizedPnl} unrealizedPnl={unrealizedPnl} freshnessMinutes={freshnessMinutes} marketState={marketState} />}
+        {view === "summary" && <SummaryView data={scopedData} realizedPnl={realizedPnl} unrealizedPnl={unrealizedPnl} freshnessMinutes={freshnessMinutes} marketState={marketState} />}
         {view === "charts" && <ChartsView data={scopedData} selectedSymbol={selectedSymbol} selectedBars={selectedBars} strategyConfig={strategyConfig} />}
-        {view === "operations" && <OperationsView data={scopedData} />}
-        {view === "performance" && <PerformanceView data={scopedData} />}
+        {view === "operations" && <OperationsView data={scopedData} activePositions={activePositions} />}
       </div>
     </main>
   );
@@ -244,50 +243,32 @@ function SkeletonBlock({ height }: { height: string }) {
   return <div className="surface animate-pulse rounded-lg border bg-[var(--surface-muted)]" style={{ height }} />;
 }
 
-function LiveView({ data, activePositions, realizedPnl, unrealizedPnl, freshnessMinutes, marketState }: { data: DashboardData; activePositions: Position[]; realizedPnl: PnlPresentation; unrealizedPnl: PnlPresentation; freshnessMinutes: number | null; marketState: DashboardData["status"] }) {
+function SummaryView({ data, realizedPnl, unrealizedPnl, freshnessMinutes, marketState }: { data: DashboardData; realizedPnl: PnlPresentation; unrealizedPnl: PnlPresentation; freshnessMinutes: number | null; marketState: DashboardData["status"] }) {
   const netLiquidation = netLiquidationFor(data);
+  const closedTrades = closedTradesFor(data);
+  const tradesWithPnl = closedTrades.filter((trade) => trade.pnl !== null);
+  const { value: pnl, currency: pnlCurrency } = aggregatePnlByCurrency(tradesWithPnl);
+  const winners = tradesWithPnl.filter((trade) => Number(trade.pnl) > 0).length;
+  const winRate = tradesWithPnl.length ? (winners / tradesWithPnl.length) * 100 : null;
   return (
-    <section className="grid min-w-0 gap-5 lg:grid-cols-[1.3fr_0.9fr]">
-      <div className="grid min-w-0 gap-4 sm:grid-cols-3 lg:col-span-2">
+    <section className="grid min-w-0 gap-5">
+      <div className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <Metric label="Collected realized P&L (all history)" value={formatCurrency(pnl, pnlCurrency)} tone={pnl === null ? undefined : pnl >= 0 ? "profit" : "loss"} />
+        <Metric label="Closed trades" value={number(closedTrades.length, 0)} />
+        <Metric label="Win rate" value={winRate === null ? "--" : `${number(winRate, 1)}%`} />
         <Metric label="Net liquidation" value={formatCurrency(netLiquidation.value, netLiquidation.currency)} />
         <Metric label={realizedPnl.label} value={formatCurrency(realizedPnl.value, realizedPnl.currency)} tone={realizedPnl.value === null ? undefined : realizedPnl.value >= 0 ? "profit" : "loss"} />
         <Metric label={unrealizedPnl.label} value={formatCurrency(unrealizedPnl.value, unrealizedPnl.currency)} tone={unrealizedPnl.value === null ? undefined : unrealizedPnl.value >= 0 ? "profit" : "loss"} />
       </div>
-      <div className="min-w-0 lg:col-span-2">
-        <Panel title="Open positions">
-          <div className="space-y-3">
-            {activePositions.map((position) => (
-              <div key={position.position_id} className="flex items-center justify-between border-b border-[var(--border)] pb-3 last:border-0 last:pb-0">
-                <div>
-                  <div className="font-semibold">{position.symbol}</div>
-                  <div className="text-sm text-[var(--muted)]">{position.side} · {number(position.quantity, 0)} shares</div>
-                  <div className="text-xs text-[var(--muted)]">Updated {time(position.updated_at)}</div>
-                </div>
-                <div className={`text-right font-semibold ${Number(position.unrealized_pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>
-                  {formatCurrency(position.unrealized_pnl, position.unrealized_pnl_currency)}
-                </div>
-              </div>
-            ))}
-            {!activePositions.length && <EmptyState label="No open positions" />}
-          </div>
-        </Panel>
-      </div>
-      <div className="min-w-0 lg:col-span-2">
-        <Panel title="Latest order events">
-          <EventTable data={data} />
-        </Panel>
-      </div>
-      <div className="min-w-0 lg:col-span-2">
-        <Panel title="Data freshness">
-          <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <Stat label="Source" value={data.source} />
-            <Stat label="Market state" value={marketState} />
-            <Stat label="Latest equity" value={freshnessMinutes === null ? "--" : `${number(freshnessMinutes, 0)} min ago`} />
-            <Stat label="Generated" value={time(data.generatedAt)} />
-          </dl>
-          {data.error && <p className="mt-4 rounded-md border border-[var(--warning)] p-3 text-sm text-[var(--warning)]">{data.error}</p>}
-        </Panel>
-      </div>
+      <Panel title="Data freshness">
+        <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+          <Stat label="Source" value={data.source} />
+          <Stat label="Market state" value={marketState} />
+          <Stat label="Latest equity" value={freshnessMinutes === null ? "--" : `${number(freshnessMinutes, 0)} min ago`} />
+          <Stat label="Generated" value={time(data.generatedAt)} />
+        </dl>
+        {data.error && <p className="mt-4 rounded-md border border-[var(--warning)] p-3 text-sm text-[var(--warning)]">{data.error}</p>}
+      </Panel>
     </section>
   );
 }
@@ -298,6 +279,7 @@ function ChartsView({ data, selectedSymbol, selectedBars, strategyConfig }: { da
   const visibleBars = filterBarsForRange(selectedBars, chartRange);
   const visibleAnnotations = latestCompleteAnnotationsForSymbol(data.annotations, selectedSymbol);
   const visibleOrderEvents = orderEventsForBars(data.orderEvents, selectedSymbol, visibleBars);
+  const closedTrades = closedTradesFor(data);
 
   return (
     <section className="grid min-w-0 gap-5 lg:grid-cols-[1.5fr_0.75fr]">
@@ -322,6 +304,16 @@ function ChartsView({ data, selectedSymbol, selectedBars, strategyConfig }: { da
       <Panel title="Strategy definition">
         <StrategySummary data={data} selectedSymbol={selectedSymbol} selectedBars={selectedBars} visibleAnnotations={visibleAnnotations} strategyConfig={strategyConfig} />
       </Panel>
+      <div className="min-w-0 lg:col-span-2">
+        <Panel title="Equity curve">
+          <EquityCurveChart equity={data.equity} />
+        </Panel>
+      </div>
+      <div className="min-w-0 lg:col-span-2">
+        <Panel title="P&L per trade">
+          <TradePnlChart trades={closedTrades} />
+        </Panel>
+      </div>
       {fullscreen && (
         <div className="fixed inset-0 z-50 bg-[rgba(0,0,0,0.72)] p-3 sm:p-6">
           <div className="surface flex h-full min-w-0 flex-col rounded-lg border p-4">
@@ -339,7 +331,7 @@ function ChartsView({ data, selectedSymbol, selectedBars, strategyConfig }: { da
   );
 }
 
-function OperationsView({ data }: { data: DashboardData }) {
+function OperationsView({ data, activePositions }: { data: DashboardData; activePositions: Position[] }) {
   const metrics = summarizeOperationalMetrics(data.metrics);
   return (
     <section className="grid min-w-0 gap-5 lg:grid-cols-2">
@@ -357,6 +349,35 @@ function OperationsView({ data }: { data: DashboardData }) {
         </dl>
       </Panel>
       <div className="min-w-0 lg:col-span-2">
+        <Panel title="Open positions">
+          <div className="space-y-3">
+            {activePositions.map((position) => (
+              <div key={position.position_id} className="flex items-center justify-between border-b border-[var(--border)] pb-3 last:border-0 last:pb-0">
+                <div>
+                  <div className="font-semibold">{position.symbol}</div>
+                  <div className="text-sm text-[var(--muted)]">{position.side} · {number(position.quantity, 0)} shares</div>
+                  <div className="text-xs text-[var(--muted)]">Updated {time(position.updated_at)}</div>
+                </div>
+                <div className={`text-right font-semibold ${Number(position.unrealized_pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>
+                  {formatCurrency(position.unrealized_pnl, position.unrealized_pnl_currency)}
+                </div>
+              </div>
+            ))}
+            {!activePositions.length && <EmptyState label="No open positions" />}
+          </div>
+        </Panel>
+      </div>
+      <div className="min-w-0 lg:col-span-2">
+        <Panel title="Trade summary">
+          <TradeTable data={data} />
+        </Panel>
+      </div>
+      <div className="min-w-0 lg:col-span-2">
+        <Panel title="Latest order events">
+          <EventTable data={data} />
+        </Panel>
+      </div>
+      <div className="min-w-0 lg:col-span-2">
         <Panel title="Operational data">
           <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Order events" value={number(data.orderEvents.length, 0)} />
@@ -370,13 +391,9 @@ function OperationsView({ data }: { data: DashboardData }) {
   );
 }
 
-function PerformanceView({ data }: { data: DashboardData }) {
+function TradeTable({ data }: { data: DashboardData }) {
   const [page, setPage] = useState(0);
   const closedTrades = closedTradesFor(data);
-  const tradesWithPnl = closedTrades.filter((trade) => trade.pnl !== null);
-  const { value: pnl, currency: pnlCurrency } = aggregatePnlByCurrency(tradesWithPnl);
-  const winners = tradesWithPnl.filter((trade) => Number(trade.pnl) > 0).length;
-  const winRate = tradesWithPnl.length ? (winners / tradesWithPnl.length) * 100 : null;
   const totalPages = Math.max(1, Math.ceil(closedTrades.length / tradePageSize));
   const currentPage = Math.min(page, totalPages - 1);
   const pageTrades = closedTrades.slice(
@@ -384,13 +401,7 @@ function PerformanceView({ data }: { data: DashboardData }) {
     (currentPage + 1) * tradePageSize,
   );
   return (
-    <section className="grid min-w-0 gap-5 lg:grid-cols-[0.8fr_1.2fr]">
-      <div className="grid min-w-0 gap-4">
-        <Metric label="Collected realized P&L (all history)" value={formatCurrency(pnl, pnlCurrency)} tone={pnl === null ? undefined : pnl >= 0 ? "profit" : "loss"} />
-        <Metric label="Closed trades" value={number(closedTrades.length, 0)} />
-        <Metric label="Win rate" value={winRate === null ? "--" : `${number(winRate, 1)}%`} />
-      </div>
-      <Panel title="Trade summary">
+    <div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
             <thead className="text-xs uppercase text-[var(--muted)]">
@@ -427,8 +438,7 @@ function PerformanceView({ data }: { data: DashboardData }) {
             </div>
           </div>
         )}
-      </Panel>
-    </section>
+    </div>
   );
 }
 
