@@ -29,6 +29,9 @@ class Position:
     entry_time: datetime
     initial_stop_price: float
     initial_risk_per_share: float
+    entry_commission: float = 0.0
+    """Commission paid to open, carried so the closed Trade reports the full
+    round trip rather than the exit leg alone."""
 
 
 class PortfolioManager:
@@ -59,6 +62,24 @@ class PortfolioManager:
         self.gap_through_exits = 0
         self.min_cash = initial_capital
         self.max_gross_exposure_ratio = 0.0
+        self.total_costs = 0.0
+
+    @property
+    def commission_model(self):
+        """Cost schedule for this run, taken from the realism config."""
+        return self.execution_realism.commission_model
+
+    def _charge_commission(self, quantity: float, price: float) -> float:
+        """Debit commission for one fill and return the amount charged.
+
+        Cash is reduced on both sides of a round trip: commission is an
+        outflow whether the fill opened or closed a position.
+        """
+        cost = self.commission_model.cost(quantity, price)
+        if cost:
+            self.cash -= cost
+            self.total_costs += cost
+        return cost
 
     def _record_cash(self) -> None:
         self.min_cash = min(self.min_cash, self.cash)
@@ -90,17 +111,39 @@ class PortfolioManager:
             abs(pos.quantity) * pos.entry_price for pos in self.positions.values()
         )
 
-    def available_buying_power(self) -> Optional[float]:
+    def available_buying_power(
+        self, entry_price: Optional[float] = None
+    ) -> Optional[float]:
         """Funds available for a new position, or None when unenforced.
 
         ``None`` means "do not gate" rather than "zero available", so callers
         must handle it explicitly instead of silently treating an unenforced
         account as broke.
+
+        When ``entry_price`` is supplied, the result is net of the round-trip
+        commission the position will incur. Without that reserve the gate
+        funds the notional exactly and the account is then debited for costs
+        it never set aside, so a maximum-size order overdraws by the
+        commission -- a real effect measured at -$2.24 on the QQQ ORB
+        baseline. Reserving both legs is deliberate: the exit is not optional,
+        so treating it as free would let the gate approve a position the
+        account cannot actually close.
         """
         if not self.execution_realism.enforce_buying_power:
             return None
         limit = self.equity_basis() * self.execution_realism.max_gross_leverage
-        return max(0.0, limit - self.committed_notional())
+        available = max(0.0, limit - self.committed_notional())
+
+        if entry_price is None or entry_price <= 0 or available <= 0:
+            return available
+
+        # Sized on the pre-reserve share count, so the reserve covers slightly
+        # more shares than will actually be bought. One pass, erring wide.
+        model = self.commission_model
+        if model.is_zero:
+            return available
+        round_trip = 2.0 * model.cost(available / entry_price, entry_price)
+        return max(0.0, available - round_trip)
 
     def assert_buying_power(self, notional: float) -> None:
         """Fail loudly on a position the account could not fund.
@@ -125,6 +168,9 @@ class PortfolioManager:
         self, fill: FillResult, stop_price: float, timestamp: datetime, take_profit: Optional[float] = None
     ) -> None:
         self.assert_buying_power(abs(fill.filled_qty) * fill.avg_price)
+        entry_commission = self._charge_commission(
+            fill.filled_qty, fill.avg_price
+        )
         self.positions[fill.symbol] = Position(
             symbol=fill.symbol,
             quantity=fill.filled_qty,
@@ -135,6 +181,7 @@ class PortfolioManager:
             entry_time=timestamp,
             initial_stop_price=stop_price,
             initial_risk_per_share=abs(fill.avg_price - stop_price),
+            entry_commission=entry_commission,
         )
         if fill.side == "buy":
             self.cash -= fill.filled_qty * fill.avg_price
@@ -179,6 +226,10 @@ class PortfolioManager:
         # Update position (quantity and entry_price only; stop/TP unchanged)
         pos.quantity = total_quantity
         pos.entry_price = weighted_avg_price
+        # Each scale-in is a separate order and is billed as one.
+        pos.entry_commission += self._charge_commission(
+            fill.filled_qty, fill.avg_price
+        )
         
         # Update cash (same logic as open_position)
         if fill.side == "buy":
@@ -195,6 +246,10 @@ class PortfolioManager:
         # Do not use the moved trailing stop at exit time.
         initial_risk = abs(pos.entry_price - pos.initial_stop_price) * pos.quantity
 
+        exit_commission = self._charge_commission(
+            fill.filled_qty, fill.avg_price
+        )
+
         self.trade_history.append(Trade(
             symbol=fill.symbol,
             side=pos.side,
@@ -205,6 +260,7 @@ class PortfolioManager:
             exit_time=timestamp,
             initial_risk=initial_risk,
             exit_reason=exit_reason,
+            commission=pos.entry_commission + exit_commission,
         ))
         if fill.side == "sell":  # closing long
             self.cash += fill.filled_qty * fill.avg_price

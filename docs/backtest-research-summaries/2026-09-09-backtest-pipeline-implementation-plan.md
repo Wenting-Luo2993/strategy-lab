@@ -679,6 +679,12 @@ Required:
 - invariant `gross_pnl - total_costs == net_pnl`;
 - plausibility gate: `total_costs > 0` whenever `n_trades > 0`.
 
+**Status.** The commission half is implemented (`core/commission.py`), charged
+at every fill site, carried on `ConvexityMetrics` as `gross_pnl`/`total_costs`,
+and the invariant is asserted on both golden windows. R-multiples are rebased on
+net P&L, so a trade whose costs exceed its edge is now correctly a loss.
+Exit-side slippage remains open and is tracked in §18.
+
 ### E5. Execution model versioning
 
 The plan versions metrics and split planners but not the execution model, even
@@ -718,7 +724,7 @@ Metric checks must distinguish calculation correctness from strategy quality.
 | --- | --- | --- |
 | Mathematical invariant | finite values; `0 <= win_rate <= 1`; no NaN/Inf in any published metric | Block completion |
 | Cross-metric invariant | `n_trades == len(trades) == closed_position_count`; `dropped_trade_count == 0` | Block completion |
-| Accounting reconciliation | `equity_final - initial_capital == sum(trade.pnl)` when flat at end; per-fill cash delta equals `qty * price`; `sum(entry_qty) == sum(exit_qty)` per symbol; `gross_pnl - total_costs == net_pnl` | Block completion |
+| Accounting reconciliation | `equity_final - initial_capital == sum(trade.pnl) - total_costs` when flat at end; per-fill cash delta equals `qty * price` plus the fill's commission; `sum(entry_qty) == sum(exit_qty)` per symbol; `gross_pnl - total_costs == net_pnl` | Block completion |
 | Execution realism | `exit_price` within `[bar.low, bar.high]`; `cash >= -declared_margin`; `gross_notional / equity <= max_leverage`; no open positions at end of session for an intraday strategy | Block completion |
 | Data integrity | expected vs observed session count; bars-per-session anomalies; duplicate or non-monotonic timestamps; `high < low`; zero or negative prices | Block completion |
 | Dataset sufficiency | enough sessions and trades for requested analysis | Mark inconclusive |
@@ -731,9 +737,14 @@ as metric-calculation failures.
 
 Note that `equity == cash + sum(position_mark_to_market)` is **not** a usable
 invariant: `PortfolioManager.update_equity` (`portfolio.py:254-264`) computes
-equity that way, so asserting it afterwards can never fail. The three
+equity that way, so asserting it afterwards can never fail. The
 reconciliation identities listed above are what actually catch the sign and
 conservation bugs that check was intended to find.
+
+Two of those identities are stated net of costs, which matters once E4 lands:
+a cost model that debited cash without appearing in `total_costs` would satisfy
+a gross-only identity while quietly losing money. Writing them net makes the
+cost ledger and the cash ledger check each other.
 
 ### Where each gate applies
 
@@ -1310,7 +1321,7 @@ above. The following recommendations were **not** adopted, with reasons.
 
 ## 18. Execution Status
 
-**Last updated:** September 15, 2026  
+**Last updated:** September 16, 2026  
 **Branch:** `wentingluo/user/plan-backtest-pipeline`
 
 This section tracks implementation against §13. It is the authoritative view of
@@ -1325,22 +1336,24 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P3 |
+| Complete | P0, P1, P3 |
 | Partial | P2, P7 |
-| Not started | P1, P4, P5, P5b, P6, P8, P9, P10, P10b, P11, P12, P13, P14 |
+| Not started | P4, P5, P5b, P6, P8, P9, P10, P10b, P11, P12, P13, P14 |
 
-Two of the nine increments required by the "minimum bar before trusting a
+Three of the nine increments required by the "minimum bar before trusting a
 result" (P0-P6, P9, P10) are complete. **No result produced today should be
-treated as trustworthy**, because P1 and P6 are both outstanding: metrics are
-not yet normalized, and no gate prevents a bad run from reaching `COMPLETED`.
+treated as trustworthy**, because P6 is still outstanding: nothing prevents a
+bad run from reaching `COMPLETED`. Metrics are now normalized and costs are
+charged, so today's numbers are *defensible* in isolation — but nothing
+enforces that, and an unreviewed run is still an unchecked claim.
 
 ### Increment status
 
 | # | Increment | Status | Commit | Evidence |
 | --- | --- | --- | --- | --- |
 | P0 | Contracts and identity | **Complete** | `73264f4` | `vibe/research_pipeline/`: `hashing.py`, `lifecycle.py`, `contracts.py`, `identity.py`, `paths.py`, `store.py`. 102 tests. ADR-018. DB path guard keeps the database out of OneDrive. |
-| P1 | Metric normalization | **Not started** | — | Blocks P6 and P9. Now the highest-value increment; see below. |
-| P2 | Execution realism and accounting | **Partial** | `f84c34f`, `3955621`, `fa43842` | E1, E2, E3 closed and reachable from a normal engine run; counters reported on every run via `BacktestResult.execution_diagnostics`. ADR-019. 67 tests. |
+| P1 | Metric normalization | **Complete** | `19b56a3` | Three-way win/loss/breakeven; `expectancy_r` as the direct sample mean; session-based Sharpe replacing a hardcoded 78 bars; drawdown duration in calendar days; trade census (`r_sample_size`, `dropped_trade_count`) on every run; `METRIC_CALCULATION_VERSION = 2`. 23 tests. Frozen against F13 (`7d10441`), which proved the change was metrics-only. |
+| P2 | Execution realism and accounting | **Partial** | `f84c34f`, `3955621`, `fa43842`, *pending* | E1-E4 closed and reachable from a normal engine run; counters reported on every run via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 35 tests. |
 | P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
 | P4 | Warmup-aware segment execution | **Not started** | — | Blocks P5, P5b, P9. |
 | P5 | Feature declarations and leakage harness | **Not started** | — | |
@@ -1359,16 +1372,24 @@ not yet normalized, and no gate prevents a bad run from reaching `COMPLETED`.
 ### Partial increments: what is missing
 
 **P2 — Execution realism.** Delivered: E1 intrabar exit ordering, E2
-gap-through fills, E3 undeclared leverage and unbounded cash. Outstanding:
+gap-through fills, E3 undeclared leverage and unbounded cash, E4 cost model.
+Outstanding:
 
-- **E4, no cost model on the exit side.** `fill_simulator.py` still uses
-  `commission=0.0`. Every reported P&L is gross of commission.
-- **`RunEvidence` ledger checksums.** The contract exists (P0) and the store can
-  persist it (P7), but nothing computes the two checksums during a run, so the
-  reproducibility acceptance criterion is not yet testable.
-- **The three reconciliation identities** are specified but unimplemented.
-- **Fixtures F5-F8 and F10** are not written. P2's realism work is currently
-  pinned by hand-written unit tests instead.
+- **Exit-side slippage.** E4 closed the commission half of the defect, but
+  entry still pays `slippage_ticks` and exits do not. Stops are native IB
+  `StopOrder`s and genuinely slip, so exits are not free — but the slippage is
+  not symmetric with entry either, so copying the entry model would be a
+  different wrong answer. Needs its own decision, not a default.
+- **The reconciliation identities.** `gross_pnl - total_costs == net_pnl` is
+  implemented and asserted on both golden windows. The other three
+  (flat-at-end equity, per-fill cash delta, entry/exit quantity parity) are
+  still specified but unimplemented.
+- **Fixtures F5-F8** are not written. F10 is (zero vs non-zero commission).
+
+Measured cost impact on the QQQ ORB baseline, 2019-2023: **$5,209 over 1,257
+trades**, 2.29% of gross P&L. The most diagnostic single number is
+`max_loss_r`, which moved from exactly `-1.0` to `-1.021`: a stop-out used to
+lose precisely the declared risk, which is only true when trading is free.
 
 **P7 — SQLite store.** Delivered: schema, migrations, store operations,
 lifecycle triggers, outbox. Outstanding:
@@ -1381,7 +1402,7 @@ lifecycle triggers, outbox. Outstanding:
 
 ### Unplanned work
 
-Two items outside §13 were necessary and are worth recording, because neither
+Four items outside §13 were necessary and are worth recording, because none
 was visible when the plan was written.
 
 **Market data path resolution** (`02e0b55`). `Path("vibe/data/parquet")` was
@@ -1398,6 +1419,32 @@ plan's scope, but the same defect: the live bot fetched IB's `BuyingPower` into
 `AccountState` and never consulted it, relying on the broker to reject
 unfundable orders. Both paths now gate through the same `PositionSizer`, which
 is what stops the simulator and live trading from diverging again.
+
+**Ledger checksums promoted to production** (`7d10441`). F13 needs a stable
+digest of the trade ledger and equity curve; so does `RunEvidence` in P2. Rather
+than write a throwaway test helper, `vibe/research_pipeline/evidence.py` was
+written as production code serving both. P2 therefore inherits two checksums
+that a full five-year run has already exercised, and the reproducibility
+criterion becomes testable without further work. `TRADE_DIGEST_FIELDS` is closed
+and explicit, so adding a field to `Trade` cannot silently change a digest.
+
+The golden harness itself (`tests/integration/test_golden_orb.py`) splits each
+snapshot into a **simulation** section and a **metrics** section. A single
+undifferentiated section can only report "something changed", which forces a
+wholesale re-freeze and lets an accidental behavioural change hide among
+intended metric edits. The split earned its keep immediately: P1 asserted
+metrics-only and the simulation digests were byte-identical, while E4 correctly
+registered as a simulation change because `commission` is in the ledger digest.
+
+**Commission reserve in the buying-power gate** (*pending*). E4 exposed a
+consequence of the gate landing first: buying power was computed against
+notional, the position was sized to consume all of it, and costs were then
+debited from an account with nothing left — driving `min_cash` to **-$2.24** on
+the five-year run. The account was funding trades it could not pay for, which is
+the same defect E3 was meant to close, reintroduced through the cost ledger.
+`available_buying_power()` now optionally takes the entry price and reserves the
+round trip. Reserving both legs is deliberate: the exit is not optional, so a
+gate that funds only the entry approves positions the account cannot close.
 
 ### Findings that change the plan
 

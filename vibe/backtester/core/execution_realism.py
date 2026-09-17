@@ -23,8 +23,10 @@ edge depends on the optimistic assumptions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+
+from vibe.backtester.core.commission import CommissionModel
 
 __all__ = [
     "EXECUTION_MODEL_VERSION",
@@ -39,7 +41,10 @@ __all__ = [
 # Distinct from the per-run settings below: two runs can share this version and
 # still differ, so callers must include ``ExecutionRealismConfig.identity()`` in
 # the run fingerprint as well.
-EXECUTION_MODEL_VERSION = 2
+#
+# Version 3 adds the E4 cost model. Every prior result was computed with no
+# commission on either side of a round trip.
+EXECUTION_MODEL_VERSION = 3
 
 
 class IntrabarExitResolution(str, Enum):
@@ -88,6 +93,9 @@ class ExecutionRealismConfig:
     gap_fill_policy: GapFillPolicy = GapFillPolicy.AT_LEVEL
     enforce_buying_power: bool = False
     max_gross_leverage: float = 1.0
+    commission_model: CommissionModel = field(
+        default_factory=CommissionModel.zero
+    )
 
     def __post_init__(self) -> None:
         if self.max_gross_leverage <= 0:
@@ -102,13 +110,31 @@ class ExecutionRealismConfig:
         return cls()
 
     @classmethod
-    def realistic(cls, *, max_gross_leverage: float = 1.0) -> "ExecutionRealismConfig":
-        """Conservative, cash-bounded execution for results meant to be believed."""
+    def realistic(
+        cls,
+        *,
+        max_gross_leverage: float = 1.0,
+        commission_model: CommissionModel | None = None,
+    ) -> "ExecutionRealismConfig":
+        """Conservative, cash-bounded execution for results meant to be believed.
+
+        Args:
+            max_gross_leverage: Declared leverage ceiling.
+            commission_model: Cost schedule. Defaults to IBKR Pro tiered, the
+                schedule this project trades under. Pass
+                ``CommissionModel.zero()`` to isolate the effect of E1-E3
+                without costs.
+        """
         return cls(
             intrabar_exit_resolution=IntrabarExitResolution.CONSERVATIVE,
             gap_fill_policy=GapFillPolicy.AT_OPEN,
             enforce_buying_power=True,
             max_gross_leverage=max_gross_leverage,
+            commission_model=(
+                commission_model
+                if commission_model is not None
+                else CommissionModel.ibkr_pro_tiered()
+            ),
         )
 
     @property
@@ -128,6 +154,7 @@ class ExecutionRealismConfig:
             "gap_fill_policy": self.gap_fill_policy.value,
             "enforce_buying_power": self.enforce_buying_power,
             "max_gross_leverage": self.max_gross_leverage,
+            **self.commission_model.identity(),
         }
 
 

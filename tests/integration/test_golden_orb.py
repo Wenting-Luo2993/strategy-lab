@@ -72,7 +72,8 @@ _PRECISION = 9
 _CONVEXITY_FIELDS = (
     "n_trades", "win_rate", "avg_win_r", "avg_loss_r", "expectancy_r",
     "max_win_r", "max_loss_r", "top10_pct", "skewness", "max_losing_streak",
-    "total_pnl", "stop_wins", "stop_losses", "eod_wins", "eod_losses",
+    "total_pnl", "gross_pnl", "total_costs",
+    "stop_wins", "stop_losses", "eod_wins", "eod_losses",
     "first_date", "last_date",
 )
 

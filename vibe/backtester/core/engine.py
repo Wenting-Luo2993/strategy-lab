@@ -269,7 +269,7 @@ class BacktestEngine:
                         capital=portfolio.cash,
                         entry_price=entry_price,
                         stop_price=stop_price,
-                        buying_power=portfolio.available_buying_power(),
+                        buying_power=portfolio.available_buying_power(entry_price),
                     )
                     if quantity > 0:
                         # Create Order with signal_bar_index for latency tracking
@@ -391,6 +391,7 @@ class BacktestEngine:
                 "gap_through_exits": float(portfolio.gap_through_exits),
                 "min_cash": float(portfolio.min_cash),
                 "max_gross_exposure_ratio": float(portfolio.max_gross_exposure_ratio),
+                "total_costs": float(portfolio.total_costs),
                 "execution_model_version": float(EXECUTION_MODEL_VERSION),
                 "orders_capped_by_buying_power": float(
                     self.sizing_caps.get("buying_power", 0)

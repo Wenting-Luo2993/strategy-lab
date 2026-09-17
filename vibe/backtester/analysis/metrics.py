@@ -31,7 +31,13 @@ class ConvexityMetrics:
       cash statistics are computed over all trades. Previously trades with
       ``initial_risk <= 0`` vanished from both without trace.
     - ``total_pnl`` sums every trade, so it reconciles against the equity
-      curve even when some trades carry no usable risk denominator.
+      curve even when some trades carry no usable risk denominator. It is
+      **net** of costs. ``gross_pnl`` and ``total_costs`` are reported
+      alongside, and ``gross_pnl - total_costs == total_pnl`` is an accounting
+      identity the validator can assert.
+    - R-multiples are computed from **net** P&L. Charging a cost and then
+      measuring the edge before it would defeat the point of modelling costs
+      at all.
     """
     n_trades: int
     win_rate: float
@@ -58,6 +64,8 @@ class ConvexityMetrics:
     breakeven_trades: int = 0
     r_sample_size: int = 0
     dropped_trade_count: int = 0
+    gross_pnl: float = 0.0
+    total_costs: float = 0.0
     calculation_version: int = METRIC_CALCULATION_VERSION
 
 

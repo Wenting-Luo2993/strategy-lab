@@ -137,13 +137,26 @@ class PerformanceAnalyzer:
         )
 
     @staticmethod
+    def _net_pnl(trade: Trade) -> float:
+        """P&L after costs.
+
+        ``Trade.pnl`` is derived from prices alone and is therefore gross.
+        Commission is carried separately, so net P&L is the difference. Every
+        R-multiple and cash total below uses this.
+        """
+        return trade.pnl - (trade.commission or 0.0)
+
+    @staticmethod
     def _calc_convexity(trades: List[Trade]) -> ConvexityMetrics:
         # Every trade counts for cash and census purposes. Only trades with a
         # usable risk denominator can carry an R-multiple, and the gap between
         # the two populations is reported rather than hidden.
         valid = [t for t in trades if t.initial_risk and t.initial_risk > 0]
         dropped = len(trades) - len(valid)
-        total_pnl = sum(t.pnl for t in trades)
+        net = PerformanceAnalyzer._net_pnl
+        gross_pnl = sum(t.pnl for t in trades)
+        total_costs = sum(t.commission or 0.0 for t in trades)
+        total_pnl = gross_pnl - total_costs
 
         if not valid:
             return ConvexityMetrics(
@@ -155,9 +168,10 @@ class PerformanceAnalyzer:
                 first_date="", last_date="",
                 winning_trades=0, losing_trades=0, breakeven_trades=0,
                 r_sample_size=0, dropped_trade_count=dropped,
+                gross_pnl=gross_pnl, total_costs=total_costs,
             )
 
-        r_list = [t.pnl / t.initial_risk for t in valid]
+        r_list = [net(t) / t.initial_risk for t in valid]
         wins      = [r for r in r_list if r > 0]
         losses    = [r for r in r_list if r < 0]
         breakeven = [r for r in r_list if r == 0]
@@ -165,9 +179,9 @@ class PerformanceAnalyzer:
         avg_win  = float(np.mean(wins))   if wins   else 0.0
         avg_loss = float(np.mean(losses)) if losses else 0.0
 
-        gross_profit = sum(t.pnl for t in valid if t.pnl > 0)
+        gross_profit = sum(net(t) for t in valid if net(t) > 0)
         top_n = max(1, len(valid) // 10)
-        top_pnls = sorted([t.pnl for t in valid], reverse=True)[:top_n]
+        top_pnls = sorted([net(t) for t in valid], reverse=True)[:top_n]
         top10_pct = (sum(top_pnls) / gross_profit * 100) if gross_profit > 0 else 0.0
 
         mean_r = float(np.mean(r_list))
@@ -204,10 +218,10 @@ class PerformanceAnalyzer:
             skewness=skew,
             max_losing_streak=streak,
             total_pnl=total_pnl,
-            stop_wins=sum(1 for t in stop_trades if t.pnl > 0),
-            stop_losses=sum(1 for t in stop_trades if t.pnl < 0),
-            eod_wins=sum(1 for t in eod_trades if t.pnl > 0),
-            eod_losses=sum(1 for t in eod_trades if t.pnl < 0),
+            stop_wins=sum(1 for t in stop_trades if net(t) > 0),
+            stop_losses=sum(1 for t in stop_trades if net(t) < 0),
+            eod_wins=sum(1 for t in eod_trades if net(t) > 0),
+            eod_losses=sum(1 for t in eod_trades if net(t) < 0),
             r_multiples=r_list,
             first_date=valid[0].entry_time.date().isoformat(),
             last_date=valid[-1].entry_time.date().isoformat(),
@@ -216,6 +230,8 @@ class PerformanceAnalyzer:
             breakeven_trades=len(breakeven),
             r_sample_size=len(r_list),
             dropped_trade_count=dropped,
+            gross_pnl=gross_pnl,
+            total_costs=total_costs,
         )
 
     @staticmethod
