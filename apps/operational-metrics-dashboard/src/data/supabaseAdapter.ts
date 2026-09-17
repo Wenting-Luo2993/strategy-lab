@@ -63,7 +63,12 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
             `select=*&account_id=eq.${accountId}&order=entry_time.desc,trade_id.asc`,
           ),
           queryTable("operational_metrics", supabaseUrl, supabaseAnonKey, metricsQuery),
-          queryTable("strategy_annotations", supabaseUrl, supabaseAnonKey, `select=*&account_id=eq.${accountId}&enabled=eq.true&limit=100`),
+          queryAllTableRows(
+            "strategy_annotations",
+            supabaseUrl,
+            supabaseAnonKey,
+            strategyAnnotationsQuery(accountId),
+          ),
         ]);
       })),
     ]);
@@ -94,6 +99,10 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
   } catch (error) {
     return unavailableDashboardData(error instanceof Error ? error.message : "Supabase dashboard query failed.");
   }
+}
+
+export function strategyAnnotationsQuery(accountId: string): string {
+  return `select=*&account_id=eq.${accountId}&enabled=eq.true&order=trading_day.desc,annotation_id.asc`;
 }
 
 export function adaptEquitySnapshot(row: SupabaseEquitySnapshot): EquitySnapshot {

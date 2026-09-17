@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   adaptEquitySnapshot,
   queryAllTableRows,
+  strategyAnnotationsQuery,
 } from "../src/data/supabaseAdapter.ts";
 
 function equityRow(overrides = {}) {
@@ -87,4 +88,11 @@ test("retrieves every Supabase page for complete trade history", async (context)
 
   assert.deepEqual(rows.map((row) => row.trade_id), ["t3", "t2", "t1"]);
   assert.deepEqual(ranges, ["0-1", "2-3"]);
+});
+
+test("loads enabled annotations newest day first without a row cap", () => {
+  assert.equal(
+    strategyAnnotationsQuery("DU123"),
+    "select=*&account_id=eq.DU123&enabled=eq.true&order=trading_day.desc,annotation_id.asc",
+  );
 });

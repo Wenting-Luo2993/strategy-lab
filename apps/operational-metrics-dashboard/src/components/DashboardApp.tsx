@@ -246,6 +246,7 @@ function SkeletonBlock({ height }: { height: string }) {
 function SummaryView({ data, realizedPnl, unrealizedPnl, freshnessMinutes, marketState }: { data: DashboardData; realizedPnl: PnlPresentation; unrealizedPnl: PnlPresentation; freshnessMinutes: number | null; marketState: DashboardData["status"] }) {
   const netLiquidation = netLiquidationFor(data);
   const closedTrades = closedTradesFor(data);
+  const activePositions = activePositionsFor(data.positions);
   const tradesWithPnl = closedTrades.filter((trade) => trade.pnl !== null);
   const { value: pnl, currency: pnlCurrency } = aggregatePnlByCurrency(tradesWithPnl);
   const winners = tradesWithPnl.filter((trade) => Number(trade.pnl) > 0).length;
@@ -260,6 +261,7 @@ function SummaryView({ data, realizedPnl, unrealizedPnl, freshnessMinutes, marke
         <Metric label={realizedPnl.label} value={formatCurrency(realizedPnl.value, realizedPnl.currency)} tone={realizedPnl.value === null ? undefined : realizedPnl.value >= 0 ? "profit" : "loss"} />
         <Metric label={unrealizedPnl.label} value={formatCurrency(unrealizedPnl.value, unrealizedPnl.currency)} tone={unrealizedPnl.value === null ? undefined : unrealizedPnl.value >= 0 ? "profit" : "loss"} />
       </div>
+      <OpenPositionsPanel positions={activePositions} />
       <Panel title="Data freshness">
         <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
           <Stat label="Source" value={data.source} />
@@ -349,23 +351,7 @@ function OperationsView({ data, activePositions }: { data: DashboardData; active
         </dl>
       </Panel>
       <div className="min-w-0 lg:col-span-2">
-        <Panel title="Open positions">
-          <div className="space-y-3">
-            {activePositions.map((position) => (
-              <div key={position.position_id} className="flex items-center justify-between border-b border-[var(--border)] pb-3 last:border-0 last:pb-0">
-                <div>
-                  <div className="font-semibold">{position.symbol}</div>
-                  <div className="text-sm text-[var(--muted)]">{position.side} · {number(position.quantity, 0)} shares</div>
-                  <div className="text-xs text-[var(--muted)]">Updated {time(position.updated_at)}</div>
-                </div>
-                <div className={`text-right font-semibold ${Number(position.unrealized_pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>
-                  {formatCurrency(position.unrealized_pnl, position.unrealized_pnl_currency)}
-                </div>
-              </div>
-            ))}
-            {!activePositions.length && <EmptyState label="No open positions" />}
-          </div>
-        </Panel>
+        <OpenPositionsPanel positions={activePositions} />
       </div>
       <div className="min-w-0 lg:col-span-2">
         <Panel title="Trade summary">
@@ -388,6 +374,28 @@ function OperationsView({ data, activePositions }: { data: DashboardData; active
         </Panel>
       </div>
     </section>
+  );
+}
+
+function OpenPositionsPanel({ positions }: { positions: Position[] }) {
+  return (
+    <Panel title="Open positions">
+      <div className="space-y-3">
+        {positions.map((position) => (
+          <div key={position.position_id} className="flex items-center justify-between border-b border-[var(--border)] pb-3 last:border-0 last:pb-0">
+            <div>
+              <div className="font-semibold">{position.symbol}</div>
+              <div className="text-sm text-[var(--muted)]">{position.side} · {number(position.quantity, 0)} shares</div>
+              <div className="text-xs text-[var(--muted)]">Updated {time(position.updated_at)}</div>
+            </div>
+            <div className={`text-right font-semibold ${Number(position.unrealized_pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>
+              {formatCurrency(position.unrealized_pnl, position.unrealized_pnl_currency)}
+            </div>
+          </div>
+        ))}
+        {!positions.length && <EmptyState label="No open positions" />}
+      </div>
+    </Panel>
   );
 }
 
