@@ -1364,7 +1364,7 @@ enforces that, and an unreviewed run is still an unchecked claim.
 | --- | --- | --- | --- | --- |
 | P0 | Contracts and identity | **Complete** | `73264f4` | `vibe/research_pipeline/`: `hashing.py`, `lifecycle.py`, `contracts.py`, `identity.py`, `paths.py`, `store.py`. 102 tests. ADR-018. DB path guard keeps the database out of OneDrive. |
 | P1 | Metric normalization | **Complete** | `19b56a3` | Three-way win/loss/breakeven; `expectancy_r` as the direct sample mean; session-based Sharpe replacing a hardcoded 78 bars; drawdown duration in calendar days; trade census (`r_sample_size`, `dropped_trade_count`) on every run; `METRIC_CALCULATION_VERSION = 2`. 23 tests. Frozen against F13 (`7d10441`), which proved the change was metrics-only. |
-| P2 | Execution realism and accounting | **Partial** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, *pending* | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; counters on every run via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 tests. |
+| P2 | Execution realism and accounting | **Partial** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be` | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; counters on every run via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 tests. |
 | P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
 | P4 | Warmup-aware segment execution | **Not started** | — | Blocks P5, P5b, P9. |
 | P5 | Feature declarations and leakage harness | **Not started** | — | |
@@ -1477,7 +1477,7 @@ the same defect E3 was meant to close, reintroduced through the cost ledger.
 round trip. Reserving both legs is deliberate: the exit is not optional, so a
 gate that funds only the entry approves positions the account cannot close.
 
-**Slippage reported separately from commission** (*pending*). The two costs are
+**Slippage reported separately from commission** (`42cc3be`). The two costs are
 structurally different and summing them into one number misleads. A commission
 is an explicit debit that sits outside `gross_pnl`; slippage is embedded in the
 fill price and has already reduced it. Folding slippage into `total_costs`
