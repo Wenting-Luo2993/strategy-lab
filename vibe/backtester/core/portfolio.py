@@ -60,6 +60,22 @@ class PortfolioManager:
         # of its result rests on optimistic assumptions.
         self.ambiguous_exit_bars = 0
         self.gap_through_exits = 0
+        self.exit_slippage_events = 0
+        self.exit_slippage_cost = 0.0
+        """Money lost to exit slippage, in account currency.
+
+        Reported separately from ``total_costs`` because the two are
+        structurally different and must not be added to the same subtraction.
+        A commission is an explicit debit, so it sits outside ``gross_pnl`` and
+        the identity ``gross_pnl - total_costs == net_pnl`` holds. Slippage is
+        embedded in the fill price, so it has *already* reduced ``gross_pnl``
+        and subtracting it again would double-count.
+
+        It is measured anyway because leaving it implicit is misleading: on the
+        QQQ ORB baseline commission is $4,995 while exit slippage is $22,091,
+        so a reader looking only at ``total_costs`` would underestimate the
+        true cost of trading by more than four times.
+        """
         self.min_cash = initial_capital
         self.max_gross_exposure_ratio = 0.0
         self.total_costs = 0.0
@@ -331,7 +347,11 @@ class PortfolioManager:
                 self.close_position(
                     FillResult(
                         symbol=symbol, side=close_side,
-                        filled_qty=pos.quantity, avg_price=bar.close,
+                        filled_qty=pos.quantity,
+                        avg_price=self._apply_exit_slippage(
+                            bar.close, reason="EOD", side=close_side,
+                            quantity=pos.quantity, bar=bar,
+                        ),
                     ),
                     exit_reason="EOD",
                     timestamp=clock.now(),
@@ -365,6 +385,11 @@ class PortfolioManager:
                 # A fill outside the traded range is a price that never existed.
                 price = clamp_to_bar(bar.open, bar.low, bar.high)
 
+        price = self._apply_exit_slippage(
+            price, reason=reason, side="sell" if is_long else "buy",
+            quantity=pos.quantity, bar=bar,
+        )
+
         self.close_position(
             FillResult(
                 symbol=pos.symbol,
@@ -375,6 +400,39 @@ class PortfolioManager:
             exit_reason=reason,
             timestamp=clock.now(),
         )
+
+    def _apply_exit_slippage(
+        self, price: float, *, reason: str, side: str, quantity: float, bar: Bar
+    ) -> float:
+        """Move an exit fill against us, then clamp it to the bar.
+
+        Slippage composes with the E2 gap reprice rather than replacing it,
+        because the two model different things: the gap reprice says *where
+        the market was* when our order became live, and slippage says what it
+        cost to cross the spread and get out. A stop that gaps through still
+        has to pay the spread on the way out, so applying only one of the two
+        would undercount.
+
+        The clamp is what keeps that composition honest. Whatever the two
+        adjustments compute between them, the fill must still be a price that
+        actually traded during the bar.
+
+        The clamp applies *only* when slippage actually moved the price. A
+        legacy run fills at the untraded trigger price by design -- that is
+        E2's defect, and correcting it here would silently change legacy
+        results and break the ADR-015 promise that they stay bit-identical.
+        Repricing a gap is opt-in through ``GapFillPolicy``; it is not this
+        method's business.
+        """
+        slipped = self.execution_realism.exit_slippage.adjust(
+            price, reason=reason, side=side, quantity=quantity, bar=bar
+        )
+        if slipped == price:
+            return price
+        self.exit_slippage_events += 1
+        filled = clamp_to_bar(slipped, bar.low, bar.high)
+        self.exit_slippage_cost += abs(filled - price) * abs(quantity)
+        return filled
 
     def _maybe_update_trailing_stop(self, pos: Position, bar: Bar) -> None:
         """Update stop price based on configured trailing stop logic."""

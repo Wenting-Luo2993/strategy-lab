@@ -27,6 +27,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from vibe.backtester.core.commission import CommissionModel
+from vibe.backtester.core.exit_slippage import (
+    ExitSlippageModel,
+    FixedTickExitSlippage,
+)
 
 __all__ = [
     "EXECUTION_MODEL_VERSION",
@@ -44,7 +48,12 @@ __all__ = [
 #
 # Version 3 adds the E4 cost model. Every prior result was computed with no
 # commission on either side of a round trip.
-EXECUTION_MODEL_VERSION = 3
+#
+# Version 4 adds exit-side slippage. Versions 1-3 filled every exit at exactly
+# the trigger price, which is the larger half of E4: on the QQQ ORB baseline
+# commission costs 2.3% of net P&L, while two ticks of stop slippage costs
+# 10.5%.
+EXECUTION_MODEL_VERSION = 4
 
 
 class IntrabarExitResolution(str, Enum):
@@ -96,6 +105,9 @@ class ExecutionRealismConfig:
     commission_model: CommissionModel = field(
         default_factory=CommissionModel.zero
     )
+    exit_slippage: ExitSlippageModel = field(
+        default_factory=FixedTickExitSlippage.zero
+    )
 
     def __post_init__(self) -> None:
         if self.max_gross_leverage <= 0:
@@ -115,6 +127,7 @@ class ExecutionRealismConfig:
         *,
         max_gross_leverage: float = 1.0,
         commission_model: CommissionModel | None = None,
+        exit_slippage: ExitSlippageModel | None = None,
     ) -> "ExecutionRealismConfig":
         """Conservative, cash-bounded execution for results meant to be believed.
 
@@ -124,6 +137,11 @@ class ExecutionRealismConfig:
                 schedule this project trades under. Pass
                 ``CommissionModel.zero()`` to isolate the effect of E1-E3
                 without costs.
+            exit_slippage: How much worse than the trigger price exits fill.
+                Defaults to two ticks on stops and one at the close. Pass
+                ``FixedTickExitSlippage.zero()`` to isolate commission, or a
+                wider setting to stress the assumption -- it is the single
+                largest lever in the cost model.
         """
         return cls(
             intrabar_exit_resolution=IntrabarExitResolution.CONSERVATIVE,
@@ -134,6 +152,11 @@ class ExecutionRealismConfig:
                 commission_model
                 if commission_model is not None
                 else CommissionModel.ibkr_pro_tiered()
+            ),
+            exit_slippage=(
+                exit_slippage
+                if exit_slippage is not None
+                else FixedTickExitSlippage.liquid_equity()
             ),
         )
 
@@ -155,6 +178,7 @@ class ExecutionRealismConfig:
             "enforce_buying_power": self.enforce_buying_power,
             "max_gross_leverage": self.max_gross_leverage,
             **self.commission_model.identity(),
+            **self.exit_slippage.identity(),
         }
 
 

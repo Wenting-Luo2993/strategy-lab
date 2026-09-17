@@ -17,6 +17,8 @@ import pandas as pd
 import pytest
 
 from vibe.backtester.core.engine import BacktestEngine
+from vibe.backtester.core.commission import CommissionModel
+from vibe.backtester.core.exit_slippage import FixedTickExitSlippage
 from vibe.backtester.core.execution_realism import (
     EXECUTION_MODEL_VERSION,
     BuyingPowerError,
@@ -183,22 +185,52 @@ class TestEndToEndReporting:
     def test_gating_preserves_the_edge_but_not_the_headline_pnl(self):
         """The gate rescales results; it does not invalidate the strategy.
 
-        Over 2019-2023 the same 1256 trades produce $4.42M unfunded versus
-        $233k funded - a 19x overstatement - while expectancy moves only from
-        0.3262R to 0.3252R. R-multiples normalise by risk, so they were the
-        honest metric all along; every capital-denominated figure was not.
+        Over 2019-2023 the same trades produce a far larger unfunded P&L than
+        funded, while expectancy barely moves. R-multiples normalise by risk,
+        so they were the honest metric all along; every capital-denominated
+        figure was not.
+
+        Costs are disabled here on purpose. ``realistic()`` bundles buying-power
+        gating *and* the E4 cost model, and costs genuinely do move expectancy -
+        that is their whole point. Leaving them on would confound the two
+        effects and make this test assert something it does not mean. See
+        ``test_costs_reduce_expectancy`` for the cost half.
 
         The invariant is that magnitude shrinks toward zero, not that P&L
         falls: over a losing window, funded sizing shrinks the loss too.
         """
         legacy = self._run()
-        realistic = self._run(execution_realism=ExecutionRealismConfig.realistic())
+        realistic = self._run(execution_realism=self._gating_only())
 
         assert len(realistic.trades) == len(legacy.trades)
         assert realistic.overall.expectancy_r == pytest.approx(
             legacy.overall.expectancy_r, rel=0.05
         )
         assert abs(realistic.overall.total_pnl) < abs(legacy.overall.total_pnl)
+
+    @staticmethod
+    def _gating_only() -> ExecutionRealismConfig:
+        """Realistic execution with E4 costs switched off."""
+        return replace(
+            ExecutionRealismConfig.realistic(),
+            commission_model=CommissionModel.zero(),
+            exit_slippage=FixedTickExitSlippage.zero(),
+        )
+
+    def test_costs_reduce_expectancy(self):
+        """The cost half of realism, isolated from the gating half.
+
+        Expectancy is *supposed* to move here. Commission and exit slippage are
+        real money leaving the account on every round trip, so a cost model
+        that left R-multiples untouched would not be doing its job.
+        """
+        free = self._run(execution_realism=self._gating_only())
+        paid = self._run(execution_realism=ExecutionRealismConfig.realistic())
+
+        assert len(paid.trades) == len(free.trades)
+        assert paid.overall.expectancy_r < free.overall.expectancy_r
+        assert paid.overall.total_costs > 0
+        assert paid.execution_diagnostics["exit_slippage_events"] > 0
 
     def test_gap_comparison_isolates_gap_pricing_from_sizing(self):
         """Buying-power clamping would otherwise confound the comparison."""

@@ -389,6 +389,8 @@ class BacktestEngine:
             execution_diagnostics={
                 "ambiguous_exit_bars": float(portfolio.ambiguous_exit_bars),
                 "gap_through_exits": float(portfolio.gap_through_exits),
+                "exit_slippage_events": float(portfolio.exit_slippage_events),
+                "exit_slippage_cost": float(portfolio.exit_slippage_cost),
                 "min_cash": float(portfolio.min_cash),
                 "max_gross_exposure_ratio": float(portfolio.max_gross_exposure_ratio),
                 "total_costs": float(portfolio.total_costs),

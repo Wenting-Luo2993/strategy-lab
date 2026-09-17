@@ -679,11 +679,22 @@ Required:
 - invariant `gross_pnl - total_costs == net_pnl`;
 - plausibility gate: `total_costs > 0` whenever `n_trades > 0`.
 
-**Status.** The commission half is implemented (`core/commission.py`), charged
-at every fill site, carried on `ConvexityMetrics` as `gross_pnl`/`total_costs`,
-and the invariant is asserted on both golden windows. R-multiples are rebased on
-net P&L, so a trade whose costs exceed its edge is now correctly a loss.
-Exit-side slippage remains open and is tracked in §18.
+**Status.** Both halves are implemented. Commission lives in
+`core/commission.py` and is charged at every fill site; exit slippage lives in
+`core/exit_slippage.py` and is keyed on exit reason, because the three reasons
+are different order types live (`STOP` a native `StopOrder` that becomes a
+market order, `TP` a `LimitOrder` that cannot fill worse than its price, `EOD`
+a market order). Charging a take-profit for slippage would be wrong rather than
+conservative, so a liquidity-providing exit structurally cannot be assigned a
+tick cost. R-multiples are rebased on net P&L, and the invariant is asserted on
+both golden windows.
+
+The two costs are reported separately and must not be added to the same
+subtraction. A commission is an explicit debit and sits outside `gross_pnl`, so
+`gross_pnl - total_costs == net_pnl` holds. Slippage is embedded in the fill
+price and has *already* reduced `gross_pnl`, so it is published as
+`exit_slippage_cost` in the diagnostics instead. Reporting only `total_costs`
+would understate the true cost of trading by more than four times.
 
 ### E5. Execution model versioning
 
@@ -1353,7 +1364,7 @@ enforces that, and an unreviewed run is still an unchecked claim.
 | --- | --- | --- | --- | --- |
 | P0 | Contracts and identity | **Complete** | `73264f4` | `vibe/research_pipeline/`: `hashing.py`, `lifecycle.py`, `contracts.py`, `identity.py`, `paths.py`, `store.py`. 102 tests. ADR-018. DB path guard keeps the database out of OneDrive. |
 | P1 | Metric normalization | **Complete** | `19b56a3` | Three-way win/loss/breakeven; `expectancy_r` as the direct sample mean; session-based Sharpe replacing a hardcoded 78 bars; drawdown duration in calendar days; trade census (`r_sample_size`, `dropped_trade_count`) on every run; `METRIC_CALCULATION_VERSION = 2`. 23 tests. Frozen against F13 (`7d10441`), which proved the change was metrics-only. |
-| P2 | Execution realism and accounting | **Partial** | `f84c34f`, `3955621`, `fa43842`, *pending* | E1-E4 closed and reachable from a normal engine run; counters reported on every run via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 35 tests. |
+| P2 | Execution realism and accounting | **Partial** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, *pending* | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; counters on every run via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 tests. |
 | P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
 | P4 | Warmup-aware segment execution | **Not started** | — | Blocks P5, P5b, P9. |
 | P5 | Feature declarations and leakage harness | **Not started** | — | |
@@ -1372,24 +1383,44 @@ enforces that, and an unreviewed run is still an unchecked claim.
 ### Partial increments: what is missing
 
 **P2 — Execution realism.** Delivered: E1 intrabar exit ordering, E2
-gap-through fills, E3 undeclared leverage and unbounded cash, E4 cost model.
-Outstanding:
+gap-through fills, E3 undeclared leverage and unbounded cash, E4 cost model
+(commission **and** exit slippage). Outstanding:
 
-- **Exit-side slippage.** E4 closed the commission half of the defect, but
-  entry still pays `slippage_ticks` and exits do not. Stops are native IB
-  `StopOrder`s and genuinely slip, so exits are not free — but the slippage is
-  not symmetric with entry either, so copying the entry model would be a
-  different wrong answer. Needs its own decision, not a default.
 - **The reconciliation identities.** `gross_pnl - total_costs == net_pnl` is
   implemented and asserted on both golden windows. The other three
   (flat-at-end equity, per-fill cash delta, entry/exit quantity parity) are
   still specified but unimplemented.
-- **Fixtures F5-F8** are not written. F10 is (zero vs non-zero commission).
+- **Fixtures F5-F7** are not written. F8 (slippage monotonicity) and F10
+  (zero vs non-zero commission) are.
+- **Slippage is uncalibrated.** Every tick count is a declared assumption, not
+  a measurement: the only execution records on hand
+  (`data/local/ib_executions.db`) are two synthetic test rows quoting
+  $1.25/share commission, roughly 250x real IBKR pricing. Until live fills
+  accumulate, results should be read alongside a slippage sweep rather than at
+  a single setting.
 
-Measured cost impact on the QQQ ORB baseline, 2019-2023: **$5,209 over 1,257
-trades**, 2.29% of gross P&L. The most diagnostic single number is
-`max_loss_r`, which moved from exactly `-1.0` to `-1.021`: a stop-out used to
-lose precisely the declared risk, which is only true when trading is free.
+Measured cost impact on the QQQ ORB baseline, 2019-2023:
+
+| | Amount | Share of pre-cost P&L |
+| --- | --- | --- |
+| Commission | $4,995 | 2.3% |
+| Exit slippage (direct) | $10,997 | 5.1% |
+| **All-in** | **$15,992** | **7.4%** |
+
+Net P&L fell further than the direct cost, from $222,018 to $199,928, because
+a smaller account takes smaller subsequent positions -- roughly half the
+$22,091 decline is compounding rather than cost. `expectancy_r` moved 0.3156
+to 0.2970, and `max_loss_r` from -1.668 to -1.748.
+
+The most diagnostic single number remains `max_loss_r`. Before any cost
+modelling it was exactly `-1.0`: a stop-out lost precisely the declared risk,
+which is true only when trading is free.
+
+Exit slippage is the largest lever in the whole cost model -- at 20 ticks it
+would cost 47.9% of net P&L, against commission's 2.3% -- which is why it is
+configurable per exit reason and why `ExitSlippageModel` is a protocol rather
+than a concrete class. A volume-scaled implementation drops in without
+touching the portfolio.
 
 **P7 — SQLite store.** Delivered: schema, migrations, store operations,
 lifecycle triggers, outbox. Outstanding:
@@ -1402,7 +1433,7 @@ lifecycle triggers, outbox. Outstanding:
 
 ### Unplanned work
 
-Four items outside §13 were necessary and are worth recording, because none
+Five items outside §13 were necessary and are worth recording, because none
 was visible when the plan was written.
 
 **Market data path resolution** (`02e0b55`). `Path("vibe/data/parquet")` was
@@ -1436,7 +1467,7 @@ intended metric edits. The split earned its keep immediately: P1 asserted
 metrics-only and the simulation digests were byte-identical, while E4 correctly
 registered as a simulation change because `commission` is in the ledger digest.
 
-**Commission reserve in the buying-power gate** (*pending*). E4 exposed a
+**Commission reserve in the buying-power gate** (`17dacfc`). E4 exposed a
 consequence of the gate landing first: buying power was computed against
 notional, the position was sized to consume all of it, and costs were then
 debited from an account with nothing left — driving `min_cash` to **-$2.24** on
@@ -1445,6 +1476,16 @@ the same defect E3 was meant to close, reintroduced through the cost ledger.
 `available_buying_power()` now optionally takes the entry price and reserves the
 round trip. Reserving both legs is deliberate: the exit is not optional, so a
 gate that funds only the entry approves positions the account cannot close.
+
+**Slippage reported separately from commission** (*pending*). The two costs are
+structurally different and summing them into one number misleads. A commission
+is an explicit debit that sits outside `gross_pnl`; slippage is embedded in the
+fill price and has already reduced it. Folding slippage into `total_costs`
+would double-count it, but omitting it entirely reports $4,995 of cost when the
+true figure is $15,992 — a reader would conclude trading costs 2.4% of gross
+when all-in they are 7.4%. `exit_slippage_cost` is therefore published beside
+`total_costs` rather than inside it, and the reconciliation identity stays
+exact.
 
 ### Findings that change the plan
 
