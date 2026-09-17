@@ -1,0 +1,80 @@
+{
+  "metrics": {
+    "by_year": {
+      "2022": {
+        "avg_loss_r": -0.990693467,
+        "avg_win_r": 3.163108978,
+        "eod_losses": 4,
+        "eod_wins": 92,
+        "expectancy_r": 0.531815796,
+        "first_date": "2022-01-03",
+        "last_date": "2022-12-30",
+        "max_losing_streak": 15,
+        "max_loss_r": -1.03030303,
+        "max_win_r": 12.38372093,
+        "n_trades": 251,
+        "skewness": 1.77007818,
+        "stop_losses": 155,
+        "stop_wins": 0,
+        "top10_pct": 48.564840736,
+        "total_pnl": 79960.265000003,
+        "win_rate": 0.366533865
+      }
+    },
+    "equity": {
+      "annualized_return": 0.81135705,
+      "max_drawdown": -0.098784112,
+      "max_drawdown_duration_days": 41,
+      "sharpe_ratio": 3.694292345,
+      "total_return": 0.79960265
+    },
+    "overall": {
+      "avg_loss_r": -0.990693467,
+      "avg_win_r": 3.163108978,
+      "eod_losses": 4,
+      "eod_wins": 92,
+      "expectancy_r": 0.531815796,
+      "first_date": "2022-01-03",
+      "last_date": "2022-12-30",
+      "max_losing_streak": 15,
+      "max_loss_r": -1.03030303,
+      "max_win_r": 12.38372093,
+      "n_trades": 251,
+      "skewness": 1.77007818,
+      "stop_losses": 155,
+      "stop_wins": 0,
+      "top10_pct": 48.564840736,
+      "total_pnl": 79960.265000003,
+      "win_rate": 0.366533865
+    }
+  },
+  "run": {
+    "end": "2022-12-31",
+    "execution_realism": "realistic",
+    "initial_capital": 100000.0,
+    "ruleset_name": "orb_production",
+    "ruleset_version": "1.0.0",
+    "start": "2022-01-01",
+    "symbol": "QQQ"
+  },
+  "schema_version": 1,
+  "simulation": {
+    "equity_curve_sha256": "91bf841cdcae939d8c90305f0dd3bd89c07424ceafb8bbb2e47580be39f4d64a",
+    "execution_diagnostics": {
+      "ambiguous_exit_bars": 0.0,
+      "execution_model_version": 2.0,
+      "gap_through_exits": 1.0,
+      "max_gross_exposure_ratio": 1.015294445,
+      "min_cash": 1.405000002,
+      "orders_capped_by_buying_power": 246.0,
+      "orders_capped_by_declared_limits": 0.0
+    },
+    "exit_reason_counts": {
+      "EOD": 96,
+      "STOP": 155
+    },
+    "n_equity_points": 19570,
+    "n_trades": 251,
+    "trade_ledger_sha256": "d11f00fef86d3fda20d7e2af2fdcb079aba1e734aaab28101195b09fd7cea842"
+  }
+}
