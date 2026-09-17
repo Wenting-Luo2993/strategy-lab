@@ -73,6 +73,28 @@ async def test_cooldown_sends_dashboard_publish_alert_for_unresolved_rows(monkey
 
 
 @pytest.mark.asyncio
+async def test_cooldown_does_not_alert_for_pending_backlog_while_publish_is_progressing(
+    monkeypatch,
+):
+    sent_payloads = []
+
+    @asynccontextmanager
+    async def fake_discord_context(webhook_url):
+        raise AssertionError("A bounded successful flush should not trigger an alert")
+        yield
+
+    monkeypatch.setattr(cooldown_module, "discord_notification_context", fake_discord_context)
+    manager = _manager({"published": 125, "failed": 0, "pending": 245, "dead_letter": 0})
+
+    await manager._send_dashboard_publish_alert(
+        manager.orchestrator.remote_data_publisher.summary,
+        SimpleNamespace(published=125),
+    )
+
+    assert sent_payloads == []
+
+
+@pytest.mark.asyncio
 async def test_cooldown_does_not_send_dashboard_publish_alert_when_clear(monkeypatch):
     sent_payloads = []
 

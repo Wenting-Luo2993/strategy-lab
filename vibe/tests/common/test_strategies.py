@@ -368,8 +368,8 @@ class TestORBStrategy:
         assert signal == -1
         assert metadata["signal"] == "short_breakout"
 
-    def test_incremental_signal_wick_breakout_allows_body_inside_range(self):
-        """Wick evaluation uses high/low for breakout detection."""
+    def test_incremental_signal_rejects_wick_breakout_retraced_inside_range(self):
+        """Live execution does not chase a wick after the completed bar retraces."""
         config = ORBStrategyConfig(name="ORB", orb_body_pct_filter=0.0, breakout_evaluation="wick")
         strategy = ORBStrategy(config=config)
         df = self._create_market_day_df(breakout_direction="up")
@@ -390,8 +390,8 @@ class TestORBStrategy:
             df_context=df.iloc[:15],
         )
 
-        assert signal == 1
-        assert metadata["signal"] == "long_breakout"
+        assert signal == 0
+        assert metadata["reason"] == "wick_breakout_retraced"
 
     def test_incremental_signal_body_breakout_requires_open_or_close_beyond_level(self):
         """Body evaluation ignores wick-only breakouts."""

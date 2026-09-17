@@ -6,7 +6,7 @@ which processes final data, disconnects providers, and prepares for the next tra
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from vibe.trading_bot.core.phases.base import BasePhase
 from vibe.trading_bot.notifications.helper import discord_notification_context
@@ -247,19 +247,28 @@ class CooldownPhaseManager(BasePhase):
                 result.dead_lettered,
                 summary,
             )
-            await self._send_dashboard_publish_alert(summary)
+            await self._send_dashboard_publish_alert(summary, result)
         except Exception as e:
             self.logger.warning("Dashboard cooldown publish flush failed: %s", e)
 
-    async def _send_dashboard_publish_alert(self, summary: dict) -> None:
+    async def _send_dashboard_publish_alert(self, summary: dict, result: Any = None) -> None:
         """Send a Discord alert if cooldown leaves unresolved publish rows."""
-        unresolved_statuses = ("pending", "failed", "publishing", "dead_letter")
+        unresolved_statuses = ("failed", "publishing", "dead_letter")
         unresolved = {
             status: int(summary.get(status, 0) or 0)
             for status in unresolved_statuses
             if int(summary.get(status, 0) or 0) > 0
         }
+        pending = int(summary.get("pending", 0) or 0)
+        made_progress = int(getattr(result, "published", 0) or 0) > 0
+        if pending > 0 and not made_progress:
+            unresolved["pending"] = pending
         if not unresolved:
+            if pending > 0:
+                self.logger.info(
+                    "Dashboard publication backlog remains after bounded cooldown flush: pending=%s",
+                    pending,
+                )
             return
 
         notifications = getattr(self.config, "notifications", None)

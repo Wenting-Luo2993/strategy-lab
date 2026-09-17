@@ -326,6 +326,23 @@ class ORBStrategy(StrategyBase):
             current_price=current_price,
         )
 
+        # Live incremental evaluation runs after a completed bar is available.
+        # A wick that has already retraced inside the ORB is no longer an
+        # actionable stop-entry and must not be chased with a market order.
+        if self.config.breakout_evaluation == "wick":
+            tick_size = 0.01
+            stale_long_wick = long_broke and current_price < levels.high + tick_size
+            stale_short_wick = short_broke and current_price > levels.low - tick_size
+            if stale_long_wick:
+                long_broke = False
+            if stale_short_wick:
+                short_broke = False
+            if stale_long_wick or stale_short_wick:
+                metadata.update({
+                    "reason": "wick_breakout_retraced",
+                    "reason_detail": "Completed bar retraced inside the ORB before live entry",
+                })
+
         # Tie-break when both levels are breached in the same bar.
         # LEAN's heuristic: the side that moved further from bar open fired first.
         if long_broke and short_broke:
@@ -394,7 +411,7 @@ class ORBStrategy(StrategyBase):
             return -1, metadata
 
         # No breakout
-        metadata.update({"reason": "no_breakout"})
+        metadata.setdefault("reason", "no_breakout")
         return 0, metadata
 
     def _calculate_body_percentage(self, bar: dict) -> float:

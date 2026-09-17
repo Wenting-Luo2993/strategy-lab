@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.8"  # fix: slippage flat 0.03% per leg — zero size_impact_factor (blew up with large share counts)
+VERSION = "1.4.9"  # fix: live ORB entry timing and dashboard publication reconciliation
 
 
 def get_build_timestamp() -> str:

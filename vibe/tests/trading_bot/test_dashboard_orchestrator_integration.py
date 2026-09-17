@@ -418,6 +418,16 @@ async def test_restart_always_publishes_first_position_observation_once(tmp_path
 
     publisher = RemoteDataPublisher(first.dashboard_outbox_store, Destination())
     await publisher.flush_pending(timeout_seconds=5, max_batches=20)
+    publisher.reconcile_sources(
+        [first.dashboard_store],
+        first.market_scheduler.now().date().isoformat(),
+    )
+    assert first.dashboard_outbox_store._get_connection().execute(
+        """
+        SELECT COUNT(*) FROM publish_outbox
+        WHERE aggregate_type = 'equity_snapshot' AND status = 'pending'
+        """
+    ).fetchone()[0] == 0
     first.dashboard_price_store.close()
     first.dashboard_store.close()
     first.dashboard_outbox_store.close()
@@ -911,6 +921,171 @@ async def test_delayed_exit_fill_preserves_reason_until_projection(
     assert projected["status"] == "closed"
     assert projected["exit_reason"] == exit_reason
     assert "AAPL" not in orchestrator._pending_exit_reasons
+
+
+@pytest.mark.asyncio
+async def test_delayed_exit_fill_closes_trade_when_broker_position_snapshot_is_stale(
+    tmp_path,
+):
+    orchestrator = TradingOrchestrator(
+        config=_dashboard_config(tmp_path),
+        ruleset=_ruleset(),
+        market_scheduler=_scheduler(),
+        testing_mode=True,
+    )
+    orchestrator.strategy = ORBStrategy(ORBStrategyConfig(name="test"))
+    orchestrator.strategy.track_position(
+        "AAPL",
+        "buy",
+        100.0,
+        110.0,
+        95.0,
+        datetime.now(timezone.utc),
+        quantity=6,
+    )
+    row_id = orchestrator.trade_store.insert_trade(Trade(
+        trade_id="DU123:entry",
+        symbol="AAPL",
+        side="buy",
+        quantity=6,
+        entry_price=100,
+        entry_time=datetime.now(timezone.utc),
+        pnl_currency="USD",
+        strategy="test",
+    ))
+    orchestrator.trade_store.update_trade(row_id, account_id="DU123", status="open")
+    orchestrator._pending_exit_reasons["AAPL"] = "stop_loss"
+    order = SimpleNamespace(
+        order_id="close",
+        symbol="AAPL",
+        side="sell",
+        quantity=6,
+        filled_qty=6,
+        avg_price=99.0,
+        price=99.0,
+        filled_at=datetime.now(timezone.utc),
+        executions=[],
+        execution_id=None,
+        permanent_order_id=None,
+        account_id="DU123",
+        trade_currency="USD",
+        commission=0.0,
+        commission_currency=None,
+        submitted_at=None,
+        decision_at=None,
+        benchmark_price=None,
+        benchmark_valid=False,
+    )
+
+    class StalePositionExchange:
+        async def get_position(self, symbol):
+            return SimpleNamespace(quantity=6, entry_price=100.0)
+
+        async def get_order(self, order_id):
+            return order
+
+    orchestrator.exchange = StalePositionExchange()
+    orchestrator.trade_executor = TradeExecutor(
+        exchange=orchestrator.exchange,
+        order_manager=SimpleNamespace(),
+        position_sizer=PositionSizer(risk_per_trade=100),
+    )
+
+    await orchestrator._sync_open_trade_after_exit_fill(order)
+
+    projected = orchestrator.trade_store.get_trade_by_id(row_id)
+    assert projected["status"] == "closed"
+    assert projected["closed_quantity"] == 6
+    assert orchestrator.strategy.get_position("AAPL") is None
+    assert "AAPL" not in orchestrator._pending_exit_reasons
+
+
+@pytest.mark.asyncio
+async def test_partial_exit_fill_stays_open_when_broker_snapshot_is_temporarily_flat(
+    tmp_path,
+):
+    orchestrator = TradingOrchestrator(
+        config=_dashboard_config(tmp_path),
+        ruleset=_ruleset(),
+        market_scheduler=_scheduler(),
+        testing_mode=True,
+    )
+    orchestrator.strategy = ORBStrategy(ORBStrategyConfig(name="test"))
+    orchestrator.strategy.track_position(
+        "AAPL",
+        "buy",
+        100.0,
+        110.0,
+        95.0,
+        datetime.now(timezone.utc),
+        quantity=6,
+    )
+    row_id = orchestrator.trade_store.insert_trade(Trade(
+        trade_id="DU123:entry",
+        symbol="AAPL",
+        side="buy",
+        quantity=6,
+        entry_price=100,
+        entry_time=datetime.now(timezone.utc),
+        pnl_currency="USD",
+        strategy="test",
+    ))
+    orchestrator.trade_store.update_trade(row_id, account_id="DU123", status="open")
+    orchestrator._pending_exit_reasons["AAPL"] = "stop_loss"
+    order = SimpleNamespace(
+        order_id="partial-close",
+        symbol="AAPL",
+        side="sell",
+        quantity=6,
+        filled_qty=2,
+        avg_price=99.0,
+        price=99.0,
+        filled_at=datetime.now(timezone.utc),
+        executions=[],
+        execution_id=None,
+        permanent_order_id=None,
+        account_id="DU123",
+        trade_currency="USD",
+        commission=0.0,
+        commission_currency=None,
+        submitted_at=None,
+        decision_at=None,
+        benchmark_price=None,
+        benchmark_valid=False,
+    )
+
+    class TemporarilyFlatExchange:
+        async def get_position(self, symbol):
+            return None
+
+        async def get_order(self, order_id):
+            return order
+
+    orchestrator.exchange = TemporarilyFlatExchange()
+    orchestrator.trade_executor = TradeExecutor(
+        exchange=orchestrator.exchange,
+        order_manager=SimpleNamespace(),
+        position_sizer=PositionSizer(risk_per_trade=100),
+    )
+
+    await orchestrator._sync_open_trade_after_exit_fill(order)
+
+    projected = orchestrator.trade_store.get_trade_by_id(row_id)
+    assert projected["status"] == "open"
+    assert projected["quantity"] == 4
+    assert projected["closed_quantity"] == 2
+    assert orchestrator.strategy.get_position("AAPL")["quantity"] == 4
+    assert orchestrator._pending_exit_reasons["AAPL"] == "stop_loss"
+
+    order.filled_qty = 4
+    order.avg_price = 98.5
+    await orchestrator._sync_open_trade_after_exit_fill(order)
+
+    projected = orchestrator.trade_store.get_trade_by_id(row_id)
+    assert projected["status"] == "open"
+    assert projected["quantity"] == 2
+    assert projected["closed_quantity"] == 4
+    assert orchestrator.strategy.get_position("AAPL")["quantity"] == 2
 
 
 @pytest.mark.asyncio
