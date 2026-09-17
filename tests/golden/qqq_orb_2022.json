@@ -24,8 +24,8 @@
     "equity": {
       "annualized_return": 0.81135705,
       "max_drawdown": -0.098784112,
-      "max_drawdown_duration_days": 41,
-      "sharpe_ratio": 3.694292345,
+      "max_drawdown_duration_days": 61,
+      "sharpe_ratio": 3.274863112,
       "total_return": 0.79960265
     },
     "overall": {

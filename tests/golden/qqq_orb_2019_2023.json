@@ -2,14 +2,14 @@
   "metrics": {
     "by_year": {
       "2019": {
-        "avg_loss_r": -0.961050228,
+        "avg_loss_r": -0.96691029,
         "avg_win_r": 2.56800835,
-        "eod_losses": 10,
+        "eod_losses": 9,
         "eod_wins": 87,
         "expectancy_r": 0.257315233,
         "first_date": "2019-01-02",
         "last_date": "2019-12-31",
-        "max_losing_streak": 14,
+        "max_losing_streak": 12,
         "max_loss_r": -1.64,
         "max_win_r": 10.358974359,
         "n_trades": 252,
@@ -100,14 +100,14 @@
     "equity": {
       "annualized_return": 0.272217283,
       "max_drawdown": -0.161615331,
-      "max_drawdown_duration_days": 139,
-      "sharpe_ratio": 2.039321142,
+      "max_drawdown_duration_days": 203,
+      "sharpe_ratio": 1.923441723,
       "total_return": 2.32618995
     },
     "overall": {
-      "avg_loss_r": -0.969072845,
+      "avg_loss_r": -0.970256084,
       "avg_win_r": 2.750773433,
-      "eod_losses": 41,
+      "eod_losses": 40,
       "eod_wins": 437,
       "expectancy_r": 0.324143403,
       "first_date": "2019-01-02",

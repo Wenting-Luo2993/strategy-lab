@@ -67,7 +67,11 @@ class SweepResult:
         gross_profit = sum(wins) if wins else 0.0
         gross_loss = abs(sum(losses)) if losses else 0.0
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0.0
-        losing_trades = sum(1 for r in metrics.r_multiples if r < 0)
+        # Taken from the analyzer rather than recomputed. This line previously
+        # counted r < 0 while win_rate counted r <= 0 as a loss, so the two
+        # disagreed on any exactly-zero-R trade and "wins + losses == trades"
+        # failed for reasons that had nothing to do with the run.
+        losing_trades = metrics.losing_trades
         
         # Calculate avg win/loss in dollars
         avg_win = sum(wins) / len(wins) if wins else 0.0
@@ -83,7 +87,11 @@ class SweepResult:
             "n_trades": metrics.n_trades,
             "win_rate": metrics.win_rate,
             "expectancy_r": metrics.expectancy_r,
+            "winning_trades": metrics.winning_trades,
             "losing_trades": losing_trades,
+            "breakeven_trades": metrics.breakeven_trades,
+            "r_sample_size": metrics.r_sample_size,
+            "dropped_trade_count": metrics.dropped_trade_count,
             "total_pnl": metrics.total_pnl,
             "max_drawdown": equity.max_drawdown,
             "profit_factor": profit_factor,
@@ -505,7 +513,10 @@ class ParameterSweep:
         display_df["win_rate"] = display_df["win_rate"].apply(lambda x: f"{x:.1%}")
         display_df["expectancy_r"] = display_df["expectancy_r"].apply(lambda x: f"{x:.2f}R")
         display_df["total_pnl"] = display_df["total_pnl"].apply(lambda x: f"${x:,.0f}")
-        display_df["max_drawdown"] = display_df["max_drawdown"].apply(lambda x: f"${x:,.0f}")
+        # max_drawdown is a negative fraction, not dollars. Rendering it as
+        # currency displayed "-$0" for every row and made drawdown look
+        # uniformly negligible.
+        display_df["max_drawdown"] = display_df["max_drawdown"].apply(lambda x: f"{x:.2%}")
         
         print(display_df[param_cols + metric_cols].to_string(index=False))
         print("=" * 80 + "\n")
