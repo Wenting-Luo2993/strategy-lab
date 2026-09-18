@@ -26,7 +26,7 @@ export function equityCurvePoints(equity: EquitySnapshot[]): TimestampValuePoint
 }
 
 export function tradePnlPoints(trades: DerivedClosedTrade[]): TimestampValuePoint[] {
-  return trades
+  const points = trades
     .filter((trade) => Number.isFinite(trade.pnl))
     .map((trade) => ({
       time: toTimestamp(trade.exitTime),
@@ -34,6 +34,12 @@ export function tradePnlPoints(trades: DerivedClosedTrade[]): TimestampValuePoin
     }))
     .filter((point): point is TimestampValuePoint => point.time !== null)
     .sort((left, right) => left.time - right.time);
+  let previousTime = Number.NEGATIVE_INFINITY;
+  return points.map((point) => {
+    const time = Math.max(point.time, previousTime + 1);
+    previousTime = time;
+    return { ...point, time };
+  });
 }
 
 function toTimestamp(value: string): number | null {

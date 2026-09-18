@@ -43,3 +43,17 @@ test("includes every closed trade in the P&L series", () => {
 
   assert.equal(tradePnlPoints(trades).length, 32);
 });
+
+test("assigns unique ordered timestamps when trades share an exit time", () => {
+  const exitTime = "2026-09-18T15:00:00Z";
+  const points = tradePnlPoints([
+    { id: "a", symbol: "QQQ", side: "long", quantity: 1, entryPrice: 100, exitPrice: 101, exitTime, pnl: 1, currency: "USD" },
+    { id: "b", symbol: "QQQ", side: "long", quantity: 1, entryPrice: 100, exitPrice: 102, exitTime, pnl: 2, currency: "USD" },
+    { id: "c", symbol: "QQQ", side: "long", quantity: 1, entryPrice: 100, exitPrice: 103, exitTime, pnl: 3, currency: "USD" },
+  ]);
+
+  assert.deepEqual(
+    points.map((point) => point.time),
+    [points[0].time, points[0].time + 1, points[0].time + 2],
+  );
+});
