@@ -18,6 +18,11 @@ type SupabaseEquitySnapshot = EquitySnapshot & {
   pnl_provenance_version?: number | null;
 };
 
+type SupabaseEquityHistoryRow = Pick<
+  EquitySnapshot,
+  "snapshot_id" | "account_id" | "timestamp" | "net_liquidation" | "granularity" | "source"
+>;
+
 type TableMap = {
   accounts: Account;
   equity_snapshots: SupabaseEquitySnapshot;
@@ -53,7 +58,13 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
           ? "select=*&order=timestamp.desc&limit=100"
           : `select=*&dimensions->>account_id=eq.${accountId}&order=timestamp.desc&limit=100`;
         return Promise.all([
-          queryTable("equity_snapshots", supabaseUrl, supabaseAnonKey, `select=*&account_id=eq.${accountId}&order=timestamp.desc&limit=50`),
+          queryTable("equity_snapshots", supabaseUrl, supabaseAnonKey, `select=*&account_id=eq.${accountId}&order=timestamp.desc&limit=1`),
+          queryAllTableRows(
+            "equity_snapshots",
+            supabaseUrl,
+            supabaseAnonKey,
+            equityHistoryQuery(accountId),
+          ),
           queryTable("positions", supabaseUrl, supabaseAnonKey, `select=*&account_id=eq.${accountId}&order=updated_at.desc&limit=50`),
           queryTable("order_events", supabaseUrl, supabaseAnonKey, `select=*&account_id=eq.${accountId}&order=occurred_at.desc&limit=100`),
           queryAllTableRows(
@@ -73,13 +84,15 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
       })),
     ]);
     const equity = rowsByAccount
-      .flatMap((rows) => rows[0] as SupabaseEquitySnapshot[])
-      .map(adaptEquitySnapshot);
-    const positions = rowsByAccount.flatMap((rows) => rows[1] as Position[]);
-    const orderEvents = rowsByAccount.flatMap((rows) => rows[2] as OrderEvent[]);
-    const trades = rowsByAccount.flatMap((rows) => rows[3] as Trade[]);
-    const metrics = rowsByAccount.flatMap((rows) => rows[4] as OperationalMetric[]);
-    const annotations = rowsByAccount.flatMap((rows) => rows[5] as StrategyAnnotation[]);
+      .flatMap((rows) => mergeEquityRows(
+        rows[0] as SupabaseEquitySnapshot[],
+        rows[1] as SupabaseEquityHistoryRow[],
+      ));
+    const positions = rowsByAccount.flatMap((rows) => rows[2] as Position[]);
+    const orderEvents = rowsByAccount.flatMap((rows) => rows[3] as OrderEvent[]);
+    const trades = rowsByAccount.flatMap((rows) => rows[4] as Trade[]);
+    const metrics = rowsByAccount.flatMap((rows) => rows[5] as OperationalMetric[]);
+    const annotations = rowsByAccount.flatMap((rows) => rows[6] as StrategyAnnotation[]);
 
     return {
       source: "supabase",
@@ -101,8 +114,34 @@ export async function getSupabaseDashboardData(): Promise<DashboardData> {
   }
 }
 
+export function equityHistoryQuery(accountId: string): string {
+  return `select=snapshot_id,account_id,timestamp,net_liquidation,granularity,source&account_id=eq.${accountId}&order=timestamp.desc,snapshot_id.asc`;
+}
+
 export function strategyAnnotationsQuery(accountId: string): string {
   return `select=*&account_id=eq.${accountId}&enabled=eq.true&order=trading_day.desc,annotation_id.asc`;
+}
+
+function mergeEquityRows(
+  latestRows: SupabaseEquitySnapshot[],
+  historyRows: SupabaseEquityHistoryRow[],
+): EquitySnapshot[] {
+  const bySnapshotId = new Map<string, EquitySnapshot>();
+  historyRows.forEach((row) => {
+    bySnapshotId.set(row.snapshot_id, {
+      ...row,
+      cash: null,
+      buying_power: null,
+      realized_pnl: null,
+      unrealized_pnl: null,
+    });
+  });
+  latestRows.forEach((row) => {
+    bySnapshotId.set(row.snapshot_id, adaptEquitySnapshot(row));
+  });
+  return [...bySnapshotId.values()].sort(
+    (left, right) => new Date(right.timestamp).getTime() - new Date(left.timestamp).getTime(),
+  );
 }
 
 export function adaptEquitySnapshot(row: SupabaseEquitySnapshot): EquitySnapshot {

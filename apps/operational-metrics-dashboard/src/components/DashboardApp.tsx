@@ -307,12 +307,12 @@ function ChartsView({ data, selectedSymbol, selectedBars, strategyConfig }: { da
         <StrategySummary data={data} selectedSymbol={selectedSymbol} selectedBars={selectedBars} visibleAnnotations={visibleAnnotations} strategyConfig={strategyConfig} />
       </Panel>
       <div className="min-w-0 lg:col-span-2">
-        <Panel title="Equity curve">
+        <Panel title="Equity curve (daily · all history)">
           <EquityCurveChart equity={data.equity} />
         </Panel>
       </div>
       <div className="min-w-0 lg:col-span-2">
-        <Panel title="P&L per trade">
+        <Panel title="P&L per trade (all history)">
           <TradePnlChart trades={closedTrades} />
         </Panel>
       </div>

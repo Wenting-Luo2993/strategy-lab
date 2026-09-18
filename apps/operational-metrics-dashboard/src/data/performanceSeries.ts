@@ -7,15 +7,21 @@ export type TimestampValuePoint = {
 };
 
 export function equityCurvePoints(equity: EquitySnapshot[]): TimestampValuePoint[] {
-  const byTimestamp = new Map<number, number>();
+  const byMarketDay = new Map<string, TimestampValuePoint>();
   equity.forEach((snapshot) => {
     const timestamp = toTimestamp(snapshot.timestamp);
     if (timestamp !== null && Number.isFinite(snapshot.net_liquidation)) {
-      byTimestamp.set(timestamp, Number(snapshot.net_liquidation));
+      const marketDay = marketDate(snapshot.timestamp);
+      const existing = byMarketDay.get(marketDay);
+      if (!existing || timestamp > existing.time) {
+        byMarketDay.set(marketDay, {
+          time: timestamp,
+          value: Number(snapshot.net_liquidation),
+        });
+      }
     }
   });
-  return [...byTimestamp.entries()]
-    .map(([time, value]) => ({ time, value }))
+  return [...byMarketDay.values()]
     .sort((left, right) => left.time - right.time);
 }
 
@@ -33,4 +39,13 @@ export function tradePnlPoints(trades: DerivedClosedTrade[]): TimestampValuePoin
 function toTimestamp(value: string): number | null {
   const timestamp = Math.floor(new Date(value).getTime() / 1000);
   return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function marketDate(value: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(value));
 }
