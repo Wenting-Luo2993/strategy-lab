@@ -1522,13 +1522,30 @@ justification.
 
 ### Recommended next increment
 
-**P1, metric normalization.** It is the last unstarted prerequisite on Lane A,
-it blocks both P6 and P9, and the 19x finding above makes it more urgent than
-when the plan was written: every stored absolute metric is currently wrong, and
-P1 is where that gets defined away rather than patched.
+**Finish P2, then P4.**
 
-P1 also has a hard ordering constraint from §13 — it changes existing numbers,
-so it must land **before** any new research is generated and **after** the F13
-golden file is frozen. Freezing F13 is therefore the immediate first task, and
-it is now possible because market data resolves correctly from a worktree.
+P2's remainder is small and closes an increment rather than opening one: three
+reconciliation identities and fixtures F5-F7. The identities matter more than
+their size suggests — they are the checks that would catch a *future* accounting
+error the way the commission reserve bug was caught, by contradiction rather
+than by inspection. E4 has already invalidated two of the plan's original
+identities once; leaving the remaining three unimplemented means the next such
+change has nothing to fail against.
+
+**P4, warmup-aware segment execution**, is then the highest-leverage unstarted
+increment. Its prerequisite (P3) is complete, and it blocks three others —
+P5, P5b, and P9. Nothing else on the critical path can start until it lands, so
+it is the single constraint on the whole Lane A/B critical path.
+
+The path to the plan's own "minimum bar before trusting a result" is
+P2 (finish) -> P4 -> P5 -> P6 -> P9 -> P10. P6 is the one that matters most:
+until it exists, the central promise of this plan — that bad metrics cannot
+reach `COMPLETED` — is unenforced, and every result is an unchecked claim.
+
+**One item is time-sensitive and independent of all of the above.** §16 requires
+the final out-of-sample date range to be hash-locked *before* further ORB
+research. Every run performed between now and P10 erodes the holdout's value,
+and that erosion cannot be undone retroactively. Committing the range to a
+config today costs almost nothing and preserves the option; deferring it until
+P10 does not.
 
