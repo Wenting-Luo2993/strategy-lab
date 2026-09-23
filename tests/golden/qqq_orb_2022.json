@@ -76,7 +76,8 @@
       "min_cash": 3.1105,
       "orders_capped_by_buying_power": 246.0,
       "orders_capped_by_declared_limits": 0.0,
-      "total_costs": 762.825
+      "total_costs": 762.825,
+      "warmup_sessions_excluded": 0.0
     },
     "exit_reason_counts": {
       "EOD": 96,

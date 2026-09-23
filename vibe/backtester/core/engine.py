@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -113,6 +113,8 @@ class BacktestEngine:
         start_date: datetime,
         end_date: datetime,
         precomputed_features: Optional[pd.DataFrame] = None,
+        *,
+        graded_start: Optional[date] = None,
     ) -> BacktestResult:
         """
         Run backtest simulation.
@@ -124,7 +126,11 @@ class BacktestEngine:
             precomputed_features: Optional pre-computed indicators (ATR, ADX, etc.)
                                  If provided, skips indicator computation for performance.
                                  Index must match the resampled bar timestamps.
-        
+            graded_start: First **graded** session. Sessions before it are warmup:
+                their bars prime indicators but generate no orders, and they are
+                excluded from the equity curve and therefore from every metric
+                denominator. ``None`` grades the whole range.
+
         Returns:
             BacktestResult with trades, metrics, and equity curve
         """
@@ -206,11 +212,22 @@ class BacktestEngine:
         # 5. Event loop with bar_index counter
         prev_date = None
         bar_index = 0  # Track bar index for latency support
+        warmup_sessions_seen: set[date] = set()
         
         for ts, row in df.iterrows():
             clock.set_time(ts.to_pydatetime())
             current_date = ts.date()
 
+            # Warmup bars prime indicators and nothing else. Suppressing orders
+            # is not enough on its own: a warmup trade would move cash, and
+            # position sizing is a function of cash, so it would silently
+            # change every graded trade that followed. The graded window has to
+            # begin from the same capital regardless of how much warmup was
+            # supplied, or folds are not comparable -- which is the entire
+            # point of the increment.
+            is_warmup = graded_start is not None and current_date < graded_start
+            if is_warmup:
+                warmup_sessions_seen.add(current_date)
             if current_date != prev_date:
                 # Reset bar index at start of new day
                 bar_index = 0
@@ -241,7 +258,11 @@ class BacktestEngine:
 
             # Generate entry signal only if no open position and no pending order.
             has_pending_symbol_order = any(o.symbol == symbol for o in self.pending_orders)
-            if symbol not in portfolio.positions and not has_pending_symbol_order:
+            if (
+                not is_warmup
+                and symbol not in portfolio.positions
+                and not has_pending_symbol_order
+            ):
                 current_bar_dict = row.to_dict()
                 current_bar_dict["timestamp"] = ts.to_pydatetime()
 
@@ -375,16 +396,31 @@ class BacktestEngine:
             # Keep exposed state synchronized for tests/diagnostics.
             self.pending_orders = [entry.order for entry in pending_queue._orders]
 
-            portfolio.update_equity(current_bars, ts.to_pydatetime())
+            # Warmup sessions are absent from the equity curve, which is what
+            # keeps them out of every metric denominator: PerformanceAnalyzer
+            # derives n_sessions by resampling this curve. Excluding them here
+            # is therefore the single edit that scopes all session-based
+            # metrics, rather than each metric needing its own exclusion.
+            if not is_warmup:
+                portfolio.update_equity(current_bars, ts.to_pydatetime())
 
         # 6. Analyze results
         reconciliation = reconcile_portfolio(portfolio)
+        # The reported window is the *graded* one. A segment whose start_date
+        # still pointed at the warmup load boundary would misreport its own
+        # span, and any fold comparison built on it would be off by the warmup
+        # length.
+        reported_start = (
+            datetime.combine(graded_start, datetime.min.time(), tzinfo=start_date.tzinfo)
+            if graded_start is not None
+            else start_date
+        )
         return PerformanceAnalyzer.analyze(
             trades=portfolio.trade_history,
             equity_curve=portfolio.equity_curve,
             initial_capital=self.initial_capital,
             symbol=symbol,
-            start_date=start_date,
+            start_date=reported_start,
             end_date=end_date,
             ruleset_name=self.ruleset.name,
             ruleset_version=self.ruleset.version,
@@ -412,6 +448,10 @@ class BacktestEngine:
                 "accounting_checks_applicable": float(
                     sum(1 for f in reconciliation.findings if f.applicable)
                 ),
+                # Published so a reviewer can confirm from the result alone
+                # that warmup was actually supplied and actually excluded,
+                # rather than trusting the caller's intent.
+                "warmup_sessions_excluded": float(len(warmup_sessions_seen)),
             },
         )
 

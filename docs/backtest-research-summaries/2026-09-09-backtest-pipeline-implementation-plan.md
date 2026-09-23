@@ -986,6 +986,17 @@ asserted:
 - **Warmup** = the maximum indicator lookback. It is a *context* requirement,
   not a leakage requirement, and must never be conflated with purge.
 
+  **Measured (P4):** the required warmup is a property of what the run's
+  *execution configuration* consumes, not of the strategy's entry rules alone.
+  On the default execution path ORB's trades are bit-identical with 0, 20, and
+  40 warmup sessions, because nothing on that path reads ATR or ADV. Enable
+  realistic execution and the same comparison separates: ADV uses a 20-session
+  rolling window, so with no warmup it is NaN for the whole first session and
+  the impact model prices fills differently (first graded fill 347.0451 versus
+  346.6493). Warmup of 20 and 40 sessions then agree exactly. A warmup
+  requirement derived only from the strategy's indicators would therefore have
+  been wrong for exactly the configuration that matters.
+
 The planner records the derivation and its inputs in the split manifest, so a
 reviewer can see why a given purge or embargo was chosen rather than trusting a
 default.
@@ -1384,17 +1395,17 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P3, P10 |
+| Complete | P0, P1, P2, P3, P4, P10 |
 | Partial | P7 |
-| Not started | P4, P5, P5b, P6, P8, P9, P10b, P11, P12, P13, P14 |
+| Not started | P5, P5b, P6, P8, P9, P10b, P11, P12, P13, P14 |
 
-Five of the nine increments required by the "minimum bar before trusting a
+Six of the nine increments required by the "minimum bar before trusting a
 result" (P0-P6, P9, P10) are complete. **No result produced today should be
 treated as trustworthy**, because P6 is still outstanding: nothing prevents a
 bad run from reaching `COMPLETED`. Metrics are now normalized, costs are
-charged, the books reconcile, and the holdout is locked — so today's numbers
-are *defensible* in isolation — but nothing enforces that, and an unreviewed
-run is still an unchecked claim.
+charged, the books reconcile, folds are warmup-comparable, and the holdout is
+locked — so today's numbers are *defensible* in isolation — but nothing
+enforces that, and an unreviewed run is still an unchecked claim.
 
 ### Increment status
 
@@ -1404,14 +1415,14 @@ run is still an unchecked claim.
 | P1 | Metric normalization | **Complete** | `19b56a3` | Three-way win/loss/breakeven; `expectancy_r` as the direct sample mean; session-based Sharpe replacing a hardcoded 78 bars; drawdown duration in calendar days; trade census (`r_sample_size`, `dropped_trade_count`) on every run; `METRIC_CALCULATION_VERSION = 2`. 23 tests. Frozen against F13 (`7d10441`), which proved the change was metrics-only. |
 | P2 | Execution realism and accounting | **Complete** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be`, `ced4823` | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; all four reconciliation identities implemented and published via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 + 46 tests. Slippage remains uncalibrated — a data limitation, not missing scope; see below. |
 | P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
-| P4 | Warmup-aware segment execution | **Not started** | — | Blocks P5, P5b, P9. |
+| P4 | Warmup-aware segment execution | **Complete** | `(pending)` | `vibe/research_pipeline/segment_runner.py` plus a `graded_start` boundary in `BacktestEngine.run`. Warmup bars prime indicators, generate no orders, move no cash, and are excluded from the equity curve — which is what scopes every session-based denominator. F3 implemented; 15 tests. Goldens re-frozen with one added diagnostic key and zero changed values. |
 | P5 | Feature declarations and leakage harness | **Not started** | — | |
 | P5b | Cross-sectional universe | **Not started** | — | Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
 | P6 | Validation gates and lifecycle | **Not started** | — | Until this lands, nothing enforces the plan's central promise that bad metrics cannot reach `COMPLETED`. |
 | P7 | SQLite store and importer | **Partial** | `f84c34f` | `storage/schema.py`, `storage/sqlite_store.py`: forward-only migrations, terminal-state triggers, UUIDv7 IDs, `run_evidence`, outbox table, concurrent-writer handling. 19 tests. |
 | P8 | Local MJS viewer | **Not started** | — | |
 | P9 | Optimizer/selector seam and nested walk-forward | **Not started** | — | |
-| P10 | Final-holdout lock | **Complete** | `(pending)` | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader` and was verified to block a real 2025 engine run and a straddling 2019→2026 run. 39 tests. Promotion-blocking on touch count > 1 is the one deferred part, and needs P11's registry. |
+| P10 | Final-holdout lock | **Complete** | `29eaa04` | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader` and was verified to block a real 2025 engine run and a straddling 2019→2026 run. 39 tests. Promotion-blocking on touch count > 1 is the one deferred part, and needs P11's registry. |
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
 | P11 | Registry migration to `ResearchStore` | **Not started** | — | |
 | P12 | Supabase publisher and reconciliation | **Not started** | — | |
@@ -1484,8 +1495,43 @@ lifecycle triggers, outbox. Outstanding:
 - **Dual-write** to the existing registry.
 - **Fixture F11.**
 
-### Unplanned work
+### P4 — what the warmup invariant actually required
 
+The property P4 had to establish is that **beyond the required lookback,
+additional warmup changes no graded trade**. Stating it is easy; making the
+test non-vacuous was the work.
+
+The first attempt passed immediately and meant nothing. On the default
+execution path, ORB produced bit-identical trades at 0, 20, and 40 warmup
+sessions — so a suite written only against that path would have asserted that
+warmup does nothing, and would have passed just as happily against an
+implementation that never loaded warmup bars at all.
+
+Probing the features directly showed the mechanism was real: at the first
+graded bar, ATR is NaN for 13 bars with no warmup and fully primed with 20,
+and ADV — a 20-session rolling window — is NaN for the entire first session
+without warmup. The trades were identical only because the legacy path reads
+neither. Under realistic execution the difference surfaces end to end: the
+first graded fill prices at 347.0451 with no warmup against 346.6493 with 20,
+and 20 versus 40 then agree exactly.
+
+Both facts are pinned in `TestWarmupActuallyMatters`, including the
+legacy-path indifference, because it is a real property of the system and
+hiding it would leave the convergence tests looking stronger than they are.
+
+Two further points are load-bearing and easy to get wrong:
+
+- **Suppressing orders is not sufficient.** A warmup fill would move cash, and
+  position sizing is a function of cash, so every graded trade downstream would
+  shift. The test probes this through the first graded trade's *quantity*,
+  which must match across all warmup lengths even where fill *prices*
+  legitimately differ.
+- **Excluding warmup from the equity curve is what scopes the metrics.**
+  `PerformanceAnalyzer` derives `n_sessions` by resampling that curve, so a
+  single exclusion covers every session-based denominator rather than each
+  metric needing its own.
+
+### Unplanned work
 Five items outside §13 were necessary and are worth recording, because none
 was visible when the plan was written.
 
@@ -1575,18 +1621,22 @@ justification.
 
 ### Recommended next increment
 
-**P4, warmup-aware segment execution.**
+**P5, feature declarations and leakage harness.**
 
-P2 and P10 are now complete, which removes both the previously recommended
-next step and the time-sensitive holdout item. P4 is the highest-leverage
-unstarted increment: its prerequisite (P3) is complete, and it blocks three
-others — P5, P5b, and P9. Nothing else on the critical path can start until it
-lands, so it is the single constraint on the whole Lane A/B critical path.
+P2, P4, and P10 are all complete. P5's prerequisite (P4) has landed, and P5 is
+now the constraint on the critical path: it blocks P6, which is the increment
+that matters most. Until P6 exists, the central promise of this plan — that
+bad metrics cannot reach `COMPLETED` — is unenforced, and every result is an
+unchecked claim.
 
-The path to the plan's own "minimum bar before trusting a result" is now
-P4 -> P5 -> P6 -> P9. P6 is the one that matters most: until it exists, the
-central promise of this plan — that bad metrics cannot reach `COMPLETED` — is
-unenforced, and every result is an unchecked claim.
+The remaining path to the plan's own "minimum bar before trusting a result" is
+P5 -> P6 -> P9. P5b (cross-sectional universe) is also unblocked by P4 and can
+run in parallel, since it only loops the existing single-symbol engine.
+
+P4 supplies P5 something it needs: a segment seam where features are computed
+over a declared warmup and graded window. The leakage harness should run
+through `run_segment` rather than raw `run`, so the leakage suite exercises the
+same path research actually uses.
 
 The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
 proceed without further eroding it; runs are now confined to `dev_end` by the
