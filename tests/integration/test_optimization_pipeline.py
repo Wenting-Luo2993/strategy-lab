@@ -14,6 +14,12 @@ import pandas as pd
 from vibe.backtester.optimization.pipeline import OptimizationPipeline, OptimizationResult
 from vibe.backtester.analysis.parameter_sweep import ParameterDefinition
 
+PARQUET_DIR = Path(__file__).resolve().parents[2] / "vibe" / "data" / "parquet"
+pytestmark = pytest.mark.skipif(
+    not (PARQUET_DIR / "QQQ.parquet").exists(),
+    reason="Parquet data not available",
+)
+
 
 def test_full_optimization_pipeline():
     """
@@ -34,7 +40,7 @@ def test_full_optimization_pipeline():
     # Create pipeline
     pipeline = OptimizationPipeline(
         base_ruleset_path="vibe/rulesets/orb_production.yaml",
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
         slippage_ticks=5,
     )
@@ -82,7 +88,7 @@ def test_optimization_pipeline_with_robustness():
     
     pipeline = OptimizationPipeline(
         base_ruleset_path="vibe/rulesets/orb_production.yaml",
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     
@@ -112,7 +118,7 @@ def test_optimization_pipeline_with_walk_forward():
     
     pipeline = OptimizationPipeline(
         base_ruleset_path="vibe/rulesets/orb_production.yaml",
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     
@@ -147,7 +153,7 @@ def test_overfitting_penalty_applied():
     
     pipeline = OptimizationPipeline(
         base_ruleset_path="vibe/rulesets/orb_production.yaml",
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     
@@ -193,7 +199,7 @@ def test_surface_analysis_outputs_matrix():
     
     pipeline = OptimizationPipeline(
         base_ruleset_path="vibe/rulesets/orb_production.yaml",
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     
@@ -246,7 +252,7 @@ def test_pipeline_result_summary():
     
     pipeline = OptimizationPipeline(
         base_ruleset_path="vibe/rulesets/orb_production.yaml",
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     
@@ -279,7 +285,7 @@ def test_pipeline_handles_single_parameter():
     
     pipeline = OptimizationPipeline(
         base_ruleset_path="vibe/rulesets/orb_production.yaml",
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     
@@ -308,7 +314,7 @@ def test_pipeline_caching():
     
     pipeline = OptimizationPipeline(
         base_ruleset_path="vibe/rulesets/orb_production.yaml",
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     
@@ -352,7 +358,7 @@ def test_pipeline_all_components_enabled():
     
     pipeline = OptimizationPipeline(
         base_ruleset_path="vibe/rulesets/orb_production.yaml",
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     

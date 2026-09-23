@@ -144,9 +144,8 @@ class YahooDataProvider(LiveDataProvider):
             return df
 
         except Exception as e:
-            # Catch yfinance-specific errors
             logger.warning(f"yfinance fetch error for {symbol}: {str(e)}")
-            return pd.DataFrame()  # Return empty rather than propagating error
+            raise
 
     async def get_historical(
         self,
@@ -194,12 +193,10 @@ class YahooDataProvider(LiveDataProvider):
                     f"Invalid period '{period}'. Valid: {self.VALID_PERIODS}"
                 )
 
-        # Apply rate limiting
-        await self._apply_rate_limit()
-
         # Fetch data with retry
         async def fetch():
             try:
+                await self._apply_rate_limit()
                 # Use run_in_executor to avoid blocking the event loop
                 loop = asyncio.get_event_loop()
                 df = await loop.run_in_executor(
@@ -264,7 +261,11 @@ class YahooDataProvider(LiveDataProvider):
                 error_msg = str(e).lower()
 
                 # Provide specific error messages for common issues
-                if "no data" in error_msg or "data doesn't exist" in error_msg:
+                if (
+                    "no data" in error_msg
+                    or "data doesn't exist" in error_msg
+                    or "no price data" in error_msg
+                ):
                     logger.warning(
                         f"No data available for {symbol} (likely weekend/holiday/market closed). "
                         f"Period: {period}, Interval: {interval}"

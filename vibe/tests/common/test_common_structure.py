@@ -56,25 +56,34 @@ def test_no_circular_dependencies():
 
 def test_imports_from_entry_points():
     """Test importing from multiple entry points."""
-    # Remove cached modules to test fresh imports
-    modules_to_clear = [
-        k for k in sys.modules.keys() if k.startswith("vibe.common")
-    ]
-    for mod in modules_to_clear:
-        del sys.modules[mod]
+    import vibe
 
-    # Test fresh import from vibe.common
-    from vibe.common.models import Bar, Order, Trade
-    assert Bar is not None
-    assert Order is not None
-    assert Trade is not None
+    original_common = getattr(vibe, "common", None)
+    original_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if name.startswith("vibe.common")
+    }
+    try:
+        for name in original_modules:
+            del sys.modules[name]
 
-    # Test importing from submodules
-    from vibe.common.execution import ExecutionEngine
-    from vibe.common.data import DataProvider
-    from vibe.common.clock import Clock, LiveClock
+        from vibe.common.models import Bar, Order, Trade
+        from vibe.common.execution import ExecutionEngine
+        from vibe.common.data import DataProvider
+        from vibe.common.clock import Clock, LiveClock
 
-    assert ExecutionEngine is not None
-    assert DataProvider is not None
-    assert Clock is not None
-    assert LiveClock is not None
+        assert Bar is not None
+        assert Order is not None
+        assert Trade is not None
+        assert ExecutionEngine is not None
+        assert DataProvider is not None
+        assert Clock is not None
+        assert LiveClock is not None
+    finally:
+        for name in list(sys.modules):
+            if name.startswith("vibe.common"):
+                del sys.modules[name]
+        sys.modules.update(original_modules)
+        if original_common is not None:
+            vibe.common = original_common

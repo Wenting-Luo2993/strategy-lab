@@ -49,8 +49,8 @@ class TestOrderNotificationPayload:
         assert payload.fill_price == 187.25
         assert payload.filled_quantity == 50
 
-    def test_order_filled_with_pnl(self):
-        """Test ORDER_FILLED with P&L calculation."""
+    def test_order_filled_with_slippage(self):
+        """Test ORDER_FILLED preserves fill details and calculates slippage."""
         payload = OrderNotificationPayload(
             event_type="ORDER_FILLED",
             timestamp=datetime.now(),
@@ -59,18 +59,16 @@ class TestOrderNotificationPayload:
             side="sell",
             order_type="market",
             quantity=50,
+            order_price=189.00,
             fill_price=187.25,
             filled_quantity=50,
-            realized_pnl=83.00,
-            realized_pnl_pct=0.90,
-            position_size=0,  # Closed
+            remaining_quantity=0,
             strategy_name="ORB",
             signal_reason="Take profit hit"
         )
 
-        assert payload.realized_pnl == 83.00
-        assert payload.realized_pnl_pct == 0.90
-        assert payload.position_size == 0
+        assert payload.remaining_quantity == 0
+        assert payload.get_slippage() == 87.5
 
     def test_order_cancelled_payload(self):
         """Test ORDER_CANCELLED payload creation."""

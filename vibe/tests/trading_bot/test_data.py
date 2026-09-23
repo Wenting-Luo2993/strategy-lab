@@ -6,7 +6,7 @@ import asyncio
 import json
 import tempfile
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -38,11 +38,9 @@ class TestRateLimiter:
         """Rate limiter allows requests within configured rate."""
         limiter = RateLimiter(rate=5, period=1.0)
 
-        # First request should be immediate
-        start = time.time()
         await limiter.acquire()
-        elapsed = time.time() - start
-        assert elapsed < 0.1
+
+        assert limiter.tokens < limiter.rate
 
     @pytest.mark.asyncio
     async def test_rate_limiter_blocks_exceeding_rate(self):
@@ -322,11 +320,12 @@ class TestFinnhubWebSocketClient:
 
         # Simulate trade message
         message = {
-            "s": "AAPL",
+            "type": "trade",
             "data": [
                 {
                     "p": 150.25,
-                    "s": 100,
+                    "s": "AAPL",
+                    "v": 100,
                     "t": 1704067200000,
                     "bp": 150.20,
                     "ap": 150.30,
@@ -641,7 +640,11 @@ class TestDataManager:
             cache = DataCache(cache_dir)
 
             sample_data = {
-                "timestamp": pd.date_range("2024-01-01", periods=5),
+                "timestamp": pd.date_range(
+                    end=datetime.now(timezone.utc),
+                    periods=5,
+                    freq="5min",
+                ),
                 "open": [100.0 + i for i in range(5)],
                 "high": [101.0 + i for i in range(5)],
                 "low": [99.0 + i for i in range(5)],
@@ -672,7 +675,11 @@ class TestDataManager:
             provider = AsyncMock(spec=YahooDataProvider)
 
             sample_data = {
-                "timestamp": pd.date_range("2024-01-01", periods=5),
+                "timestamp": pd.date_range(
+                    end=datetime.now(timezone.utc),
+                    periods=5,
+                    freq="5min",
+                ),
                 "open": [100.0 + i for i in range(5)],
                 "high": [101.0 + i for i in range(5)],
                 "low": [99.0 + i for i in range(5)],
@@ -745,7 +752,11 @@ class TestDataManager:
             provider = AsyncMock(spec=YahooDataProvider)
 
             sample_data = {
-                "timestamp": pd.date_range("2024-01-01", periods=5),
+                "timestamp": pd.date_range(
+                    end=datetime.now(timezone.utc),
+                    periods=5,
+                    freq="5min",
+                ),
                 "open": [100.0 + i for i in range(5)],
                 "high": [101.0 + i for i in range(5)],
                 "low": [99.0 + i for i in range(5)],

@@ -67,8 +67,8 @@ class TestDiscordNotificationFormatter:
         assert embed["color"] == 0x2ecc71  # Green
         assert "Order Filled" in embed["title"]
 
-    def test_format_order_filled_with_pnl(self, formatter):
-        """Test ORDER_FILLED shows P&L for closing trades."""
+    def test_format_order_filled_with_slippage(self, formatter):
+        """Test ORDER_FILLED shows execution slippage."""
         payload = OrderNotificationPayload(
             event_type="ORDER_FILLED",
             timestamp=datetime.now(),
@@ -77,11 +77,10 @@ class TestDiscordNotificationFormatter:
             side="sell",
             order_type="market",
             quantity=50,
+            order_price=189.00,
             fill_price=187.25,
             filled_quantity=50,
-            realized_pnl=83.00,
-            realized_pnl_pct=0.90,
-            position_size=0,  # Closed
+            remaining_quantity=0,
             strategy_name="ORB",
             signal_reason="Take profit hit"
         )
@@ -90,13 +89,12 @@ class TestDiscordNotificationFormatter:
 
         embed = message["embeds"][0]
 
-        # Check for P&L field
-        pnl_field = next(
-            (f for f in embed["fields"] if "P&L" in f["name"]),
+        slippage_field = next(
+            (f for f in embed["fields"] if f["name"] == "Slippage"),
             None
         )
-        assert pnl_field is not None
-        assert "83.00" in pnl_field["value"]
+        assert slippage_field is not None
+        assert "87.50" in slippage_field["value"]
 
     def test_format_order_cancelled(self, formatter):
         """Test ORDER_CANCELLED message formatting."""

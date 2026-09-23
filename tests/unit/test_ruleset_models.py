@@ -111,10 +111,10 @@ class TestTakeProfitConfigs:
         with pytest.raises(ValidationError):
             OrbRangeMultipleTakeProfit(multiplier=-1.0)
 
-    def test_zero_multiplier_rejected(self):
-        """Test that zero multiplier is rejected."""
-        with pytest.raises(ValidationError):
-            OrbRangeMultipleTakeProfit(multiplier=0)
+    def test_zero_multiplier_disables_take_profit(self):
+        """Zero is the supported sentinel for disabling take profit."""
+        config = OrbRangeMultipleTakeProfit(multiplier=0)
+        assert config.multiplier == 0
 
 
 class TestStopLossConfigs:

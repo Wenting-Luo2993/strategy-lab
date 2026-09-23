@@ -17,6 +17,12 @@ from vibe.backtester.analysis.walk_forward import (
 )
 from vibe.common.ruleset.loader import RuleSetLoader
 
+PARQUET_DIR = Path(__file__).resolve().parents[3] / "vibe" / "data" / "parquet"
+pytestmark = pytest.mark.skipif(
+    not (PARQUET_DIR / "QQQ.parquet").exists(),
+    reason="Parquet data not available",
+)
+
 
 def test_walk_forward_no_leakage():
     """
@@ -31,7 +37,7 @@ def test_walk_forward_no_leakage():
     
     engine = WalkForwardEngine(
         ruleset=ruleset,
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
         slippage_ticks=5,
     )
@@ -93,7 +99,7 @@ def test_walk_forward_period_properties():
     ruleset = RuleSetLoader.from_name("orb_production")
     engine = BacktestEngine(
         ruleset=ruleset,
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
         slippage_ticks=5,
     )
@@ -148,7 +154,7 @@ def test_walk_forward_rolling_window():
     
     engine = WalkForwardEngine(
         ruleset=ruleset,
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     
@@ -206,7 +212,7 @@ def test_walk_forward_analysis_structure():
     
     engine = WalkForwardEngine(
         ruleset=ruleset,
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     

@@ -184,6 +184,7 @@ class ORBStrategy(StrategyBase):
         symbol: str,
         current_bar: Dict[str, float],
         df_context: pd.DataFrame,
+        reject_retraced_wick: bool = False,
     ) -> Tuple[int, Dict[str, Any]]:
         """
         Generate signal for current bar incrementally.
@@ -326,10 +327,11 @@ class ORBStrategy(StrategyBase):
             current_price=current_price,
         )
 
-        # Live incremental evaluation runs after a completed bar is available.
+        # Live execution enters at the completed-bar market price, unlike the
+        # backtester which models an intrabar resting stop fill at the ORB level.
         # A wick that has already retraced inside the ORB is no longer an
         # actionable stop-entry and must not be chased with a market order.
-        if self.config.breakout_evaluation == "wick":
+        if reject_retraced_wick and self.config.breakout_evaluation == "wick":
             tick_size = 0.01
             stale_long_wick = long_broke and current_price < levels.high + tick_size
             stale_short_wick = short_broke and current_price > levels.low - tick_size
@@ -337,7 +339,7 @@ class ORBStrategy(StrategyBase):
                 long_broke = False
             if stale_short_wick:
                 short_broke = False
-            if stale_long_wick or stale_short_wick:
+            if (stale_long_wick or stale_short_wick) and not (long_broke or short_broke):
                 metadata.update({
                     "reason": "wick_breakout_retraced",
                     "reason_detail": "Completed bar retraced inside the ORB before live entry",

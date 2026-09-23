@@ -156,21 +156,18 @@ class TestORBCalculation:
         assert levels.low == 109.0, "ORB low should be from 9:30 bar"
         assert levels.range == 2.0, "ORB range should be 2.0"
 
-    def test_orb_body_percentage_filter(self, sample_bars):
-        """Test body percentage filter validation."""
+    def test_orb_body_percentage_filter_applies_to_breakout_candle(self, sample_bars):
+        """ORB levels remain valid; the strategy applies this filter to breakout bars."""
         calc = ORBCalculator(
             start_time="09:30",
             duration_minutes=5,
-            body_pct_filter=0.9,  # Very high filter - should fail
+            body_pct_filter=0.9,
         )
 
         levels = calc.calculate(sample_bars)
 
-        # First bar body: |109.5 - 110.5| = 1.0
-        # First bar range: 111.0 - 109.0 = 2.0
-        # Body %: 1.0/2.0 = 50% < 90% filter
-        assert not levels.valid, "Should be invalid with high body% filter"
-        assert "body" in levels.reason.lower(), "Reason should mention body percentage"
+        assert levels.valid
+        assert not calc._is_valid_breakout_candle(110.5, 109.5, 111.0, 109.0)
 
     def test_orb_no_bars_in_window(self):
         """Test ORB calculation with no bars in window."""

@@ -49,6 +49,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import logging
+import pytest
 
 # Add project root to path
 # File is at: tests/integration/test_orchestrator_daily_cycle.py
@@ -128,6 +129,8 @@ class OrchestratorTestHarness:
         return False
 
 
+@pytest.mark.asyncio
+@pytest.mark.slow
 async def test_orchestrator_daily_cycle_v2():
     """Test full orchestrator through 3 daily cycles using orchestrator.run()."""
 
@@ -157,12 +160,12 @@ async def test_orchestrator_daily_cycle_v2():
     print()
 
     # Check Finnhub API key
+    if os.getenv("RUN_LIVE_DAILY_CYCLE") != "1":
+        pytest.skip("Set RUN_LIVE_DAILY_CYCLE=1 to run the live daily-cycle integration test")
+
     finnhub_key = os.getenv('FINNHUB_API_KEY')
     if not finnhub_key:
-        # Fallback to hardcoded key for testing
-        finnhub_key = "d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0"
-        os.environ['FINNHUB_API_KEY'] = finnhub_key
-        print("[*] Using hardcoded Finnhub API key for testing")
+        pytest.skip("FINNHUB_API_KEY is required for the live daily-cycle integration test")
 
     try:
         # Import after path setup
@@ -261,7 +264,7 @@ async def test_orchestrator_daily_cycle_v2():
         if len(orchestrator.primary_provider.subscribed_symbols) == 0:
             print("[ERROR] No symbols subscribed after warmup!")
             await harness.stop()
-            return False
+            pytest.fail("Day 1: no symbols subscribed after warmup")
 
         print("[PHASE] Orchestrator should now be running trading cycles...")
         print()
@@ -561,13 +564,14 @@ async def test_orchestrator_daily_cycle_v2():
         if bars_day1 == 0 and bars_day2 == 0 and bars_day3 == 0:
             print("[NOTE] No bars received - increase SLEEP_TRADING_DURATION or check market hours")
 
-        return len(issues_found) == 0
+        assert not issues_found, "; ".join(issues_found)
 
     except Exception as e:
+        await harness.stop()
         print(f"[ERROR] Test failed: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        pytest.fail(str(e))
 
 
 async def main():
@@ -580,10 +584,8 @@ async def main():
     # Check environment
     finnhub_key = os.getenv('FINNHUB_API_KEY')
     if not finnhub_key:
-        # Fallback to hardcoded key for testing
-        finnhub_key = "d4q7bnhr01qr2e6b08hgd4q7bnhr01qr2e6b08i0"
-        os.environ['FINNHUB_API_KEY'] = finnhub_key
-        print("[*] Using hardcoded Finnhub API key for testing")
+        print("[SKIP] FINNHUB_API_KEY is not set")
+        return 0
     else:
         print("[OK] FINNHUB_API_KEY is set")
 

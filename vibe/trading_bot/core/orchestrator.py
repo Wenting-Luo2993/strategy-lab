@@ -2937,6 +2937,7 @@ class TradingOrchestrator:
                         symbol=symbol,
                         current_bar=current_bar,
                         df_context=bars,
+                        reject_retraced_wick=True,
                     )
 
                     # Log strategy evaluation issues at INFO level for visibility

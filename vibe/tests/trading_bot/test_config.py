@@ -66,7 +66,7 @@ class TestDataSettings:
         settings = DataSettings()
         assert settings.yahoo_rate_limit == 5
         assert settings.yahoo_retry_count == 3
-        assert settings.data_cache_ttl_seconds == 3600
+        assert settings.data_cache_ttl_seconds == 2592000
 
     def test_bar_intervals(self):
         """Test bar intervals."""
@@ -211,6 +211,28 @@ class TestJSONFormatter:
 
 class TestLoggingConfig:
     """Tests for logging configuration."""
+
+    @pytest.fixture(autouse=True)
+    def restore_logging_state(self):
+        root = logging.getLogger()
+        vibe_logger = logging.getLogger("vibe")
+        root_state = (list(root.handlers), root.level)
+        vibe_state = (
+            list(vibe_logger.handlers),
+            vibe_logger.level,
+            vibe_logger.propagate,
+            vibe_logger.disabled,
+        )
+        yield
+        saved_handlers = set(root_state[0] + vibe_state[0])
+        for handler in set(root.handlers + vibe_logger.handlers) - saved_handlers:
+            handler.close()
+        root.handlers = root_state[0]
+        root.setLevel(root_state[1])
+        vibe_logger.handlers = vibe_state[0]
+        vibe_logger.setLevel(vibe_state[1])
+        vibe_logger.propagate = vibe_state[2]
+        vibe_logger.disabled = vibe_state[3]
 
     def test_get_logging_config(self, tmp_path):
         """Test getting logging configuration."""

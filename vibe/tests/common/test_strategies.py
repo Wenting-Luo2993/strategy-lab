@@ -388,6 +388,7 @@ class TestORBStrategy:
             symbol="AAPL",
             current_bar=current_bar,
             df_context=df.iloc[:15],
+            reject_retraced_wick=True,
         )
 
         assert signal == 0
@@ -413,6 +414,7 @@ class TestORBStrategy:
             symbol="AAPL",
             current_bar=current_bar,
             df_context=df.iloc[:15],
+            reject_retraced_wick=True,
         )
 
         assert signal == 0

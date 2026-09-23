@@ -16,6 +16,12 @@ from vibe.backtester.analysis.robustness import (
 )
 from vibe.common.ruleset.loader import RuleSetLoader
 
+PARQUET_DIR = Path(__file__).resolve().parents[3] / "vibe" / "data" / "parquet"
+pytestmark = pytest.mark.skipif(
+    not (PARQUET_DIR / "QQQ.parquet").exists(),
+    reason="Parquet data not available",
+)
+
 
 def test_robustness_score_reduces_variance():
     """
@@ -32,7 +38,7 @@ def test_robustness_score_reduces_variance():
     # Create analyzer
     analyzer = RobustnessAnalyzer(
         ruleset=ruleset,
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
         baseline_slippage_ticks=5,
     )
@@ -68,7 +74,7 @@ def test_robustness_analysis_structure():
     
     analyzer = RobustnessAnalyzer(
         ruleset=ruleset,
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
     )
     
@@ -106,7 +112,7 @@ def test_noise_injection_creates_variance():
     
     analyzer = RobustnessAnalyzer(
         ruleset=ruleset,
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
         baseline_slippage_ticks=5,
     )
@@ -139,7 +145,7 @@ def test_robustness_test_result_properties():
     
     engine = BacktestEngine(
         ruleset=ruleset,
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
         slippage_ticks=10,  # High slippage for noise
     )

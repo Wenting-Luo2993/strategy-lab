@@ -219,7 +219,7 @@ class TestSweepResultExperimentLinker:
         )
         
         # Verify note created
-        notes = [n for n in Path(tmp_path, "research/notes").glob("*.md") 
+        notes = [n for n in Path(tmp_path, "notes").glob("*.md")
                  if n.exists()]
         assert len(notes) > 0
 

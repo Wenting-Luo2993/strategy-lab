@@ -12,6 +12,12 @@ import pandas as pd
 from vibe.backtester.core.engine import BacktestEngine
 from vibe.common.ruleset.loader import RuleSetLoader
 
+PARQUET_DIR = Path(__file__).resolve().parents[3] / "vibe" / "data" / "parquet"
+pytestmark = pytest.mark.skipif(
+    not (PARQUET_DIR / "QQQ.parquet").exists(),
+    reason="Parquet data not available",
+)
+
 
 def test_backtest_is_deterministic():
     """
@@ -24,7 +30,7 @@ def test_backtest_is_deterministic():
     ruleset = RuleSetLoader.from_name("orb_production")
     
     # Common parameters
-    data_dir = Path("vibe/data/parquet")
+    data_dir = PARQUET_DIR
     symbol = "QQQ"
     start_date = pd.Timestamp(2024, 1, 2, tz="America/New_York")
     end_date = pd.Timestamp(2024, 1, 31, tz="America/New_York")
@@ -92,7 +98,7 @@ def test_backtest_determinism_with_precomputed_features():
     ruleset = RuleSetLoader.from_name("orb_production")
     
     # Load data and compute features
-    data_dir = Path("vibe/data/parquet")
+    data_dir = PARQUET_DIR
     symbol = "QQQ"
     start_date = pd.Timestamp(2024, 1, 2, tz="America/New_York")
     end_date = pd.Timestamp(2024, 1, 31, tz="America/New_York")
@@ -153,7 +159,7 @@ def test_backtest_reproducible_across_sessions():
     
     engine = BacktestEngine(
         ruleset=ruleset,
-        data_dir=Path("vibe/data/parquet"),
+        data_dir=PARQUET_DIR,
         initial_capital=10_000.0,
         slippage_ticks=5,
     )

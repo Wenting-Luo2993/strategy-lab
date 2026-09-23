@@ -91,6 +91,7 @@ class StrategyBase(ABC):
         symbol: str,
         current_bar: Dict[str, float],
         df_context: pd.DataFrame,
+        reject_retraced_wick: bool = False,
     ) -> Tuple[int, Dict[str, Any]]:
         """
         Generate signal for current bar incrementally.
@@ -102,6 +103,7 @@ class StrategyBase(ABC):
             symbol: Trading symbol
             current_bar: Current OHLCV bar {'open': float, 'high': float, ...}
             df_context: Historical DataFrame for context (last N bars)
+            reject_retraced_wick: Reject completed wick breakouts that are no longer actionable live
 
         Returns:
             Tuple of (signal, metadata)
