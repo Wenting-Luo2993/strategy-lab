@@ -28,7 +28,7 @@ from typing import Callable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from vibe.research_pipeline.contracts import FeatureKind
+from vibe.research_pipeline.contracts import FeatureDeclaration, FeatureKind
 from vibe.research_pipeline.features.registry import (
     FEATURE_REGISTRY,
     declaration_for,
@@ -300,18 +300,30 @@ def check_future_perturbation(
 
 
 def audit_feature_availability(
-    columns: Sequence[str], *, decision_context: str = "signal generation"
+    columns: Sequence[str],
+    *,
+    decision_context: str = "signal generation",
+    registry: Mapping[str, FeatureDeclaration] | None = None,
 ) -> LeakageReport:
     """Reject causal-looking columns whose declaration says otherwise.
 
     This is check 4 in section 9, and it is a pure declaration audit: it does
     not compute anything. It exists so that a feature the measured checks have
     already convicted cannot quietly reappear in a decision path later.
+
+    ``registry`` is injectable for the same reason it is on
+    :func:`assert_decision_features_are_causal`: no shipped feature is currently
+    diagnostic, so without injection the rejecting branch of this function would
+    be unreachable from any test.
     """
     findings = []
     for name in columns:
         try:
-            decl = declaration_for(name)
+            decl = (
+                declaration_for(name)
+                if registry is None
+                else registry[name]
+            )
         except KeyError:
             findings.append(
                 LeakageFinding(

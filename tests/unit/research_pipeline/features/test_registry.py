@@ -22,6 +22,26 @@ from vibe.research_pipeline.features.registry import (
     registry_hash,
 )
 
+#: A registry containing one synthetic leaky feature.
+#:
+#: Every feature that ships is now causal, so the decision guard cannot be made
+#: to fire against the live registry. Rather than delete the tests that prove it
+#: refuses leaky input - which would leave the guard completely unexercised -
+#: they run against this injected registry instead.
+_REGISTRY_WITH_LEAK = dict(FEATURE_REGISTRY) | {
+    "leaky_probe": FeatureDeclaration(
+        name="leaky_probe",
+        kind=FeatureKind.DIAGNOSTIC,
+        lookback_bars=1,
+        lookahead_bars=77,
+        description=(
+            "Synthetic. Reproduces the construction that caused the original "
+            "bug: a whole-session daily aggregate forward-filled onto intraday "
+            "bars with no lag."
+        ),
+    )
+}
+
 
 class TestRegistryCoversFeatureEngine:
     """Every computable feature must carry a declaration."""
@@ -54,10 +74,21 @@ class TestClassificationIsLocked:
     """Pin the measured classification so a silent reclassification fails CI."""
 
     def test_known_leaky_features_are_diagnostic(self):
-        # Measured against real QQQ 5m bars: these three fail truncation
-        # equivalence at a mid-session bar because they are computed on a daily
-        # resample and forward-filled with no shift.
-        assert diagnostic_feature_names() == ("adx_14", "slope_20d", "slope_50d")
+        """The daily-resample leak is fixed, so nothing should remain leaky.
+
+        adx_14, slope_20d and slope_50d were measured against real QQQ 5m bars
+        to fail truncation equivalence at a mid-session bar. They were fixed by
+        lagging the daily series one session on intraday frames and re-measured
+        as causal, so the diagnostic set is now empty.
+
+        This is deliberately asserted as an exact empty tuple rather than
+        loosened: a new leaky feature appearing should be a conscious decision
+        that updates this test, not something that slips in unnoticed.
+        """
+        assert diagnostic_feature_names() == ()
+        for name in ("adx_14", "slope_20d", "slope_50d"):
+            assert FEATURE_REGISTRY[name].kind is FeatureKind.CAUSAL
+            assert FEATURE_REGISTRY[name].lookahead_bars == 0
 
     def test_atr_is_causal(self):
         decl = declaration_for("atr_14")
@@ -90,7 +121,12 @@ class TestClassificationIsLocked:
 
 
 class TestSweepPrecomputeIsContaminated:
-    """The sweep's own feature list is the reason P5 exists."""
+    """The sweep's own feature list is the reason P5 exists.
+
+    It originally requested five features, three of which leaked. Those three
+    are fixed; these tests now guard against regression rather than documenting
+    a live defect.
+    """
 
     def test_sweep_list_matches_parameter_sweep_source(self):
         # If the sweep's list changes, this test must be updated deliberately
@@ -106,27 +142,24 @@ class TestSweepPrecomputeIsContaminated:
                 f"appears in _precompute_features."
             )
 
-    def test_sweep_precompute_includes_diagnostic_features(self):
+    def test_sweep_precompute_is_now_free_of_leaky_features(self):
         leaky = [
             n
             for n in SWEEP_PRECOMPUTED_FEATURES
             if FEATURE_REGISTRY[n].kind is FeatureKind.DIAGNOSTIC
         ]
-        assert leaky == ["adx_14", "slope_20d", "slope_50d"], (
-            "The parameter sweep precomputes these leaky features and hands "
-            "them to the engine. They are currently unconsumed by the ORB "
-            "decision path, which makes this latent rather than live - but the "
-            "guard must stay, because consuming them is a one-line change."
+        assert leaky == [], (
+            f"The parameter sweep precomputes {leaky}, which are declared "
+            f"diagnostic and are handed straight to the engine. adx_14, "
+            f"slope_20d and slope_50d were exactly this problem before the "
+            f"one-session lag fixed them."
         )
 
-    def test_sweep_feature_set_is_refused_by_the_decision_guard(self):
-        with pytest.raises(LeakyFeatureInDecisionError) as exc:
-            assert_decision_features_are_causal(
-                SWEEP_PRECOMPUTED_FEATURES, context="parameter sweep"
-            )
-        msg = str(exc.value)
-        assert "adx_14" in msg and "slope_20d" in msg and "slope_50d" in msg
-        assert "parameter sweep" in msg
+    def test_sweep_feature_set_is_accepted_by_the_decision_guard(self):
+        # Previously this set was refused: three of its five members leaked.
+        assert_decision_features_are_causal(
+            SWEEP_PRECOMPUTED_FEATURES, context="parameter sweep"
+        )
 
 
 class TestDecisionGuard:
@@ -145,8 +178,17 @@ class TestDecisionGuard:
         assert_decision_features_are_causal(["ATR_14"])
 
     def test_diagnostic_feature_is_refused(self):
+        """The guard must still fire, even though nothing shipped is leaky.
+
+        Injecting a synthetic diagnostic keeps this test meaningful. Asserting
+        against the live registry would silently become a no-op the moment the
+        last diagnostic feature was fixed - which is exactly what just
+        happened to adx_14, slope_20d and slope_50d.
+        """
         with pytest.raises(LeakyFeatureInDecisionError):
-            assert_decision_features_are_causal(["atr_14", "adx_14"])
+            assert_decision_features_are_causal(
+                ["atr_14", "leaky_probe"], registry=_REGISTRY_WITH_LEAK
+            )
 
     def test_undeclared_feature_is_refused_not_assumed_safe(self):
         with pytest.raises(FeatureNotDeclaredError) as exc:
@@ -155,10 +197,12 @@ class TestDecisionGuard:
 
     def test_error_names_the_offending_feature_and_why(self):
         with pytest.raises(LeakyFeatureInDecisionError) as exc:
-            assert_decision_features_are_causal(["slope_20d"])
+            assert_decision_features_are_causal(
+                ["leaky_probe"], registry=_REGISTRY_WITH_LEAK
+            )
         msg = str(exc.value)
-        assert "slope_20d" in msg
-        assert "LEAKY INTRADAY" in msg
+        assert "leaky_probe" in msg
+        assert "whole-session daily aggregate" in msg
 
     def test_empty_columns_pass(self):
         assert_decision_features_are_causal([])

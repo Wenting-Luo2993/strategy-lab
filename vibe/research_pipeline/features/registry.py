@@ -9,16 +9,16 @@ whether a given column is safe to make decisions with. This registry is the
 missing declaration, and :func:`assert_decision_features_are_causal` is the
 enforcement point.
 
-The classification below is not a guess. Each ``DIAGNOSTIC`` entry marked as
-intraday-leaky was measured with a truncation-equivalence probe against real
-QQQ 5-minute bars (2022-01-03..2022-06-30): the feature's value at a mid-session
-bar differs depending on whether bars *after* that timestamp were present when
-the column was computed. See
+The classification below is not a guess. Every entry was measured with a
+truncation-equivalence probe against real QQQ 5-minute bars
+(2022-01-03..2022-06-30): a feature is leaky if its value at a mid-session bar
+differs depending on whether bars *after* that timestamp were present when the
+column was computed. See
 :func:`vibe.research_pipeline.features.leakage.check_truncation_equivalence`,
 which is the same check run as a test.
 
-The daily-resample trap
------------------------
+The daily-resample trap (found here, then fixed)
+------------------------------------------------
 
 ``FeatureEngine`` computes some features by resampling intraday bars to daily,
 computing on the daily frame, then reindexing back onto the intraday index with
@@ -27,15 +27,26 @@ session D, including bars that have not happened yet at 10:00 on session D. The
 forward-fill then stamps that whole-session value onto every intraday bar of
 session D.
 
-Features that apply ``.shift(1)`` on the daily frame before reindexing are safe:
-session D carries session D-1's value, which is fully observable. Features that
-do not are not safe. That single difference is what separates
-``prev_day_range`` (causal) from ``adx_14`` (leaky), and it is invisible at the
-call site.
+``adx_14``, ``slope_20d``, and ``slope_50d`` were measured to do exactly this:
+on real data the 09:30 bar of a session carried that session's *complete* daily
+ADX. They are now fixed at the source — ``_reindex_causally`` lags the daily
+series by one session when the input frame is intraday — and re-measured as
+causal against all three checks. They are declared ``CAUSAL`` on that evidence,
+not on the assumption that the fix worked.
 
-``FeatureEngine``'s own module docstring claims "all features are
-forward-observable". That claim holds at daily granularity and fails at intraday
-granularity, which is the granularity the parameter sweep actually uses.
+The shift is deliberately conditional on intraday input, because
+``DayRegimeLabeler`` applies its own ``shift(1)`` and shifting unconditionally
+would double-lag the daily path. That regression was checked: daily-frame
+feature checksums and regime label counts are bit-identical across the fix.
+
+What still separates causal from leaky here is whether a daily-derived value is
+lagged before being forward-filled. That difference is invisible at the call
+site, which is why this registry exists rather than a convention.
+
+``FeatureEngine``'s module docstring previously claimed "all features are
+forward-observable". That claim held at daily granularity and failed at intraday
+granularity — the granularity the parameter sweep actually uses — and has been
+corrected.
 """
 
 from __future__ import annotations
@@ -125,31 +136,31 @@ _DECLARATIONS: tuple[FeatureDeclaration, ...] = (
         50,
         "Close versus a 50-bar SMA, computed on the intraday frame.",
     ),
-    _diagnostic(
+    _causal(
         "slope_20d",
-        20 * _SESSION_BARS_5M,
-        _SESSION_BARS_5M - 1,
-        "LEAKY INTRADAY. Rolling 20-day OLS slope of daily closes, forward-"
-        "filled onto intraday bars with no shift. Session D's value uses "
-        "session D's close, so at 10:00 it encodes the not-yet-known close. "
-        "Measured: differs under truncation at a mid-session bar. Safe only if "
-        "consumed on a daily index with an explicit shift(1).",
+        21 * _SESSION_BARS_5M,
+        "Rolling 20-day OLS slope of daily closes, mapped onto the caller's "
+        "index by _reindex_causally. Was LEAKY INTRADAY until the daily series "
+        "was lagged one session for intraday frames; session D now carries "
+        "session D-1's slope. The lookback covers the extra session that lag "
+        "consumes. Re-measured: passes truncation equivalence, prefix "
+        "invariance, and future perturbation.",
     ),
-    _diagnostic(
+    _causal(
         "slope_50d",
-        50 * _SESSION_BARS_5M,
-        _SESSION_BARS_5M - 1,
-        "LEAKY INTRADAY. Same daily-resample-then-ffill construction as "
-        "slope_20d. Measured: fails truncation equivalence.",
+        51 * _SESSION_BARS_5M,
+        "Same daily-resample construction as slope_20d, and fixed by the same "
+        "one-session lag. Re-measured: passes all three checks.",
     ),
-    _diagnostic(
+    _causal(
         "adx_14",
-        14 * _SESSION_BARS_5M,
-        _SESSION_BARS_5M - 1,
-        "LEAKY INTRADAY. Wilder ADX on daily bars, forward-filled onto "
-        "intraday bars with no shift, so session D's high/low/close leak "
-        "backwards into every intraday bar of session D. Measured: differs "
-        "under truncation at a mid-session bar.",
+        15 * _SESSION_BARS_5M,
+        "Wilder ADX on daily bars, mapped onto the caller's index by "
+        "_reindex_causally. Was the headline leak: session D's high/low/close "
+        "propagated backwards into every intraday bar of session D, so the "
+        "09:30 bar carried that session's complete ADX. Now lagged one session "
+        "on intraday frames. Verified on real QQQ bars: the 09:30 value equals "
+        "the prior session's daily ADX exactly.",
     ),
     # ---- Opening behavior -------------------------------------------------
     _causal(
@@ -268,7 +279,10 @@ def diagnostic_feature_names() -> tuple[str, ...]:
 
 
 def assert_decision_features_are_causal(
-    columns: Iterable[str], *, context: str = "decision path"
+    columns: Iterable[str],
+    *,
+    context: str = "decision path",
+    registry: Mapping[str, FeatureDeclaration] | None = None,
 ) -> None:
     """Refuse a decision path that can see a diagnostic or undeclared feature.
 
@@ -276,15 +290,20 @@ def assert_decision_features_are_causal(
         columns: Column names visible to signal, filter, sizing, execution, or
             parameter-selection logic.
         context: Human-readable description used in the error message.
+        registry: Declarations to enforce against. Defaults to
+            :data:`FEATURE_REGISTRY`. Injectable so the guard stays testable
+            when - as is currently the case - no shipped feature is diagnostic.
+            A guard that cannot be made to fire is not evidence of anything.
 
     Raises:
         FeatureNotDeclaredError: A column is neither raw market data nor
             declared. Undeclared is treated as unsafe, not as safe-by-default.
         LeakyFeatureInDecisionError: A declared diagnostic feature is visible.
     """
+    reg = FEATURE_REGISTRY if registry is None else registry
     names = [c for c in columns if c not in _RAW_COLUMNS]
 
-    undeclared = sorted(n for n in names if n not in FEATURE_REGISTRY)
+    undeclared = sorted(n for n in names if n not in reg)
     if undeclared:
         raise FeatureNotDeclaredError(
             f"{context} exposes undeclared feature(s) {undeclared}. Declare them "
@@ -292,9 +311,9 @@ def assert_decision_features_are_causal(
             f"undeclared feature is not assumed safe."
         )
 
-    leaky = sorted(n for n in names if FEATURE_REGISTRY[n].kind is FeatureKind.DIAGNOSTIC)
+    leaky = sorted(n for n in names if reg[n].kind is FeatureKind.DIAGNOSTIC)
     if leaky:
-        details = "; ".join(f"{n}: {FEATURE_REGISTRY[n].description}" for n in leaky)
+        details = "; ".join(f"{n}: {reg[n].description}" for n in leaky)
         raise LeakyFeatureInDecisionError(
             f"{context} exposes diagnostic feature(s) {leaky}, which may not "
             f"enter signal, filter, sizing, execution, or parameter-selection "

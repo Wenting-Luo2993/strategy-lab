@@ -1,9 +1,42 @@
 """
 Feature Engine — builds a date/timestamp-indexed feature table from OHLCV data.
 
-All features are forward-observable: each row's value depends only on data up to
-and including that row's timestamp.  Callers must not shift the output; the
-DayRegimeLabeler handles its own shift(1) before assigning labels.
+Every feature is causal: a row's value depends only on data available at or
+before that row's timestamp. Note the qualifier — this guarantee holds at the
+granularity of the frame you pass in, and that distinction is the whole reason
+this docstring is longer than it used to be.
+
+Daily-derived features on intraday frames
+-----------------------------------------
+Several features (``adx_14``, ``slope_20d``, ``slope_50d``) are only meaningful
+at daily granularity, so they resample to daily, compute, then reindex back
+onto the caller's index with a forward fill. The daily bar for session D
+summarizes *all* of session D, including its close. Forward-filling that value
+onto session D's intraday bars would stamp the 16:00 close onto the 09:30 bar —
+a look-ahead leak that was measured on real QQQ data, not hypothesized.
+
+So those features apply a one-session shift **when and only when the input
+frame is intraday**, via :func:`_reindex_causally`. On an intraday frame the
+value at any bar of session D reflects data through session D-1's close.
+
+Why the shift is conditional
+----------------------------
+:class:`DayRegimeLabeler` applies its own ``shift(1)`` and documents that
+callers must not pre-shift. That contract is correct for a *daily* frame, where
+one row is one session. Shifting here unconditionally would double-shift the
+daily path and silently stale every regime label by an extra session. On an
+intraday frame the labeler's ``shift(1)`` moves by a single bar — five minutes —
+and protects nothing, which is why the shift has to live here instead.
+
+The net contract:
+
+- daily frame in   → unshifted; the labeler owns the shift (unchanged behavior)
+- intraday frame in → shifted here; the labeler's shift is a near no-op
+
+Features computed row-wise on the input frame (``atr_14``, ``atr_pctile``,
+``realized_vol``, and the rolling percentiles) are causal on an intraday frame
+already and are deliberately left alone; they still rely on the labeler's shift
+when fed a daily frame.
 
 Usage::
 
@@ -152,18 +185,19 @@ def _compute_one(name: str, df: pd.DataFrame, ctx: pd.DataFrame) -> pd.Series:
     if name == "slope_20d":
         daily_close = _to_daily_close(df)
         slope = linear_slope(daily_close, 20)
-        return slope.reindex(df.index, method="ffill")
+        return _reindex_causally(slope, df)
 
     if name == "slope_50d":
         daily_close = _to_daily_close(df)
         slope = linear_slope(daily_close, 50)
-        return slope.reindex(df.index, method="ffill")
+        return _reindex_causally(slope, df)
 
     if name == "adx_14":
-        # If intraday, resample to daily then forward-fill; if already daily, use as-is
+        # Computed on daily bars, then mapped back to the caller's index. On an
+        # intraday frame this must lag by a session; see _reindex_causally.
         daily_df = _to_daily_ohlcv(df)
         adx = adx_series(daily_df, 14)
-        return adx.reindex(df.index, method="ffill")
+        return _reindex_causally(adx, df)
 
     if name == "or_size_pct":
         # Requires OR high/low columns; return NaN if not present
@@ -217,6 +251,23 @@ def _compute_one(name: str, df: pd.DataFrame, ctx: pd.DataFrame) -> pd.Series:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _reindex_causally(daily_values: pd.Series, df: pd.DataFrame) -> pd.Series:
+    """Map a daily-frequency series onto ``df.index`` without look-ahead.
+
+    A daily bar for session D summarizes the whole of session D. Forward-filling
+    it onto session D's intraday bars would let a 09:30 bar see the 16:00 close,
+    so on an intraday frame the series is lagged one session first: bars of
+    session D carry session D-1's value.
+
+    On a daily frame no shift is applied. One row is already one session there,
+    and :class:`DayRegimeLabeler` applies its own ``shift(1)``; shifting here too
+    would lag every label by an extra session. See the module docstring.
+    """
+    if _is_intraday(df):
+        daily_values = daily_values.shift(1)
+    return daily_values.reindex(df.index, method="ffill")
+
 
 def _to_daily_close(df: pd.DataFrame) -> pd.Series:
     """Return daily close series; if df is already daily-ish, return close as-is."""

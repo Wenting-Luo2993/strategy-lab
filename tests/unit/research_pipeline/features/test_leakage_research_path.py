@@ -15,20 +15,32 @@ These tests run against the real Parquet corpus and are marked ``slow``. They
 are the fixture that converted the leakage question from a design concern into
 a measured finding.
 
-What they found
----------------
+What they found, and what happened next
+---------------------------------------
 
 Three of the five features ``_precompute_features`` requests - ``adx_14``,
-``slope_20d``, ``slope_50d`` - fail truncation equivalence at a mid-session bar.
-They are computed on a daily resample and forward-filled back onto intraday
-bars with no shift, so a bar at 11:00 carries a value derived from that
-session's close.
+``slope_20d``, ``slope_50d`` - failed truncation equivalence at a mid-session
+bar. They were computed on a daily resample and forward-filled back onto
+intraday bars with no lag, so the 09:30 bar of a session carried that session's
+*complete* daily value. On real QQQ bars the 09:30 ADX on 2022-05-25 was
+33.131858 after the fix and 33.407330 before it - the latter being the daily
+ADX computed through that same session's close.
 
-The contamination is currently **latent** rather than live: poisoning those
-three columns to a constant leaves the ORB backtest bit-identical, because the
-ORB decision path does not read them. That makes the guard more important, not
-less - consuming them is a one-line change in a ruleset, and the failure would
-be silent and flattering.
+They have since been fixed at the source, by lagging the daily series one
+session on intraday frames (``_reindex_causally``), and promoted to CAUSAL in
+the registry on the strength of these checks. The tests below are now a
+regression guard rather than a conviction.
+
+Because every registered feature is now causal, this file carries a
+``leaky_control`` column that deliberately reproduces the original defective
+construction. A check suite where nothing can fail proves nothing, so each
+check must still convict that control.
+
+The contamination was **latent** rather than live while it existed: poisoning
+those three columns to a constant left the ORB backtest bit-identical, because
+the ORB decision path does not read them. That made the guard more important,
+not less - consuming them is a one-line change in a ruleset, and the failure
+would have been silent and flattering.
 """
 
 from __future__ import annotations
@@ -135,6 +147,32 @@ def research_compute():
     return compute
 
 
+@pytest.fixture(scope="module")
+def leaky_compute():
+    """A compute callable carrying one deliberately non-causal column.
+
+    This reproduces the exact construction that caused the original bug -
+    resample to daily, compute, forward-fill back onto the intraday index with
+    no lag - so the leakage checks have something they must still convict now
+    that every registered feature is causal. Without it, the checks in this
+    file could pass forever while measuring nothing.
+    """
+    from vibe.backtester.analysis.regime_research.features import FeatureEngine
+
+    engine = FeatureEngine()
+
+    def compute(df: pd.DataFrame) -> pd.DataFrame:
+        out = engine.compute(df, features=list(SWEEP_PRECOMPUTED_FEATURES))
+        daily_close = df["close"].resample("D").last().dropna()
+        # No .shift(1): session D's close lands on session D's 09:30 bar.
+        out = out.assign(
+            leaky_control=daily_close.reindex(df.index, method="ffill")
+        )
+        return out
+
+    return compute
+
+
 def _mid_session_cut(df: pd.DataFrame) -> int:
     """A bar around 11:00, late enough that daily features are primed.
 
@@ -182,28 +220,52 @@ class TestF2TruncationEquivalenceThroughResearchPath:
             f"{report}"
         )
 
-    def test_diagnostic_features_are_caught_by_the_check(self, bars, research_compute):
-        """The check must actually fire on the features it convicted.
+    def test_the_fixed_features_are_now_causal(self, bars, research_compute):
+        """Regression guard for the daily-resample leak.
 
-        If this ever starts passing, either the daily-resample construction was
-        fixed - in which case the registry must be updated to promote these to
-        causal - or the probe went vacuous. Both need a human.
+        ``adx_14``, ``slope_20d`` and ``slope_50d`` were measured to fail
+        truncation equivalence here: on real QQQ bars the 09:30 bar of a session
+        carried that session's *complete* daily ADX. They were fixed at the
+        source by lagging the daily series one session on intraday frames
+        (``_reindex_causally``), and promoted to CAUSAL on the strength of this
+        check rather than on the assumption the fix worked.
+
+        If this fails, the lag was removed or bypassed and the research path is
+        consuming the future again.
         """
         cut = _mid_session_cut(bars)
-        diagnostic = [
-            n
-            for n in SWEEP_PRECOMPUTED_FEATURES
-            if FEATURE_REGISTRY[n].kind is FeatureKind.DIAGNOSTIC
-        ]
+        fixed = ["adx_14", "slope_20d", "slope_50d"]
         report = check_truncation_equivalence(
-            bars, research_compute, cut=cut, features=diagnostic
+            bars, research_compute, cut=cut, features=fixed
+        )
+        assert report.passed, (
+            f"The daily-resample look-ahead leak has returned:\n{report}"
+        )
+
+    def test_the_check_still_convicts_a_known_leaky_feature(
+        self, bars, leaky_compute
+    ):
+        """Falsifiability guard — the most important test in this file.
+
+        Every feature in the registry is now causal, so every real check passes.
+        A suite of checks that cannot fail proves nothing, and would keep
+        reporting green if the comparator silently broke.
+
+        ``leaky_compute`` reproduces the original defective construction -
+        resample to daily, forward-fill onto intraday bars, no lag - in a column
+        named ``leaky_control``. The check must convict it.
+        """
+        cut = _mid_session_cut(bars)
+        report = check_truncation_equivalence(
+            bars, leaky_compute, cut=cut, features=["leaky_control"]
         )
         assert not report.passed, (
-            "adx_14 / slope_20d / slope_50d were measured to fail truncation "
-            "equivalence. They now pass, so either the leak was fixed (promote "
-            "them in the registry) or this probe stopped measuring anything."
+            "The truncation check failed to convict a feature built with the "
+            "exact construction that caused the original leak. The check is no "
+            "longer measuring anything, so every other green result in this "
+            "file is worthless."
         )
-        assert set(report.features_failing()) == set(diagnostic)
+        assert set(report.features_failing()) == {"leaky_control"}
 
     def test_the_cut_is_not_at_a_session_boundary(self, bars):
         cut = _mid_session_cut(bars)
@@ -212,7 +274,9 @@ class TestF2TruncationEquivalenceThroughResearchPath:
         assert bars.index[cut] != same_session[0], "cut is the first bar of its session"
         assert bars.index[cut] != same_session[-1], "cut is the last bar of its session"
 
-    def test_diagnostic_features_are_not_nan_at_the_cut(self, bars, research_compute):
+    def test_daily_derived_features_are_not_nan_at_the_cut(
+        self, bars, research_compute
+    ):
         """Non-vacuity guard: a NaN would compare equal and prove nothing."""
         cut = _mid_session_cut(bars)
         full = research_compute(bars)
@@ -222,31 +286,91 @@ class TestF2TruncationEquivalenceThroughResearchPath:
                 f"be trivially satisfied and the test would assert nothing."
             )
 
+    def test_the_lagged_value_equals_the_prior_session(self, bars, research_compute):
+        """Pin the fix's actual semantics, not merely that a check is green.
+
+        A feature could pass truncation equivalence by being constant, or NaN,
+        or stale by ten sessions. The specific contract is one session of lag,
+        so assert exactly that: a bar of session D must carry the daily value
+        computed through session D-1's close.
+        """
+        from vibe.backtester.analysis.regime_research.features import FeatureEngine
+
+        full = research_compute(bars)
+        daily = (
+            bars.resample("D")
+            .agg(
+                {
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                }
+            )
+            .dropna()
+        )
+        daily_feat = FeatureEngine().compute(daily, features=["adx_14"])
+
+        sessions = sorted({ts.date() for ts in bars.index})
+        # Late enough that the daily ADX is primed well past its warmup.
+        target = sessions[-5]
+        prior = sessions[-6]
+
+        first_bar = min(ts for ts in bars.index if ts.date() == target)
+        intraday_value = full["adx_14"].loc[first_bar]
+        prior_daily = daily_feat["adx_14"].loc[str(prior)]
+
+        assert pd.notna(intraday_value) and pd.notna(prior_daily)
+        assert intraday_value == pytest.approx(prior_daily, rel=1e-9), (
+            f"The first bar of {target} carries {intraday_value}, but the "
+            f"prior session {prior} closed with {prior_daily}. The lag is not "
+            f"exactly one session."
+        )
+
 
 class TestF2OtherChecksAgree:
     """Truncation, prefix invariance, and perturbation must convict together."""
 
-    def test_prefix_invariance_catches_the_same_features(self, bars, research_compute):
+    def test_prefix_invariance_still_convicts_a_leaky_feature(
+        self, bars, leaky_compute
+    ):
         cut = _mid_session_cut(bars)
         report = check_prefix_invariance(
-            bars,
-            research_compute,
-            cut=cut,
-            features=["adx_14", "slope_20d", "slope_50d"],
+            bars, leaky_compute, cut=cut, features=["leaky_control"]
         )
-        assert not report.passed
+        assert not report.passed, (
+            "check_prefix_invariance no longer detects a feature built with "
+            "the original leaky construction."
+        )
 
-    def test_future_perturbation_catches_the_same_features(
-        self, bars, research_compute
+    def test_future_perturbation_still_convicts_a_leaky_feature(
+        self, bars, leaky_compute
     ):
         cut = _mid_session_cut(bars)
         report = check_future_perturbation(
-            bars,
-            research_compute,
-            cut=cut,
-            features=["adx_14", "slope_20d", "slope_50d"],
+            bars, leaky_compute, cut=cut, features=["leaky_control"]
         )
-        assert not report.passed
+        assert not report.passed, (
+            "check_future_perturbation no longer detects a feature built with "
+            "the original leaky construction."
+        )
+
+    def test_all_three_checks_clear_the_fixed_features(self, bars, research_compute):
+        """The fix must satisfy every check, not just the one that found it."""
+        cut = _mid_session_cut(bars)
+        for check in (
+            check_truncation_equivalence,
+            check_prefix_invariance,
+            check_future_perturbation,
+        ):
+            report = check(
+                bars,
+                research_compute,
+                cut=cut,
+                features=["adx_14", "slope_20d", "slope_50d"],
+            )
+            assert report.passed, f"{check.__name__} still convicts:\n{report}"
 
     def test_atr_survives_all_three(self, bars, research_compute):
         cut = _mid_session_cut(bars)

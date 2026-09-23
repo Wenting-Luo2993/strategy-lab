@@ -24,6 +24,25 @@ from vibe.research_pipeline.features.leakage import (
     check_truncation_equivalence,
     run_leakage_suite,
 )
+from vibe.research_pipeline.contracts import FeatureDeclaration, FeatureKind
+from vibe.research_pipeline.features.registry import FEATURE_REGISTRY
+
+#: See the identically-named constant in ``test_registry.py``. Every shipped
+#: feature is causal now that the daily-resample leak is fixed, so the audit's
+#: rejecting branch needs an injected diagnostic to stay reachable.
+_REGISTRY_WITH_LEAK = dict(FEATURE_REGISTRY) | {
+    "leaky_probe": FeatureDeclaration(
+        name="leaky_probe",
+        kind=FeatureKind.DIAGNOSTIC,
+        lookback_bars=1,
+        lookahead_bars=77,
+        description=(
+            "Synthetic. Reproduces the construction that caused the original "
+            "bug: a whole-session daily aggregate forward-filled onto intraday "
+            "bars with no lag."
+        ),
+    )
+}
 
 
 @pytest.fixture
@@ -174,17 +193,31 @@ class TestFeatureAvailabilityAudit:
         assert report.passed
 
     def test_diagnostic_feature_fails(self):
-        report = audit_feature_availability(["atr_14", "adx_14"])
+        """Injected, because no shipped feature is diagnostic any more.
+
+        Pointing this at a real feature name would have silently turned into a
+        no-op when adx_14 was fixed and promoted to causal.
+        """
+        report = audit_feature_availability(
+            ["atr_14", "leaky_probe"], registry=_REGISTRY_WITH_LEAK
+        )
         assert not report.passed
-        assert report.features_failing() == ("adx_14",)
+        assert report.features_failing() == ("leaky_probe",)
+
+    def test_previously_leaky_features_now_pass(self):
+        # Regression guard: these three were the original convictions.
+        report = audit_feature_availability(["adx_14", "slope_20d", "slope_50d"])
+        assert report.passed
 
     def test_undeclared_feature_fails(self):
         report = audit_feature_availability(["mystery_alpha"])
         assert not report.passed
 
     def test_failure_explains_why(self):
-        report = audit_feature_availability(["slope_50d"])
-        assert "LEAKY INTRADAY" in report.failures[0].detail
+        report = audit_feature_availability(
+            ["leaky_probe"], registry=_REGISTRY_WITH_LEAK
+        )
+        assert "whole-session daily aggregate" in report.failures[0].detail
 
 
 class TestORBBoundary:
