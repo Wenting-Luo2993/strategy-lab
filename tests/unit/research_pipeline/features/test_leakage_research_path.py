@@ -1,0 +1,328 @@
+"""F2: truncation equivalence executed through the research path.
+
+Why this file is separate from ``test_leakage.py``
+--------------------------------------------------
+
+Section 9 of the plan is explicit: *"These checks must execute through the
+research path, not just the engine."* The reason is structural.
+``ParameterSweep._precompute_features`` computes features **once over the whole
+date range** and slices them per fold afterwards. By the time
+``BacktestEngine.run`` receives a frame, any contamination is already baked in
+and the engine cannot detect it. A leakage test that exercises only the engine
+will therefore pass while the research path leaks.
+
+These tests run against the real Parquet corpus and are marked ``slow``. They
+are the fixture that converted the leakage question from a design concern into
+a measured finding.
+
+What they found
+---------------
+
+Three of the five features ``_precompute_features`` requests - ``adx_14``,
+``slope_20d``, ``slope_50d`` - fail truncation equivalence at a mid-session bar.
+They are computed on a daily resample and forward-filled back onto intraday
+bars with no shift, so a bar at 11:00 carries a value derived from that
+session's close.
+
+The contamination is currently **latent** rather than live: poisoning those
+three columns to a constant leaves the ORB backtest bit-identical, because the
+ORB decision path does not read them. That makes the guard more important, not
+less - consuming them is a one-line change in a ruleset, and the failure would
+be silent and flattering.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import pytest
+import pytz
+
+from vibe.research_pipeline.contracts import FeatureKind
+from vibe.research_pipeline.features.leakage import (
+    check_future_perturbation,
+    check_prefix_invariance,
+    check_truncation_equivalence,
+)
+from vibe.research_pipeline.features.registry import (
+    FEATURE_REGISTRY,
+    SWEEP_PRECOMPUTED_FEATURES,
+)
+
+pytestmark = pytest.mark.slow
+
+ET = pytz.timezone("America/New_York")
+SYMBOL = "QQQ"
+START = ET.localize(datetime(2022, 1, 3))
+END = ET.localize(datetime(2022, 6, 30, 23, 59))
+
+
+def _resolve_data_dir():
+    from vibe.backtester.data.paths import resolve_market_data_dir
+
+    return resolve_market_data_dir(None)
+
+
+@pytest.fixture(scope="module")
+def sweep():
+    from vibe.backtester.analysis.parameter_sweep import ParameterSweep
+    from vibe.common.ruleset.loader import RuleSetLoader
+
+    ruleset_path = Path(RuleSetLoader.RULESETS_DIR) / "orb_production.yaml"
+    if not ruleset_path.exists():
+        pytest.skip(f"ruleset not available at {ruleset_path}")
+
+    return ParameterSweep(
+        base_ruleset_path=ruleset_path,
+        parameters=[],
+        data_dir=_resolve_data_dir(),
+    )
+
+
+@pytest.fixture(scope="module")
+def bars(sweep) -> pd.DataFrame:
+    """The same 5-minute frame ``_precompute_features`` computes against."""
+    import asyncio
+
+    from vibe.backtester.data.parquet_loader import ParquetLoader
+
+    loader = ParquetLoader(_resolve_data_dir(), [SYMBOL])
+    try:
+        df_1m = asyncio.run(
+            loader.get_bars(SYMBOL, start_time=START, end_time=END)
+        )
+    except Exception as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"market data unavailable: {exc}")
+
+    if df_1m is None or df_1m.empty:
+        pytest.skip("no bars returned for the probe window")
+
+    return (
+        df_1m.resample("5min")
+        .agg(
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+        )
+        .dropna()
+    )
+
+
+@pytest.fixture(scope="module")
+def research_compute():
+    """The research path's feature computation, as a plain callable.
+
+    ``_precompute_features`` loads its own bars from Parquet, so it cannot be
+    handed a truncated frame directly. This reproduces its exact feature list
+    and engine so the check measures what the sweep actually produces.
+    """
+    from vibe.backtester.analysis.regime_research.features import FeatureEngine
+
+    engine = FeatureEngine()
+
+    def compute(df: pd.DataFrame) -> pd.DataFrame:
+        out = engine.compute(df, features=list(SWEEP_PRECOMPUTED_FEATURES))
+        if "atr_14" in out.columns:
+            out = out.assign(ATR_14=out["atr_14"])
+        return out
+
+    return compute
+
+
+def _mid_session_cut(df: pd.DataFrame) -> int:
+    """A bar around 11:00, late enough that daily features are primed.
+
+    Cutting at a session boundary would let a whole-session aggregate look
+    correct by accident, so the cut must fall strictly inside a session.
+    """
+    cut = int(len(df) * 0.8)
+    for i in range(cut, len(df) - 1):
+        if df.index[i].hour == 11 and df.index[i].minute == 0:
+            return i
+    return cut
+
+
+class TestResearchPathMatchesTheSweep:
+    """Guard against this fixture drifting away from the code it tests."""
+
+    def test_feature_list_is_the_sweeps_own_list(self, research_compute, bars):
+        produced = set(research_compute(bars.iloc[:400]).columns)
+        assert set(SWEEP_PRECOMPUTED_FEATURES) <= produced
+
+    def test_probe_window_has_enough_sessions_to_prime_daily_features(self, bars):
+        sessions = len({ts.date() for ts in bars.index})
+        assert sessions >= 60, (
+            f"only {sessions} sessions in the probe window; slope_50d needs 50 "
+            f"daily observations before it is defined, and a window that "
+            f"leaves it NaN would make this whole file vacuous."
+        )
+
+
+class TestF2TruncationEquivalenceThroughResearchPath:
+    """F2: sessions 1..N vs 1..k must agree on their shared prefix."""
+
+    def test_causal_features_survive_truncation(self, bars, research_compute):
+        cut = _mid_session_cut(bars)
+        causal = [
+            n
+            for n in SWEEP_PRECOMPUTED_FEATURES
+            if FEATURE_REGISTRY[n].kind is FeatureKind.CAUSAL
+        ]
+        report = check_truncation_equivalence(
+            bars, research_compute, cut=cut, features=causal
+        )
+        assert report.passed, (
+            f"A feature declared CAUSAL changed when future bars were removed:\n"
+            f"{report}"
+        )
+
+    def test_diagnostic_features_are_caught_by_the_check(self, bars, research_compute):
+        """The check must actually fire on the features it convicted.
+
+        If this ever starts passing, either the daily-resample construction was
+        fixed - in which case the registry must be updated to promote these to
+        causal - or the probe went vacuous. Both need a human.
+        """
+        cut = _mid_session_cut(bars)
+        diagnostic = [
+            n
+            for n in SWEEP_PRECOMPUTED_FEATURES
+            if FEATURE_REGISTRY[n].kind is FeatureKind.DIAGNOSTIC
+        ]
+        report = check_truncation_equivalence(
+            bars, research_compute, cut=cut, features=diagnostic
+        )
+        assert not report.passed, (
+            "adx_14 / slope_20d / slope_50d were measured to fail truncation "
+            "equivalence. They now pass, so either the leak was fixed (promote "
+            "them in the registry) or this probe stopped measuring anything."
+        )
+        assert set(report.features_failing()) == set(diagnostic)
+
+    def test_the_cut_is_not_at_a_session_boundary(self, bars):
+        cut = _mid_session_cut(bars)
+        day = bars.index[cut].date()
+        same_session = [ts for ts in bars.index if ts.date() == day]
+        assert bars.index[cut] != same_session[0], "cut is the first bar of its session"
+        assert bars.index[cut] != same_session[-1], "cut is the last bar of its session"
+
+    def test_diagnostic_features_are_not_nan_at_the_cut(self, bars, research_compute):
+        """Non-vacuity guard: a NaN would compare equal and prove nothing."""
+        cut = _mid_session_cut(bars)
+        full = research_compute(bars)
+        for name in ("adx_14", "slope_20d", "slope_50d"):
+            assert pd.notna(full[name].iloc[cut]), (
+                f"{name} is NaN at the cut, so the truncation comparison would "
+                f"be trivially satisfied and the test would assert nothing."
+            )
+
+
+class TestF2OtherChecksAgree:
+    """Truncation, prefix invariance, and perturbation must convict together."""
+
+    def test_prefix_invariance_catches_the_same_features(self, bars, research_compute):
+        cut = _mid_session_cut(bars)
+        report = check_prefix_invariance(
+            bars,
+            research_compute,
+            cut=cut,
+            features=["adx_14", "slope_20d", "slope_50d"],
+        )
+        assert not report.passed
+
+    def test_future_perturbation_catches_the_same_features(
+        self, bars, research_compute
+    ):
+        cut = _mid_session_cut(bars)
+        report = check_future_perturbation(
+            bars,
+            research_compute,
+            cut=cut,
+            features=["adx_14", "slope_20d", "slope_50d"],
+        )
+        assert not report.passed
+
+    def test_atr_survives_all_three(self, bars, research_compute):
+        cut = _mid_session_cut(bars)
+        for check in (
+            check_truncation_equivalence,
+            check_prefix_invariance,
+            check_future_perturbation,
+        ):
+            report = check(bars, research_compute, cut=cut, features=["atr_14"])
+            assert report.passed, f"{check.__name__} failed for atr_14:\n{report}"
+
+
+class TestContaminationIsLatentNotLive:
+    """Pin the live-versus-latent finding so a regression is visible.
+
+    The leaky columns are handed to ``BacktestEngine.run`` on every sweep. Today
+    nothing reads them, so results are unaffected. This test records that fact;
+    if it ever fails, the leak has gone live and stored results are suspect.
+    """
+
+    def test_poisoning_leaky_features_does_not_change_the_backtest(self, sweep):
+        from vibe.backtester.core.engine import BacktestEngine
+        from vibe.common.ruleset.loader import RuleSetLoader
+
+        ruleset = RuleSetLoader.from_name("orb_production")
+        data_dir = _resolve_data_dir()
+
+        features = sweep._precompute_features(SYMBOL, START, END, "5m")
+
+        def run(frame):
+            engine = BacktestEngine(
+                ruleset=ruleset, data_dir=data_dir, initial_capital=100_000
+            )
+            return engine.run(
+                symbol=SYMBOL,
+                start_date=START,
+                end_date=END,
+                precomputed_features=frame,
+            )
+
+        def signature(result):
+            return (
+                len(result.trades),
+                round(result.overall.total_pnl, 6),
+                round(result.overall.expectancy_r, 6),
+            )
+
+        baseline = signature(run(features))
+
+        poisoned = features.copy()
+        for name in ("adx_14", "slope_20d", "slope_50d"):
+            poisoned[name] = -999.0
+
+        assert signature(run(poisoned)) == baseline, (
+            "Poisoning the leaky features changed the backtest, which means the "
+            "ORB decision path now consumes adx_14, slope_20d, or slope_50d. "
+            "The look-ahead leak is live: stored results computed through "
+            "ParameterSweep are contaminated and must be re-baselined, and the "
+            "features must be fixed or removed from the precompute list."
+        )
+
+    def test_baseline_run_produces_trades(self, sweep):
+        """Non-vacuity: a zero-trade run would make the comparison meaningless."""
+        from vibe.backtester.core.engine import BacktestEngine
+        from vibe.common.ruleset.loader import RuleSetLoader
+
+        result = BacktestEngine(
+            ruleset=RuleSetLoader.from_name("orb_production"),
+            data_dir=_resolve_data_dir(),
+            initial_capital=100_000,
+        ).run(
+            symbol=SYMBOL,
+            start_date=START,
+            end_date=END,
+            precomputed_features=sweep._precompute_features(
+                SYMBOL, START, END, "5m"
+            ),
+        )
+        assert len(result.trades) > 0
