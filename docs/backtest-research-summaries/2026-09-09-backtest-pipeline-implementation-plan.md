@@ -1106,6 +1106,37 @@ is how all current scripts work. Make it a property of the system:
 4. Promotion is blocked when a research lineage's holdout touch count exceeds
    one, and the dashboard surfaces the counter.
 
+**Status (2026-09-09): 1-3 implemented, 4 deferred to P11.**
+`config/final_holdout.yaml` holds the committed range and
+`vibe/research_pipeline/holdout.py` the loader guard, unlock token, and
+append-only access log (`touch_count()` is implemented and ready for P11 to
+consume; it is the *enforcement* of blocking that needs the registry).
+
+The boundary is `dev_end: 2024-12-31`, giving an OOS period of
+2025-01-01..2026-04-27 (329 QQQ sessions, 1.31 years). That date was not chosen
+for convenience: every record in `research/` was produced over
+2018-01-01..2024-12-31, so no promise of "untouched" could be true before it.
+The honest holdout is the largest *untouched* suffix of the data, not the
+largest useful one. Counting sessions to size it is calendar metadata; no
+backtest was run on the candidate range.
+
+The guard binds at `ParquetLoader`, the single choke point every backtest reads
+through. An explicit `end_time` past `dev_end` raises; an unbounded request is
+clamped to `dev_end` and logged, because the caller expressed no intent and
+clamping is the only behaviour that can neither leak data nor break every
+legitimate "load all development data" call. `get_full_df` is clamped too -- an
+unguarded method beside a guarded one is a back door that callers would reach
+for precisely when the guard was inconvenient.
+
+**The lock is tamper-evident, not tamper-proof, and overclaiming it would be the
+kind of overstatement this pipeline exists to prevent.** A single developer owns
+the file and can edit it. What it prevents is redefining the holdout
+*accidentally* or *silently*: the config is version controlled, so a change is a
+visible diff, and `lock_hash` is stamped on every run, so a result produced
+under a different definition stays permanently distinguishable. `lock_hash`
+covers the acceptance rule as well as the dates, since moving the threshold is
+as much a redefinition of the test as moving the boundary.
+
 #### Pre-registered acceptance rule
 
 Before the holdout is unlocked, the run must record the metric, the threshold,
@@ -1305,14 +1336,20 @@ the richer dashboard views.
 ## 16. Remaining Open Items
 
 - Pin the Node.js version required by the local viewer's `node:sqlite` usage.
-- Commit the concrete final out-of-sample date range to a hash-locked config
-  **before** further ORB research, so it cannot be chosen after seeing results.
 - Define the pruning schedule for locally retained `diagnostic`/`full` debug
   rows.
-- Decide whether portfolio simulation (P10b) is in scope for the first build, or
-  whether cross-sectional evidence (P5b) is sufficient for now.
 - Confirm the `static_declared` member list and freeze it with a
   `universe_hash` before cross-sectional research begins.
+
+Resolved since the plan was written:
+
+- ~~Commit the concrete final out-of-sample date range to a hash-locked
+  config.~~ Done — `config/final_holdout.yaml`, `dev_end 2024-12-31`, enforced
+  at the loader. See §10.
+- ~~Decide whether portfolio simulation (P10b) is in scope for the first
+  build.~~ Deferred: cross-sectional evidence (P5b) is sufficient for now, and
+  the constraint is tracked in
+  `memory-bank/features/portfolio-simulation-constraint.md`.
 
 ## 17. Design Review Log
 
@@ -1347,16 +1384,17 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P3 |
-| Partial | P2, P7 |
-| Not started | P4, P5, P5b, P6, P8, P9, P10, P10b, P11, P12, P13, P14 |
+| Complete | P0, P1, P2, P3, P10 |
+| Partial | P7 |
+| Not started | P4, P5, P5b, P6, P8, P9, P10b, P11, P12, P13, P14 |
 
-Three of the nine increments required by the "minimum bar before trusting a
+Five of the nine increments required by the "minimum bar before trusting a
 result" (P0-P6, P9, P10) are complete. **No result produced today should be
 treated as trustworthy**, because P6 is still outstanding: nothing prevents a
-bad run from reaching `COMPLETED`. Metrics are now normalized and costs are
-charged, so today's numbers are *defensible* in isolation — but nothing
-enforces that, and an unreviewed run is still an unchecked claim.
+bad run from reaching `COMPLETED`. Metrics are now normalized, costs are
+charged, the books reconcile, and the holdout is locked — so today's numbers
+are *defensible* in isolation — but nothing enforces that, and an unreviewed
+run is still an unchecked claim.
 
 ### Increment status
 
@@ -1364,7 +1402,7 @@ enforces that, and an unreviewed run is still an unchecked claim.
 | --- | --- | --- | --- | --- |
 | P0 | Contracts and identity | **Complete** | `73264f4` | `vibe/research_pipeline/`: `hashing.py`, `lifecycle.py`, `contracts.py`, `identity.py`, `paths.py`, `store.py`. 102 tests. ADR-018. DB path guard keeps the database out of OneDrive. |
 | P1 | Metric normalization | **Complete** | `19b56a3` | Three-way win/loss/breakeven; `expectancy_r` as the direct sample mean; session-based Sharpe replacing a hardcoded 78 bars; drawdown duration in calendar days; trade census (`r_sample_size`, `dropped_trade_count`) on every run; `METRIC_CALCULATION_VERSION = 2`. 23 tests. Frozen against F13 (`7d10441`), which proved the change was metrics-only. |
-| P2 | Execution realism and accounting | **Partial** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be` | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; counters on every run via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 tests. |
+| P2 | Execution realism and accounting | **Complete** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be`, `ced4823` | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; all four reconciliation identities implemented and published via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 + 46 tests. Slippage remains uncalibrated — a data limitation, not missing scope; see below. |
 | P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
 | P4 | Warmup-aware segment execution | **Not started** | — | Blocks P5, P5b, P9. |
 | P5 | Feature declarations and leakage harness | **Not started** | — | |
@@ -1373,7 +1411,7 @@ enforces that, and an unreviewed run is still an unchecked claim.
 | P7 | SQLite store and importer | **Partial** | `f84c34f` | `storage/schema.py`, `storage/sqlite_store.py`: forward-only migrations, terminal-state triggers, UUIDv7 IDs, `run_evidence`, outbox table, concurrent-writer handling. 19 tests. |
 | P8 | Local MJS viewer | **Not started** | — | |
 | P9 | Optimizer/selector seam and nested walk-forward | **Not started** | — | |
-| P10 | Final-holdout lock | **Not started** | — | The OOS range is currently protected by convention only. |
+| P10 | Final-holdout lock | **Complete** | `(pending)` | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader` and was verified to block a real 2025 engine run and a straddling 2019→2026 run. 39 tests. Promotion-blocking on touch count > 1 is the one deferred part, and needs P11's registry. |
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
 | P11 | Registry migration to `ResearchStore` | **Not started** | — | |
 | P12 | Supabase publisher and reconciliation | **Not started** | — | |
@@ -1384,14 +1422,29 @@ enforces that, and an unreviewed run is still an unchecked claim.
 
 **P2 — Execution realism.** Delivered: E1 intrabar exit ordering, E2
 gap-through fills, E3 undeclared leverage and unbounded cash, E4 cost model
-(commission **and** exit slippage). Outstanding:
+(commission **and** exit slippage), all four reconciliation identities, and
+fixtures F5-F8 and F10.
 
-- **The reconciliation identities.** `gross_pnl - total_costs == net_pnl` is
-  implemented and asserted on both golden windows. The other three
-  (flat-at-end equity, per-fill cash delta, entry/exit quantity parity) are
-  still specified but unimplemented.
-- **Fixtures F5-F7** are not written. F8 (slippage monotonicity) and F10
-  (zero vs non-zero commission) are.
+The three identities added in `ced4823` are flat-at-end equity, per-fill cash
+delta, and entry/exit quantity parity. They were deliberately built so they
+*can* fail: `PortfolioManager.cash_ledger` records **observed** cash before and
+after every fill, and reconciliation recomputes the expectation independently
+from the fill's own quantity, price, and commission. Recording a computed delta
+would have repeated exactly the tautology this replaced. Verified by mutation on
+the real 2019-2023 run — dropping a commission, corrupting a cash snapshot, and
+duplicating a fill were each detected. Clean run: 3 applicable, 0 failures,
+2514 ledger entries, worst residual 9.9e-10.
+
+`applicable` is reported separately from `passed` because flat-at-end equity
+cannot be evaluated while a position is open, and counting that as a pass would
+let a run look reconciled when the strongest check never ran.
+
+F7 pinned a real limitation rather than skipping it: `close_position` pops the
+whole position regardless of fill quantity, so **a partial exit is not
+representable today**. Anyone adding partial exits must confront that test.
+
+The one remaining caveat is a data limitation, not missing scope:
+
 - **Slippage is uncalibrated.** Every tick count is a declared assumption, not
   a measurement: the only execution records on hand
   (`data/local/ib_executions.db`) are two synthetic test rows quoting
@@ -1522,30 +1575,20 @@ justification.
 
 ### Recommended next increment
 
-**Finish P2, then P4.**
+**P4, warmup-aware segment execution.**
 
-P2's remainder is small and closes an increment rather than opening one: three
-reconciliation identities and fixtures F5-F7. The identities matter more than
-their size suggests — they are the checks that would catch a *future* accounting
-error the way the commission reserve bug was caught, by contradiction rather
-than by inspection. E4 has already invalidated two of the plan's original
-identities once; leaving the remaining three unimplemented means the next such
-change has nothing to fail against.
+P2 and P10 are now complete, which removes both the previously recommended
+next step and the time-sensitive holdout item. P4 is the highest-leverage
+unstarted increment: its prerequisite (P3) is complete, and it blocks three
+others — P5, P5b, and P9. Nothing else on the critical path can start until it
+lands, so it is the single constraint on the whole Lane A/B critical path.
 
-**P4, warmup-aware segment execution**, is then the highest-leverage unstarted
-increment. Its prerequisite (P3) is complete, and it blocks three others —
-P5, P5b, and P9. Nothing else on the critical path can start until it lands, so
-it is the single constraint on the whole Lane A/B critical path.
+The path to the plan's own "minimum bar before trusting a result" is now
+P4 -> P5 -> P6 -> P9. P6 is the one that matters most: until it exists, the
+central promise of this plan — that bad metrics cannot reach `COMPLETED` — is
+unenforced, and every result is an unchecked claim.
 
-The path to the plan's own "minimum bar before trusting a result" is
-P2 (finish) -> P4 -> P5 -> P6 -> P9 -> P10. P6 is the one that matters most:
-until it exists, the central promise of this plan — that bad metrics cannot
-reach `COMPLETED` — is unenforced, and every result is an unchecked claim.
-
-**One item is time-sensitive and independent of all of the above.** §16 requires
-the final out-of-sample date range to be hash-locked *before* further ORB
-research. Every run performed between now and P10 erodes the holdout's value,
-and that erosion cannot be undone retroactively. Committing the range to a
-config today costs almost nothing and preserves the option; deferring it until
-P10 does not.
+The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
+proceed without further eroding it; runs are now confined to `dev_end` by the
+loader rather than by convention.
 
