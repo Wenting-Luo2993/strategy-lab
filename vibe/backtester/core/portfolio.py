@@ -11,6 +11,7 @@ from vibe.backtester.core.execution_realism import (
     clamp_to_bar,
 )
 from vibe.backtester.core.fill_simulator import FillResult
+from vibe.backtester.core.reconciliation import CashLedgerEntry
 from vibe.common.models.bar import Bar
 from vibe.common.models.trade import Trade
 
@@ -80,6 +81,15 @@ class PortfolioManager:
         self.max_gross_exposure_ratio = 0.0
         self.total_costs = 0.0
 
+        self.cash_ledger: List[CashLedgerEntry] = []
+        """Observed cash movement per fill, for accounting reconciliation.
+
+        Records cash *before* and *after* each fill rather than the delta the
+        portfolio intended, so the reconciliation check has something
+        independent to disagree with. Storing a computed delta would make the
+        identity pass by construction and assert nothing.
+        """
+
     @property
     def commission_model(self):
         """Cost schedule for this run, taken from the realism config."""
@@ -96,6 +106,35 @@ class PortfolioManager:
             self.cash -= cost
             self.total_costs += cost
         return cost
+
+    def _record_fill(
+        self,
+        *,
+        fill: FillResult,
+        commission: float,
+        cash_before: float,
+        timestamp: datetime,
+        kind: str,
+    ) -> None:
+        """Append the observed cash movement for one fill.
+
+        Called after cash has fully settled for the fill -- both the notional
+        and the commission -- so ``cash_after`` reflects the complete mutation
+        and not an intermediate state.
+        """
+        self.cash_ledger.append(
+            CashLedgerEntry(
+                timestamp=timestamp,
+                symbol=fill.symbol,
+                side=fill.side,
+                quantity=fill.filled_qty,
+                price=fill.avg_price,
+                commission=commission,
+                cash_before=cash_before,
+                cash_after=self.cash,
+                kind=kind,
+            )
+        )
 
     def _record_cash(self) -> None:
         self.min_cash = min(self.min_cash, self.cash)
@@ -184,6 +223,7 @@ class PortfolioManager:
         self, fill: FillResult, stop_price: float, timestamp: datetime, take_profit: Optional[float] = None
     ) -> None:
         self.assert_buying_power(abs(fill.filled_qty) * fill.avg_price)
+        cash_before = self.cash
         entry_commission = self._charge_commission(
             fill.filled_qty, fill.avg_price
         )
@@ -204,6 +244,10 @@ class PortfolioManager:
         else:  # short (sell)
             self.cash += fill.filled_qty * fill.avg_price
         self._record_cash()
+        self._record_fill(
+            fill=fill, commission=entry_commission, cash_before=cash_before,
+            timestamp=timestamp, kind="open",
+        )
 
     def add_to_position(
         self, fill: FillResult, timestamp: datetime
@@ -243,9 +287,11 @@ class PortfolioManager:
         pos.quantity = total_quantity
         pos.entry_price = weighted_avg_price
         # Each scale-in is a separate order and is billed as one.
-        pos.entry_commission += self._charge_commission(
+        cash_before = self.cash
+        add_commission = self._charge_commission(
             fill.filled_qty, fill.avg_price
         )
+        pos.entry_commission += add_commission
         
         # Update cash (same logic as open_position)
         if fill.side == "buy":
@@ -253,6 +299,10 @@ class PortfolioManager:
         else:  # short (sell)
             self.cash += fill.filled_qty * fill.avg_price
         self._record_cash()
+        self._record_fill(
+            fill=fill, commission=add_commission, cash_before=cash_before,
+            timestamp=timestamp, kind="add",
+        )
 
     def close_position(
         self, fill: FillResult, exit_reason: str, timestamp: datetime
@@ -262,10 +312,10 @@ class PortfolioManager:
         # Do not use the moved trailing stop at exit time.
         initial_risk = abs(pos.entry_price - pos.initial_stop_price) * pos.quantity
 
+        cash_before = self.cash
         exit_commission = self._charge_commission(
             fill.filled_qty, fill.avg_price
         )
-
         self.trade_history.append(Trade(
             symbol=fill.symbol,
             side=pos.side,
@@ -283,6 +333,10 @@ class PortfolioManager:
         else:  # closing short (buy back)
             self.cash -= fill.filled_qty * fill.avg_price
         self._record_cash()
+        self._record_fill(
+            fill=fill, commission=exit_commission, cash_before=cash_before,
+            timestamp=timestamp, kind="close",
+        )
 
     def check_exits(
         self, current_bars: Dict[str, Bar], clock

@@ -149,6 +149,8 @@
   "simulation": {
     "equity_curve_sha256": "f382f2515da4d4a42b0039d1d52f92eca2e30ce554ea2f291793464b6abe74f9",
     "execution_diagnostics": {
+      "accounting_checks_applicable": 3.0,
+      "accounting_failures": 0.0,
       "ambiguous_exit_bars": 0.0,
       "execution_model_version": 4.0,
       "exit_slippage_cost": 10997.284999994,

@@ -9,6 +9,7 @@ from vibe.backtester.core.clock import SimulatedClock
 from vibe.backtester.core.fill_simulator import FillSimulator, FillResult
 from vibe.backtester.core.portfolio import PortfolioManager
 from vibe.backtester.core.execution_realism import ExecutionRealismConfig, EXECUTION_MODEL_VERSION
+from vibe.backtester.core.reconciliation import reconcile_portfolio
 from vibe.common.risk.position_sizer import PositionSizer
 from vibe.backtester.core.execution.config import ExecutionConfig
 from vibe.backtester.core.execution.simulator import ExecutionSimulator
@@ -377,6 +378,7 @@ class BacktestEngine:
             portfolio.update_equity(current_bars, ts.to_pydatetime())
 
         # 6. Analyze results
+        reconciliation = reconcile_portfolio(portfolio)
         return PerformanceAnalyzer.analyze(
             trades=portfolio.trade_history,
             equity_curve=portfolio.equity_curve,
@@ -401,6 +403,14 @@ class BacktestEngine:
                 "orders_capped_by_declared_limits": float(
                     self.sizing_caps.get("max_position_size", 0)
                     + self.sizing_caps.get("max_position_pct", 0)
+                ),
+                # Reported rather than raised. A reconciliation failure means
+                # the result is arithmetically wrong, but P6 owns the decision
+                # to block a run -- the engine's job is to make the fact
+                # visible on every run, including legacy ones.
+                "accounting_failures": float(len(reconciliation.failures)),
+                "accounting_checks_applicable": float(
+                    sum(1 for f in reconciliation.findings if f.applicable)
                 ),
             },
         )
