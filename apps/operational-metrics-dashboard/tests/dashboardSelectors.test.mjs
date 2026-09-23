@@ -7,6 +7,7 @@ import {
   closedTradesFor,
   dashboardDataForAccount,
   netLiquidationFor,
+  positionUnrealizedPnlCurrencyFor,
   realizedPnlFor,
   realizedPnlPresentationFor,
   unrealizedPnlFor,
@@ -45,6 +46,24 @@ test("keeps a long-lived unchanged open position visible", () => {
   }];
 
   assert.deepEqual(activePositionsFor(positions), positions);
+});
+
+test("uses instrument currency for position P&L when an older row has the account currency", () => {
+  const position = {
+    position_id: "A:QQQ",
+    account_id: "A",
+    symbol: "QQQ",
+    quantity: 6,
+    side: "short",
+    avg_cost: 744.45,
+    market_price: 738.86,
+    unrealized_pnl: 33.56,
+    instrument_currency: "USD",
+    unrealized_pnl_currency: "CAD",
+    updated_at: "2026-09-23T17:11:00Z",
+  };
+
+  assert.equal(positionUnrealizedPnlCurrencyFor(position), "USD");
 });
 
 test("does not infer net liquidation currency from account currency", () => {
@@ -242,12 +261,12 @@ test("does not infer missing position or trade P&L currencies", () => {
 
   assert.equal(closedTradesFor(data)[0].currency, null);
   assert.equal(realizedPnlFor(data), null);
-  assert.equal(unrealizedPnlFor(undefined, positions), null);
+  assert.equal(unrealizedPnlFor(undefined, positions), 1);
   assert.deepEqual(
     unrealizedPnlPresentationFor(undefined, positions),
     {
-      value: null,
-      currency: null,
+      value: 1,
+      currency: "USD",
       provenance: "local",
       version: null,
       label: "Position unrealized P&L",

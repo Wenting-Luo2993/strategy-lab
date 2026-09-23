@@ -9,6 +9,7 @@ import {
   dashboardAccounts,
   dashboardDataForAccount,
   netLiquidationFor,
+  positionUnrealizedPnlCurrencyFor,
   realizedPnlPresentationFor,
   unrealizedPnlPresentationFor,
   type PnlPresentation,
@@ -389,7 +390,7 @@ function OpenPositionsPanel({ positions }: { positions: Position[] }) {
               <div className="text-xs text-[var(--muted)]">Updated {time(position.updated_at)}</div>
             </div>
             <div className={`text-right font-semibold ${Number(position.unrealized_pnl ?? 0) >= 0 ? "text-[var(--profit)]" : "text-[var(--loss)]"}`}>
-              {formatCurrency(position.unrealized_pnl, position.unrealized_pnl_currency)}
+              {formatCurrency(position.unrealized_pnl, positionUnrealizedPnlCurrencyFor(position))}
             </div>
           </div>
         ))}

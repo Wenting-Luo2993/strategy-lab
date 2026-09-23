@@ -69,6 +69,12 @@ export function activePositionsFor(positions: Position[]): Position[] {
     .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime());
 }
 
+export function positionUnrealizedPnlCurrencyFor(position: Position): string | null {
+  // Position P&L is derived from instrument-denominated prices. Prefer the
+  // instrument currency to repair older IB rows that mislabeled it as account currency.
+  return position.instrument_currency ?? position.unrealized_pnl_currency ?? null;
+}
+
 export function closedTradesFor(data: DashboardData): DerivedClosedTrade[] {
   const authoritative = data.trades
     .filter((trade) => trade.status === "closed" && trade.exit_price != null && trade.exit_time)
@@ -151,7 +157,7 @@ export function unrealizedPnlPresentationFor(
   const aggregate = aggregatePnlByCurrency(
     activePositions.map((position) => ({
       pnl: position.unrealized_pnl,
-      currency: position.unrealized_pnl_currency ?? null,
+      currency: positionUnrealizedPnlCurrencyFor(position),
     })),
   );
   return {
