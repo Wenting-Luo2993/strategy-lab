@@ -63,6 +63,23 @@ class _AccountSummaryIB:
         self.pnl_cancellations.append((account, model_code))
 
 
+class _UpdatingPnl:
+    account = "DU123"
+    modelCode = ""
+
+    def __init__(self):
+        self.reads = 0
+
+    @property
+    def realizedPnL(self):
+        return 0.0
+
+    @property
+    def unrealizedPnL(self):
+        self.reads += 1
+        return 0.0 if self.reads == 1 else 42.5
+
+
 def _summary(tag: str, value: str, currency: str, account: str = "DU123"):
     return SimpleNamespace(tag=tag, value=value, currency=currency, account=account)
 
@@ -267,6 +284,53 @@ async def test_ib_account_summary_uses_req_pnl_and_preserves_balance_currencies(
 
 
 @pytest.mark.asyncio
+async def test_ib_req_pnl_ignores_transient_initial_zero(monkeypatch):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    fake_ib = _AccountSummaryIB(
+        [_summary("NetLiquidation", "100000", "BASE")],
+        pnl=_UpdatingPnl(),
+    )
+    monkeypatch.setattr(ib_module, "IB", lambda: fake_ib)
+    api = InteractiveBrokersAPI(
+        account_id="DU123",
+        account_base_currency="CAD",
+    )
+
+    account = await api.get_account_info()
+
+    assert account.realized_pnl == 0.0
+    assert account.unrealized_pnl == 42.5
+    assert fake_ib.pnl_cancellations == [("DU123", "")]
+
+
+@pytest.mark.asyncio
+async def test_ib_req_pnl_returns_legitimate_persistent_zero(monkeypatch):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    fake_ib = _AccountSummaryIB(
+        [_summary("NetLiquidation", "100000", "BASE")],
+        pnl=SimpleNamespace(
+            account="DU123",
+            modelCode="",
+            realizedPnL=0.0,
+            unrealizedPnL=0.0,
+        ),
+    )
+    monkeypatch.setattr(ib_module, "IB", lambda: fake_ib)
+    api = InteractiveBrokersAPI(
+        account_id="DU123",
+        account_base_currency="CAD",
+    )
+
+    account = await api.get_account_info()
+
+    assert account.realized_pnl == 0.0
+    assert account.unrealized_pnl == 0.0
+    assert fake_ib.pnl_cancellations == [("DU123", "")]
+
+
+@pytest.mark.asyncio
 async def test_ib_cad_balance_does_not_imply_unknown_account_base_currency(monkeypatch):
     import vibe.trading_bot.brokers.interactive_brokers as ib_module
 
@@ -321,6 +385,41 @@ async def test_ib_req_pnl_filters_account_and_model_and_cancels_on_timeout(monke
     assert account.realized_pnl_currency is None
     assert fake_ib.pnl_requests == [("DU123", "growth")]
     assert fake_ib.pnl_cancellations == [("DU123", "growth")]
+
+
+@pytest.mark.asyncio
+async def test_ib_portfolio_pnl_uses_instrument_currency(monkeypatch):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    class PortfolioIB(_AccountSummaryIB):
+        def portfolio(self):
+            return [
+                SimpleNamespace(
+                    account="DU123",
+                    contract=SimpleNamespace(
+                        symbol="QQQ",
+                        secType="STK",
+                        currency="USD",
+                    ),
+                    position=-6,
+                    averageCost=744.45,
+                    marketPrice=739.62,
+                    unrealizedPNL=28.98,
+                )
+            ]
+
+    fake_ib = PortfolioIB([])
+    monkeypatch.setattr(ib_module, "IB", lambda: fake_ib)
+    api = InteractiveBrokersAPI(
+        account_id="DU123",
+        account_base_currency="CAD",
+    )
+
+    positions = await api.get_positions()
+
+    assert positions[0].instrument_currency == "USD"
+    assert positions[0].unrealized_pnl == 28.98
+    assert positions[0].unrealized_pnl_currency == "USD"
 
 
 @pytest.mark.asyncio

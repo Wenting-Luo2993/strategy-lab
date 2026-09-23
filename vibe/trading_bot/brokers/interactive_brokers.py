@@ -43,6 +43,7 @@ _ACCOUNT_SUMMARY_TAGS = (
     "DayTradesRemainingT+4,Leverage,$LEDGER:ALL"
 )
 _IB_UNSET_DOUBLE = 1.7976931348623157e308
+_ZERO_PNL_STABILIZATION_SECONDS = 0.25
 
 
 class IBOperatorActionRequired(RuntimeError):
@@ -698,10 +699,16 @@ class InteractiveBrokersAPI:
         self,
         account_id: str,
     ) -> tuple[Optional[float], Optional[float]]:
-        """Read one bounded account/model P&L update and always cancel it."""
+        """Read one bounded account/model P&L update and always cancel it.
+
+        IB can publish an initial all-zero placeholder before updating the same
+        PnL object with the current account values. Briefly stabilize that
+        placeholder while still returning a legitimate persistent zero.
+        """
         async with self._pnl_request_lock:
             pnl = self.ib.reqPnL(account_id, self.model_code)
             deadline = asyncio.get_running_loop().time() + self.account_data_timeout_seconds
+            zero_observed_at: Optional[float] = None
             try:
                 while asyncio.get_running_loop().time() < deadline:
                     returned_account = getattr(pnl, "account", account_id)
@@ -710,7 +717,13 @@ class InteractiveBrokersAPI:
                         realized = self._clean_pnl_number(getattr(pnl, "realizedPnL", None))
                         unrealized = self._clean_pnl_number(getattr(pnl, "unrealizedPnL", None))
                         if realized is not None and unrealized is not None:
-                            return realized, unrealized
+                            if realized != 0.0 or unrealized != 0.0:
+                                return realized, unrealized
+                            now = asyncio.get_running_loop().time()
+                            if zero_observed_at is None:
+                                zero_observed_at = now
+                            if now - zero_observed_at >= _ZERO_PNL_STABILIZATION_SECONDS:
+                                return realized, unrealized
                     await asyncio.sleep(0.05)
                 logger.warning(
                     "Timed out waiting for IB account P&L account=%s model=%s",
@@ -752,7 +765,7 @@ class InteractiveBrokersAPI:
                     ),
                     instrument_currency=getattr(contract, "currency", None) or None,
                     unrealized_pnl_currency=(
-                        self.account_base_currency
+                        getattr(contract, "currency", None) or None
                         if self._clean_pnl_number(
                             getattr(position, "unrealizedPNL", None)
                         ) is not None

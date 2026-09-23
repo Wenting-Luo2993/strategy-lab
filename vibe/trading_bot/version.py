@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.9"  # fix: live ORB entry timing and dashboard publication reconciliation
+VERSION = "1.4.10"  # fix: stabilize IB account P&L and preserve position P&L currency
 
 
 def get_build_timestamp() -> str:
