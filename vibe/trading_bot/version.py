@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.8"  # fix: slippage flat 0.03% per leg — zero size_impact_factor (blew up with large share counts)
+VERSION = "1.4.10"  # fix: stabilize IB account P&L and preserve position P&L currency
 
 
 def get_build_timestamp() -> str:

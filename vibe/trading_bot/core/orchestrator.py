@@ -696,8 +696,30 @@ class TradingOrchestrator:
         )
         if tracked_side is None or tracked_side == order.side:
             return
-        position = await self.exchange.get_position(order.symbol)
-        remaining_quantity = float(position.quantity) if position is not None else 0.0
+        logical_quantity = (
+            float(open_trades[0].get("quantity") or 0.0)
+            if open_trades
+            else float(tracked.get("quantity") or 0.0)
+            if tracked is not None
+            else 0.0
+        )
+        order_id = str(getattr(order, "order_id", ""))
+        durable_projection = (
+            self.trade_store.get_exit_projection(order_id)
+            if self.config.dashboard.enabled
+            else None
+        )
+        previous_order_filled = (
+            float(durable_projection["applied_quantity"])
+            if durable_projection is not None
+            else self._dashboard_exit_order_progress.get(order_id, (0.0, 0.0))[0]
+        )
+        cumulative_order_filled = float(order.filled_qty or 0.0)
+        newly_filled_quantity = max(
+            cumulative_order_filled - previous_order_filled,
+            0.0,
+        )
+        remaining_quantity = max(logical_quantity - newly_filled_quantity, 0.0)
         if remaining_quantity <= 0:
             if self.strategy is not None:
                 self.strategy.close_position(order.symbol)
@@ -705,9 +727,12 @@ class TradingOrchestrator:
                 self.trade_executor.clear_pending_close(symbol=order.symbol)
         elif tracked is not None:
             tracked["quantity"] = remaining_quantity
-            tracked["entry_price"] = float(position.entry_price)
 
         if not self.config.dashboard.enabled:
+            self._dashboard_exit_order_progress[order_id] = (
+                cumulative_order_filled,
+                float(order.avg_price or order.price) * cumulative_order_filled,
+            )
             if remaining_quantity <= 0:
                 self._pending_exit_reasons.pop(order.symbol, None)
             return
@@ -1338,7 +1363,6 @@ class TradingOrchestrator:
                     "period_start": None,
                     "event_type": reason,
                     "source": broker_name,
-                    "reason": reason,
                 },
                 original_event_timestamp=observed_at,
             )
