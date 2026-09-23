@@ -1399,6 +1399,10 @@ class PublishOutboxStore(_SQLiteStore):
                 "ALTER TABLE publication_ledger "
                 "ADD COLUMN successor_version INTEGER NOT NULL DEFAULT 0"
             )
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_publication_ledger_logical_event
+            ON publication_ledger(logical_event_id, successor_version)
+        """)
         published_rows = cursor.execute(
             """
             SELECT event_id, logical_event_id, successor_version,

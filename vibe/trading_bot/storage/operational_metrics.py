@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Dict, Optional, Protocol
 
 from vibe.trading_bot.brokers.base import FillEvent
+from vibe.trading_bot.release_metadata import release_metadata
 from vibe.trading_bot.storage.metrics_store import MetricType, MetricsStore
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,17 @@ class RemoteMetricsSink(Protocol):
 class SupabaseRestMetricsSink:
     """Zero-cost-friendly Supabase REST sink for operational metrics."""
 
-    def __init__(self, url: str, anon_key: str, table_name: str = "operational_metrics"):
+    def __init__(
+        self,
+        url: str,
+        anon_key: str,
+        table_name: str = "operational_metrics",
+        release: Optional[Dict[str, str]] = None,
+    ):
         self.url = url.rstrip("/")
         self.anon_key = anon_key
         self.table_name = table_name
+        self.release = dict(release or release_metadata())
 
     async def record_metric(self, metric: OperationalMetric) -> bool:
         try:
@@ -46,15 +54,7 @@ class SupabaseRestMetricsSink:
         except ImportError as exc:
             raise ImportError("aiohttp is required for SupabaseRestMetricsSink") from exc
 
-        payload = {
-            "metric_id": metric.idempotency_key or (
-                f"legacy:{metric.name}:{metric.timestamp.isoformat()}"
-            ),
-            "metric_name": metric.name,
-            "metric_value": metric.value,
-            "dimensions": metric.dimensions,
-            "timestamp": metric.timestamp.isoformat(),
-        }
+        payload = self._payload_for_metric(metric)
         headers = {
             "apikey": self.anon_key,
             "Authorization": f"Bearer {self.anon_key}",
@@ -74,6 +74,18 @@ class SupabaseRestMetricsSink:
         except Exception as exc:
             logger.warning("Remote metrics write failed: %s", exc)
             return False
+
+    def _payload_for_metric(self, metric: OperationalMetric) -> Dict[str, object]:
+        return {
+            "metric_id": metric.idempotency_key or (
+                f"legacy:{metric.name}:{metric.timestamp.isoformat()}"
+            ),
+            "metric_name": metric.name,
+            "metric_value": metric.value,
+            "dimensions": metric.dimensions,
+            "timestamp": metric.timestamp.isoformat(),
+            **self.release,
+        }
 
 
 class OperationalMetricsRecorder:

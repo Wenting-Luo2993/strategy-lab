@@ -8,6 +8,9 @@ create table if not exists public.accounts (
     display_name text not null,
     currency text,
     mode text not null,
+    code_version text,
+    git_commit text,
+    deployment_id text,
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );
@@ -29,6 +32,9 @@ create table if not exists public.trades (
     strategy text,
     exit_reason text,
     broker_order_id text,
+    code_version text,
+    git_commit text,
+    deployment_id text,
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );
@@ -69,7 +75,10 @@ create table if not exists public.order_events (
     slippage_version integer not null default 1,
     slippage_valid boolean not null default false,
     occurred_at timestamptz not null,
-    raw_status text
+    raw_status text,
+    code_version text,
+    git_commit text,
+    deployment_id text
 );
 
 create table if not exists public.price_bars (
@@ -84,6 +93,9 @@ create table if not exists public.price_bars (
     provider text not null,
     ingestion_time timestamptz not null,
     is_complete boolean not null default true,
+    code_version text,
+    git_commit text,
+    deployment_id text,
     primary key (symbol, timeframe, bar_start)
 );
 
@@ -111,7 +123,10 @@ create table if not exists public.equity_snapshots (
     granularity text not null default 'raw',
     period_start timestamptz,
     event_type text,
-    source text not null
+    source text not null,
+    code_version text,
+    git_commit text,
+    deployment_id text
 );
 
 create table if not exists public.positions (
@@ -125,7 +140,10 @@ create table if not exists public.positions (
     unrealized_pnl numeric,
     instrument_currency text,
     unrealized_pnl_currency text,
-    updated_at timestamptz not null
+    updated_at timestamptz not null,
+    code_version text,
+    git_commit text,
+    deployment_id text
 );
 
 create table if not exists public.strategy_annotations (
@@ -138,6 +156,9 @@ create table if not exists public.strategy_annotations (
     key text not null,
     value_json jsonb not null,
     enabled boolean not null default true,
+    code_version text,
+    git_commit text,
+    deployment_id text,
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );
@@ -148,11 +169,39 @@ create table if not exists public.operational_metrics (
     metric_value numeric not null,
     dimensions jsonb,
     timestamp timestamptz not null,
+    code_version text,
+    git_commit text,
+    deployment_id text,
     created_at timestamptz default now()
 );
 
 -- Backward-compatible additions for deployments created from an earlier version
 -- of this read model. Existing execution rows remain version 1 / invalid.
+do $$
+declare
+    table_name text;
+begin
+    foreach table_name in array array[
+        'accounts', 'trades', 'order_events', 'price_bars',
+        'equity_snapshots', 'positions', 'operational_metrics',
+        'strategy_annotations'
+    ]
+    loop
+        execute format(
+            'alter table public.%I add column if not exists code_version text',
+            table_name
+        );
+        execute format(
+            'alter table public.%I add column if not exists git_commit text',
+            table_name
+        );
+        execute format(
+            'alter table public.%I add column if not exists deployment_id text',
+            table_name
+        );
+    end loop;
+end;
+$$;
 alter table public.order_events add column if not exists execution_id text;
 alter table public.accounts alter column currency drop not null;
 alter table public.accounts alter column currency drop default;

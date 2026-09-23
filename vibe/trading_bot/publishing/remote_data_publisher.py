@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Dict, Iterable, Optional, Protocol
 
+from vibe.trading_bot.release_metadata import release_metadata
 from vibe.trading_bot.storage.dashboard_store import PublishOutboxEvent, PublishOutboxStore
 
 logger = logging.getLogger(__name__)
@@ -105,10 +106,17 @@ class SupabaseRestDestination:
         },
     }
 
-    def __init__(self, url: str, service_key: str, request_timeout_seconds: float = 10.0):
+    def __init__(
+        self,
+        url: str,
+        service_key: str,
+        request_timeout_seconds: float = 10.0,
+        release: Optional[Dict[str, str]] = None,
+    ):
         self.url = url.rstrip("/")
         self.service_key = service_key
         self.request_timeout_seconds = request_timeout_seconds
+        self.release = dict(release or release_metadata())
 
     async def publish(self, event: Dict[str, Any]) -> PublishOutcome:
         try:
@@ -159,9 +167,13 @@ class SupabaseRestDestination:
 
     def _payload_for_aggregate(self, aggregate_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         columns = self.PAYLOAD_COLUMNS_BY_AGGREGATE.get(aggregate_type)
-        if columns is None:
-            return payload
-        return {key: value for key, value in payload.items() if key in columns}
+        filtered = (
+            dict(payload)
+            if columns is None
+            else {key: value for key, value in payload.items() if key in columns}
+        )
+        filtered.update(self.release)
+        return filtered
 
     @staticmethod
     def _upsert_outcome(rows: Any, expected_version: int) -> PublishOutcome:

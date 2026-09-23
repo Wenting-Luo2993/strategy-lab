@@ -41,7 +41,16 @@ def _event(event_id: str = "trade:1", next_retry_at: datetime | None = None) -> 
 
 
 def test_supabase_destination_filters_non_schema_metadata_for_snapshots():
-    destination = SupabaseRestDestination("https://example.supabase.co", "service-key")
+    release = {
+        "code_version": "1.4.11",
+        "git_commit": "abc123",
+        "deployment_id": "deployment-1",
+    }
+    destination = SupabaseRestDestination(
+        "https://example.supabase.co",
+        "service-key",
+        release=release,
+    )
 
     equity_payload = destination._payload_for_aggregate(
         "equity_snapshot",
@@ -71,6 +80,8 @@ def test_supabase_destination_filters_non_schema_metadata_for_snapshots():
     assert "reason" not in position_payload
     assert equity_payload["snapshot_id"] == "snap-1"
     assert position_payload["position_id"] == "acct:QQQ"
+    assert {key: equity_payload[key] for key in release} == release
+    assert {key: position_payload[key] for key in release} == release
     metric_payload = destination._payload_for_aggregate(
         "metric",
         {
@@ -83,7 +94,41 @@ def test_supabase_destination_filters_non_schema_metadata_for_snapshots():
     )
     assert destination.CONFLICT_BY_AGGREGATE["metric"] == "metric_id"
     assert metric_payload["metric_id"] == "exec-1:slippage_bps"
+    assert {key: metric_payload[key] for key in release} == release
     assert "unexpected" not in metric_payload
+
+
+@pytest.mark.parametrize("aggregate_type", SupabaseRestDestination.TABLE_BY_AGGREGATE)
+def test_supabase_destination_adds_release_identity_to_every_aggregate(aggregate_type):
+    release = {
+        "code_version": "1.4.11",
+        "git_commit": "abc123",
+        "deployment_id": "deployment-1",
+    }
+    destination = SupabaseRestDestination(
+        "https://example.supabase.co",
+        "service-key",
+        release=release,
+    )
+
+    payload = destination._payload_for_aggregate(aggregate_type, {})
+
+    assert payload == release
+
+
+def test_outbox_store_indexes_publication_ledger_identity(tmp_path):
+    outbox = PublishOutboxStore(str(tmp_path / "outbox.db"))
+
+    index = outbox._get_connection().execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'index'
+          AND name = 'idx_publication_ledger_logical_event'
+        """
+    ).fetchone()
+
+    assert index is not None
 
 
 def test_supabase_destination_distinguishes_applied_from_stale_fenced_rows():
