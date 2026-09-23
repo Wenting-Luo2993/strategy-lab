@@ -1395,17 +1395,18 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P3, P4, P10 |
+| Complete | P0, P1, P2, P3, P4, P5, P5b, P10 |
 | Partial | P7 |
-| Not started | P5, P5b, P6, P8, P9, P10b, P11, P12, P13, P14 |
+| Not started | P6, P8, P9, P10b, P11, P12, P13, P14 |
 
-Six of the nine increments required by the "minimum bar before trusting a
+Seven of the nine increments required by the "minimum bar before trusting a
 result" (P0-P6, P9, P10) are complete. **No result produced today should be
 treated as trustworthy**, because P6 is still outstanding: nothing prevents a
 bad run from reaching `COMPLETED`. Metrics are now normalized, costs are
-charged, the books reconcile, folds are warmup-comparable, and the holdout is
-locked — so today's numbers are *defensible* in isolation — but nothing
-enforces that, and an unreviewed run is still an unchecked claim.
+charged, the books reconcile, folds are warmup-comparable, feature causality is
+declared and tested, and the holdout is locked — so today's numbers are
+*defensible* in isolation — but nothing enforces that, and an unreviewed run is
+still an unchecked claim.
 
 ### Increment status
 
@@ -1416,8 +1417,8 @@ enforces that, and an unreviewed run is still an unchecked claim.
 | P2 | Execution realism and accounting | **Complete** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be`, `ced4823` | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; all four reconciliation identities implemented and published via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 + 46 tests. Slippage remains uncalibrated — a data limitation, not missing scope; see below. |
 | P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
 | P4 | Warmup-aware segment execution | **Complete** | `c89d4ab` | `vibe/research_pipeline/segment_runner.py` plus a `graded_start` boundary in `BacktestEngine.run`. Warmup bars prime indicators, generate no orders, move no cash, and are excluded from the equity curve — which is what scopes every session-based denominator. F3 implemented; 15 tests. Goldens re-frozen with one added diagnostic key and zero changed values. |
-| P5 | Feature declarations and leakage harness | **Not started** | — | |
-| P5b | Cross-sectional universe | **Not started** | — | Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
+| P5 | Feature declarations and leakage harness | **Complete** | `295882b` | `features/registry.py`, `features/leakage.py`. All 20 `FeatureEngine` features declared; all six §9 checks implemented; F1 and F2 both present, F2 on real QQQ data. 67 tests. **Found a real look-ahead bug** — see below. |
+| P5b | Cross-sectional universe | **Complete** | `(pending)` | `vibe/research_pipeline/universe.py`. Pooled **and** per-symbol metrics with dispersion; failing members recorded rather than dropped; zero-trade members are silent, not zero; `universe_hash` and survivorship badge stamped. 34 unit + 12 real-engine tests. Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
 | P6 | Validation gates and lifecycle | **Not started** | — | Until this lands, nothing enforces the plan's central promise that bad metrics cannot reach `COMPLETED`. |
 | P7 | SQLite store and importer | **Partial** | `f84c34f` | `storage/schema.py`, `storage/sqlite_store.py`: forward-only migrations, terminal-state triggers, UUIDv7 IDs, `run_evidence`, outbox table, concurrent-writer handling. 19 tests. |
 | P8 | Local MJS viewer | **Not started** | — | |
@@ -1619,24 +1620,85 @@ take-profit is **not** a broker-side bracket or OCO, so the exchange does not
 resolve intrabar ambiguity either — the legacy optimistic assumption has no live
 justification.
 
+### Look-ahead contamination found by P5 (measured, not suspected)
+
+`FeatureEngine` computes several features by resampling to daily, computing on
+the daily frame, then `reindex(intraday_index, method="ffill")`. The daily bar
+for session D summarizes **all** of session D, so the forward-fill stamps a
+whole-session value — including that session's close — onto every intraday bar
+of session D. A bar at 10:00 therefore carries information from 16:00.
+
+Features that apply `.shift(1)` on the daily frame before reindexing are safe
+(`prev_day_range`, `prev_day_trend_pct`, `prev_close_location`, `inside_day`).
+Three do not, and are contaminated:
+
+| Feature | Value on truncated data | Value on full data |
+| --- | --- | --- |
+| `adx_14` | 33.407330 | 33.811987 |
+| `slope_20d` | -0.006359 | -0.006484 |
+| `slope_50d` | -0.005019 | -0.005039 |
+
+Measured on real QQQ 5-minute bars, 2022-01-03..2022-06-30, at the bar
+2022-05-25 11:00. `atr_14` and `atr_pctile` were identical under the same test
+and are causal. The difference between the safe and unsafe features is
+**invisible at the call site**, which is precisely why a declaration is
+required rather than a convention.
+
+Two aggravating details:
+
+- `FeatureEngine`'s module docstring claims all features are
+  "forward-observable". That claim holds at *daily* granularity and fails at
+  *intraday* granularity — which is the granularity `ParameterSweep` uses.
+- `ParameterSweep._precompute_features` requests exactly
+  `["atr_14", "atr_pctile", "adx_14", "slope_20d", "slope_50d"]`. Three of the
+  five are the contaminated ones. `DayRegimeLabeler` requires two of them, and
+  its `shift(1)` protects only on a daily-indexed frame; on the intraday table
+  it shifts five minutes and protects nothing.
+
+**The contamination is latent, not live.** Poisoning all three columns to
+`-999.0` and re-running the real ORB backtest leaves the result bit-identical
+(124 trades, total P&L 144238.72, expectancy_r 0.759895), because the legacy
+ORB path consumes none of them. `TestContaminationIsLatentNotLive` pins this
+and fails loudly if it ever stops being true. The registry currently bars these
+three from decision use; whether to *fix* them (add `.shift(1)`) or remove them
+from `_precompute_features` is still open.
+
+### Cross-sectional result from P5b
+
+First real multi-symbol evidence, same ruleset and window as above:
+
+| Symbol | Trades | `expectancy_r` |
+| --- | --- | --- |
+| AMZN | 124 | +0.7820 |
+| GOOGL | 124 | +0.5835 |
+| MSFT | 124 | +0.4449 |
+| QQQ | 124 | +0.7599 |
+| TSLA | 123 | +0.7832 |
+| **Pooled** | **619** | **+0.6705** |
+
+Equal-weighted mean +0.6707, stdev 0.1353, range +0.4449..+0.7832. QQQ's
++0.7599 matches the single-symbol golden exactly, confirming the universe loop
+drives the same engine. Pooled and equal-weighted nearly coincide here only
+because trade counts are nearly equal; they will diverge on an unbalanced
+universe, which is why both are reported. All five names are survivors chosen
+in hindsight, so the run is permanently badged `survivorship_bias=present`.
+
 ### Recommended next increment
 
-**P5, feature declarations and leakage harness.**
+**P6, validation gates and lifecycle.**
 
-P2, P4, and P10 are all complete. P5's prerequisite (P4) has landed, and P5 is
-now the constraint on the critical path: it blocks P6, which is the increment
-that matters most. Until P6 exists, the central promise of this plan — that
-bad metrics cannot reach `COMPLETED` — is unenforced, and every result is an
-unchecked claim.
+P6's prerequisites (P1, P2, P5) are now all complete, and it is the last
+increment standing between this pipeline and its own central promise: that bad
+metrics cannot reach `COMPLETED`. Until P6 exists, every result is an unchecked
+claim regardless of how carefully it was produced.
+
+P5 hands P6 a natural input. `LeakageReport` findings and `registry_hash`
+should feed `ValidationFinding` / `MetricValidator`, so a run whose features
+are contaminated — or whose registry has drifted from the one the result was
+produced under — cannot be marked `COMPLETED`.
 
 The remaining path to the plan's own "minimum bar before trusting a result" is
-P5 -> P6 -> P9. P5b (cross-sectional universe) is also unblocked by P4 and can
-run in parallel, since it only loops the existing single-symbol engine.
-
-P4 supplies P5 something it needs: a segment seam where features are computed
-over a declared warmup and graded window. The leakage harness should run
-through `run_segment` rather than raw `run`, so the leakage suite exercises the
-same path research actually uses.
+P6 -> P9.
 
 The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
 proceed without further eroding it; runs are now confined to `dev_end` by the
