@@ -1417,7 +1417,7 @@ still an unchecked claim.
 | P2 | Execution realism and accounting | **Complete** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be`, `ced4823` | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; all four reconciliation identities implemented and published via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 + 46 tests. Slippage remains uncalibrated — a data limitation, not missing scope; see below. |
 | P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
 | P4 | Warmup-aware segment execution | **Complete** | `c89d4ab` | `vibe/research_pipeline/segment_runner.py` plus a `graded_start` boundary in `BacktestEngine.run`. Warmup bars prime indicators, generate no orders, move no cash, and are excluded from the equity curve — which is what scopes every session-based denominator. F3 implemented; 15 tests. Goldens re-frozen with one added diagnostic key and zero changed values. |
-| P5 | Feature declarations and leakage harness | **Complete** | `295882b` | `features/registry.py`, `features/leakage.py`. All 20 `FeatureEngine` features declared; all six §9 checks implemented; F1 and F2 both present, F2 on real QQQ data. 67 tests. **Found a real look-ahead bug** — see below. |
+| P5 | Feature declarations and leakage harness | **Complete** | `295882b`, `143846c` | `features/registry.py`, `features/leakage.py`. All 20 `FeatureEngine` features declared; all six §9 checks implemented; F1 and F2 both present, F2 on real QQQ data. **Found and fixed a real look-ahead bug** — see below. 71 tests. |
 | P5b | Cross-sectional universe | **Complete** | `1bc8068` | `vibe/research_pipeline/universe.py`. Pooled **and** per-symbol metrics with dispersion; failing members recorded rather than dropped; zero-trade members are silent, not zero; `universe_hash` and survivorship badge stamped. 34 unit + 12 real-engine tests. Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
 | P6 | Validation gates and lifecycle | **Not started** | — | Until this lands, nothing enforces the plan's central promise that bad metrics cannot reach `COMPLETED`. |
 | P7 | SQLite store and importer | **Partial** | `f84c34f` | `storage/schema.py`, `storage/sqlite_store.py`: forward-only migrations, terminal-state triggers, UUIDv7 IDs, `run_evidence`, outbox table, concurrent-writer handling. 19 tests. |
@@ -1620,48 +1620,97 @@ take-profit is **not** a broker-side bracket or OCO, so the exchange does not
 resolve intrabar ambiguity either — the legacy optimistic assumption has no live
 justification.
 
-### Look-ahead contamination found by P5 (measured, not suspected)
+### Look-ahead contamination found by P5 — and fixed (`143846c`)
 
-`FeatureEngine` computes several features by resampling to daily, computing on
+`FeatureEngine` computed several features by resampling to daily, computing on
 the daily frame, then `reindex(intraday_index, method="ffill")`. The daily bar
-for session D summarizes **all** of session D, so the forward-fill stamps a
+for session D summarizes **all** of session D, so the forward-fill stamped a
 whole-session value — including that session's close — onto every intraday bar
-of session D. A bar at 10:00 therefore carries information from 16:00.
+of session D. A bar at 10:00 therefore carried information from 16:00.
 
-Features that apply `.shift(1)` on the daily frame before reindexing are safe
-(`prev_day_range`, `prev_day_trend_pct`, `prev_close_location`, `inside_day`).
-Three do not, and are contaminated:
+The magnitude was not marginal. On real QQQ 5-minute bars, the **09:30** bar of
+2022-05-25 carried `adx_14 = 33.407330`, which is that session's *complete*
+daily ADX. At the opening bell the feature already knew the close.
 
-| Feature | Value on truncated data | Value on full data |
+Three features were affected — `adx_14`, `slope_20d`, `slope_50d` — and all
+three are among the five that `ParameterSweep._precompute_features` requests.
+`DayRegimeLabeler` requires two of them, and its `shift(1)` protects only on a
+daily-indexed frame; on the intraday table it shifts five minutes and protects
+nothing.
+
+**Fix.** `_reindex_causally` lags the daily series by one session **when the
+input frame is intraday**. Session D now carries session D-1's value; the 09:30
+value is `33.1318577816425`, equal to the prior session's daily ADX exactly.
+
+The conditional matters. `DayRegimeLabeler` applies its own `shift(1)` and
+documents that callers must not pre-shift — a contract that is correct on a
+daily frame, where one row is one session. Shifting unconditionally would have
+double-lagged the daily path and silently staled every regime label by an extra
+session. That regression was checked, not assumed: on a daily frame, feature
+checksums and regime label counts are bit-identical across the fix.
+
+| Feature | Before (leaked) | After (causal) |
 | --- | --- | --- |
-| `adx_14` | 33.407330 | 33.811987 |
-| `slope_20d` | -0.006359 | -0.006484 |
-| `slope_50d` | -0.005019 | -0.005039 |
+| `adx_14` @ 09:30 | 33.407330 *(same session's close)* | 33.131858 *(prior session)* |
 
-Measured on real QQQ 5-minute bars, 2022-01-03..2022-06-30, at the bar
-2022-05-25 11:00. `atr_14` and `atr_pctile` were identical under the same test
-and are causal. The difference between the safe and unsafe features is
-**invisible at the call site**, which is precisely why a declaration is
-required rather than a convention.
+**No stored result was contaminated.** The contamination was latent: poisoning
+all three columns to `-999.0` left the ORB backtest bit-identical, because the
+legacy ORB path consumes none of them. Post-fix results confirm this — QQQ is
+unchanged at 124 trades / expectancy_r 0.759895, and the five-symbol universe
+is unchanged at 619 trades / pooled +0.6705. The bug was a loaded gun, not a
+fired one; consuming those columns was a one-line ruleset change away.
 
-Two aggravating details:
+**Keeping the checks falsifiable.** Promoting all three to `CAUSAL` leaves the
+diagnostic set empty, which would make every leakage check pass and the
+decision guard unable to fire — a harness reporting green while measuring
+nothing. The guard entry points therefore accept an injectable registry, tests
+that prove rejection run against a synthetic diagnostic, and the real-data
+suite carries a `leaky_control` column reproducing the original defective
+construction that each check must still convict.
 
-- `FeatureEngine`'s module docstring claims all features are
-  "forward-observable". That claim holds at *daily* granularity and fails at
-  *intraday* granularity — which is the granularity `ParameterSweep` uses.
-- `ParameterSweep._precompute_features` requests exactly
-  `["atr_14", "atr_pctile", "adx_14", "slope_20d", "slope_50d"]`. Three of the
-  five are the contaminated ones. `DayRegimeLabeler` requires two of them, and
-  its `shift(1)` protects only on a daily-indexed frame; on the intraday table
-  it shifts five minutes and protects nothing.
+### Open defect: the ORB golden is red, from a live-trading change
 
-**The contamination is latent, not live.** Poisoning all three columns to
-`-999.0` and re-running the real ORB backtest leaves the result bit-identical
-(124 trades, total P&L 144238.72, expectancy_r 0.759895), because the legacy
-ORB path consumes none of them. `TestContaminationIsLatentNotLive` pins this
-and fails loudly if it ever stops being true. The registry currently bars these
-three from decision use; whether to *fix* them (add `.shift(1)`) or remove them
-from `_precompute_features` is still open.
+`tests/integration/test_golden_orb.py` fails on both fixtures as of merge
+`6897d94`. **This is not caused by the P5 leak fix** — the golden deltas are
+byte-identical with that change stashed, which is how it was ruled out.
+
+The cause is a stale-wick filter added to `ORBStrategy.evaluate` on `main`:
+
+```python
+# Live incremental evaluation runs after a completed bar is available.
+if self.config.breakout_evaluation == "wick":
+    stale_long_wick = long_broke and current_price < levels.high + tick_size
+```
+
+The comment scopes the intent to **live** incremental evaluation, but
+`ORBStrategy` is shared with the backtester and `breakout_evaluation` defaults
+to `wick`, so the filter silently applies to every backtest. Measured effect on
+`qqq_orb_2022`:
+
+| | Before | After |
+| --- | --- | --- |
+| `exit_reason_counts.STOP` | 155 | 143 |
+| `exit_reason_counts.EOD` | 96 | 108 |
+| `execution_diagnostics.total_costs` | 762.825 | 852.488 |
+
+Trade count is unchanged (251), so entries are being *relocated* rather than
+suppressed — consistent with a breakout being deferred to a later bar.
+
+This needs a decision before any new result is trusted, because it changes the
+simulation, not just its reporting:
+
+1. **Gate the filter to live execution.** In a backtest, a stop-entry order
+   resting at the ORB level would have been filled intrabar when price crossed
+   it, regardless of where the bar later closed. Suppressing that fill because
+   the *close* retraced models an order type the strategy does not use, and
+   makes the backtest diverge from the live path it is supposed to predict.
+2. **Accept it for both paths and re-freeze the golden**, if the live behavior
+   is what the backtest should have been modelling all along.
+
+Option 1 is the likely correct answer, but this is a live-trading-bot change
+and the decision is not the research pipeline's to make unilaterally. The
+golden did exactly its job: it refused to let a silent behavioral change pass
+as a metrics change.
 
 ### Cross-sectional result from P5b
 
