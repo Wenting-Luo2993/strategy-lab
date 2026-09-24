@@ -368,6 +368,39 @@ class TestORBStrategy:
         assert signal == -1
         assert metadata["signal"] == "short_breakout"
 
+    def test_open_position_still_emits_current_orb_metadata(self):
+        """An existing position blocks entry without suppressing ORB telemetry."""
+        df = self._create_market_day_df(breakout_direction="up")
+        levels = self.strategy.orb_calculator.calculate(df)
+        self.strategy.track_position(
+            symbol="AAPL",
+            side="buy",
+            entry_price=levels.high,
+            take_profit=levels.high + 1,
+            stop_loss=levels.low,
+            timestamp=df.iloc[15]["timestamp"],
+        )
+        current_bar = {
+            "timestamp": df.iloc[15]["timestamp"],
+            "open": levels.high - 0.5,
+            "high": levels.high + 1.0,
+            "low": levels.high - 0.5,
+            "close": levels.high + 0.8,
+            "volume": 2000000,
+        }
+
+        signal, metadata = self.strategy.generate_signal_incremental(
+            symbol="AAPL",
+            current_bar=current_bar,
+            df_context=df.iloc[:15],
+        )
+
+        assert signal == 0
+        assert metadata["reason"] == "position_already_open"
+        assert metadata["orb_high"] == levels.high
+        assert metadata["orb_low"] == levels.low
+        assert metadata["orb_trading_date"] == df.iloc[15]["timestamp"].date()
+
     def test_incremental_signal_rejects_wick_breakout_retraced_inside_range(self):
         """Live execution does not chase a wick after the completed bar retraces."""
         config = ORBStrategyConfig(name="ORB", orb_body_pct_filter=0.0, breakout_evaluation="wick")

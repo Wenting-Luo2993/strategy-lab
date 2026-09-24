@@ -368,8 +368,16 @@ class InteractiveBrokersAPI:
         self._execution_listeners.append(listener)
 
     def list_durable_executions(self) -> List[Dict[str, Any]]:
-        """Return all known executions for idempotent startup recovery."""
-        return self.execution_store.list_executions()
+        """Return executions belonging to the configured broker account."""
+        executions = self.execution_store.list_executions()
+        if not self.account_id:
+            return executions
+        return [
+            execution
+            for execution in executions
+            if not execution.get("account_id")
+            or str(execution["account_id"]) == str(self.account_id)
+        ]
 
     def list_open_orders(self) -> List[Dict[str, Any]]:
         """Return synchronized non-terminal orders restored from TWS/Gateway."""

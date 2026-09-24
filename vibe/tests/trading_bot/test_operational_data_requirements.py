@@ -29,6 +29,12 @@ from vibe.common.execution.base import OrderResponse
 from vibe.common.models import Order, OrderStatus, Trade
 
 
+@pytest.fixture(autouse=True)
+def _isolate_relative_storage_paths(tmp_path, monkeypatch):
+    """Prevent tests using default SQLite paths from touching a live checkout."""
+    monkeypatch.chdir(tmp_path)
+
+
 class _ErrorEvent:
     def __iadd__(self, handler):
         self.handler = handler
@@ -611,6 +617,40 @@ def test_ib_commission_report_currency_is_preserved_per_execution(monkeypatch):
     assert [execution["execution_id"] for execution in executions] == ["e1", "e2"]
     assert [execution["commission"] for execution in executions] == [1.25, 2.5]
     assert all(execution["commission_currency"] == "USD" for execution in executions)
+
+
+def test_durable_execution_recovery_excludes_other_accounts(monkeypatch, tmp_path):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    monkeypatch.setattr(ib_module, "IB", lambda: _AccountSummaryIB([]))
+    api = InteractiveBrokersAPI(
+        account_id="DU123",
+        execution_db_path=str(tmp_path / "executions.db"),
+    )
+    base = {
+        "broker_order_id": "1001",
+        "symbol": "QQQ",
+        "side": "buy",
+        "quantity": 1,
+        "price": 100.0,
+        "filled_at": datetime.now(timezone.utc),
+    }
+    api.execution_store.upsert_execution({
+        **base,
+        "execution_id": "configured-account",
+        "account_id": "DU123",
+    })
+    api.execution_store.upsert_execution({
+        **base,
+        "execution_id": "foreign-account",
+        "account_id": "OTHER",
+    })
+
+    executions = api.list_durable_executions()
+
+    assert [execution["execution_id"] for execution in executions] == [
+        "configured-account"
+    ]
 
 
 def test_missing_commission_report_remains_unknown(monkeypatch):

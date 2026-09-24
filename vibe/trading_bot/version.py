@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.11"  # add release identity to remotely published operational records
+VERSION = "1.4.12"  # isolate validation data and reject foreign-account lifecycle recovery
 
 
 def get_build_timestamp() -> str:

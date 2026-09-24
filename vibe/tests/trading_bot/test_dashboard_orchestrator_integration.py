@@ -1277,6 +1277,43 @@ async def test_restart_orders_mixed_offset_execution_timestamps_by_instant(
 
 
 @pytest.mark.asyncio
+async def test_restart_ignores_durable_executions_from_other_accounts(tmp_path):
+    execution = {
+        "execution_id": "foreign-entry",
+        "broker_order_id": "foreign-order",
+        "account_id": "OTHER",
+        "symbol": "AAPL",
+        "side": "buy",
+        "quantity": 10,
+        "price": 100,
+        "filled_at": datetime.now(timezone.utc).isoformat(),
+        "trade_currency": "USD",
+        "order_metadata": {"strategy_stop_price": 95},
+    }
+    orchestrator = TradingOrchestrator(
+        config=_dashboard_config(tmp_path),
+        ruleset=_ruleset(),
+        market_scheduler=_scheduler(),
+        testing_mode=True,
+    )
+    orchestrator.exchange = SimpleNamespace(
+        list_durable_executions=lambda: [execution]
+    )
+    orchestrator.strategy = ORBStrategy(ORBStrategyConfig(name="test"))
+    orchestrator.trade_executor = TradeExecutor(
+        exchange=orchestrator.exchange,
+        order_manager=SimpleNamespace(),
+        position_sizer=PositionSizer(risk_per_trade=100),
+    )
+
+    await orchestrator._recover_durable_lifecycle_projections()
+
+    assert orchestrator.trade_store.get_trades() == []
+    assert orchestrator.strategy.get_position("AAPL") is None
+    assert orchestrator.trade_executor.get_open_trades() == {}
+
+
+@pytest.mark.asyncio
 async def test_trade_executor_blocks_duplicate_pending_entry_and_close():
     executor = TradeExecutor(
         exchange=SimpleNamespace(),

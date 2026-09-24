@@ -937,14 +937,32 @@ class TradingOrchestrator:
         )
         positions: Dict[tuple[str, str], Dict[str, Any]] = {}
         close_progress: Dict[str, tuple[float, float]] = {}
+        configured_account_id = str(
+            getattr(self.config.broker, "ib_account_id", None)
+            or self._dashboard_account_id()
+            or ""
+        ).strip()
 
         for execution in executions:
             execution_id = str(execution["execution_id"])
             order_id = str(execution["broker_order_id"])
+            execution_account_id = str(execution.get("account_id") or "").strip()
+            if (
+                configured_account_id
+                and execution_account_id
+                and execution_account_id != configured_account_id
+            ):
+                self.logger.warning(
+                    "Ignoring durable execution %s for foreign account %s "
+                    "(configured account=%s)",
+                    execution_id,
+                    execution_account_id,
+                    configured_account_id,
+                )
+                continue
             account_id = str(
-                execution.get("account_id")
-                or getattr(self.config.broker, "ib_account_id", None)
-                or self._dashboard_account_id()
+                execution_account_id
+                or configured_account_id
             )
             symbol = str(execution["symbol"])
             side = str(execution["side"])

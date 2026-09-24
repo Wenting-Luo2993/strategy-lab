@@ -197,10 +197,6 @@ class ORBStrategy(StrategyBase):
         Returns:
             (signal, metadata)
         """
-        # Check if position already open - prevent duplicate entries
-        if self.has_position(symbol):
-            return 0, {"reason": "position_already_open"}
-
         if df_context.empty or "ATR_14" not in df_context.columns:
             return 0, {"reason": "insufficient_data"}
 
@@ -252,28 +248,9 @@ class ORBStrategy(StrategyBase):
         if not levels.valid:
             return 0, {"reason": "invalid_orb_levels", "reason_detail": levels.reason}
 
-        # Check time filter AFTER calculating ORB (so levels get stored)
-        if bar_time >= self.entry_cutoff:
-            # Return with ORB levels in metadata (for notification)
-            return 0, {
-                "reason": "after_entry_cutoff_time",
-                "orb_high": levels.high,
-                "orb_low": levels.low,
-                "orb_range": levels.range,
-                "orb_trading_date": current_time_local.date(),
-                "current_price": current_bar["close"],
-                "price_position": "n/a",
-            }
-
-        # Check volume filter
-        if self.config.use_volume_filter:
-            avg_volume = df_context["volume"].mean()
-            if current_bar["volume"] < avg_volume * self.config.volume_threshold:
-                return 0, {"reason": "insufficient_volume"}
-
         current_price = current_bar["close"]
         bar_high = float(current_bar.get("high", current_price))
-        bar_low  = float(current_bar.get("low",  current_price))
+        bar_low  = float(current_bar.get("low", current_price))
         bar_open = float(current_bar.get("open", current_price))
 
         # Calculate distance to breakout levels for logging
@@ -288,19 +265,7 @@ class ORBStrategy(StrategyBase):
         else:
             price_position = "within_range"
 
-        # One-trade-per-day gate (ORB-specific: only one breakout entry per symbol per day)
         trading_date = current_time_local.date()
-        if self._traded_today.get(symbol) == trading_date:
-            return 0, {
-                "reason": "already_traded_today",
-                "orb_high": levels.high,
-                "orb_low": levels.low,
-                "orb_range": levels.range,
-                "orb_trading_date": trading_date,
-                "current_price": current_price,
-                "price_position": price_position,
-            }
-
         metadata = {
             "orb_high": levels.high,
             "orb_low": levels.low,
@@ -313,6 +278,22 @@ class ORBStrategy(StrategyBase):
             "distance_to_low_pct": distance_to_low,
             "bar_time": bar_time.strftime("%H:%M"),
         }
+
+        # Preserve ORB telemetry even when entry gates suppress a signal.
+        if bar_time >= self.entry_cutoff:
+            return 0, {**metadata, "reason": "after_entry_cutoff_time"}
+
+        if self.has_position(symbol):
+            return 0, {**metadata, "reason": "position_already_open"}
+
+        if self.config.use_volume_filter:
+            avg_volume = df_context["volume"].mean()
+            if current_bar["volume"] < avg_volume * self.config.volume_threshold:
+                return 0, {**metadata, "reason": "insufficient_volume"}
+
+        # One-trade-per-day gate (ORB-specific: only one breakout entry per symbol per day)
+        if self._traded_today.get(symbol) == trading_date:
+            return 0, {**metadata, "reason": "already_traded_today"}
 
         # Intrabar breakout detection: use the configured price source with a 1-tick offset.
         # QC places stop-market orders at OR_high+$0.01 (long) and OR_low-$0.01
