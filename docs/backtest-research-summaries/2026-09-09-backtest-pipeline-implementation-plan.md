@@ -1395,18 +1395,20 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P3, P4, P5, P5b, P6, P7, P10 |
+| Complete | P0, P1, P2, P3, P4, P5, P5b, P6, P7, P9, P10 |
 | Partial | — |
-| Not started | P8, P9, P10b, P11, P12, P13, P14 |
+| Not started | P8, P10b, P11, P12, P13, P14 |
 
-Eight of the nine increments required by the "minimum bar before trusting a
-result" (P0-P6, P9, P10) are complete. P6 now prevents a run from reaching
+All nine increments required by the "minimum bar before trusting a result"
+(P0-P6, P9, P10) are complete. P6 prevents a run from reaching
 `COMPLETED` without a durable one-pass validation report covering normalized
 metrics, accounting and execution reconciliation, data integrity, all six
 leakage checks, and the feature-registry hash. Candidate plausibility outliers
 stop at `REVIEW_REQUIRED`, acceptance misses remain advisory, zero-trade runs
 are `INCONCLUSIVE`, and stale execution leases are swept to
-`EXECUTION_FAILED`. P9 remains before the full minimum bar is met.
+`EXECUTION_FAILED`. P9 confines optimization to TRAIN, selection to VALIDATION,
+and frozen evaluation to each unseen TEST window; incomplete grids or folds
+make the parent inconclusive instead of stitching survivors.
 
 ### Increment status
 
@@ -1422,7 +1424,7 @@ are `INCONCLUSIVE`, and stale execution leases are swept to
 | P6 | Validation gates and lifecycle | **Complete** | this commit | `validation.py`: validation profiles, candidate-scoped plausibility and acceptance rules, one-pass findings across every declared category, required leakage evidence and registry-hash drift detection. SQLite migration 2 adds durable validation reports and execution leases; `RUNNING` requires a lease, heartbeats are token-owned, stale leases become `EXECUTION_FAILED`, and direct `VALIDATING -> COMPLETED` transitions are rejected in both Python and SQLite. 50 focused tests plus 585 research-pipeline and 322 backtester regressions. |
 | P7 | SQLite store and importer | **Complete** | `f84c34f`, `117105d` | Forward-only schema v3 upgrades v1 databases after P6's validation/lease migration; terminal UPDATE/DELETE triggers; UUIDv7 IDs; `run_evidence`; outbox; deterministic importer and F11 over all 98 checked-in records/158 relationships; canonical tree hash parity; `legacy-uncontrolled` stamping; unusable-until-rebaselined absolute metrics; legacy artifact path preservation/normalization; registry and artifact dual-write with rollback; same-fingerprint concurrent-writer convergence. 27 focused tests; 576 research-pipeline regressions. |
 | P8 | Local MJS viewer | **Not started** | — | |
-| P9 | Optimizer/selector seam and nested walk-forward | **Not started** | — | |
+| P9 | Optimizer/selector seam and nested walk-forward | **Complete** | this commit | `optimization.py`: pure injected `Optimizer.fit` and `Selector.select`, a concrete fresh-engine ruleset adapter, canonical grid identities, exact candidate counts, P6 `SWEEP_ROW`/`CANDIDATE` validation scopes, and deterministic connected-plateau medoid selection with signed margin. `walk_forward.py`: session-contamination audit (F9), per-fold train/validation/test control flow, frozen candidate evaluation, explicit inconclusive failure semantics, and chronological all-fold OOS stitching that preserves per-fold dollar P&L. 602 research-pipeline tests plus 8 optimization regressions pass; 15 data-dependent legacy tests skip when their fixed parquet path is absent. |
 | P10 | Final-holdout lock | **Complete** | `29eaa04` | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader` and was verified to block a real 2025 engine run and a straddling 2019→2026 run. 39 tests. Promotion-blocking on touch count > 1 is the one deferred part, and needs P11's registry. |
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
 | P11 | Registry migration to `ResearchStore` | **Not started** | — | |
@@ -1725,20 +1727,13 @@ in hindsight, so the run is permanently badged `survivorship_bias=present`.
 
 ### Recommended next increment
 
-**P6, validation gates and lifecycle.**
+**Complete P7, then P11 registry migration.**
 
-P6's prerequisites (P1, P2, P5) are now all complete, and it is the last
-increment standing between this pipeline and its own central promise: that bad
-metrics cannot reach `COMPLETED`. Until P6 exists, every result is an unchecked
-claim regardless of how carefully it was produced.
-
-P5 hands P6 a natural input. `LeakageReport` findings and `registry_hash`
-should feed `ValidationFinding` / `MetricValidator`, so a run whose features
-are contaminated — or whose registry has drifted from the one the result was
-produced under — cannot be marked `COMPLETED`.
-
-The remaining path to the plan's own "minimum bar before trusting a result" is
-P6 -> P9.
+The correctness path's minimum bar is now complete through P9. P7's remaining
+importer, hash-parity verification, `legacy-uncontrolled` stamping, and F11
+fixture are the next dependency for replacing YAML writes safely. Once P7 is
+complete, P11 can move the registry and sweep write paths to `ResearchStore`
+without weakening P6 validation or P9 fold evidence.
 
 The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
 proceed without further eroding it; runs are now confined to `dev_end` by the
