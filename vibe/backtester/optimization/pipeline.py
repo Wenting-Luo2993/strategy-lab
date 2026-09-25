@@ -22,6 +22,7 @@ from vibe.backtester.analysis.robustness import RobustnessAnalyzer, RobustnessAn
 from vibe.backtester.analysis.walk_forward import WalkForwardEngine, WalkForwardAnalysis
 from vibe.backtester.analysis.surface import SurfaceAnalyzer, ParameterSurface
 from vibe.backtester.analysis.scoring import rank_results
+from vibe.backtester.data.paths import resolve_market_data_dir
 from vibe.common.ruleset.models import StrategyRuleSet
 from vibe.research_journal.registry import ResearchRegistry
 
@@ -125,7 +126,7 @@ class OptimizationPipeline:
     def __init__(
         self,
         base_ruleset_path: Path | str,
-        data_dir: Path | str,
+        data_dir: Path | str | None = None,
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 5,
     ):
@@ -134,12 +135,12 @@ class OptimizationPipeline:
         
         Args:
             base_ruleset_path: Path to base ruleset YAML
-            data_dir: Path to Parquet data directory
+            data_dir: Parquet data directory, or None to resolve automatically
             initial_capital: Starting capital for backtests
             slippage_ticks: Slippage simulation (ticks)
         """
         self.base_ruleset_path = Path(base_ruleset_path)
-        self.data_dir = Path(data_dir)
+        self.data_dir = resolve_market_data_dir(data_dir)
         self.initial_capital = initial_capital
         self.slippage_ticks = slippage_ticks
     

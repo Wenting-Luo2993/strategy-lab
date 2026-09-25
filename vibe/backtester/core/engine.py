@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +8,9 @@ import pandas as pd
 from vibe.backtester.core.clock import SimulatedClock
 from vibe.backtester.core.fill_simulator import FillSimulator, FillResult
 from vibe.backtester.core.portfolio import PortfolioManager
+from vibe.backtester.core.execution_realism import ExecutionRealismConfig, EXECUTION_MODEL_VERSION
+from vibe.backtester.core.reconciliation import reconcile_portfolio
+from vibe.common.risk.position_sizer import PositionSizer
 from vibe.backtester.core.execution.config import ExecutionConfig
 from vibe.backtester.core.execution.simulator import ExecutionSimulator
 from vibe.backtester.core.execution.pending_queue import PendingOrderQueue
@@ -78,17 +81,31 @@ class BacktestEngine:
     def __init__(
         self,
         ruleset: StrategyRuleSet,
-        data_dir: Path,
+        data_dir: Path | str | None = None,
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 2,
         execution_config: Optional[ExecutionConfig] = None,
+        execution_realism: Optional[ExecutionRealismConfig] = None,
     ) -> None:
         self.ruleset = ruleset
+        # None defers to vibe.backtester.data.paths, which honours
+        # BACKTEST__DATA_DIR and falls back to the main worktree's shared copy.
         self.data_dir = data_dir
         self.initial_capital = initial_capital
         self.slippage_ticks = slippage_ticks
         self.execution_config = execution_config
+        # None means legacy semantics, so existing runs stay bit-identical.
+        # Pass ExecutionRealismConfig.realistic() to opt into honest exits.
+        self.execution_realism = execution_realism or ExecutionRealismConfig.legacy()
         self.pending_orders: list[Order] = []
+        # Counts of orders reduced by each cap, reported in execution_diagnostics.
+        self.sizing_caps: dict[str, int] = {}
+        config = ruleset.position_size
+        self._position_sizer = PositionSizer(
+            risk_pct=config.value,
+            max_position_size=getattr(config, "max_shares", None),
+            max_position_pct=getattr(config, "max_position_pct", None),
+        )
 
     def run(
         self,
@@ -96,6 +113,8 @@ class BacktestEngine:
         start_date: datetime,
         end_date: datetime,
         precomputed_features: Optional[pd.DataFrame] = None,
+        *,
+        graded_start: Optional[date] = None,
     ) -> BacktestResult:
         """
         Run backtest simulation.
@@ -107,7 +126,11 @@ class BacktestEngine:
             precomputed_features: Optional pre-computed indicators (ATR, ADX, etc.)
                                  If provided, skips indicator computation for performance.
                                  Index must match the resampled bar timestamps.
-        
+            graded_start: First **graded** session. Sessions before it are warmup:
+                their bars prime indicators but generate no orders, and they are
+                excluded from the equity curve and therefore from every metric
+                denominator. ``None`` grades the whole range.
+
         Returns:
             BacktestResult with trades, metrics, and equity curve
         """
@@ -176,6 +199,7 @@ class BacktestEngine:
         portfolio = PortfolioManager(
             self.initial_capital,
             trailing_stop_config=trailing_stop_config,
+            execution_realism=self.execution_realism,
         )
         runner = RuleSetRunner(self.ruleset)
         
@@ -183,15 +207,27 @@ class BacktestEngine:
         pending_queue = PendingOrderQueue()
         pending_order_meta: dict[str, dict[str, float | None]] = {}
         self.pending_orders = []
+        self.sizing_caps = {}
 
         # 5. Event loop with bar_index counter
         prev_date = None
         bar_index = 0  # Track bar index for latency support
+        warmup_sessions_seen: set[date] = set()
         
         for ts, row in df.iterrows():
             clock.set_time(ts.to_pydatetime())
             current_date = ts.date()
 
+            # Warmup bars prime indicators and nothing else. Suppressing orders
+            # is not enough on its own: a warmup trade would move cash, and
+            # position sizing is a function of cash, so it would silently
+            # change every graded trade that followed. The graded window has to
+            # begin from the same capital regardless of how much warmup was
+            # supplied, or folds are not comparable -- which is the entire
+            # point of the increment.
+            is_warmup = graded_start is not None and current_date < graded_start
+            if is_warmup:
+                warmup_sessions_seen.add(current_date)
             if current_date != prev_date:
                 # Reset bar index at start of new day
                 bar_index = 0
@@ -222,7 +258,11 @@ class BacktestEngine:
 
             # Generate entry signal only if no open position and no pending order.
             has_pending_symbol_order = any(o.symbol == symbol for o in self.pending_orders)
-            if symbol not in portfolio.positions and not has_pending_symbol_order:
+            if (
+                not is_warmup
+                and symbol not in portfolio.positions
+                and not has_pending_symbol_order
+            ):
                 current_bar_dict = row.to_dict()
                 current_bar_dict["timestamp"] = ts.to_pydatetime()
 
@@ -251,6 +291,7 @@ class BacktestEngine:
                         capital=portfolio.cash,
                         entry_price=entry_price,
                         stop_price=stop_price,
+                        buying_power=portfolio.available_buying_power(entry_price),
                     )
                     if quantity > 0:
                         # Create Order with signal_bar_index for latency tracking
@@ -355,27 +396,133 @@ class BacktestEngine:
             # Keep exposed state synchronized for tests/diagnostics.
             self.pending_orders = [entry.order for entry in pending_queue._orders]
 
-            portfolio.update_equity(current_bars, ts.to_pydatetime())
+            # Warmup sessions are absent from the equity curve, which is what
+            # keeps them out of every metric denominator: PerformanceAnalyzer
+            # derives n_sessions by resampling this curve. Excluding them here
+            # is therefore the single edit that scopes all session-based
+            # metrics, rather than each metric needing its own exclusion.
+            if not is_warmup:
+                portfolio.update_equity(current_bars, ts.to_pydatetime())
 
         # 6. Analyze results
+        reconciliation = reconcile_portfolio(portfolio)
+        # The reported window is the *graded* one. A segment whose start_date
+        # still pointed at the warmup load boundary would misreport its own
+        # span, and any fold comparison built on it would be off by the warmup
+        # length.
+        reported_start = (
+            datetime.combine(graded_start, datetime.min.time(), tzinfo=start_date.tzinfo)
+            if graded_start is not None
+            else start_date
+        )
         return PerformanceAnalyzer.analyze(
             trades=portfolio.trade_history,
             equity_curve=portfolio.equity_curve,
             initial_capital=self.initial_capital,
             symbol=symbol,
-            start_date=start_date,
+            start_date=reported_start,
             end_date=end_date,
             ruleset_name=self.ruleset.name,
             ruleset_version=self.ruleset.version,
+            execution_diagnostics={
+                "ambiguous_exit_bars": float(portfolio.ambiguous_exit_bars),
+                "gap_through_exits": float(portfolio.gap_through_exits),
+                "exit_slippage_events": float(portfolio.exit_slippage_events),
+                "exit_slippage_cost": float(portfolio.exit_slippage_cost),
+                "min_cash": float(portfolio.min_cash),
+                "max_gross_exposure_ratio": float(portfolio.max_gross_exposure_ratio),
+                "total_costs": float(portfolio.total_costs),
+                "execution_model_version": float(EXECUTION_MODEL_VERSION),
+                "orders_capped_by_buying_power": float(
+                    self.sizing_caps.get("buying_power", 0)
+                ),
+                "orders_capped_by_declared_limits": float(
+                    self.sizing_caps.get("max_position_size", 0)
+                    + self.sizing_caps.get("max_position_pct", 0)
+                ),
+                # Reported rather than raised. A reconciliation failure means
+                # the result is arithmetically wrong, but P6 owns the decision
+                # to block a run -- the engine's job is to make the fact
+                # visible on every run, including legacy ones.
+                "accounting_failures": float(len(reconciliation.failures)),
+                "accounting_checks_applicable": float(
+                    sum(1 for f in reconciliation.findings if f.applicable)
+                ),
+                # Published so a reviewer can confirm from the result alone
+                # that warmup was actually supplied and actually excluded,
+                # rather than trusting the caller's intent.
+                "warmup_sessions_excluded": float(len(warmup_sessions_seen)),
+            },
         )
 
     def _position_size(
-        self, capital: float, entry_price: float, stop_price: float
+        self,
+        capital: float,
+        entry_price: float,
+        stop_price: float,
+        buying_power: float | None = None,
     ) -> int:
-        """Risk position_size.value% of capital per trade based on stop distance."""
+        """Size a position with the same sizer live trading uses.
+
+        Routing through ``PositionSizer`` keeps declared ruleset caps
+        (``max_shares``, ``max_position_pct``) honoured identically in
+        simulation and live, which the previous inline formula ignored
+        outright.
+
+        ``buying_power`` is None under legacy semantics, where sizing stays
+        unbounded and bit-identical to prior results. The legacy path also
+        keeps its one-share floor and its tolerance of non-positive capital,
+        both of which are wrong but load-bearing for historical comparisons.
+        """
         risk_pct = self.ruleset.position_size.value
-        risk_dollars = capital * risk_pct
         stop_distance = abs(entry_price - stop_price)
         if stop_distance <= 0:
             return 0
-        return max(1, int(risk_dollars / stop_distance))
+
+        if buying_power is None:
+            risk_dollars = capital * risk_pct
+            size = max(1, int(risk_dollars / stop_distance))
+            return self._apply_declared_caps(size, capital, entry_price)
+
+        if capital <= 0:
+            # Funded sizing cannot express "trade anyway on negative equity".
+            return 0
+
+        result = self._position_sizer.calculate(
+            entry_price=entry_price,
+            stop_price=stop_price,
+            account_value=capital,
+            buying_power=buying_power,
+        )
+        if result.was_capped:
+            self.sizing_caps[result.capped_by] = (
+                self.sizing_caps.get(result.capped_by, 0) + 1
+            )
+        return int(result.size)
+
+    def _apply_declared_caps(
+        self, size: int, capital: float, entry_price: float
+    ) -> int:
+        """Honour max_shares / max_position_pct even under legacy semantics.
+
+        These are explicit ruleset declarations, so ignoring them was a defect
+        rather than a legacy behaviour worth preserving. No ruleset in the repo
+        currently sets either, so this changes no existing result.
+        """
+        config = self.ruleset.position_size
+        max_shares = getattr(config, "max_shares", None)
+        max_position_pct = getattr(config, "max_position_pct", None)
+
+        if max_shares is not None and size > max_shares:
+            size = int(max_shares)
+            self.sizing_caps["max_position_size"] = (
+                self.sizing_caps.get("max_position_size", 0) + 1
+            )
+        if max_position_pct is not None and entry_price > 0 and capital > 0:
+            max_size = int((capital * max_position_pct) / entry_price)
+            if size > max_size:
+                size = max_size
+                self.sizing_caps["max_position_pct"] = (
+                    self.sizing_caps.get("max_position_pct", 0) + 1
+                )
+        return max(0, size)

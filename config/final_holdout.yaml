@@ -1,0 +1,63 @@
+# Final out-of-sample holdout lock
+#
+# This file exists to make "untouched" a property of the system rather than a
+# convention. It is committed BEFORE the holdout is used, so the range cannot
+# be chosen after seeing results. Any change to it is a visible diff in git
+# history and changes `lock_hash`, which is stamped on every run.
+#
+# It is tamper-EVIDENT, not tamper-proof. A single developer can always edit a
+# file they own. What this prevents is redefining the holdout accidentally, or
+# redefining it silently -- a result produced under a different lock is
+# distinguishable from one produced under this lock, forever.
+#
+# Read vibe/research_pipeline/holdout.py before changing anything here.
+
+version: 1
+
+# Why the boundary falls here, in one sentence: it is where the data stops
+# being contaminated, and not one session earlier.
+#
+# Every research record in research/ was produced over 2018-01-01..2024-12-31
+# (verified 2026-09-23: that is the only start_date and the only end_date
+# present in the entire journal). The golden baselines cover 2019-2023. So
+# every session through 2024-12-31 has already influenced parameter choices,
+# metric definitions, and the execution model, and no promise about it would
+# be true.
+#
+# The data extends to 2026-04-27. Everything after 2024-12-31 has never been
+# run, which makes it the only period that can carry the untouched guarantee.
+dev_end: 2024-12-31
+
+oos_start: 2025-01-01
+oos_end: 2026-04-27
+
+# Instruments the lock covers. The guard applies per symbol, so adding a
+# symbol later does not retroactively unlock the existing ones.
+symbols:
+  - AMZN
+  - GOOGL
+  - MSFT
+  - QQQ
+  - TSLA
+
+declared_at: 2026-09-23
+declared_by: wentingluo
+
+# The acceptance rule is pre-registered here, before the holdout is unlocked.
+# With ~330 sessions and expectancy in the 0.05-0.25R range the standard error
+# is wide enough that a threshold chosen afterwards is indistinguishable from
+# choosing the answer.
+#
+# min_trades is not a formality. At 329 sessions ORB is expected to produce
+# roughly 300 trades; requiring 200 means a run that trades far less than
+# expected is inconclusive rather than a pass on a thin sample.
+acceptance:
+  metric: expectancy_r
+  comparison: ">="
+  threshold: 0.10
+  min_trades: 200
+  rationale: >-
+    A frozen ORB methodology must clear 0.10R expectancy on the untouched
+    period to be considered validated. The development estimate is near 0.30R
+    net of costs; 0.10R allows for substantial degradation from overfitting
+    while still representing a real edge after commission and slippage.

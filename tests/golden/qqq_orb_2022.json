@@ -1,0 +1,90 @@
+{
+  "metrics": {
+    "by_year": {
+      "2022": {
+        "avg_loss_r": -1.008325508,
+        "avg_win_r": 3.151601425,
+        "eod_losses": 4,
+        "eod_wins": 92,
+        "expectancy_r": 0.516428587,
+        "first_date": "2022-01-03",
+        "gross_pnl": 77450.290000004,
+        "last_date": "2022-12-30",
+        "max_losing_streak": 15,
+        "max_loss_r": -1.057575758,
+        "max_win_r": 12.363953488,
+        "n_trades": 251,
+        "skewness": 1.766355256,
+        "stop_losses": 155,
+        "stop_wins": 0,
+        "top10_pct": 48.657187721,
+        "total_costs": 762.825,
+        "total_pnl": 76687.465000004,
+        "win_rate": 0.366533865
+      }
+    },
+    "equity": {
+      "annualized_return": 0.778053652,
+      "max_drawdown": -0.10079755,
+      "max_drawdown_duration_days": 61,
+      "sharpe_ratio": 3.17348544,
+      "total_return": 0.76687465
+    },
+    "overall": {
+      "avg_loss_r": -1.008325508,
+      "avg_win_r": 3.151601425,
+      "eod_losses": 4,
+      "eod_wins": 92,
+      "expectancy_r": 0.516428587,
+      "first_date": "2022-01-03",
+      "gross_pnl": 77450.290000004,
+      "last_date": "2022-12-30",
+      "max_losing_streak": 15,
+      "max_loss_r": -1.057575758,
+      "max_win_r": 12.363953488,
+      "n_trades": 251,
+      "skewness": 1.766355256,
+      "stop_losses": 155,
+      "stop_wins": 0,
+      "top10_pct": 48.657187721,
+      "total_costs": 762.825,
+      "total_pnl": 76687.465000004,
+      "win_rate": 0.366533865
+    }
+  },
+  "run": {
+    "end": "2022-12-31",
+    "execution_realism": "realistic",
+    "initial_capital": 100000.0,
+    "ruleset_name": "orb_production",
+    "ruleset_version": "1.0.0",
+    "start": "2022-01-01",
+    "symbol": "QQQ"
+  },
+  "schema_version": 1,
+  "simulation": {
+    "equity_curve_sha256": "686ef31bd4a362cf37e96dd2e460b2035c5fe04a87353fcbea62e2e938e7b820",
+    "execution_diagnostics": {
+      "accounting_checks_applicable": 3.0,
+      "accounting_failures": 0.0,
+      "ambiguous_exit_bars": 0.0,
+      "execution_model_version": 4.0,
+      "exit_slippage_cost": 1692.009999998,
+      "exit_slippage_events": 251.0,
+      "gap_through_exits": 1.0,
+      "max_gross_exposure_ratio": 1.014737201,
+      "min_cash": 3.1105,
+      "orders_capped_by_buying_power": 246.0,
+      "orders_capped_by_declared_limits": 0.0,
+      "total_costs": 762.825,
+      "warmup_sessions_excluded": 0.0
+    },
+    "exit_reason_counts": {
+      "EOD": 96,
+      "STOP": 155
+    },
+    "n_equity_points": 19570,
+    "n_trades": 251,
+    "trade_ledger_sha256": "2746c63bc049b8be3dcb52b55172e67b3a3bc31dd08a29ebded774f3969efbd0"
+  }
+}

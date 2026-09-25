@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -117,6 +117,7 @@ class PerformanceAnalyzer:
         end_date: datetime,
         ruleset_name: str,
         ruleset_version: str,
+        execution_diagnostics: Optional[Dict[str, float]] = None,
     ) -> BacktestResult:
         overall = PerformanceAnalyzer._calc_convexity(trades)
         by_year = PerformanceAnalyzer._calc_by_year(trades)
@@ -132,31 +133,55 @@ class PerformanceAnalyzer:
             end_date=end_date.date().isoformat(),
             ruleset_name=ruleset_name,
             ruleset_version=ruleset_version,
+            execution_diagnostics=dict(execution_diagnostics or {}),
         )
 
     @staticmethod
+    def _net_pnl(trade: Trade) -> float:
+        """P&L after costs.
+
+        ``Trade.pnl`` is derived from prices alone and is therefore gross.
+        Commission is carried separately, so net P&L is the difference. Every
+        R-multiple and cash total below uses this.
+        """
+        return trade.pnl - (trade.commission or 0.0)
+
+    @staticmethod
     def _calc_convexity(trades: List[Trade]) -> ConvexityMetrics:
+        # Every trade counts for cash and census purposes. Only trades with a
+        # usable risk denominator can carry an R-multiple, and the gap between
+        # the two populations is reported rather than hidden.
         valid = [t for t in trades if t.initial_risk and t.initial_risk > 0]
+        dropped = len(trades) - len(valid)
+        net = PerformanceAnalyzer._net_pnl
+        gross_pnl = sum(t.pnl for t in trades)
+        total_costs = sum(t.commission or 0.0 for t in trades)
+        total_pnl = gross_pnl - total_costs
+
         if not valid:
             return ConvexityMetrics(
-                n_trades=0, win_rate=0.0, avg_win_r=0.0, avg_loss_r=0.0,
+                n_trades=len(trades), win_rate=0.0, avg_win_r=0.0, avg_loss_r=0.0,
                 expectancy_r=0.0, max_win_r=0.0, max_loss_r=0.0,
                 top10_pct=0.0, skewness=0.0, max_losing_streak=0,
-                total_pnl=0.0, stop_wins=0, stop_losses=0,
+                total_pnl=total_pnl, stop_wins=0, stop_losses=0,
                 eod_wins=0, eod_losses=0, r_multiples=[],
                 first_date="", last_date="",
+                winning_trades=0, losing_trades=0, breakeven_trades=0,
+                r_sample_size=0, dropped_trade_count=dropped,
+                gross_pnl=gross_pnl, total_costs=total_costs,
             )
 
-        r_list = [t.pnl / t.initial_risk for t in valid]
-        wins   = [r for r in r_list if r > 0]
-        losses = [r for r in r_list if r <= 0]
+        r_list = [net(t) / t.initial_risk for t in valid]
+        wins      = [r for r in r_list if r > 0]
+        losses    = [r for r in r_list if r < 0]
+        breakeven = [r for r in r_list if r == 0]
         wr = len(wins) / len(r_list)
-        avg_win  = float(np.mean(wins))  if wins   else 0.0
+        avg_win  = float(np.mean(wins))   if wins   else 0.0
         avg_loss = float(np.mean(losses)) if losses else 0.0
 
-        gross_profit = sum(t.pnl for t in valid if t.pnl > 0)
+        gross_profit = sum(net(t) for t in valid if net(t) > 0)
         top_n = max(1, len(valid) // 10)
-        top_pnls = sorted([t.pnl for t in valid], reverse=True)[:top_n]
+        top_pnls = sorted([net(t) for t in valid], reverse=True)[:top_n]
         top10_pct = (sum(top_pnls) / gross_profit * 100) if gross_profit > 0 else 0.0
 
         mean_r = float(np.mean(r_list))
@@ -164,33 +189,49 @@ class PerformanceAnalyzer:
         skew = (float(np.mean([(r - mean_r) ** 3 for r in r_list])) / std_r ** 3
                 if std_r > 0 else 0.0)
 
+        # Mean of the R sample directly. The previous
+        # ``wr * avg_win + (1 - wr) * avg_loss`` form was algebraically the
+        # same only while wins and losses partitioned the sample; with
+        # breakeven split out it would no longer be, and the mean is the
+        # definition anyway.
+        expectancy = mean_r
+
+        # A breakeven trade ends a losing streak rather than extending it,
+        # consistent with it not being a loss.
         streak = cur = 0
         for r in r_list:
-            cur = cur + 1 if r <= 0 else 0
+            cur = cur + 1 if r < 0 else 0
             streak = max(streak, cur)
 
         stop_trades = [t for t in valid if t.exit_reason == "STOP"]
         eod_trades  = [t for t in valid if t.exit_reason == "EOD"]
 
         return ConvexityMetrics(
-            n_trades=len(r_list),
+            n_trades=len(trades),
             win_rate=wr,
             avg_win_r=avg_win,
             avg_loss_r=avg_loss,
-            expectancy_r=wr * avg_win + (1 - wr) * avg_loss,
+            expectancy_r=expectancy,
             max_win_r=max(r_list),
             max_loss_r=min(r_list),
             top10_pct=top10_pct,
             skewness=skew,
             max_losing_streak=streak,
-            total_pnl=sum(t.pnl for t in valid),
-            stop_wins=sum(1 for t in stop_trades if t.pnl > 0),
-            stop_losses=sum(1 for t in stop_trades if t.pnl <= 0),
-            eod_wins=sum(1 for t in eod_trades if t.pnl > 0),
-            eod_losses=sum(1 for t in eod_trades if t.pnl <= 0),
+            total_pnl=total_pnl,
+            stop_wins=sum(1 for t in stop_trades if net(t) > 0),
+            stop_losses=sum(1 for t in stop_trades if net(t) < 0),
+            eod_wins=sum(1 for t in eod_trades if net(t) > 0),
+            eod_losses=sum(1 for t in eod_trades if net(t) < 0),
             r_multiples=r_list,
             first_date=valid[0].entry_time.date().isoformat(),
             last_date=valid[-1].entry_time.date().isoformat(),
+            winning_trades=len(wins),
+            losing_trades=len(losses),
+            breakeven_trades=len(breakeven),
+            r_sample_size=len(r_list),
+            dropped_trade_count=dropped,
+            gross_pnl=gross_pnl,
+            total_costs=total_costs,
         )
 
     @staticmethod
@@ -215,31 +256,44 @@ class PerformanceAnalyzer:
                 total_return=0.0, annualized_return=0.0, sharpe_ratio=0.0,
                 max_drawdown=0.0, max_drawdown_duration_days=0,
                 equity_curve=empty, drawdown_curve=empty,
+                bars_per_session=0.0, n_sessions=0,
             )
 
         times, values = zip(*equity_curve)
         eq = pd.Series(values, index=pd.DatetimeIndex(times))
-        returns = eq.pct_change().dropna()
 
         total_return = (eq.iloc[-1] - initial_capital) / initial_capital
         days = (eq.index[-1] - eq.index[0]).days or 1
         ann_return = (1 + total_return) ** (365 / days) - 1
 
-        sharpe = 0.0
-        if returns.std() > 0:
-            sharpe = float((returns.mean() / returns.std()) * np.sqrt(252 * 78))
+        # Session closes. An intraday strategy is flat overnight, so the
+        # meaningful return series is one observation per trading day.
+        # Annualizing per-bar returns with a hardcoded bars-per-day constant
+        # inflated Sharpe and produced a number not comparable to any
+        # published figure.
+        session_close = eq.resample("1D").last().dropna()
+        session_counts = eq.resample("1D").count()
+        session_counts = session_counts[session_counts > 0]
+        n_sessions = int(len(session_counts))
+        bars_per_session = (
+            float(session_counts.median()) if n_sessions else 0.0
+        )
 
+        sharpe = 0.0
+        session_returns = session_close.pct_change().dropna()
+        if len(session_returns) > 1 and session_returns.std() > 0:
+            sharpe = float(
+                session_returns.mean() / session_returns.std() * np.sqrt(252)
+            )
+
+        # Drawdown stays on the full bar-level curve: an intraday trough is a
+        # real loss of capital even when the session closes flat, and
+        # measuring it on session closes only would understate it.
         roll_max = eq.cummax()
         drawdown = (eq - roll_max) / roll_max
         max_dd = float(drawdown.min())
 
-        in_dd = drawdown < 0
-        max_dd_days = 0
-        cur_dd = 0
-        for v in in_dd:
-            cur_dd = cur_dd + 1 if v else 0
-            max_dd_days = max(max_dd_days, cur_dd)
-        max_dd_days = max_dd_days * 5 // (78 * 5) or max_dd_days
+        max_dd_days = PerformanceAnalyzer._max_drawdown_duration_days(drawdown)
 
         return EquityMetrics(
             total_return=total_return,
@@ -249,4 +303,38 @@ class PerformanceAnalyzer:
             max_drawdown_duration_days=max_dd_days,
             equity_curve=eq,
             drawdown_curve=drawdown,
+            bars_per_session=bars_per_session,
+            n_sessions=n_sessions,
         )
+
+    @staticmethod
+    def _max_drawdown_duration_days(drawdown: pd.Series) -> int:
+        """Longest span spent below a prior peak, in calendar days.
+
+        Measured from timestamps rather than by counting bars. The previous
+        implementation counted bars and then applied ``* 5 // (78 * 5)``,
+        which is integer division by the bars in a session; for any drawdown
+        shorter than a full session that yields zero, and an ``or`` fallback
+        then substituted the raw bar count. The result was a value that was
+        sometimes days and sometimes bars, with no way to tell which.
+        """
+        if drawdown.empty:
+            return 0
+
+        longest = pd.Timedelta(0)
+        start: pd.Timestamp | None = None
+
+        for timestamp, value in drawdown.items():
+            if value < 0:
+                if start is None:
+                    start = timestamp
+            elif start is not None:
+                longest = max(longest, timestamp - start)
+                start = None
+
+        if start is not None:
+            # Still underwater at the end of the series; the drawdown has not
+            # recovered, so it is measured to the final observation.
+            longest = max(longest, drawdown.index[-1] - start)
+
+        return int(longest.days)

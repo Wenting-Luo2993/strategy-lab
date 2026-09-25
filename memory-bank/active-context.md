@@ -1,21 +1,143 @@
 # Active Context
 
 ## Current Focus Area
-**Current Work**: 🚀 **Interactive Brokers (IB) Paper Trading Integration** — Enabling live trading execution against IB paper accounts
+**Current Work**: 🔬 **Backtest Research Pipeline** — Making backtest results trustworthy before generating more of them. Increments **P0 (contracts)**, **P2 (execution realism)**, **P3 (splits)**, and **P7 (SQLite store)** complete. 191 tests passing.
 
-**Next Priority**: ORB 2026 H1 re-validation planning and paper-trading quality monitoring design
+**Next Priority**: P1 (metric normalization), then P4 (warmup-aware segment execution) and P5 (leakage harness). P1's golden-file fixture (F13) is **unblocked** — market data now resolves automatically (see below).
 
-**Context**: 
-- Core execution and research tracking infrastructure in place
-- Broker abstraction foundation added for IB integration
-- P0 smoke path now exists for IB paper: market data -> order submission -> fill event -> operational metrics
-- Operational metrics support local SQLite plus optional Supabase free-tier remote DB for Vercel dashboard work
-- P1/P2 dashboard scaffold added at `apps/operational-metrics-dashboard` and validated with build/lint
-- Target completion: Q3 2026 (12 weeks)
+**Context**:
+- A design review found that current results cannot be trusted for reasons unrelated to strategy quality: stale sweep caches keyed on ruleset *filename*, runs completing without validation, metrics that disagree with themselves, calendar-day splits, and a tautological correctness check.
+- Full plan: `docs/backtest-research-summaries/2026-09-09-backtest-pipeline-implementation-plan.md` (increments P0-P14, three parallel lanes).
+- ⚠️ **Existing ORB results predate this work** and are stamped `legacy-uncontrolled`. Do not cite them as validated.
+- ⚠️ `BacktestEngine` does not yet pass `ExecutionRealismConfig` to `PortfolioManager`, so realism is available but not yet reachable from a normal engine run. That wiring is part of the engine increment.
+- **Market data inventory**: `vibe/data/parquet` holds 1-minute bars for **5 symbols only** (AMZN, GOOGL, MSFT, QQQ, TSLA), 2018-05-01 → 2026-04-27, ~781k rows each. Source `.csv.zst` files are in `data/databento`. Note `data/parquet/QQQ.parquet` is a *different*, daily-bar file and is not usable for intraday ORB. P5b cross-sectional scope is therefore 5 names, not 25+.
+- Pre-existing unrelated test failures: 14 (trading_bot, ruleset models, sweep tracker, ORB indicator reset). Verified against HEAD in a clean worktree.
+- Prior work (IB paper trading, operational metrics dashboard, ROES) is unchanged and remains in place.
 
 ---
 
 ## Recent Decisions
+
+### Decision: Buying Power Gates Sizing In Both Simulation And Live (2026-09-14)
+**Chosen**: Position sizing consults available buying power and **clamps** the order to what the account can fund, counting every clamp. Relying on the broker to reject was rejected as a contract: you learn after the signal, at the exchange, with no record of why.
+
+Three layers, deliberately separated:
+1. **Gate** — `PositionSizer.calculate(..., buying_power=...)` clamps size; `PositionSizeResult` gains `requested_size` and `capped_by` so a clamp is measurable rather than silent.
+2. **Assert** — `PortfolioManager.assert_buying_power` stays a hard `BuyingPowerError`. Given the gate it should be unreachable, so it now means *sizing was bypassed*, not *the strategy wants too much*.
+3. **Measure** — `orders_capped_by_buying_power` and `orders_capped_by_declared_limits` report in `execution_diagnostics` on every run.
+
+**Measured effect** (ORB, QQQ, 2019-01-02 → 2023-12-29, identical 1256 trades):
+
+| | legacy | funded |
+|---|---|---|
+| total P&L | $4,423,656 | **$232,983** |
+| min cash | -$26,657,576 | **+$0.12** |
+| peak leverage | 10.82x | **1.01x** |
+| orders clamped | 0 | 1234 of 1256 |
+| **expectancy** | **0.3262R** | **0.3252R** |
+
+**The headline**: absolute P&L was overstated **19x**, while expectancy moved 0.3%. The edge is real; the scale was fiction. Trade count is identical, so the gate rescales results rather than invalidating the strategy. Over a *losing* window the same clamping shrinks the loss, so the invariant is "magnitude moves toward zero", not "P&L falls".
+
+**Backtester specifics**:
+- `BacktestEngine._position_size` now routes through the **same `PositionSizer` the live bot uses**, which closes the sim-to-live divergence at its root rather than patching one side.
+- Declared ruleset caps (`max_shares`, `max_position_pct`) are honoured **unconditionally** — ignoring explicit config was a defect, not a legacy behaviour worth preserving. No ruleset in the repo sets either, so this changes no existing result.
+- Buying-power clamping remains **behind `enforce_buying_power`** per ADR-019, so legacy runs stay bit-identical. Under legacy the old one-share floor and negative-capital tolerance are deliberately preserved; both are wrong but load-bearing for historical comparison.
+- `equity_basis()` / `committed_notional()` / `available_buying_power()` give the gate and the assertion one shared definition, so they cannot disagree. `available_buying_power()` returns `None` for "unenforced" rather than `0.0`, forcing callers to distinguish that from "broke".
+
+**Live specifics**: `trade_executor.py` now passes `account.buying_power` — already fetched into `AccountState`, previously unused — and logs a **warning** when a position is clamped, because a clamped trade is no longer risking the configured percentage and its R-multiple will not match the strategy's assumptions.
+
+**Known caveat**: `max_gross_exposure_ratio` can still read slightly above 1.0 (measured 1.01) under funded sizing. That is mark-to-market drift after entry — a short moving against you raises gross exposure while lowering equity — not a sizing failure. Sizing is bounded at cost, at entry time.
+
+**Also fixed**: `PositionSizer.calculate`'s `existing_position_size` was documented as preventing over-leverage but never used in the body. Broker buying power is already net of open positions, so subtracting them again would halve every follow-on position; the parameter is now documented as deliberately not applied, and a test pins that.
+
+### Finding: ORB Backtests Have Been Running At Up To 10.8x Unfunded Leverage (2026-09-11)
+**Measured**: With the realism toggle now reachable from `BacktestEngine`, a legacy ORB (`orb_production`) run on QQQ over 2019-01-02 → 2023-12-29 (1256 trades) reports:
+
+| counter | value |
+|---|---|
+| `ambiguous_exit_bars` | 0 |
+| `gap_through_exits` | 3 |
+| `min_cash` | **-$26,657,576** |
+| `max_gross_exposure_ratio` | **10.82** |
+
+**What it means**: `BacktestEngine._position_size` sizes purely off risk-per-share and never consults cash, so the simulator silently borrowed up to **$26.7M against $100k of capital**. Any *absolute* figure from every ORB backtest to date — `total_pnl`, the equity curve, Sharpe, max drawdown — is a leveraged number produced by money the account never had. Per-trade R-multiples are unaffected, because they normalise by risk rather than by capital.
+
+**Corroborating detail**: enabling `ExecutionRealismConfig.realistic()` fails on the very first entry — a $158,325 order against $100,000 of equity (1.58x) — and even at `max_gross_leverage=4.0` it fails later at $418,733 against $96,702 (4.33x).
+
+**Also settled by the same measurement**:
+- `ambiguous_exit_bars == 0` confirms intrabar TP-vs-stop ambiguity (defect E1) **cannot** affect `orb_production`, which has no take-profit. It remains a live risk for any TP-bearing variant, so the counter stays.
+- `gap_through_exits == 3 / 1256` (0.24%) is real but small, and small *because* ORB is flat overnight. A strategy holding positions overnight would see far more.
+
+**Consequence**: position sizing must become capital-aware before any portfolio-level or absolute-return claim is credible. Tracked as blocker **B2** in [portfolio-simulation-constraint](features/portfolio-simulation-constraint.md). Until then, prefer R-multiple metrics and treat equity-curve output as diagnostic only.
+
+### Finding: The Backtester Ignores Position Caps That Live Trading Enforces (2026-09-11)
+**Measured**: `BacktestEngine._position_size` (`vibe/backtester/core/engine.py:387`) reads **only** `position_size.value`:
+
+```python
+risk_dollars = capital * risk_pct
+return max(1, int(risk_dollars / stop_distance))
+```
+
+`PositionSizeConfig` (`vibe/common/ruleset/models.py:289`) also defines `max_shares` and `max_position_pct`, and the live bot's `PositionSizer` (`vibe/common/risk/position_sizer.py:118-148`) honours both. The backtester honours neither. That asymmetry is the mechanism behind the 10.8x leverage above: as stop distance shrinks, size grows without bound.
+
+**Second-order**: `orb_production.yaml` sets neither cap, so even a cap-aware backtester would not bound this particular ruleset. Both the engine and the ruleset need fixing; fixing only one is insufficient.
+
+### Finding: How Live Trading Actually Handles The Three Realism Concerns (2026-09-11)
+Investigated `vibe/trading_bot/` to check whether the backtester's new assumptions match real broker behaviour.
+
+| concern | live bot behaviour | backtester alignment |
+|---|---|---|
+| **Gap-through exits** | Sends a **native IB stop order** (`StopOrder`, `brokers/interactive_brokers.py:789`) — not stop-limit. A gap therefore fills at the market/open, never at the stop price. | **`GapFillPolicy.AT_OPEN` is the correct model.** The legacy `AT_LEVEL` behaviour is not reproducible in live trading. |
+| **Intrabar TP-vs-stop ambiguity** | Take-profit is **not** a resting broker order and there is **no bracket/OCO** (no `ocaGroup`/`transmit`/`parentId` in the order path). It is strategy-side metadata (`core/orchestrator.py:3032`). | Not resolved by the exchange, so the legacy `OPTIMISTIC` assumption has no live justification. Moot for `orb_production` (`multiplier: 0`, so no take-profit — hence `ambiguous_exit_bars == 0`), but live for any TP-bearing variant. |
+| **Buying power** | Reads IB `BuyingPower`/`TotalCashValue` (`brokers/interactive_brokers.py:618-640`) but **never gates on it** — it only clamps negatives to zero (`exchange/ib_exchange.py:491-500`). Sizing is risk-based plus `max_shares`/`max_position_pct` caps. | **Neither side enforces buying power.** The live bot is protected only by IB rejecting the order; the backtester has no such backstop, which is why simulated cash reached -$26.7M. |
+
+**Live bot does better on one axis**: it records the broker's **actual** fill price and logs realized slippage as intended-vs-actual (`core/orchestrator.py:3003-3012`, `brokers/base.py:73-123`). The backtester's `fill_simulator.py` still uses `commission=0.0` (defect E4, unaddressed).
+
+**Conclusion**: the realism work is not backtester-only paranoia — it closes a genuine sim-to-live divergence on gaps, and it surfaces a sizing hazard that exists in *both* the simulator and live trading.
+
+### Decision: The Realism Toggle Is Reachable From A Normal Engine Run (2026-09-11)
+
+**Chosen**: `BacktestEngine(..., execution_realism=...)` threads the config into `PortfolioManager`; `BacktestResult.execution_diagnostics` reports the four counters plus `execution_model_version` on **every** run. Default remains `ExecutionRealismConfig.legacy()`.
+
+**Reasoning**: P2 built the realism model but nothing constructed a portfolio with it, so the behaviour was unreachable and the counters were never surfaced — the measurement above was impossible to obtain. Tests in `tests/unit/research_pipeline/test_engine_realism_wiring.py` pin both the legacy default and the realistic behaviour.
+
+### Decision: Analysis Entry Points Resolve Their Own Data Directory (2026-09-11)
+**Chosen**: `ParameterSweep`, `WalkForwardEngine`, `RobustnessAnalyzer` and `OptimizationPipeline` now call `resolve_market_data_dir()` instead of storing a raw `Path`, and accept `None`.
+
+**Reasoning**: after the path fix, callers passing a stale relative `Path("vibe/data/parquet")` only worked by accident — the resolver fell through because the path did not exist. That is a silent dependency on a bug-shaped behaviour. Resolving at construction makes it deliberate.
+
+### Decision: The Stray Daily `data/parquet/QQQ.parquet` Was Deleted (2026-09-11)
+**Chosen**: Deleted. It held **daily** bars (2093 rows, tz-naive `date` index) in a directory whose name implies the 1-minute dataset, so pointing a backtest at `data/parquet` silently produced daily bars for an intraday strategy.
+
+**Reasoning**: it is not referenced by any test and is trivially re-fetchable through the existing Yahoo provider. `vibe/backtester/analysis/regime_research/features.py` (`_to_daily_close`, `_to_daily_ohlcv`) resamples intraday → daily itself, so regime analysis needs no separate daily file. Note `scripts/convert_databento.py:42` still defaults its output to `data/parquet` while the loader reads `vibe/data/parquet`; that inconsistency is how the stray file appeared and is still unfixed.
+
+### Decision: Market Data Location Is Resolved, Not Hardcoded (2026-09-11)
+**Chosen**: Added `vibe/backtester/data/paths.py`. Resolution order is explicit argument → `BACKTEST__DATA_DIR` → `<repo root>/vibe/data/parquet` → `<main worktree>/vibe/data/parquet`. Absolute paths are honoured; relative paths resolve against the **repository root, never the working directory**.
+
+**Reasoning**: `Path("vibe/data/parquet")` was hardcoded in ~10 places and resolved against the cwd, so backtests only ran when launched from the repo root. Worse, `data/` is gitignored, so every new worktree began with no market data and every backtest there failed with a bare `FileNotFoundError` from inside pandas. The main-worktree fallback lets worktrees share the one downloaded copy, which is what gitignoring the data already implied.
+
+**Effect**: full suite went from 24 failures / 1315 passed to **14 failures / 1450 passed**; 10 of the "pre-existing failures" were only this path bug, and 7 loader tests stopped silently skipping. A real ORB backtest (QQQ, 2023 H1, 123 trades) now runs from a worktree, which unblocks P1's golden file.
+
+### Decision: Execution Assumptions Are Declared and Always Measured (2026-09-09)
+**Chosen**: Add `ExecutionRealismConfig` (`vibe/backtester/core/execution_realism.py`). Behaviour stays legacy by default per ADR-015, but ambiguity/gap/leverage **counters run in every mode**. See [ADR-019](adrs/adr-019-declared-execution-semantics.md).
+
+**Reasoning**: Three defects flattered results invisibly — take-profit was checked before stop-loss on the same bar (every ambiguous bar became a win), exits filled at untraded prices after gaps, and position sizing had no cash bound. Changing the defaults outright would invalidate every existing baseline; leaving them alone would keep the optimism hidden. Recording `ambiguous_exit_bars`, `gap_through_exits`, `min_cash`, and `max_gross_exposure_ratio` regardless of mode makes the assumption visible without changing a single historical number.
+
+**Also fixed**: `check_exits`' docstring claimed exits triggered on `bar.close`. They never did — they use intrabar wicks.
+
+### Decision: Research Pipeline Contracts Land Before Any Fixes (2026-09-09)
+**Chosen**: Ship `vibe/research_pipeline/` as a contracts-only package first — canonical hashing, run lifecycle, contract models, `RunFingerprint`, OneDrive-safe DB paths, `ResearchStore` protocol. See [ADR-018](adrs/adr-018-research-pipeline-contracts.md).
+
+**Reasoning**: Five workstreams need the same vocabulary. Without it they cannot run in parallel, and storage built before an identity definition just persists ambiguity faster.
+
+**Key guarantees now structural, not conventional**: no `RUNNING -> COMPLETED` edge (validation cannot be skipped); no `VALIDATION_FAILED -> COMPLETED` edge; `cache_key() == fingerprint`; causal features cannot declare look-ahead; `static_declared` universes must disclose survivorship bias.
+
+### Decision: Cross-Sectional Yes, Portfolio Simulation Deferred (2026-09-09)
+**Chosen**: Multi-symbol *cross-sectional* evidence (P5b) is in scope; *portfolio* simulation (P10b) is deferred and tracked.
+
+**Blocker worth remembering**: portfolio simulation is gated on the buying-power fix (defect E3). `_position_size` has no cash bound, so a portfolio backtest on today's engine would silently lever to whatever the signals demand — meaningless, not merely inaccurate. Details: [portfolio-simulation-constraint.md](features/portfolio-simulation-constraint.md).
+
+---
 
 ### Decision: ORB Carryover Positions Are Flattened During Warmup (2026-07-28)
 **Observed issue**: On 2026-07-28, the IB paper account still held a prior-day `QQQ -1` position, but the bot had no same-day order/fill records. ORB strategy logs reported `already_traded_today`, which made a carried broker position look like a clean same-day trade decision.

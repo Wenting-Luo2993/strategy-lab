@@ -31,6 +31,10 @@ except ImportError:
     pass
 
 from vibe.backtester.analysis.parameter_sweep import ParameterDefinition, ParameterSweep
+from vibe.backtester.data.paths import (
+    MarketDataNotFoundError,
+    resolve_market_data_dir,
+)
 
 ET = ZoneInfo("America/New_York")
 
@@ -297,10 +301,11 @@ def main() -> None:
     # Always show progress from the parameter sweep module
     logging.getLogger("vibe.backtester.analysis.parameter_sweep").setLevel(logging.INFO)
     
-    # Validate data directory
-    data_dir = Path("vibe/data/parquet")
-    if not data_dir.exists():
-        print(f"ERROR: Data directory not found: {data_dir}", file=sys.stderr)
+    # Resolve data directory (BACKTEST__DATA_DIR, repo default, main worktree)
+    try:
+        data_dir = resolve_market_data_dir()
+    except MarketDataNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         print("Run: python scripts/convert_databento.py", file=sys.stderr)
         sys.exit(1)
     
