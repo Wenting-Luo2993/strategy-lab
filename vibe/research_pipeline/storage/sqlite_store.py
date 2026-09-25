@@ -20,6 +20,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -32,7 +33,13 @@ from vibe.research_pipeline.lifecycle import (
 )
 from vibe.research_pipeline.paths import research_db_path
 from vibe.research_pipeline.storage import schema
-from vibe.research_pipeline.store import ImmutableRecordError, StoreError
+from vibe.research_pipeline.store import (
+    ImmutableRecordError,
+    LeaseError,
+    StoreError,
+    ValidationRequiredError,
+)
+from vibe.research_pipeline.validation import ValidationReport
 
 __all__ = ["SqliteResearchStore", "SqliteRunRecord"]
 
@@ -89,6 +96,8 @@ class SqliteRunRecord:
     display_alias: str
     strategy_id: str
     created_at: str
+    lease_owner: Optional[str]
+    lease_expires_at: Optional[str]
 
 
 def _to_record(row: sqlite3.Row) -> SqliteRunRecord:
@@ -100,6 +109,8 @@ def _to_record(row: sqlite3.Row) -> SqliteRunRecord:
         display_alias=row["display_alias"],
         strategy_id=row["strategy_id"],
         created_at=row["created_at"],
+        lease_owner=row["lease_owner"],
+        lease_expires_at=row["lease_expires_at"],
     )
 
 
@@ -189,19 +200,58 @@ class SqliteResearchStore:
         *,
         target: RunState,
         reason: Optional[str] = None,
+        lease_token: Optional[str] = None,
     ) -> None:
         current = self._require_state(run_id)
         if current in TERMINAL_STATES:
             raise ImmutableRecordError(
                 f"Run {run_id} is terminal ({current.value}); cannot transition."
             )
+        if target is RunState.RUNNING:
+            raise LeaseError(
+                "RUNNING requires an owned lease; call start_run() instead."
+            )
+        if current is RunState.RUNNING:
+            self._assert_live_lease(run_id, lease_token)
+        if current is RunState.VALIDATING and target in {
+            RunState.COMPLETED,
+            RunState.REVIEW_REQUIRED,
+            RunState.VALIDATION_FAILED,
+            RunState.INCONCLUSIVE,
+        }:
+            raise ValidationRequiredError(
+                "A validating run can only be finalized with finalize_validation()."
+            )
+        if current is RunState.REVIEW_REQUIRED and target in {
+            RunState.COMPLETED,
+            RunState.VALIDATION_FAILED,
+            RunState.INCONCLUSIVE,
+        } and not reason:
+            raise ValidationRequiredError(
+                "Resolving REVIEW_REQUIRED requires a non-empty reviewer reason."
+            )
         assert_legal_transition(current, target)
         now = schema.utc_now_iso()
         with self._conn:
-            self._conn.execute(
-                "UPDATE runs SET state = ?, updated_at = ? WHERE run_id = ?",
-                (target.value, now, run_id),
+            params: list[Any] = [target.value, now, run_id, current.value]
+            lease_clause = ""
+            if current is RunState.RUNNING:
+                lease_clause = " AND lease_token = ? AND lease_expires_at > ?"
+                params.extend([lease_token, now])
+            cursor = self._conn.execute(
+                """
+                UPDATE runs
+                SET state = ?, updated_at = ?,
+                    lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+                WHERE run_id = ? AND state = ?
+                """
+                + lease_clause,
+                params,
             )
+            if cursor.rowcount != 1:
+                raise LeaseError(
+                    f"Run {run_id!r} changed state or its lease expired."
+                )
             self._conn.execute(
                 """
                 INSERT INTO experiment_state_transitions
@@ -209,6 +259,232 @@ class SqliteResearchStore:
                 VALUES (?, ?, ?, ?, ?)
                 """,
                 (run_id, current.value, target.value, reason, now),
+            )
+
+    def start_run(
+        self,
+        run_id: str,
+        *,
+        owner: str,
+        lease_seconds: int,
+        now: Optional[datetime] = None,
+    ) -> str:
+        if not owner.strip():
+            raise ValueError("owner must be non-empty")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        current = self._require_state(run_id)
+        assert_legal_transition(current, RunState.RUNNING)
+        instant = self._utc(now)
+        expires = instant + timedelta(seconds=lease_seconds)
+        token = secrets.token_urlsafe(32)
+        with self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE runs
+                SET state = ?, updated_at = ?, lease_owner = ?,
+                    lease_token = ?, lease_expires_at = ?
+                WHERE run_id = ? AND state = ?
+                """,
+                (
+                    RunState.RUNNING.value,
+                    instant.isoformat(),
+                    owner,
+                    token,
+                    expires.isoformat(),
+                    run_id,
+                    current.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise LeaseError(
+                    f"Run {run_id!r} was claimed by another worker."
+                )
+            self._conn.execute(
+                """
+                INSERT INTO experiment_state_transitions
+                    (run_id, from_state, to_state, reason, occurred_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    current.value,
+                    RunState.RUNNING.value,
+                    f"lease acquired by {owner}",
+                    instant.isoformat(),
+                ),
+            )
+        return token
+
+    def heartbeat(
+        self,
+        run_id: str,
+        *,
+        lease_token: str,
+        lease_seconds: int,
+        now: Optional[datetime] = None,
+    ) -> None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        instant = self._utc(now)
+        expires = instant + timedelta(seconds=lease_seconds)
+        with self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE runs
+                SET lease_expires_at = ?, updated_at = ?
+                WHERE run_id = ? AND state = ? AND lease_token = ?
+                  AND lease_expires_at > ?
+                """,
+                (
+                    expires.isoformat(),
+                    instant.isoformat(),
+                    run_id,
+                    RunState.RUNNING.value,
+                    lease_token,
+                    instant.isoformat(),
+                ),
+            )
+        if cursor.rowcount != 1:
+            raise LeaseError(
+                f"Run {run_id!r} has no live lease owned by the supplied token."
+            )
+
+    def sweep_stale_leases(self, *, now: Optional[datetime] = None) -> list[str]:
+        instant = self._utc(now)
+        now_iso = instant.isoformat()
+        stale = self._conn.execute(
+            """
+            SELECT run_id FROM runs
+            WHERE state = ? AND lease_expires_at IS NOT NULL
+              AND lease_expires_at <= ?
+            ORDER BY display_seq
+            """,
+            (RunState.RUNNING.value, now_iso),
+        ).fetchall()
+        candidates = [row["run_id"] for row in stale]
+        if not candidates:
+            return []
+        swept: list[str] = []
+        with self._conn:
+            for run_id in candidates:
+                cursor = self._conn.execute(
+                    """
+                    UPDATE runs
+                    SET state = ?, updated_at = ?, lease_owner = NULL,
+                        lease_token = NULL, lease_expires_at = NULL
+                    WHERE run_id = ? AND state = ?
+                      AND lease_expires_at IS NOT NULL
+                      AND lease_expires_at <= ?
+                    """,
+                    (
+                        RunState.EXECUTION_FAILED.value,
+                        now_iso,
+                        run_id,
+                        RunState.RUNNING.value,
+                        now_iso,
+                    ),
+                )
+                if cursor.rowcount:
+                    swept.append(run_id)
+                    self._conn.execute(
+                        """
+                        INSERT INTO experiment_state_transitions
+                            (run_id, from_state, to_state, reason, occurred_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            run_id,
+                            RunState.RUNNING.value,
+                            RunState.EXECUTION_FAILED.value,
+                            "execution lease expired",
+                            now_iso,
+                        ),
+                    )
+        return swept
+
+    def finalize_validation(self, run_id: str, report: ValidationReport) -> None:
+        current = self._require_state(run_id)
+        if current is not RunState.VALIDATING:
+            raise ValidationRequiredError(
+                f"Run {run_id!r} is {current.value}, not validating."
+            )
+        assert_legal_transition(current, report.target_state)
+        now = schema.utc_now_iso()
+        finding_rows = [
+            (
+                run_id,
+                finding.code,
+                finding.category.value,
+                finding.severity.value,
+                finding.message,
+                finding.metric_key,
+                finding.model_dump_json(),
+                now,
+            )
+            for finding in report.findings
+        ]
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO validation_reports (
+                    run_id, profile_name, scope, target_state,
+                    registry_hash_at_execution, current_registry_hash,
+                    leakage_passed, payload_json, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    report.profile_name,
+                    report.scope.value,
+                    report.target_state.value,
+                    report.registry_hash_at_execution,
+                    report.current_registry_hash,
+                    1 if report.leakage_passed else 0,
+                    report.model_dump_json(),
+                    now,
+                ),
+            )
+            self._conn.executemany(
+                """
+                INSERT INTO run_findings
+                    (run_id, code, category, severity, message, metric_key,
+                     payload_json, recorded_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                finding_rows,
+            )
+            cursor = self._conn.execute(
+                """
+                UPDATE runs
+                SET state = ?, updated_at = ?,
+                    lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+                WHERE run_id = ? AND state = ?
+                """,
+                (
+                    report.target_state.value,
+                    now,
+                    run_id,
+                    RunState.VALIDATING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValidationRequiredError(
+                    f"Run {run_id!r} changed state during validation finalization."
+                )
+            self._conn.execute(
+                """
+                INSERT INTO experiment_state_transitions
+                    (run_id, from_state, to_state, reason, occurred_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    current.value,
+                    report.target_state.value,
+                    f"validation profile {report.profile_name}",
+                    now,
+                ),
             )
 
     # -- attachments -----------------------------------------------------
@@ -376,6 +652,27 @@ class SqliteResearchStore:
             (run_id,),
         ).fetchone()
 
+    def get_validation_report(self, run_id: str) -> Optional[ValidationReport]:
+        row = self._conn.execute(
+            "SELECT payload_json FROM validation_reports WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        return (
+            ValidationReport.model_validate_json(row["payload_json"])
+            if row
+            else None
+        )
+
+    def get_findings(self, run_id: str) -> list[ValidationFinding]:
+        rows = self._conn.execute(
+            "SELECT payload_json FROM run_findings WHERE run_id = ? ORDER BY id",
+            (run_id,),
+        ).fetchall()
+        return [
+            ValidationFinding.model_validate_json(row["payload_json"])
+            for row in rows
+        ]
+
     # -- internals -------------------------------------------------------
 
     def _require_state(self, run_id: str) -> RunState:
@@ -391,3 +688,29 @@ class SqliteResearchStore:
             raise ImmutableRecordError(
                 f"Run {run_id} is terminal; cannot attach further records."
             )
+
+    def _assert_live_lease(
+        self, run_id: str, lease_token: Optional[str]
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        row = self._conn.execute(
+            "SELECT lease_token, lease_expires_at FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if (
+            row is None
+            or not lease_token
+            or row["lease_token"] != lease_token
+            or row["lease_expires_at"] is None
+            or datetime.fromisoformat(row["lease_expires_at"]) <= now
+        ):
+            raise LeaseError(
+                f"Run {run_id!r} has no live lease owned by the supplied token."
+            )
+
+    @staticmethod
+    def _utc(value: Optional[datetime]) -> datetime:
+        instant = value or datetime.now(timezone.utc)
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise ValueError("lease timestamps must be timezone-aware")
+        return instant.astimezone(timezone.utc)

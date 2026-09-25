@@ -72,6 +72,7 @@ class ValidationCategory(str, Enum):
     DATA_INTEGRITY = "data_integrity"
     SPLIT_INTEGRITY = "split_integrity"
     LOOK_AHEAD = "look_ahead"
+    DATASET_SUFFICIENCY = "dataset_sufficiency"
     PLAUSIBILITY = "plausibility"
     RESEARCH_ACCEPTANCE = "research_acceptance"
 

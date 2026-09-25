@@ -8,7 +8,7 @@ validation, mutated terminal runs, and per-trade data escaping to the cloud.
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -22,9 +22,16 @@ from vibe.research_pipeline.contracts import (
 )
 from vibe.research_pipeline.identity import RunFingerprint
 from vibe.research_pipeline.lifecycle import IllegalTransitionError, RunState
-from vibe.research_pipeline.store import ImmutableRecordError, ResearchStore, StoreError
+from vibe.research_pipeline.store import (
+    ImmutableRecordError,
+    LeaseError,
+    ResearchStore,
+    StoreError,
+    ValidationRequiredError,
+)
 from vibe.research_pipeline.storage import schema
 from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
+from vibe.research_pipeline.validation import ValidationReport, ValidationScope
 
 _BASE_FP = dict(
     strategy_id="orb",
@@ -75,6 +82,23 @@ def store(tmp_path: Path) -> SqliteResearchStore:
 def _register(store: SqliteResearchStore, **fp_overrides) -> str:
     return store.register_run(
         fingerprint=_fp(**fp_overrides), methodology_version="v1"
+    )
+
+
+def _start(store: SqliteResearchStore, run_id: str) -> str:
+    return store.start_run(run_id, owner="pytest", lease_seconds=60)
+
+
+def _clean_report(target: RunState = RunState.COMPLETED) -> ValidationReport:
+    return ValidationReport(
+        profile_name="test",
+        scope=ValidationScope.RUN,
+        target_state=target,
+        findings=(),
+        checked_categories=tuple(ValidationCategory),
+        registry_hash_at_execution="a" * 64,
+        current_registry_hash="a" * 64,
+        leakage_passed=True,
     )
 
 
@@ -155,16 +179,18 @@ def test_find_by_fingerprint_round_trips(store: SqliteResearchStore):
 def test_illegal_transition_is_rejected(store: SqliteResearchStore):
     """RUNNING -> COMPLETED skips validation; the state machine must forbid it."""
     run_id = _register(store)
-    store.transition(run_id, target=RunState.RUNNING)
+    token = _start(store, run_id)
     with pytest.raises(IllegalTransitionError):
-        store.transition(run_id, target=RunState.COMPLETED)
+        store.transition(run_id, target=RunState.COMPLETED, lease_token=token)
 
 
 def test_transitions_recorded_in_order_with_utc(store: SqliteResearchStore):
     run_id = _register(store)
-    store.transition(run_id, target=RunState.RUNNING, reason="start")
-    store.transition(run_id, target=RunState.VALIDATING, reason="done")
-    store.transition(run_id, target=RunState.COMPLETED, reason="passed")
+    token = _start(store, run_id)
+    store.transition(
+        run_id, target=RunState.VALIDATING, reason="done", lease_token=token
+    )
+    store.finalize_validation(run_id, _clean_report())
     rows = store.get_transitions(run_id)
     states = [(r["from_state"], r["to_state"]) for r in rows]
     assert states == [
@@ -184,9 +210,9 @@ def test_transitions_recorded_in_order_with_utc(store: SqliteResearchStore):
 
 def test_transition_on_terminal_run_raises_immutable(store: SqliteResearchStore):
     run_id = _register(store)
-    store.transition(run_id, target=RunState.RUNNING)
-    store.transition(run_id, target=RunState.VALIDATING)
-    store.transition(run_id, target=RunState.COMPLETED)
+    token = _start(store, run_id)
+    store.transition(run_id, target=RunState.VALIDATING, lease_token=token)
+    store.finalize_validation(run_id, _clean_report())
     with pytest.raises(ImmutableRecordError):
         store.transition(run_id, target=RunState.ARCHIVED)
 
@@ -198,9 +224,9 @@ def test_terminal_update_blocked_by_database_trigger(store: SqliteResearchStore)
     run. If only application code guarded this, the UPDATE would succeed.
     """
     run_id = _register(store)
-    store.transition(run_id, target=RunState.RUNNING)
-    store.transition(run_id, target=RunState.VALIDATING)
-    store.transition(run_id, target=RunState.COMPLETED)
+    token = _start(store, run_id)
+    store.transition(run_id, target=RunState.VALIDATING, lease_token=token)
+    store.finalize_validation(run_id, _clean_report())
     with pytest.raises(sqlite3.IntegrityError):
         with store._conn:
             store._conn.execute(
@@ -215,7 +241,7 @@ def test_record_metrics_stores_calculation_version(store: SqliteResearchStore):
     """A metric value must carry the version that computed it, or it is not
     comparable across runs."""
     run_id = _register(store)
-    store.transition(run_id, target=RunState.RUNNING)
+    _start(store, run_id)
     store.record_metrics(run_id, {"sharpe": 1.4, "net_pnl": 1000.0}, calculation_version=3)
     rows = {r["metric_key"]: r for r in store.get_metrics(run_id)}
     assert rows["sharpe"]["metric_value"] == pytest.approx(1.4)
@@ -226,7 +252,7 @@ def test_record_metrics_stores_calculation_version(store: SqliteResearchStore):
 def test_record_evidence_under_summary_round_trips(store: SqliteResearchStore):
     """Even a summary-only run stores ledger checksums so it stays verifiable."""
     run_id = _register(store)
-    store.transition(run_id, target=RunState.RUNNING)
+    _start(store, run_id)
     ev = _evidence(retention_profile=RetentionProfile.SUMMARY)
     store.record_evidence(run_id, ev)
     got = store.get_evidence(run_id)
@@ -238,7 +264,7 @@ def test_record_evidence_under_summary_round_trips(store: SqliteResearchStore):
 
 def test_record_findings_appends(store: SqliteResearchStore):
     run_id = _register(store)
-    store.transition(run_id, target=RunState.RUNNING)
+    _start(store, run_id)
     finding = ValidationFinding(
         code="ACC-003",
         category=ValidationCategory.ACCOUNTING,
@@ -288,7 +314,7 @@ def test_query_runs_filters_by_state_and_paginates(store: SqliteResearchStore):
     ids = [_register(store, strategy_id=f"s{i}") for i in range(5)]
     # Move the first two to RUNNING.
     for run_id in ids[:2]:
-        store.transition(run_id, target=RunState.RUNNING)
+        _start(store, run_id)
 
     running = store.query_runs(state=RunState.RUNNING)
     assert {r.run_id for r in running} == set(ids[:2])
@@ -314,3 +340,105 @@ def test_two_connections_see_same_committed_data(tmp_path: Path):
     assert seen.run_id == run_id
     writer.close()
     reader.close()
+
+
+def test_running_requires_a_lease(store: SqliteResearchStore):
+    run_id = _register(store)
+    with pytest.raises(LeaseError):
+        store.transition(run_id, target=RunState.RUNNING)
+
+
+def test_heartbeat_extends_only_the_owned_live_lease(store: SqliteResearchStore):
+    run_id = _register(store)
+    start = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    token = store.start_run(
+        run_id, owner="worker-a", lease_seconds=30, now=start
+    )
+    store.heartbeat(
+        run_id, lease_token=token, lease_seconds=60, now=start + timedelta(seconds=10)
+    )
+    record = store.get_run(run_id)
+    assert record is not None
+    assert datetime.fromisoformat(record.lease_expires_at) == start + timedelta(seconds=70)
+
+    with pytest.raises(LeaseError):
+        store.heartbeat(
+            run_id,
+            lease_token="wrong-token",
+            lease_seconds=60,
+            now=start + timedelta(seconds=20),
+        )
+
+
+def test_stale_lease_sweep_marks_execution_failed(store: SqliteResearchStore):
+    stale = _register(store, strategy_id="stale")
+    live = _register(store, strategy_id="live")
+    start = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    store.start_run(stale, owner="dead-worker", lease_seconds=30, now=start)
+    store.start_run(live, owner="live-worker", lease_seconds=120, now=start)
+
+    swept = store.sweep_stale_leases(now=start + timedelta(seconds=60))
+
+    assert swept == [stale]
+    assert store.get_run(stale).state is RunState.EXECUTION_FAILED
+    assert store.get_run(live).state is RunState.RUNNING
+    assert store.get_run(stale).lease_owner is None
+    assert store.get_transitions(stale)[-1]["reason"] == "execution lease expired"
+
+
+def test_validation_outcome_cannot_bypass_durable_report(store: SqliteResearchStore):
+    run_id = _register(store)
+    token = _start(store, run_id)
+    store.transition(run_id, target=RunState.VALIDATING, lease_token=token)
+    with pytest.raises(ValidationRequiredError):
+        store.transition(run_id, target=RunState.COMPLETED)
+
+    report = _clean_report()
+    store.finalize_validation(run_id, report)
+    assert store.get_run(run_id).state is RunState.COMPLETED
+    assert store.get_validation_report(run_id) == report
+
+
+def test_database_trigger_blocks_raw_validation_bypass(store: SqliteResearchStore):
+    run_id = _register(store)
+    token = _start(store, run_id)
+    store.transition(run_id, target=RunState.VALIDATING, lease_token=token)
+    with pytest.raises(sqlite3.IntegrityError, match="validation report required"):
+        with store._conn:
+            store._conn.execute(
+                "UPDATE runs SET state = ? WHERE run_id = ?",
+                (RunState.COMPLETED.value, run_id),
+            )
+
+
+def test_validation_failure_persists_full_finding_set(store: SqliteResearchStore):
+    run_id = _register(store)
+    token = _start(store, run_id)
+    store.transition(run_id, target=RunState.VALIDATING, lease_token=token)
+    findings = (
+        ValidationFinding(
+            code="ACC-001",
+            category=ValidationCategory.ACCOUNTING,
+            severity=Severity.BLOCKING,
+            message="gross and net disagree",
+        ),
+        ValidationFinding(
+            code="DATA-001",
+            category=ValidationCategory.DATA_INTEGRITY,
+            severity=Severity.BLOCKING,
+            message="session missing",
+        ),
+    )
+    report = ValidationReport(
+        profile_name="test",
+        scope=ValidationScope.RUN,
+        target_state=RunState.VALIDATION_FAILED,
+        findings=findings,
+        checked_categories=tuple(ValidationCategory),
+        registry_hash_at_execution="a" * 64,
+        current_registry_hash="a" * 64,
+        leakage_passed=True,
+    )
+    store.finalize_validation(run_id, report)
+    assert store.get_run(run_id).state is RunState.VALIDATION_FAILED
+    assert store.get_findings(run_id) == list(findings)

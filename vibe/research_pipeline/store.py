@@ -14,13 +14,22 @@ Two invariants are part of the contract, not the implementation:
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Iterable, Optional, Protocol, runtime_checkable
 
 from vibe.research_pipeline.contracts import RunEvidence, ValidationFinding
 from vibe.research_pipeline.identity import RunFingerprint
 from vibe.research_pipeline.lifecycle import RunState
+from vibe.research_pipeline.validation import ValidationReport
 
-__all__ = ["ResearchStore", "RunRecord", "StoreError", "ImmutableRecordError"]
+__all__ = [
+    "ResearchStore",
+    "RunRecord",
+    "StoreError",
+    "ImmutableRecordError",
+    "LeaseError",
+    "ValidationRequiredError",
+]
 
 
 class StoreError(RuntimeError):
@@ -29,6 +38,14 @@ class StoreError(RuntimeError):
 
 class ImmutableRecordError(StoreError):
     """Raised on an attempt to mutate a terminal run record."""
+
+
+class LeaseError(StoreError):
+    """Raised when a run lease is missing, expired, or owned by another worker."""
+
+
+class ValidationRequiredError(StoreError):
+    """Raised when a caller tries to bypass the durable validation gate."""
 
 
 class RunRecord(Protocol):
@@ -63,12 +80,40 @@ class ResearchStore(Protocol):
         *,
         target: RunState,
         reason: Optional[str] = None,
+        lease_token: Optional[str] = None,
     ) -> None:
         """Move a run along a legal edge, recording the transition.
 
+        A transition out of ``RUNNING`` requires the current lease token.
         Raises :class:`ImmutableRecordError` if the run is already terminal, and
         ``IllegalTransitionError`` if the edge is not permitted.
         """
+
+    def start_run(
+        self,
+        run_id: str,
+        *,
+        owner: str,
+        lease_seconds: int,
+        now: Optional[datetime] = None,
+    ) -> str:
+        """Atomically enter ``RUNNING`` with a lease and return its token."""
+
+    def heartbeat(
+        self,
+        run_id: str,
+        *,
+        lease_token: str,
+        lease_seconds: int,
+        now: Optional[datetime] = None,
+    ) -> None:
+        """Extend a live lease owned by ``lease_token``."""
+
+    def sweep_stale_leases(self, *, now: Optional[datetime] = None) -> list[str]:
+        """Mark expired ``RUNNING`` rows ``EXECUTION_FAILED``."""
+
+    def finalize_validation(self, run_id: str, report: ValidationReport) -> None:
+        """Persist a complete report and atomically apply its terminal state."""
 
     def record_metrics(
         self, run_id: str, metrics: dict[str, float], *, calculation_version: int

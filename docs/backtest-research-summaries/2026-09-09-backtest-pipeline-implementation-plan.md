@@ -1380,7 +1380,7 @@ above. The following recommendations were **not** adopted, with reasons.
 
 ## 18. Execution Status
 
-**Last updated:** September 16, 2026  
+**Last updated:** September 24, 2026
 **Branch:** `wentingluo/user/plan-backtest-pipeline`
 
 This section tracks implementation against §13. It is the authoritative view of
@@ -1395,18 +1395,18 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P3, P4, P5, P5b, P10 |
+| Complete | P0, P1, P2, P3, P4, P5, P5b, P6, P10 |
 | Partial | P7 |
 | Not started | P6, P8, P9, P10b, P11, P12, P13, P14 |
 
-Seven of the nine increments required by the "minimum bar before trusting a
-result" (P0-P6, P9, P10) are complete. **No result produced today should be
-treated as trustworthy**, because P6 is still outstanding: nothing prevents a
-bad run from reaching `COMPLETED`. Metrics are now normalized, costs are
-charged, the books reconcile, folds are warmup-comparable, feature causality is
-declared and tested, and the holdout is locked — so today's numbers are
-*defensible* in isolation — but nothing enforces that, and an unreviewed run is
-still an unchecked claim.
+Eight of the nine increments required by the "minimum bar before trusting a
+result" (P0-P6, P9, P10) are complete. P6 now prevents a run from reaching
+`COMPLETED` without a durable one-pass validation report covering normalized
+metrics, accounting and execution reconciliation, data integrity, all six
+leakage checks, and the feature-registry hash. Candidate plausibility outliers
+stop at `REVIEW_REQUIRED`, acceptance misses remain advisory, zero-trade runs
+are `INCONCLUSIVE`, and stale execution leases are swept to
+`EXECUTION_FAILED`. P9 remains before the full minimum bar is met.
 
 ### Increment status
 
@@ -1419,7 +1419,7 @@ still an unchecked claim.
 | P4 | Warmup-aware segment execution | **Complete** | `c89d4ab` | `vibe/research_pipeline/segment_runner.py` plus a `graded_start` boundary in `BacktestEngine.run`. Warmup bars prime indicators, generate no orders, move no cash, and are excluded from the equity curve — which is what scopes every session-based denominator. F3 implemented; 15 tests. Goldens re-frozen with one added diagnostic key and zero changed values. |
 | P5 | Feature declarations and leakage harness | **Complete** | `295882b`, `143846c` | `features/registry.py`, `features/leakage.py`. All 20 `FeatureEngine` features declared; all six §9 checks implemented; F1 and F2 both present, F2 on real QQQ data. **Found and fixed a real look-ahead bug** — see below. 71 tests. |
 | P5b | Cross-sectional universe | **Complete** | `1bc8068` | `vibe/research_pipeline/universe.py`. Pooled **and** per-symbol metrics with dispersion; failing members recorded rather than dropped; zero-trade members are silent, not zero; `universe_hash` and survivorship badge stamped. 34 unit + 12 real-engine tests. Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
-| P6 | Validation gates and lifecycle | **Not started** | — | Until this lands, nothing enforces the plan's central promise that bad metrics cannot reach `COMPLETED`. |
+| P6 | Validation gates and lifecycle | **Complete** | this commit | `validation.py`: validation profiles, candidate-scoped plausibility and acceptance rules, one-pass findings across every declared category, required leakage evidence and registry-hash drift detection. SQLite migration 2 adds durable validation reports and execution leases; `RUNNING` requires a lease, heartbeats are token-owned, stale leases become `EXECUTION_FAILED`, and direct `VALIDATING -> COMPLETED` transitions are rejected in both Python and SQLite. 50 focused tests plus 585 research-pipeline and 322 backtester regressions. |
 | P7 | SQLite store and importer | **Partial** | `f84c34f` | `storage/schema.py`, `storage/sqlite_store.py`: forward-only migrations, terminal-state triggers, UUIDv7 IDs, `run_evidence`, outbox table, concurrent-writer handling. 19 tests. |
 | P8 | Local MJS viewer | **Not started** | — | |
 | P9 | Optimizer/selector seam and nested walk-forward | **Not started** | — | |
@@ -1752,4 +1752,3 @@ P6 -> P9.
 The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
 proceed without further eroding it; runs are now confined to `dev_end` by the
 loader rather than by convention.
-

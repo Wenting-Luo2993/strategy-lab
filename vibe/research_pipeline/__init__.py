@@ -68,8 +68,20 @@ from vibe.research_pipeline.storage import (
 )
 from vibe.research_pipeline.store import (
     ImmutableRecordError,
+    LeaseError,
     ResearchStore,
     StoreError,
+    ValidationRequiredError,
+)
+from vibe.research_pipeline.validation import (
+    AcceptanceDirection,
+    AcceptanceRule,
+    DataIntegritySummary,
+    MetricValidator,
+    ValidationInput,
+    ValidationProfile,
+    ValidationReport,
+    ValidationScope,
 )
 
 __all__ = [
@@ -84,6 +96,7 @@ __all__ = [
     "FeatureKind",
     "IllegalTransitionError",
     "ImmutableRecordError",
+    "LeaseError",
     "MetricDefinition",
     "MetricDirection",
     "MetricUnit",
@@ -112,6 +125,15 @@ __all__ = [
     "UnsafeDatabaseLocationError",
     "ValidationCategory",
     "ValidationFinding",
+    "ValidationRequiredError",
+    "AcceptanceDirection",
+    "AcceptanceRule",
+    "DataIntegritySummary",
+    "MetricValidator",
+    "ValidationInput",
+    "ValidationProfile",
+    "ValidationReport",
+    "ValidationScope",
     "assert_legal_transition",
     "canonical_json",
     "hash_file",

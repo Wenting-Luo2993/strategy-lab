@@ -27,7 +27,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Rendered into the trigger below so the database's notion of "terminal" can
 # never drift from lifecycle.py.
@@ -154,9 +154,44 @@ BEGIN
 END;
 """
 
+_MIGRATION_2 = """
+ALTER TABLE runs ADD COLUMN lease_owner TEXT;
+ALTER TABLE runs ADD COLUMN lease_token TEXT;
+ALTER TABLE runs ADD COLUMN lease_expires_at TEXT;
+CREATE INDEX idx_runs_lease_expiry ON runs(state, lease_expires_at);
+
+CREATE TABLE validation_reports (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id                     TEXT NOT NULL UNIQUE REFERENCES runs(run_id),
+    profile_name               TEXT NOT NULL,
+    scope                      TEXT NOT NULL,
+    target_state               TEXT NOT NULL,
+    registry_hash_at_execution TEXT NOT NULL,
+    current_registry_hash      TEXT NOT NULL,
+    leakage_passed             INTEGER NOT NULL,
+    payload_json               TEXT NOT NULL,
+    recorded_at                TEXT NOT NULL
+);
+CREATE INDEX idx_validation_reports_run ON validation_reports(run_id);
+
+CREATE TRIGGER trg_runs_validation_required
+BEFORE UPDATE OF state ON runs
+FOR EACH ROW
+WHEN OLD.state = 'validating'
+ AND NEW.state IN ('completed', 'review_required', 'validation_failed', 'inconclusive')
+ AND NOT EXISTS (
+     SELECT 1 FROM validation_reports
+     WHERE run_id = OLD.run_id AND target_state = NEW.state
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'validation report required before terminal outcome');
+END;
+"""
+
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
+    (2, _MIGRATION_2),
 ]
 
 
