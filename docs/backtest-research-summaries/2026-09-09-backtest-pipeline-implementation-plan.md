@@ -1381,7 +1381,7 @@ above. The following recommendations were **not** adopted, with reasons.
 ## 18. Execution Status
 
 **Last updated:** September 24, 2026
-**Branch:** `wentingluo/user/plan-backtest-pipeline`
+**Branch:** `wenting-luo2993-backtest-implementation-review`
 
 This section tracks implementation against §13. It is the authoritative view of
 what exists; the increment table in §13 describes intent, not state.
@@ -1395,9 +1395,9 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P3, P4, P5, P5b, P6, P10 |
-| Partial | P7 |
-| Not started | P6, P8, P9, P10b, P11, P12, P13, P14 |
+| Complete | P0, P1, P2, P3, P4, P5, P5b, P6, P7, P10 |
+| Partial | — |
+| Not started | P8, P9, P10b, P11, P12, P13, P14 |
 
 Eight of the nine increments required by the "minimum bar before trusting a
 result" (P0-P6, P9, P10) are complete. P6 now prevents a run from reaching
@@ -1420,7 +1420,7 @@ are `INCONCLUSIVE`, and stale execution leases are swept to
 | P5 | Feature declarations and leakage harness | **Complete** | `295882b`, `143846c` | `features/registry.py`, `features/leakage.py`. All 20 `FeatureEngine` features declared; all six §9 checks implemented; F1 and F2 both present, F2 on real QQQ data. **Found and fixed a real look-ahead bug** — see below. 71 tests. |
 | P5b | Cross-sectional universe | **Complete** | `1bc8068` | `vibe/research_pipeline/universe.py`. Pooled **and** per-symbol metrics with dispersion; failing members recorded rather than dropped; zero-trade members are silent, not zero; `universe_hash` and survivorship badge stamped. 34 unit + 12 real-engine tests. Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
 | P6 | Validation gates and lifecycle | **Complete** | this commit | `validation.py`: validation profiles, candidate-scoped plausibility and acceptance rules, one-pass findings across every declared category, required leakage evidence and registry-hash drift detection. SQLite migration 2 adds durable validation reports and execution leases; `RUNNING` requires a lease, heartbeats are token-owned, stale leases become `EXECUTION_FAILED`, and direct `VALIDATING -> COMPLETED` transitions are rejected in both Python and SQLite. 50 focused tests plus 585 research-pipeline and 322 backtester regressions. |
-| P7 | SQLite store and importer | **Partial** | `f84c34f` | `storage/schema.py`, `storage/sqlite_store.py`: forward-only migrations, terminal-state triggers, UUIDv7 IDs, `run_evidence`, outbox table, concurrent-writer handling. 19 tests. |
+| P7 | SQLite store and importer | **Complete** | `f84c34f`, `117105d` | Forward-only schema v3 upgrades v1 databases after P6's validation/lease migration; terminal UPDATE/DELETE triggers; UUIDv7 IDs; `run_evidence`; outbox; deterministic importer and F11 over all 98 checked-in records/158 relationships; canonical tree hash parity; `legacy-uncontrolled` stamping; unusable-until-rebaselined absolute metrics; legacy artifact path preservation/normalization; registry and artifact dual-write with rollback; same-fingerprint concurrent-writer convergence. 27 focused tests; 576 research-pipeline regressions. |
 | P8 | Local MJS viewer | **Not started** | — | |
 | P9 | Optimizer/selector seam and nested walk-forward | **Not started** | — | |
 | P10 | Final-holdout lock | **Complete** | `29eaa04` | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader` and was verified to block a real 2025 engine run and a straddling 2019→2026 run. 39 tests. Promotion-blocking on touch count > 1 is the one deferred part, and needs P11's registry. |
@@ -1486,15 +1486,6 @@ would cost 47.9% of net P&L, against commission's 2.3% -- which is why it is
 configurable per exit reason and why `ExitSlippageModel` is a protocol rather
 than a concrete class. A volume-scaled implementation drops in without
 touching the portfolio.
-
-**P7 — SQLite store.** Delivered: schema, migrations, store operations,
-lifecycle triggers, outbox. Outstanding:
-
-- **The importer.** No YAML-tree import, no hash-parity check, no
-  `legacy-uncontrolled` stamping. This is the larger half of the increment and
-  it blocks P11 and P14.
-- **Dual-write** to the existing registry.
-- **Fixture F11.**
 
 ### P4 — what the warmup invariant actually required
 
