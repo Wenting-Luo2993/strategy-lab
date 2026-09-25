@@ -69,7 +69,7 @@ out-of-sample evaluation, and consolidated research storage
 - [18. Execution Status](#18-execution-status)
   - [Status at a glance](#status-at-a-glance)
   - [Increment status](#increment-status)
-  - [Partial increments: what is missing](#partial-increments-what-is-missing)
+  - [Completed increments: caveats](#completed-increments-caveats)
   - [Unplanned work](#unplanned-work)
   - [Findings that change the plan](#findings-that-change-the-plan)
   - [Recommended next increment](#recommended-next-increment)
@@ -1381,7 +1381,7 @@ above. The following recommendations were **not** adopted, with reasons.
 ## 18. Execution Status
 
 **Last updated:** September 24, 2026
-**Branch:** `wenting-luo2993-backtest-implementation-review`
+**Branch:** `wentingluo/user/plan-backtest-pipeline`
 
 This section tracks implementation against §13. It is the authoritative view of
 what exists; the increment table in §13 describes intent, not state.
@@ -1421,10 +1421,10 @@ make the parent inconclusive instead of stitching survivors.
 | P4 | Warmup-aware segment execution | **Complete** | `c89d4ab` | `vibe/research_pipeline/segment_runner.py` plus a `graded_start` boundary in `BacktestEngine.run`. Warmup bars prime indicators, generate no orders, move no cash, and are excluded from the equity curve — which is what scopes every session-based denominator. F3 implemented; 15 tests. Goldens re-frozen with one added diagnostic key and zero changed values. |
 | P5 | Feature declarations and leakage harness | **Complete** | `295882b`, `143846c` | `features/registry.py`, `features/leakage.py`. All 20 `FeatureEngine` features declared; all six §9 checks implemented; F1 and F2 both present, F2 on real QQQ data. **Found and fixed a real look-ahead bug** — see below. 71 tests. |
 | P5b | Cross-sectional universe | **Complete** | `1bc8068` | `vibe/research_pipeline/universe.py`. Pooled **and** per-symbol metrics with dispersion; failing members recorded rather than dropped; zero-trade members are silent, not zero; `universe_hash` and survivorship badge stamped. 34 unit + 12 real-engine tests. Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
-| P6 | Validation gates and lifecycle | **Complete** | this commit | `validation.py`: validation profiles, candidate-scoped plausibility and acceptance rules, one-pass findings across every declared category, required leakage evidence and registry-hash drift detection. SQLite migration 2 adds durable validation reports and execution leases; `RUNNING` requires a lease, heartbeats are token-owned, stale leases become `EXECUTION_FAILED`, and direct `VALIDATING -> COMPLETED` transitions are rejected in both Python and SQLite. 50 focused tests plus 585 research-pipeline and 322 backtester regressions. |
-| P7 | SQLite store and importer | **Complete** | `f84c34f`, `117105d` | Forward-only schema v3 upgrades v1 databases after P6's validation/lease migration; terminal UPDATE/DELETE triggers; UUIDv7 IDs; `run_evidence`; outbox; deterministic importer and F11 over all 98 checked-in records/158 relationships; canonical tree hash parity; `legacy-uncontrolled` stamping; unusable-until-rebaselined absolute metrics; legacy artifact path preservation/normalization; registry and artifact dual-write with rollback; same-fingerprint concurrent-writer convergence. 27 focused tests; 576 research-pipeline regressions. |
+| P6 | Validation gates and lifecycle | **Complete** | `c808710` | `validation.py`: validation profiles, candidate-scoped plausibility and acceptance rules, one-pass findings across every declared category, required leakage evidence and registry-hash drift detection. SQLite migration 2 adds durable validation reports and execution leases; `RUNNING` requires a lease, heartbeats are token-owned, stale leases become `EXECUTION_FAILED`, and direct `VALIDATING -> COMPLETED` transitions are rejected in both Python and SQLite. 50 focused tests plus 585 research-pipeline and 322 backtester regressions. |
+| P7 | SQLite store and importer | **Complete** | `1ccf7a4`, `f46ee74`, `6070d80` | Forward-only schema v3 upgrades v1 databases after P6's validation/lease migration; terminal UPDATE/DELETE triggers; UUIDv7 IDs; `run_evidence`; outbox; deterministic importer and F11 over all 98 checked-in records/158 relationships; canonical tree hash parity; `legacy-uncontrolled` stamping; unusable-until-rebaselined absolute metrics; legacy artifact path preservation/normalization; registry and artifact dual-write with rollback; same-fingerprint concurrent-writer convergence. |
 | P8 | Local MJS viewer | **Not started** | — | |
-| P9 | Optimizer/selector seam and nested walk-forward | **Complete** | this commit | `optimization.py`: pure injected `Optimizer.fit` and `Selector.select`, a concrete fresh-engine ruleset adapter, canonical grid identities, exact candidate counts, P6 `SWEEP_ROW`/`CANDIDATE` validation scopes, and deterministic connected-plateau medoid selection with signed margin. `walk_forward.py`: session-contamination audit (F9), per-fold train/validation/test control flow, frozen candidate evaluation, explicit inconclusive failure semantics, and chronological all-fold OOS stitching that preserves per-fold dollar P&L. 602 research-pipeline tests plus 8 optimization regressions pass; 15 data-dependent legacy tests skip when their fixed parquet path is absent. |
+| P9 | Optimizer/selector seam and nested walk-forward | **Complete** | `72a05e0` | `optimization.py`: pure injected `Optimizer.fit` and `Selector.select`, a concrete fresh-engine ruleset adapter, canonical grid identities, exact candidate counts, P6 `SWEEP_ROW`/`CANDIDATE` validation scopes, and deterministic connected-plateau medoid selection with signed margin. `walk_forward.py`: session-contamination audit (F9), per-fold train/validation/test control flow, frozen candidate evaluation, explicit inconclusive failure semantics, and chronological all-fold OOS stitching that preserves per-fold dollar P&L. |
 | P10 | Final-holdout lock | **Complete** | `29eaa04` | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader` and was verified to block a real 2025 engine run and a straddling 2019→2026 run. 39 tests. Promotion-blocking on touch count > 1 is the one deferred part, and needs P11's registry. |
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
 | P11 | Registry migration to `ResearchStore` | **Not started** | — | |
@@ -1432,7 +1432,10 @@ make the parent inconclusive instead of stitching survivors.
 | P13 | `/research` route | **Not started** | — | |
 | P14 | YAML retirement | **Not started** | — | Gated on P11 and P12 being validated. |
 
-### Partial increments: what is missing
+The integrated P6/P7/P9 tree passes 610 research-pipeline unit tests and both
+ORB golden integration tests.
+
+### Completed increments: caveats
 
 **P2 — Execution realism.** Delivered: E1 intrabar exit ordering, E2
 gap-through fills, E3 undeclared leverage and unbounded cash, E4 cost model
@@ -1727,13 +1730,16 @@ in hindsight, so the run is permanently badged `survivorship_bias=present`.
 
 ### Recommended next increment
 
-**Complete P7, then P11 registry migration.**
+**P11, registry migration to `ResearchStore`.**
 
-The correctness path's minimum bar is now complete through P9. P7's remaining
-importer, hash-parity verification, `legacy-uncontrolled` stamping, and F11
-fixture are the next dependency for replacing YAML writes safely. Once P7 is
-complete, P11 can move the registry and sweep write paths to `ResearchStore`
-without weakening P6 validation or P9 fold evidence.
+The correctness path's minimum bar and P7 are complete. P11 can now move the
+registry, query, lineage, notes, artifacts, and sweep write paths from the YAML
+compatibility surface to `ResearchStore` without weakening P6 validation or P9
+fold evidence. It also enables the deferred P10 rule that blocks promotion when
+the final-holdout touch count exceeds one.
+
+P8, the local read-only viewer, can proceed independently against the completed
+SQLite schema, but it is not on the critical path for retiring YAML.
 
 The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
 proceed without further eroding it; runs are now confined to `dev_end` by the
