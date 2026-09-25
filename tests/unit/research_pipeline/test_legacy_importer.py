@@ -65,9 +65,12 @@ def test_terminal_run_delete_is_blocked_by_database_trigger(tmp_path: Path):
     run_id = store.register_run(fingerprint=fingerprint, methodology_version="v1")
     from vibe.research_pipeline.lifecycle import RunState
 
-    store.transition(run_id, target=RunState.RUNNING)
-    store.transition(run_id, target=RunState.VALIDATING)
-    store.transition(run_id, target=RunState.COMPLETED)
+    lease_token = store.start_run(run_id, owner="test-worker", lease_seconds=60)
+    store.transition(
+        run_id,
+        target=RunState.EXECUTION_FAILED,
+        lease_token=lease_token,
+    )
     with pytest.raises(sqlite3.IntegrityError, match="terminal"):
         with store._conn:
             store._conn.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
