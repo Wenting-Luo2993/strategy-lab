@@ -6,9 +6,10 @@ to provide a unified interface for managing research experiments.
 
 import logging
 import re
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from vibe.research_journal.git_metadata import capture_execution_metadata
 from vibe.research_journal.lineage import LineageGraph, build_lineage_graph, CycleDetectedError
@@ -31,6 +32,8 @@ from vibe.research_journal.persistence import (
     update_experiment_status,
     ImmutabilityError,
 )
+from vibe.research_pipeline.paths import research_db_path
+from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +45,12 @@ class ResearchRegistry:
     tracking results, and querying research history.
     """
 
-    def __init__(self, research_root: Optional[Path] = None):
+    def __init__(
+        self,
+        research_root: Optional[Path] = None,
+        *,
+        sqlite_store: Optional[SqliteResearchStore] = None,
+    ):
         """Initialize registry.
 
         Args:
@@ -50,6 +58,10 @@ class ResearchRegistry:
         """
         self.research_root = ensure_research_directories(research_root)
         self._lineage_graph: Optional[LineageGraph] = None
+        self._sqlite_store = sqlite_store
+        self._sqlite_db_path = (
+            None if sqlite_store is not None else self._compatibility_db_path(research_root)
+        )
 
     def create_hypothesis(
         self,
@@ -88,7 +100,8 @@ class ResearchRegistry:
             updated_at=now,
         )
 
-        save_hypothesis(hypothesis, self.research_root)
+        filepath = save_hypothesis(hypothesis, self.research_root)
+        self._dual_write_or_remove("hypothesis", hypothesis, filepath)
         logger.info(f"Created hypothesis: {hyp_id}")
 
         return hypothesis
@@ -170,7 +183,8 @@ class ResearchRegistry:
             created_at=now,
         )
 
-        save_experiment(experiment, self.research_root)
+        filepath = save_experiment(experiment, self.research_root)
+        self._dual_write_or_remove("experiment", experiment, filepath)
         logger.info(f"Created experiment: {exp_id}")
 
         # Invalidate lineage cache
@@ -201,12 +215,23 @@ class ResearchRegistry:
         # This will check immutability internally
         experiment.mark_completed(results, conclusion)
 
-        # Remove old file and save new version
+        # Remove old file and save new version. Keep a byte-for-byte backup so
+        # a failed SQLite write cannot leave the compatibility stores split.
         filepath = self.research_root / "experiments" / f"{experiment_id}.yaml"
-        if filepath.exists():
-            filepath.unlink()
-
-        save_experiment(experiment, self.research_root)
+        previous = filepath.read_bytes()
+        previous_mode = stat.S_IMODE(filepath.stat().st_mode)
+        try:
+            if filepath.exists():
+                filepath.unlink()
+            save_experiment(experiment, self.research_root)
+            self._dual_write("experiment", experiment, filepath)
+        except Exception:
+            if filepath.exists():
+                filepath.chmod(stat.S_IWRITE)
+                filepath.unlink()
+            filepath.write_bytes(previous)
+            filepath.chmod(previous_mode)
+            raise
         logger.info(f"Completed experiment: {experiment_id}")
 
         # Invalidate lineage cache
@@ -313,7 +338,8 @@ class ResearchRegistry:
             created_at=now,
         )
 
-        save_research_note(note, self.research_root)
+        filepath = save_research_note(note, self.research_root)
+        self._dual_write_or_remove("note", note, filepath)
         logger.info(f"Created research note: {note_id}")
 
         return note
@@ -353,10 +379,52 @@ class ResearchRegistry:
             created_at=now,
         )
 
-        save_rejected_idea(rejected_idea, self.research_root)
+        filepath = save_rejected_idea(rejected_idea, self.research_root)
+        self._dual_write_or_remove("rejected_idea", rejected_idea, filepath)
         logger.info(f"Created rejected idea: {rj_id}")
 
         return rejected_idea
+
+    def dual_write_artifact(self, artifact: Any, filepath: Path) -> None:
+        """Persist an artifact reference to SQLite after its YAML write."""
+        self._dual_write_or_remove("artifact", artifact, filepath)
+
+    def _compatibility_db_path(self, requested_root: Optional[Path]) -> Path:
+        if requested_root is None:
+            return research_db_path(create_parents=True)
+
+        root = self.research_root.resolve()
+        if any((candidate / ".git").exists() for candidate in (root, *root.parents)):
+            return research_db_path(create_parents=True)
+
+        # Explicit roots are predominantly isolated registries (tests, tools,
+        # imports). Keep their compatibility DB isolated beside the tree.
+        return root.parent / f".{root.name}-research.sqlite3"
+
+    def _dual_write_or_remove(
+        self, record_type: str, model: Any, filepath: Path
+    ) -> None:
+        try:
+            self._dual_write(record_type, model, filepath)
+        except Exception:
+            filepath.unlink(missing_ok=True)
+            raise
+
+    def _dual_write(self, record_type: str, model: Any, filepath: Path) -> None:
+        store = self._sqlite_store
+        owns_store = store is None
+        if store is None:
+            store = SqliteResearchStore(self._sqlite_db_path)
+        try:
+            store.upsert_registry_record(
+                record_type=record_type,
+                payload=model.model_dump(mode="json"),
+                source_path=filepath.relative_to(self.research_root).as_posix(),
+                repository_root=self.research_root.parent,
+            )
+        finally:
+            if owns_store:
+                store.close()
 
     def get_lineage_graph(self) -> LineageGraph:
         """Get current lineage graph (cached).

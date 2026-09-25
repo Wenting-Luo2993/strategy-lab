@@ -27,7 +27,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Rendered into the trigger below so the database's notion of "terminal" can
 # never drift from lifecycle.py.
@@ -188,10 +188,108 @@ BEGIN
 END;
 """
 
+# --------------------------------------------------------------------------
+# Migration 3: legacy registry compatibility and import audit
+# --------------------------------------------------------------------------
+
+_MIGRATION_3 = f"""
+-- The YAML registry remains the public compatibility surface until P11.  This
+-- table stores its complete canonical payload, rather than projecting only the
+-- fields understood by the new run model and silently losing legacy data.
+CREATE TABLE registry_records (
+    record_type          TEXT NOT NULL,
+    legacy_id            TEXT NOT NULL,
+    payload_json         TEXT NOT NULL,
+    canonical_sha256     TEXT NOT NULL,
+    methodology_version  TEXT NOT NULL,
+    status               TEXT,
+    git_dirty            INTEGER NOT NULL DEFAULT 0,
+    source_path          TEXT,
+    imported_at          TEXT NOT NULL,
+    PRIMARY KEY (record_type, legacy_id)
+);
+CREATE INDEX idx_registry_records_status
+    ON registry_records(record_type, status);
+
+CREATE TABLE registry_relationships (
+    record_type  TEXT NOT NULL,
+    legacy_id    TEXT NOT NULL,
+    relation     TEXT NOT NULL,
+    target_type  TEXT NOT NULL,
+    target_id    TEXT NOT NULL,
+    ordinal      INTEGER NOT NULL DEFAULT 0,
+    resolved     INTEGER NOT NULL,
+    PRIMARY KEY (record_type, legacy_id, relation, ordinal),
+    FOREIGN KEY (record_type, legacy_id)
+        REFERENCES registry_records(record_type, legacy_id)
+);
+CREATE INDEX idx_registry_relationship_target
+    ON registry_relationships(target_type, target_id);
+
+-- Preserve the legacy spelling while also exposing a normalized local path or
+-- external URI.  This handles absolute paths without laundering them into a
+-- repository-relative value that points at a different file.
+CREATE TABLE registry_artifact_locations (
+    record_type       TEXT NOT NULL,
+    legacy_id         TEXT NOT NULL,
+    ordinal           INTEGER NOT NULL,
+    original_location TEXT NOT NULL,
+    repository_path   TEXT,
+    external_uri      TEXT,
+    PRIMARY KEY (record_type, legacy_id, ordinal),
+    FOREIGN KEY (record_type, legacy_id)
+        REFERENCES registry_records(record_type, legacy_id),
+    CHECK ((repository_path IS NULL) != (external_uri IS NULL))
+);
+
+-- Historical absolute values are evidence, not usable baselines.  Keep the
+-- original number for audit, but leave effective_value NULL until a clean run
+-- re-baselines it under a controlled methodology.
+CREATE TABLE legacy_metric_values (
+    record_type     TEXT NOT NULL DEFAULT 'experiment'
+                    CHECK (record_type = 'experiment'),
+    experiment_id   TEXT NOT NULL,
+    metric_key      TEXT NOT NULL,
+    original_value  REAL NOT NULL,
+    effective_value REAL,
+    baseline_status TEXT NOT NULL,
+    PRIMARY KEY (experiment_id, metric_key),
+    FOREIGN KEY (record_type, experiment_id)
+        REFERENCES registry_records(record_type, legacy_id)
+);
+
+CREATE TRIGGER trg_runs_terminal_delete_immutable
+BEFORE DELETE ON runs
+FOR EACH ROW
+WHEN OLD.state IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'run is in a terminal state and is immutable');
+END;
+
+CREATE TRIGGER trg_registry_terminal_update_immutable
+BEFORE UPDATE ON registry_records
+FOR EACH ROW
+WHEN OLD.record_type = 'experiment'
+ AND OLD.status IN ('completed', 'failed', 'superseded', 'archived')
+BEGIN
+    SELECT RAISE(ABORT, 'legacy experiment is in a terminal state and is immutable');
+END;
+
+CREATE TRIGGER trg_registry_terminal_delete_immutable
+BEFORE DELETE ON registry_records
+FOR EACH ROW
+WHEN OLD.record_type = 'experiment'
+ AND OLD.status IN ('completed', 'failed', 'superseded', 'archived')
+BEGIN
+    SELECT RAISE(ABORT, 'legacy experiment is in a terminal state and is immutable');
+END;
+"""
+
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
+    (3, _MIGRATION_3),
 ]
 
 

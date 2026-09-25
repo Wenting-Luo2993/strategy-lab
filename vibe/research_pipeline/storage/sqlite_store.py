@@ -33,6 +33,7 @@ from vibe.research_pipeline.lifecycle import (
 )
 from vibe.research_pipeline.paths import research_db_path
 from vibe.research_pipeline.storage import schema
+from vibe.research_pipeline.storage.legacy_importer import upsert_registry_payload
 from vibe.research_pipeline.store import (
     ImmutableRecordError,
     LeaseError,
@@ -672,6 +673,23 @@ class SqliteResearchStore:
             ValidationFinding.model_validate_json(row["payload_json"])
             for row in rows
         ]
+
+    def upsert_registry_record(
+        self,
+        *,
+        record_type: str,
+        payload: dict[str, Any],
+        source_path: str,
+        repository_root: Path,
+    ) -> str:
+        """Dual-write one legacy registry record during the compatibility period."""
+        return upsert_registry_payload(
+            self._conn,
+            record_type=record_type,
+            payload=payload,
+            source_path=source_path,
+            repository_root=repository_root,
+        )
 
     # -- internals -------------------------------------------------------
 

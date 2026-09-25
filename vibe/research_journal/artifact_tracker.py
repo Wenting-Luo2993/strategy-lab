@@ -119,7 +119,8 @@ class ArtifactTracker:
         )
         
         # Save artifact reference
-        save_artifact_reference(artifact_ref, self.registry.research_root)
+        filepath = save_artifact_reference(artifact_ref, self.registry.research_root)
+        self.registry.dual_write_artifact(artifact_ref, filepath)
         
         logger.info(
             f"Registered artifact {artifact_id}: {artifact_type} "
