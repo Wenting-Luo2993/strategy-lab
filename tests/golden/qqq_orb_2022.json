@@ -2,54 +2,54 @@
   "metrics": {
     "by_year": {
       "2022": {
-        "avg_loss_r": -1.008325508,
-        "avg_win_r": 3.151601425,
-        "eod_losses": 4,
-        "eod_wins": 92,
-        "expectancy_r": 0.516428587,
+        "avg_loss_r": -0.970056104,
+        "avg_win_r": 1.801407769,
+        "eod_losses": 11,
+        "eod_wins": 97,
+        "expectancy_r": 0.100987704,
         "first_date": "2022-01-03",
-        "gross_pnl": 77450.290000004,
+        "gross_pnl": 27096.870000003,
         "last_date": "2022-12-30",
         "max_losing_streak": 15,
-        "max_loss_r": -1.057575758,
-        "max_win_r": 12.363953488,
+        "max_loss_r": -1.053773585,
+        "max_win_r": 6.511764706,
         "n_trades": 251,
-        "skewness": 1.766355256,
-        "stop_losses": 155,
+        "skewness": 1.465581489,
+        "stop_losses": 143,
         "stop_wins": 0,
-        "top10_pct": 48.657187721,
-        "total_costs": 762.825,
-        "total_pnl": 76687.465000004,
-        "win_rate": 0.366533865
+        "top10_pct": 49.099996348,
+        "total_costs": 623.875,
+        "total_pnl": 26472.995000003,
+        "win_rate": 0.386454183
       }
     },
     "equity": {
-      "annualized_return": 0.778053652,
-      "max_drawdown": -0.10079755,
-      "max_drawdown_duration_days": 61,
-      "sharpe_ratio": 3.17348544,
-      "total_return": 0.76687465
+      "annualized_return": 0.268025458,
+      "max_drawdown": -0.133471229,
+      "max_drawdown_duration_days": 105,
+      "sharpe_ratio": 1.453808507,
+      "total_return": 0.26472995
     },
     "overall": {
-      "avg_loss_r": -1.008325508,
-      "avg_win_r": 3.151601425,
-      "eod_losses": 4,
-      "eod_wins": 92,
-      "expectancy_r": 0.516428587,
+      "avg_loss_r": -0.970056104,
+      "avg_win_r": 1.801407769,
+      "eod_losses": 11,
+      "eod_wins": 97,
+      "expectancy_r": 0.100987704,
       "first_date": "2022-01-03",
-      "gross_pnl": 77450.290000004,
+      "gross_pnl": 27096.870000003,
       "last_date": "2022-12-30",
       "max_losing_streak": 15,
-      "max_loss_r": -1.057575758,
-      "max_win_r": 12.363953488,
+      "max_loss_r": -1.053773585,
+      "max_win_r": 6.511764706,
       "n_trades": 251,
-      "skewness": 1.766355256,
-      "stop_losses": 155,
+      "skewness": 1.465581489,
+      "stop_losses": 143,
       "stop_wins": 0,
-      "top10_pct": 48.657187721,
-      "total_costs": 762.825,
-      "total_pnl": 76687.465000004,
-      "win_rate": 0.366533865
+      "top10_pct": 49.099996348,
+      "total_costs": 623.875,
+      "total_pnl": 26472.995000003,
+      "win_rate": 0.386454183
     }
   },
   "run": {
@@ -63,28 +63,28 @@
   },
   "schema_version": 1,
   "simulation": {
-    "equity_curve_sha256": "686ef31bd4a362cf37e96dd2e460b2035c5fe04a87353fcbea62e2e938e7b820",
+    "equity_curve_sha256": "6389ed46e11161ba1329fa4dd7e030f51bdc9636e3bea3bbfe8ec44f69c96873",
     "execution_diagnostics": {
       "accounting_checks_applicable": 3.0,
       "accounting_failures": 0.0,
       "ambiguous_exit_bars": 0.0,
-      "execution_model_version": 4.0,
-      "exit_slippage_cost": 1692.009999998,
+      "execution_model_version": 5.0,
+      "exit_slippage_cost": 1340.599999999,
       "exit_slippage_events": 251.0,
       "gap_through_exits": 1.0,
-      "max_gross_exposure_ratio": 1.014737201,
-      "min_cash": 3.1105,
-      "orders_capped_by_buying_power": 246.0,
+      "max_gross_exposure_ratio": 1.015859919,
+      "min_cash": 4.7755,
+      "orders_capped_by_buying_power": 213.0,
       "orders_capped_by_declared_limits": 0.0,
-      "total_costs": 762.825,
+      "total_costs": 623.875,
       "warmup_sessions_excluded": 0.0
     },
     "exit_reason_counts": {
-      "EOD": 96,
-      "STOP": 155
+      "EOD": 108,
+      "STOP": 143
     },
     "n_equity_points": 19570,
     "n_trades": 251,
-    "trade_ledger_sha256": "2746c63bc049b8be3dcb52b55172e67b3a3bc31dd08a29ebded774f3969efbd0"
+    "trade_ledger_sha256": "0b3c1bce359c1ac2de7777aae136f1e4b0d747c4e8104922f5109897cdf83bc6"
   }
 }
