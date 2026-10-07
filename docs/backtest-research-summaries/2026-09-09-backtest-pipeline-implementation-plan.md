@@ -729,8 +729,9 @@ Resolution: `ExecutionRealismConfig.entry_fill_policy` now drives *both* halves.
 | `AT_STOP_TRIGGER` (legacy) | stop triggers intrabar | `OR_high + tick` |
 | `AT_SIGNAL_BAR_CLOSE` (realistic) | bar must close beyond level | signal-bar close ± slippage |
 
-The engine derives `ORBStrategyConfig.reject_retraced_wick` from the policy, so
-the incoherent combination can no longer arise from a normal engine run. All
+The engine derives the strategy's `reject_retraced_wick` gate from the policy,
+so the incoherent combination can no longer arise from a normal engine run.
+Live opts into the same gate explicitly in `TradingOrchestrator`. All
 250 repriced entries moved *against* the trader, which is the expected sign for
 a change that removes optimism.
 
