@@ -12,6 +12,15 @@ are invisible in the output:
   so an overnight or intrabar gap straight through the level cost nothing.
 * **E3 Undeclared leverage.** Position sizing has no buying-power check and
   cash has no floor, so a strategy could take positions it could never fund.
+* **E6 Entry fill price.** ORB entries were priced at the stop-market trigger
+  (``OR_high + $0.01``) no matter which bar the signal fired on, while the
+  signal itself is evaluated only after a bar completes. Live does not place a
+  resting stop -- ``TradeExecutor`` submits a *market* order -- so the backtest
+  was claiming a fill at a level the live system never rests an order at. The
+  mismatch is not academic: with the stale-wick filter active it lets an entry
+  be deferred by up to three hours and still fill at the original breakout
+  price, skipping the adverse excursion in between. On QQQ 2022 that is worth
+  +46% of net P&L.
 
 Following ADR-015 (default legacy, explicit realistic opt-in), none of these
 change unless a caller opts in. Existing research remains bit-comparable.
@@ -36,6 +45,7 @@ __all__ = [
     "EXECUTION_MODEL_VERSION",
     "IntrabarExitResolution",
     "GapFillPolicy",
+    "EntryFillPolicy",
     "ExecutionRealismConfig",
     "BuyingPowerError",
     "clamp_to_bar",
@@ -53,7 +63,10 @@ __all__ = [
 # the trigger price, which is the larger half of E4: on the QQQ ORB baseline
 # commission costs 2.3% of net P&L, while two ticks of stop slippage costs
 # 10.5%.
-EXECUTION_MODEL_VERSION = 4
+#
+# Version 5 adds E6, the entry fill price. Versions 1-4 filled every ORB entry
+# at the stop-market trigger price regardless of when the signal fired.
+EXECUTION_MODEL_VERSION = 5
 
 
 class IntrabarExitResolution(str, Enum):
@@ -88,6 +101,28 @@ class GapFillPolicy(str, Enum):
     first realistically obtainable price."""
 
 
+class EntryFillPolicy(str, Enum):
+    """What price an ORB entry fills at.
+
+    The two options model two different orders, and the choice must match what
+    the live system actually submits. ``ORBStrategy`` is shared between the
+    backtester and the live bot, so a mismatch here is silent.
+    """
+
+    AT_STOP_TRIGGER = "at_stop_trigger"
+    """Fill at ``OR_high + $0.01`` (long) or ``OR_low - $0.01`` (short), the
+    price a resting stop-market order would have triggered at. Legacy
+    behaviour, and self-consistent *only* if the signal also fires the instant
+    price crosses the level. It is optimistic whenever entry is deferred,
+    because the fill price does not move with the delay."""
+
+    AT_SIGNAL_BAR_CLOSE = "at_signal_bar_close"
+    """Fill around the close of the bar that produced the signal, plus
+    slippage. This is what live does: ``TradeExecutor`` submits a market order
+    after a completed bar, so the obtainable price is wherever the market is
+    then -- not where the breakout level sits."""
+
+
 class BuyingPowerError(RuntimeError):
     """Raised when a position would exceed available buying power."""
 
@@ -100,6 +135,7 @@ class ExecutionRealismConfig:
         IntrabarExitResolution.OPTIMISTIC
     )
     gap_fill_policy: GapFillPolicy = GapFillPolicy.AT_LEVEL
+    entry_fill_policy: EntryFillPolicy = EntryFillPolicy.AT_STOP_TRIGGER
     enforce_buying_power: bool = False
     max_gross_leverage: float = 1.0
     commission_model: CommissionModel = field(
@@ -146,6 +182,7 @@ class ExecutionRealismConfig:
         return cls(
             intrabar_exit_resolution=IntrabarExitResolution.CONSERVATIVE,
             gap_fill_policy=GapFillPolicy.AT_OPEN,
+            entry_fill_policy=EntryFillPolicy.AT_SIGNAL_BAR_CLOSE,
             enforce_buying_power=True,
             max_gross_leverage=max_gross_leverage,
             commission_model=(
@@ -175,6 +212,7 @@ class ExecutionRealismConfig:
             "execution_model_version": EXECUTION_MODEL_VERSION,
             "intrabar_exit_resolution": self.intrabar_exit_resolution.value,
             "gap_fill_policy": self.gap_fill_policy.value,
+            "entry_fill_policy": self.entry_fill_policy.value,
             "enforce_buying_power": self.enforce_buying_power,
             "max_gross_leverage": self.max_gross_leverage,
             **self.commission_model.identity(),
