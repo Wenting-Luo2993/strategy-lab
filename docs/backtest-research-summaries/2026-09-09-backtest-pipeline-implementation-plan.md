@@ -703,6 +703,47 @@ though changing any of E1-E4 changes every result. Add
 `execution_model_version` to the run fingerprint (§4) so results computed under
 different execution assumptions are never compared silently.
 
+### E6. Entry fill price (found 2026-09, during golden triage)
+
+ORB entries were filled at the stop-market trigger price (`OR_high + $0.01`)
+regardless of which bar the signal fired on, while the signal itself is only
+evaluated once a bar has *completed*. These are two halves of one execution
+model and they disagreed.
+
+Live does not rest a stop order. `TradeExecutor` submits `order_type="market"`
+once the breakout bar closes, so the backtest was claiming a fill at a price no
+live order ever rests at.
+
+The mismatch became visible when a stale-wick rejection filter merged from
+`main`. That filter is correct for live — it refuses a breakout whose bar
+closed back inside the range — but paired with pinned trigger fills it creates
+a free option: the entry is deferred to a later bar (median 20 minutes, up to
+175) yet still fills at the *original* breakout price, skipping the adverse
+excursion in between. 35 of 66 relocated days on QQQ 2022 kept a byte-identical
+entry price hours later. Net effect **+46% of P&L**, pure artifact.
+
+Resolution: `ExecutionRealismConfig.entry_fill_policy` now drives *both* halves.
+
+| | signal gate | fill price |
+| --- | --- | --- |
+| `AT_STOP_TRIGGER` (legacy) | stop triggers intrabar | `OR_high + tick` |
+| `AT_SIGNAL_BAR_CLOSE` (realistic) | bar must close beyond level | signal-bar close ± slippage |
+
+The engine derives `ORBStrategyConfig.reject_retraced_wick` from the policy, so
+the incoherent combination can no longer arise from a normal engine run. All
+250 repriced entries moved *against* the trader, which is the expected sign for
+a change that removes optimism.
+
+**This materially changes the research conclusion.** On QQQ 2022 `orb_production`
+the expectancy falls from **0.53R to 0.10R** once entries are priced the way
+live actually fills them. The prior number was largely an execution artifact.
+
+That makes "should live place resting stop-market entries instead of market
+orders?" a real strategy question worth roughly **0.43R** of expectancy, not a
+cosmetic one. `orb.py`'s own comments show resting stops were the original QC
+design intent, so live is the side that drifted. Tracked separately; out of
+scope for the research pipeline.
+
 ## 7. Metric Sanity Gates
 
 ### Metric definition normalization (prerequisite)
@@ -1416,7 +1457,7 @@ make the parent inconclusive instead of stitching survivors.
 | --- | --- | --- | --- | --- |
 | P0 | Contracts and identity | **Complete** | `73264f4` | `vibe/research_pipeline/`: `hashing.py`, `lifecycle.py`, `contracts.py`, `identity.py`, `paths.py`, `store.py`. 102 tests. ADR-018. DB path guard keeps the database out of OneDrive. |
 | P1 | Metric normalization | **Complete** | `19b56a3` | Three-way win/loss/breakeven; `expectancy_r` as the direct sample mean; session-based Sharpe replacing a hardcoded 78 bars; drawdown duration in calendar days; trade census (`r_sample_size`, `dropped_trade_count`) on every run; `METRIC_CALCULATION_VERSION = 2`. 23 tests. Frozen against F13 (`7d10441`), which proved the change was metrics-only. |
-| P2 | Execution realism and accounting | **Complete** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be`, `ced4823` | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; all four reconciliation identities implemented and published via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 + 46 tests. Slippage remains uncalibrated — a data limitation, not missing scope; see below. |
+| P2 | Execution realism and accounting | **Complete** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be`, `ced4823`, +E6 | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; all four reconciliation identities implemented and published via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 + 46 tests. **E6 (entry fill price) added 2026-09** after golden triage found live/backtest execution-model drift; goldens deliberately re-frozen, `EXECUTION_MODEL_VERSION = 5`. Slippage remains uncalibrated — a data limitation, not missing scope; see below. |
 | P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
 | P4 | Warmup-aware segment execution | **Complete** | `c89d4ab` | `vibe/research_pipeline/segment_runner.py` plus a `graded_start` boundary in `BacktestEngine.run`. Warmup bars prime indicators, generate no orders, move no cash, and are excluded from the equity curve — which is what scopes every session-based denominator. F3 implemented; 15 tests. Goldens re-frozen with one added diagnostic key and zero changed values. |
 | P5 | Feature declarations and leakage harness | **Complete** | `295882b`, `143846c` | `features/registry.py`, `features/leakage.py`. All 20 `FeatureEngine` features declared; all six §9 checks implemented; F1 and F2 both present, F2 on real QQQ data. **Found and fixed a real look-ahead bug** — see below. 71 tests. |
@@ -1439,8 +1480,23 @@ ORB golden integration tests.
 
 **P2 — Execution realism.** Delivered: E1 intrabar exit ordering, E2
 gap-through fills, E3 undeclared leverage and unbounded cash, E4 cost model
-(commission **and** exit slippage), all four reconciliation identities, and
-fixtures F5-F8 and F10.
+(commission **and** exit slippage), E6 entry fill price, all four
+reconciliation identities, and fixtures F5-F8 and F10.
+
+**E6, added after the fact, is the most consequential of the six.** It was
+found by refusing to re-freeze a red golden without explaining it. The golden
+was neither stale nor a valid regression: a correct-for-live filter merged from
+`main` had been paired with backtest-only stop-trigger fills, and the
+combination inflated QQQ 2022 P&L by 46%. Fixing it properly meant aligning the
+backtest *down* to live, which cut measured expectancy from 0.53R to 0.10R.
+
+Two lessons worth keeping. First, a change that removes optimism must make
+results **worse**; the merged half made them better, which was the signal that
+it was incomplete. Second, the signal gate lived in `vibe/common/strategies/`
+and the fill price in `vibe/backtester/core/`, with no link between them — so a
+change to either silently produced an incoherent model. They now derive from a
+single setting. Nothing yet *prevents* constructing the incoherent pairing
+outside the engine; that guard is still open.
 
 The three identities added in `ced4823` are flat-at-end equity, per-fill cash
 delta, and entry/exit quantity parity. They were deliberately built so they
