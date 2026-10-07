@@ -51,13 +51,22 @@ def _make_orb_context(orb_high: float = 400.0, orb_low: float = 395.0) -> pd.Dat
     return df
 
 
-def _fresh_strategy() -> ORBStrategy:
+def _fresh_strategy(*, reject_retraced_wick: bool = False) -> ORBStrategy:
+    """Build a test strategy.
+
+    Defaults to the resting stop-market model (``reject_retraced_wick=False``),
+    which is what the tests in this module were written to exercise: detection
+    is intrabar, so a bar that crossed the level fires regardless of its close.
+    Pass ``True`` for the live model, where a completed bar is evaluated and a
+    market order is then submitted.
+    """
     cfg = ORBStrategyConfig(
         name="TEST_ORB",
         orb_body_pct_filter=0.0,   # disable body filter so test bars always qualify
         entry_cutoff_time="15:00",
         take_profit_multiplier=2.0,
         stop_loss_at_level=True,
+        reject_retraced_wick=reject_retraced_wick,
     )
     return ORBStrategy(cfg)
 
@@ -188,6 +197,54 @@ def test_intrabar_short_fires_when_close_above_level():
     signal, meta = strat.generate_signal_incremental("QQQ", bar, df)
     assert signal == -1, f"Expected short signal, got {signal}. meta={meta}"
     assert meta.get("signal") == "short_breakout"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.2a (live model) — a retraced wick is not obtainable
+#
+# These are the counterparts to the two tests above. The same bars must produce
+# the opposite answer under the live model, because live evaluates a completed
+# bar and then submits a market order: by then the wick is gone. If both models
+# ever agree on these bars, one of them has stopped being modelled.
+# ---------------------------------------------------------------------------
+
+def test_live_model_rejects_long_wick_that_closed_back_inside():
+    strat = _fresh_strategy(reject_retraced_wick=True)
+    df = _make_orb_context(orb_high=400.0, orb_low=395.0)
+
+    # Identical bar to test_intrabar_long_fires_when_close_below_level.
+    bar = _bar_dict(_ts(9, 40), open_=398.0, high=400.02, low=397.0, close=399.0)
+
+    signal, meta = strat.generate_signal_incremental("QQQ", bar, df)
+    assert signal == 0, f"Expected no signal, got {signal}. meta={meta}"
+    assert meta.get("reason") == "wick_breakout_retraced"
+
+
+def test_live_model_rejects_short_wick_that_closed_back_inside():
+    strat = _fresh_strategy(reject_retraced_wick=True)
+    df = _make_orb_context(orb_high=400.0, orb_low=395.0)
+
+    # Identical bar to test_intrabar_short_fires_when_close_above_level.
+    bar = _bar_dict(_ts(9, 40), open_=397.0, high=398.0, low=394.98, close=396.0)
+
+    signal, meta = strat.generate_signal_incremental("QQQ", bar, df)
+    assert signal == 0, f"Expected no signal, got {signal}. meta={meta}"
+    assert meta.get("reason") == "wick_breakout_retraced"
+
+
+def test_live_model_still_fires_when_the_bar_closes_beyond_the_level():
+    """Guard against the filter rejecting everything.
+
+    A rejection-only test passes just as well if the strategy never signals, so
+    pin a bar that must survive: it closes above the trigger.
+    """
+    strat = _fresh_strategy(reject_retraced_wick=True)
+    df = _make_orb_context(orb_high=400.0, orb_low=395.0)
+
+    bar = _bar_dict(_ts(9, 40), open_=398.0, high=401.0, low=397.0, close=400.5)
+
+    signal, meta = strat.generate_signal_incremental("QQQ", bar, df)
+    assert signal == 1, f"Expected long signal, got {signal}. meta={meta}"
 
 
 # ---------------------------------------------------------------------------
