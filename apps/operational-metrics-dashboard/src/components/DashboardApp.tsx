@@ -15,6 +15,7 @@ import {
   type PnlPresentation,
 } from "@/data/dashboardSelectors";
 import { formatCurrency } from "@/data/formatters";
+import { performanceSummary } from "@/data/performanceSeries";
 import type { DashboardData, Position, PriceBar, StrategyAnnotation, StrategyConfigSummary } from "@/data/types";
 import { EquityCurveChart, TradePnlChart } from "./PerformanceCharts";
 import { PriceChart } from "./PriceChart";
@@ -252,16 +253,23 @@ function SummaryView({ data, realizedPnl, unrealizedPnl, freshnessMinutes, marke
   const { value: pnl, currency: pnlCurrency } = aggregatePnlByCurrency(tradesWithPnl);
   const winners = tradesWithPnl.filter((trade) => Number(trade.pnl) > 0).length;
   const winRate = tradesWithPnl.length ? (winners / tradesWithPnl.length) * 100 : null;
+  const performance = performanceSummary(data.equity, closedTrades);
   return (
     <section className="grid min-w-0 gap-5">
-      <div className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <Metric label="Collected realized P&L (all history)" value={formatCurrency(pnl, pnlCurrency)} tone={pnl === null ? undefined : pnl >= 0 ? "profit" : "loss"} />
-        <Metric label="Closed trades" value={number(closedTrades.length, 0)} />
-        <Metric label="Win rate" value={winRate === null ? "--" : `${number(winRate, 1)}%`} />
-        <Metric label="Net liquidation" value={formatCurrency(netLiquidation.value, netLiquidation.currency)} />
-        <Metric label={realizedPnl.label} value={formatCurrency(realizedPnl.value, realizedPnl.currency)} tone={realizedPnl.value === null ? undefined : realizedPnl.value >= 0 ? "profit" : "loss"} />
-        <Metric label={unrealizedPnl.label} value={formatCurrency(unrealizedPnl.value, unrealizedPnl.currency)} tone={unrealizedPnl.value === null ? undefined : unrealizedPnl.value >= 0 ? "profit" : "loss"} />
-      </div>
+      <Panel title="Performance overview">
+        <div className="grid gap-px overflow-hidden rounded-md border border-[var(--border)] bg-[var(--border)] sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          <PerformanceMetric label="Collected realized P&L" value={formatCurrency(pnl, pnlCurrency)} detail="All history" tone={pnl === null ? undefined : pnl >= 0 ? "profit" : "loss"} />
+          <PerformanceMetric label="Closed trades" value={number(closedTrades.length, 0)} />
+          <PerformanceMetric label="Win rate" value={winRate === null ? "--" : `${number(winRate, 1)}%`} />
+          <PerformanceMetric label="Maximum drawdown" value={performance.maximumDrawdownPct === null ? "--" : `${number(performance.maximumDrawdownPct, 2)}%`} tone={performance.maximumDrawdownPct !== null && performance.maximumDrawdownPct > 0 ? "loss" : undefined} />
+          <PerformanceMetric label="MAR ratio" value={number(performance.marRatio, 2)} detail="Annualized return / max drawdown" />
+          <PerformanceMetric label="Longest losing streak" value={number(performance.longestLosingStreak, 0)} detail="Closed trades" />
+          <PerformanceMetric label="Current losing streak" value={number(performance.currentLosingStreak, 0)} detail="Closed trades" tone={performance.currentLosingStreak > 0 ? "loss" : undefined} />
+          <PerformanceMetric label="Net liquidation" value={formatCurrency(netLiquidation.value, netLiquidation.currency)} />
+          <PerformanceMetric label={realizedPnl.label} value={formatCurrency(realizedPnl.value, realizedPnl.currency)} tone={realizedPnl.value === null ? undefined : realizedPnl.value >= 0 ? "profit" : "loss"} />
+          <PerformanceMetric label={unrealizedPnl.label} value={formatCurrency(unrealizedPnl.value, unrealizedPnl.currency)} tone={unrealizedPnl.value === null ? undefined : unrealizedPnl.value >= 0 ? "profit" : "loss"} />
+        </div>
+      </Panel>
       <OpenPositionsPanel positions={activePositions} />
       <Panel title="Data freshness">
         <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
@@ -573,8 +581,14 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
   return <section className="surface min-w-0 rounded-lg border p-4"><h2 className="mb-4 text-base font-bold">{title}</h2>{children}</section>;
 }
 
-function Metric({ label, value, tone }: { label: string; value: string; tone?: "profit" | "loss" }) {
-  return <div className="surface rounded-lg border p-4"><div className="text-xs font-semibold uppercase text-[var(--muted)]">{label}</div><div className={`mt-2 text-2xl font-bold ${tone === "profit" ? "text-[var(--profit)]" : tone === "loss" ? "text-[var(--loss)]" : ""}`}>{value}</div></div>;
+function PerformanceMetric({ label, value, detail, tone }: { label: string; value: string; detail?: string; tone?: "profit" | "loss" }) {
+  return (
+    <div className="min-w-0 bg-[var(--surface-muted)] p-4">
+      <div className="text-xs font-semibold uppercase leading-5 text-[var(--muted)]">{label}</div>
+      <div className={`mt-1 break-words text-xl font-bold ${tone === "profit" ? "text-[var(--profit)]" : tone === "loss" ? "text-[var(--loss)]" : ""}`}>{value}</div>
+      {detail && <div className="mt-1 text-xs text-[var(--muted)]">{detail}</div>}
+    </div>
+  );
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
