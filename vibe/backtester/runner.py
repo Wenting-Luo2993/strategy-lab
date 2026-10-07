@@ -15,8 +15,23 @@ class RuleSetRunner:
     to keep the strategy's internal state in sync with the portfolio.
     """
 
-    def __init__(self, ruleset: StrategyRuleSet) -> None:
+    def __init__(
+        self,
+        ruleset: StrategyRuleSet,
+        *,
+        reject_retraced_wick: bool = True,
+    ) -> None:
+        """
+        Args:
+            ruleset: Strategy configuration.
+            reject_retraced_wick: Whether a wick breakout that closed back
+                inside the ORB is discarded. This is one half of an execution
+                model and must match how the caller prices the entry fill --
+                see ``EntryFillPolicy``. The default matches live, which is
+                also what ``TradingOrchestrator`` passes.
+        """
         self.ruleset = ruleset
+        self.reject_retraced_wick = reject_retraced_wick
         self.strategy = self._build_strategy(ruleset)
 
     def _build_strategy(self, ruleset: StrategyRuleSet) -> ORBStrategy:
@@ -57,6 +72,7 @@ class RuleSetRunner:
             symbol=symbol,
             current_bar=current_bar,
             df_context=df_context,
+            reject_retraced_wick=self.reject_retraced_wick,
         )
 
     def track_position(

@@ -8,7 +8,11 @@ import pandas as pd
 from vibe.backtester.core.clock import SimulatedClock
 from vibe.backtester.core.fill_simulator import FillSimulator, FillResult
 from vibe.backtester.core.portfolio import PortfolioManager
-from vibe.backtester.core.execution_realism import ExecutionRealismConfig, EXECUTION_MODEL_VERSION
+from vibe.backtester.core.execution_realism import (
+    EntryFillPolicy,
+    ExecutionRealismConfig,
+    EXECUTION_MODEL_VERSION,
+)
 from vibe.backtester.core.reconciliation import reconcile_portfolio
 from vibe.common.risk.position_sizer import PositionSizer
 from vibe.backtester.core.execution.config import ExecutionConfig
@@ -201,7 +205,17 @@ class BacktestEngine:
             trailing_stop_config=trailing_stop_config,
             execution_realism=self.execution_realism,
         )
-        runner = RuleSetRunner(self.ruleset)
+        # The signal gate and the fill price are two halves of one execution
+        # model. Rejecting a retraced wick while still filling at the ORB level
+        # books the breakout price without the exposure that earned it, so the
+        # two are wired from the same setting.
+        entry_at_signal_close = (
+            self.execution_realism.entry_fill_policy
+            is EntryFillPolicy.AT_SIGNAL_BAR_CLOSE
+        )
+        runner = RuleSetRunner(
+            self.ruleset, reject_retraced_wick=entry_at_signal_close
+        )
         
         # Reset pending orders for new backtest
         pending_queue = PendingOrderQueue()
@@ -274,18 +288,38 @@ class BacktestEngine:
                     side = "buy" if signal_value == 1 else "sell"
                     stop_price = metadata.get("stop_loss", bar.close * 0.99)
 
-                    # Entry at stop-market trigger price (OR_high+$0.01 / OR_low-$0.01)
-                    # plus configurable slippage ticks for market impact.
+                    # E5: what price this entry can actually be had at.
+                    # AT_STOP_TRIGGER models a resting stop-market order at
+                    # OR_high+$0.01 / OR_low-$0.01. AT_SIGNAL_BAR_CLOSE models
+                    # the market order live actually submits once the bar that
+                    # produced the signal has completed.
                     _TICK = 0.01
                     slippage = self.slippage_ticks * _TICK
                     orb_high = metadata.get("orb_high")
                     orb_low  = metadata.get("orb_low")
+
+                    stop_trigger: float | None = None
                     if signal_value == 1 and orb_high is not None:
-                        entry_price = orb_high + _TICK + slippage
+                        stop_trigger = orb_high + _TICK + slippage
                     elif signal_value == -1 and orb_low is not None:
-                        entry_price = orb_low - _TICK - slippage
+                        stop_trigger = orb_low - _TICK - slippage
+
+                    pin_to_trigger = (
+                        self.execution_realism.entry_fill_policy
+                        is EntryFillPolicy.AT_STOP_TRIGGER
+                        and stop_trigger is not None
+                    )
+                    if pin_to_trigger:
+                        entry_price = stop_trigger
                     else:
-                        entry_price = bar.close
+                        # Sized on the price the fill simulator will produce
+                        # for a market order on this bar, so the sizing
+                        # decision and the fill agree.
+                        entry_price = (
+                            bar.close + slippage
+                            if side == "buy"
+                            else bar.close - slippage
+                        )
 
                     quantity = self._position_size(
                         capital=portfolio.cash,
@@ -295,7 +329,11 @@ class BacktestEngine:
                     )
                     if quantity > 0:
                         # Create Order with signal_bar_index for latency tracking
-                        order_price_override = entry_price if _use_orb_price_override() else None
+                        order_price_override = (
+                            entry_price
+                            if pin_to_trigger and _use_orb_price_override()
+                            else None
+                        )
                         order = Order(
                             id=f"{symbol}_{ts.timestamp()}",
                             symbol=symbol,
