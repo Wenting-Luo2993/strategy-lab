@@ -818,6 +818,28 @@ honours it, and `optimization.py` already has the seam. It should be closed
 before any further result is produced, and certainly before P11 migrates
 results into the store as though they were trustworthy.
 
+**Resolved (P2b, 2026-10).** All four runners now take an `execution_realism`
+argument and default to `ExecutionRealismConfig.realistic()`. `legacy()` is
+reachable only by asking for it by name, so the optimistic model can no longer
+be selected by omission. Two details that mattered:
+
+- `ParameterSweep._cache_key` now folds in `execution_realism.identity()`.
+  Without that, every cached result produced under `legacy()` would have been
+  served straight back to a `realistic()` sweep and the fix would have been
+  invisible.
+- `ParameterSweep._build_engine` was extracted purely so the construction site
+  could be pinned by a test. E7 *was* a forgotten keyword at a construction
+  site buried in an async loop; leaving it buried invites the same bug back.
+
+The regression tests spy on engine construction rather than asserting on the
+runner's own attribute, because the bug was never a missing attribute — it was
+an attribute that existed and was never passed on. Reverting any of the three
+mechanisms fails them.
+
+Note that stored sweep, fold, and robustness results predating this change were
+produced under `legacy()` and are not comparable to anything produced after it.
+They should be regenerated before being used for selection.
+
 Related: two execution configuration types coexist — `ExecutionRealismConfig`
 (`core/execution_realism.py:157`) and `ExecutionConfig`
 (`core/execution/config.py`). The engine accepts both, independently. Their
@@ -1544,7 +1566,7 @@ make the parent inconclusive instead of stitching survivors.
 | P5b | Cross-sectional universe | **Complete** | `1bc8068` | `vibe/research_pipeline/universe.py`. Pooled **and** per-symbol metrics with dispersion; failing members recorded rather than dropped; zero-trade members are silent, not zero; `universe_hash` and survivorship badge stamped. 34 unit + 12 real-engine tests. Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
 | P6 | Validation gates and lifecycle | **Complete** | `c808710` | `validation.py`: validation profiles, candidate-scoped plausibility and acceptance rules, one-pass findings across every declared category, required leakage evidence and registry-hash drift detection. SQLite migration 2 adds durable validation reports and execution leases; `RUNNING` requires a lease, heartbeats are token-owned, stale leases become `EXECUTION_FAILED`, and direct `VALIDATING -> COMPLETED` transitions are rejected in both Python and SQLite. 50 focused tests plus 585 research-pipeline and 322 backtester regressions. |
 | P7 | SQLite store and importer | **Complete** | `1ccf7a4`, `f46ee74`, `6070d80` | Forward-only schema v3 upgrades v1 databases after P6's validation/lease migration; terminal UPDATE/DELETE triggers; UUIDv7 IDs; `run_evidence`; outbox; deterministic importer and F11 over all 98 checked-in records/158 relationships; canonical tree hash parity; `legacy-uncontrolled` stamping; unusable-until-rebaselined absolute metrics; legacy artifact path preservation/normalization; registry and artifact dual-write with rollback; same-fingerprint concurrent-writer convergence. |
-| P2b | Thread execution realism into every runner | **Not started** — *blocks everything downstream* | — | E7. `ParameterSweep`, `WalkForwardEngine`, `RobustnessAnalyzer`, and P9's `RulesetSegmentExecutor` all construct `BacktestEngine` without `execution_realism`, so every sweep, fold, and trial silently runs `legacy()` — the model E6 proved inflates P&L by 46%. E1-E6 currently affect only direct engine runs and the goldens. |
+| P2b | Thread execution realism into every runner | **Done** (2026-10) | `vibe/tests/backtester/test_realism_threading.py` (8) | E7 closed. `ParameterSweep`, `WalkForwardEngine`, `RobustnessAnalyzer` and P9's `RulesetSegmentExecutor` now accept `execution_realism` and default to `realistic()`; `legacy()` is opt-in. Sweep cache key includes the execution identity, so pre-E7 cached results can no longer be served. Threading is pinned by engine-construction spies, mutation-checked. |
 | P8 | Local MJS viewer | **Not started** | — | || P9 | Optimizer/selector seam and nested walk-forward | **Complete** | `72a05e0` | `optimization.py`: pure injected `Optimizer.fit` and `Selector.select`, a concrete fresh-engine ruleset adapter, canonical grid identities, exact candidate counts, P6 `SWEEP_ROW`/`CANDIDATE` validation scopes, and deterministic connected-plateau medoid selection with signed margin. `walk_forward.py`: session-contamination audit (F9), per-fold train/validation/test control flow, frozen candidate evaluation, explicit inconclusive failure semantics, and chronological all-fold OOS stitching that preserves per-fold dollar P&L. |
 | P10 | Final-holdout lock | **Complete** | `29eaa04` | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader` and was verified to block a real 2025 engine run and a straddling 2019→2026 run. 39 tests. Promotion-blocking on touch count > 1 is the one deferred part, and needs P11's registry. |
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
