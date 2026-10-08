@@ -727,7 +727,8 @@ Resolution: `ExecutionRealismConfig.entry_fill_policy` now drives *both* halves.
 | | signal gate | fill price |
 | --- | --- | --- |
 | `AT_STOP_TRIGGER` (legacy) | stop triggers intrabar | `OR_high + tick` |
-| `AT_SIGNAL_BAR_CLOSE` (realistic) | bar must close beyond level | signal-bar close ± slippage |
+| `AT_SIGNAL_BAR_CLOSE` | bar must close beyond level | signal-bar close ± slippage |
+| `AT_NEXT_BAR_OPEN` (realistic) | bar must close beyond level | *next* bar's open ± slippage |
 
 The engine derives the strategy's `reject_retraced_wick` gate from the policy,
 so the incoherent combination can no longer arise from a normal engine run.
@@ -735,12 +736,48 @@ Live opts into the same gate explicitly in `TradingOrchestrator`. All
 250 repriced entries moved *against* the trader, which is the expected sign for
 a change that removes optimism.
 
+#### Why the default is `AT_NEXT_BAR_OPEN`, not `AT_SIGNAL_BAR_CLOSE`
+
+`AT_SIGNAL_BAR_CLOSE` fixed the large error but kept a smaller one: it assumes
+zero reaction time. The signal is only knowable once the bar has *completed*,
+so the close has already happened by the time the order exists. The earliest
+price a market order can actually obtain is the next bar's open. That is one
+bar of delay rather than the hours the original defect granted, but it is still
+a price that was not available.
+
+Two properties are worth stating plainly, because they differ from E1–E4:
+
+- **It is not a strict penalty.** A breakout that keeps running fills worse at
+  the next open; one that fades fills better. On QQQ 2022, 85 entries got worse
+  and 65 got better. Expectancy *rose* from 0.1010R to 0.1704R. A realism fix
+  moving the number favourably is not evidence it is wrong — the sign of this
+  one is genuinely indeterminate, unlike slippage or commission.
+- **Signals on a session's last bar are dropped.** The row after a session's
+  final bar is the next morning's open. Filling there would hand the entry an
+  overnight gap, reintroducing exactly the free option E6 removes. Such signals
+  become no trade at all. On QQQ 2022 this dropped zero signals, since
+  `entry_cutoff_time` is 15:00, so the guard is pinned by unit test rather than
+  by the data.
+
+Implementation note: the engine passes the fill simulator a bar whose `close`
+is the next bar's *open*, leaving high/low/volume real. Every fill path already
+prices market orders off `close`, so both simulators fill at the open without
+either needing to know the policy exists, while slippage and volume caps still
+see the true bar. `FillSimulator`'s own `fill_mode=1` next-bar switch was
+deleted in the same change: no caller ever passed `next_bar`, so it was
+unreachable, and keeping it would have left two places deciding one thing.
+
+`EXECUTION_MODEL_VERSION` is now **6**. Goldens were re-frozen deliberately:
+STOP exits 699 → 779, EOD 558 → 478, total costs 3,233.59 → 3,087.87. Entries
+now sit nearer the stop, so more positions stop out and fewer survive to the
+close.
+
 **This materially changes the research conclusion.** On QQQ 2022 `orb_production`
-the expectancy falls from **0.53R to 0.10R** once entries are priced the way
+the expectancy falls from **0.53R to 0.17R** once entries are priced the way
 live actually fills them. The prior number was largely an execution artifact.
 
 That makes "should live place resting stop-market entries instead of market
-orders?" a real strategy question worth roughly **0.43R** of expectancy, not a
+orders?" a real strategy question worth roughly **0.36R** of expectancy, not a
 cosmetic one. `orb.py`'s own comments show resting stops were the original QC
 design intent, so live is the side that drifted. Tracked separately; out of
 scope for the research pipeline.
@@ -1458,7 +1495,7 @@ make the parent inconclusive instead of stitching survivors.
 | --- | --- | --- | --- | --- |
 | P0 | Contracts and identity | **Complete** | `73264f4` | `vibe/research_pipeline/`: `hashing.py`, `lifecycle.py`, `contracts.py`, `identity.py`, `paths.py`, `store.py`. 102 tests. ADR-018. DB path guard keeps the database out of OneDrive. |
 | P1 | Metric normalization | **Complete** | `19b56a3` | Three-way win/loss/breakeven; `expectancy_r` as the direct sample mean; session-based Sharpe replacing a hardcoded 78 bars; drawdown duration in calendar days; trade census (`r_sample_size`, `dropped_trade_count`) on every run; `METRIC_CALCULATION_VERSION = 2`. 23 tests. Frozen against F13 (`7d10441`), which proved the change was metrics-only. |
-| P2 | Execution realism and accounting | **Complete** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be`, `ced4823`, +E6 | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; all four reconciliation identities implemented and published via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 + 46 tests. **E6 (entry fill price) added 2026-09** after golden triage found live/backtest execution-model drift; goldens deliberately re-frozen, `EXECUTION_MODEL_VERSION = 5`. Slippage remains uncalibrated — a data limitation, not missing scope; see below. |
+| P2 | Execution realism and accounting | **Complete** | `f84c34f`, `3955621`, `fa43842`, `17dacfc`, `42cc3be`, `ced4823`, +E6 | E1-E4 closed and reachable from a normal engine run; commission and exit slippage both modelled and reported separately; all four reconciliation identities implemented and published via `BacktestResult.execution_diagnostics`. ADR-019. 67 + 72 + 46 tests. **E6 (entry fill price) added 2026-09** after golden triage found live/backtest execution-model drift; extended the same month with `AT_NEXT_BAR_OPEN`, now the `realistic()` default, so entries pay the first price a market order could actually obtain. Goldens deliberately re-frozen twice, `EXECUTION_MODEL_VERSION = 6`. Slippage remains uncalibrated — a data limitation, not missing scope; see below. |
 | P3 | Session calendar and manifest planner | **Complete** | `f84c34f` | `splits/calendar.py`, `splits/planner.py`. Purge/embargo/warmup derived from declared horizons; manifest hash; rejection rules. 34 tests. |
 | P4 | Warmup-aware segment execution | **Complete** | `c89d4ab` | `vibe/research_pipeline/segment_runner.py` plus a `graded_start` boundary in `BacktestEngine.run`. Warmup bars prime indicators, generate no orders, move no cash, and are excluded from the equity curve — which is what scopes every session-based denominator. F3 implemented; 15 tests. Goldens re-frozen with one added diagnostic key and zero changed values. |
 | P5 | Feature declarations and leakage harness | **Complete** | `295882b`, `143846c` | `features/registry.py`, `features/leakage.py`. All 20 `FeatureEngine` features declared; all six §9 checks implemented; F1 and F2 both present, F2 on real QQQ data. **Found and fixed a real look-ahead bug** — see below. 71 tests. |
