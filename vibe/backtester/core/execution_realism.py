@@ -20,7 +20,8 @@ are invisible in the output:
   mismatch is not academic: with the stale-wick filter active it lets an entry
   be deferred by up to three hours and still fill at the original breakout
   price, skipping the adverse excursion in between. On QQQ 2022 that is worth
-  +46% of net P&L.
+  +46% of net P&L. The realistic profile now fills at the *next* bar's open,
+  the first price that actually exists once the decision has been made.
 
 Following ADR-015 (default legacy, explicit realistic opt-in), none of these
 change unless a caller opts in. Existing research remains bit-comparable.
@@ -66,7 +67,11 @@ __all__ = [
 #
 # Version 5 adds E6, the entry fill price. Versions 1-4 filled every ORB entry
 # at the stop-market trigger price regardless of when the signal fired.
-EXECUTION_MODEL_VERSION = 5
+#
+# Version 6 moves the realistic entry fill to the next bar's open. Version 5
+# filled at the signal bar's own close, which assumes the bot reacts to a
+# completed bar in zero time and still gets its closing print.
+EXECUTION_MODEL_VERSION = 6
 
 
 class IntrabarExitResolution(str, Enum):
@@ -104,9 +109,11 @@ class GapFillPolicy(str, Enum):
 class EntryFillPolicy(str, Enum):
     """What price an ORB entry fills at.
 
-    The two options model two different orders, and the choice must match what
-    the live system actually submits. ``ORBStrategy`` is shared between the
+    Each option models a different order, and the choice must match what the
+    live system actually submits. ``ORBStrategy`` is shared between the
     backtester and the live bot, so a mismatch here is silent.
+
+    The options are ordered from most to least optimistic.
     """
 
     AT_STOP_TRIGGER = "at_stop_trigger"
@@ -117,10 +124,29 @@ class EntryFillPolicy(str, Enum):
     because the fill price does not move with the delay."""
 
     AT_SIGNAL_BAR_CLOSE = "at_signal_bar_close"
-    """Fill around the close of the bar that produced the signal, plus
-    slippage. This is what live does: ``TradeExecutor`` submits a market order
-    after a completed bar, so the obtainable price is wherever the market is
-    then -- not where the breakout level sits."""
+    """Fill at the close of the bar that produced the signal, plus slippage.
+
+    Closer to live than ``AT_STOP_TRIGGER``, but still assumes a reaction time
+    of zero: the closing print is the last trade of a bar the bot has not
+    finished evaluating yet, so it is not actually obtainable. Retained as an
+    option because it isolates the effect of entry *timing* from the effect of
+    entry *delay*."""
+
+    AT_NEXT_BAR_OPEN = "at_next_bar_open"
+    """Fill at the open of the bar *after* the signal bar, plus slippage.
+
+    This is the first price that genuinely exists after the decision is made.
+    Live evaluates a completed bar, submits a market order, and fills shortly
+    afterwards -- which lands at or just after the next bar's open.
+
+    Unlike E1-E4, this is not a strict penalty. A breakout that keeps running
+    fills worse here, one that immediately fades fills better. It is adopted
+    because it is *correct*, not because it is conservative.
+
+    An entry whose signal bar is the last bar of its session is dropped: there
+    is no next bar in that session to fill at, and carrying the fill across the
+    overnight gap would reintroduce exactly the kind of free option E6 exists
+    to remove."""
 
 
 class BuyingPowerError(RuntimeError):
@@ -182,7 +208,7 @@ class ExecutionRealismConfig:
         return cls(
             intrabar_exit_resolution=IntrabarExitResolution.CONSERVATIVE,
             gap_fill_policy=GapFillPolicy.AT_OPEN,
-            entry_fill_policy=EntryFillPolicy.AT_SIGNAL_BAR_CLOSE,
+            entry_fill_policy=EntryFillPolicy.AT_NEXT_BAR_OPEN,
             enforce_buying_power=True,
             max_gross_leverage=max_gross_leverage,
             commission_model=(

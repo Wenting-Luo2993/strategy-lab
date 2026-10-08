@@ -30,6 +30,41 @@ from vibe.common.models.bar import Bar
 from vibe.common.ruleset.models import StrategyRuleSet
 
 
+def _next_session_bar(
+    df: pd.DataFrame, idx: int, session_date: date
+) -> Optional[Bar]:
+    """The next bar, shaped so that filling against it fills at its open.
+
+    E6 ``AT_NEXT_BAR_OPEN`` fills here. ``close`` is deliberately set to the
+    next bar's *open*: every fill path prices a market order off ``close``, so
+    this makes both the legacy simulator and the ExecutionConfig simulator fill
+    at the open without either needing to know about the policy. High, low, and
+    volume stay real so slippage, volume caps, and clamping still see the true
+    bar.
+
+    Returns None when there is no next bar, or when the next row belongs to
+    another session. That guard matters: the row after the last bar of a day is
+    the next morning's open, and filling there would hand the entry an
+    overnight gap it could never have traded -- reintroducing exactly the
+    free-option bug this policy exists to remove.
+    """
+    if idx + 1 >= len(df):
+        return None
+    next_ts = df.index[idx + 1]
+    if next_ts.date() != session_date:
+        return None
+    next_row = df.iloc[idx + 1]
+    next_open = float(next_row["open"])
+    return Bar(
+        timestamp=next_ts.to_pydatetime(),
+        open=next_open,
+        high=float(next_row["high"]),
+        low=float(next_row["low"]),
+        close=next_open,
+        volume=float(next_row["volume"]),
+    )
+
+
 def _resample(df: pd.DataFrame, interval: str = "5min") -> pd.DataFrame:
     return df.resample(interval, closed="left", label="left").agg(
         open=("open", "first"),
@@ -227,8 +262,8 @@ class BacktestEngine:
         prev_date = None
         bar_index = 0  # Track bar index for latency support
         warmup_sessions_seen: set[date] = set()
-        
-        for ts, row in df.iterrows():
+
+        for i, (ts, row) in enumerate(df.iterrows()):
             clock.set_time(ts.to_pydatetime())
             current_date = ts.date()
 
@@ -288,15 +323,18 @@ class BacktestEngine:
                     side = "buy" if signal_value == 1 else "sell"
                     stop_price = metadata.get("stop_loss", bar.close * 0.99)
 
-                    # E5: what price this entry can actually be had at.
+                    # E6: what price this entry can actually be had at.
                     # AT_STOP_TRIGGER models a resting stop-market order at
                     # OR_high+$0.01 / OR_low-$0.01. AT_SIGNAL_BAR_CLOSE models
-                    # the market order live actually submits once the bar that
-                    # produced the signal has completed.
+                    # an instant reaction to the completed bar. AT_NEXT_BAR_OPEN
+                    # models what live really does: evaluate the completed bar,
+                    # submit a market order, fill at the next obtainable price.
                     _TICK = 0.01
                     slippage = self.slippage_ticks * _TICK
                     orb_high = metadata.get("orb_high")
                     orb_low  = metadata.get("orb_low")
+
+                    policy = self.execution_realism.entry_fill_policy
 
                     stop_trigger: float | None = None
                     if signal_value == 1 and orb_high is not None:
@@ -305,20 +343,33 @@ class BacktestEngine:
                         stop_trigger = orb_low - _TICK - slippage
 
                     pin_to_trigger = (
-                        self.execution_realism.entry_fill_policy
-                        is EntryFillPolicy.AT_STOP_TRIGGER
+                        policy is EntryFillPolicy.AT_STOP_TRIGGER
                         and stop_trigger is not None
                     )
+
+                    entry_bar = bar
+                    if policy is EntryFillPolicy.AT_NEXT_BAR_OPEN:
+                        next_bar = _next_session_bar(df, i, current_date)
+                        if next_bar is None:
+                            # No bar left in this session to fill against, so
+                            # this signal simply does not become a trade.
+                            signal_value = 0
+                        else:
+                            entry_bar = next_bar
+
+                if signal_value in (1, -1):
                     if pin_to_trigger:
                         entry_price = stop_trigger
                     else:
-                        # Sized on the price the fill simulator will produce
-                        # for a market order on this bar, so the sizing
-                        # decision and the fill agree.
+                        # Sized on the price the fill simulator will produce,
+                        # so the sizing decision and the fill agree.
+                        # ``entry_bar.close`` is this bar's close under
+                        # AT_SIGNAL_BAR_CLOSE and the next bar's open under
+                        # AT_NEXT_BAR_OPEN.
                         entry_price = (
-                            bar.close + slippage
+                            entry_bar.close + slippage
                             if side == "buy"
-                            else bar.close - slippage
+                            else entry_bar.close - slippage
                         )
 
                     quantity = self._position_size(
@@ -350,6 +401,7 @@ class BacktestEngine:
                         pending_order_meta[order.id] = {
                             "stop_loss": stop_price,
                             "take_profit": metadata.get("take_profit"),
+                            "fill_bar": entry_bar,
                         }
 
             # Execute all orders eligible for this bar based on configured latency.
@@ -360,6 +412,11 @@ class BacktestEngine:
 
             for order in eligible_orders:
                 fill_result = None
+
+                # Under AT_NEXT_BAR_OPEN the order fills against the bar after
+                # the signal, not the signal bar. Default to the current bar so
+                # every other policy is unaffected.
+                fill_bar = pending_order_meta.get(order.id, {}).get("fill_bar", bar)
 
                 if execution_sim is not None:
                     # Align daily ADV lookup key with ADV series index dtype/timezone.
@@ -374,7 +431,7 @@ class BacktestEngine:
 
                     fill = execution_sim.execute_order(
                         order=order,
-                        bar=bar,
+                        bar=fill_bar,
                         adv=current_adv,
                     )
                     if fill is not None:
@@ -393,7 +450,7 @@ class BacktestEngine:
                         order.symbol,
                         order.side,
                         order.size,
-                        bar,
+                        fill_bar,
                         price_override=order.price_override,
                     )
 
