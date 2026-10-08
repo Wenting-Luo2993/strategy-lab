@@ -782,7 +782,49 @@ cosmetic one. `orb.py`'s own comments show resting stops were the original QC
 design intent, so live is the side that drifted. Tracked separately; out of
 scope for the research pipeline.
 
+### E7. Execution realism never reaches sweeps, walk-forward, or robustness (found 2026-10)
+
+E1-E6 are all reachable from `BacktestEngine`, and the goldens exercise them.
+But `BacktestEngine.execution_realism` defaults to `ExecutionRealismConfig.legacy()`
+(`core/engine.py:138`), and **every multi-run analysis constructs the engine
+without passing one**:
+
+| Caller | Line | Passes realism? |
+| --- | --- | --- |
+| `ParameterSweep` | `analysis/parameter_sweep.py:442` | No |
+| `WalkForwardEngine` | `analysis/walk_forward.py:167` | No |
+| `RobustnessAnalyzer` (baseline) | `analysis/robustness.py:137` | No |
+| `RobustnessAnalyzer` (per-trial) | `analysis/robustness.py:228` | No |
+| `RulesetSegmentExecutor` (P9) | `research_pipeline/optimization.py:88` | Only if the caller supplies `engine_kwargs`; nothing does |
+
+Neither `ParameterSweep.__init__` nor `WalkForwardEngine.__init__` even accepts
+an execution-realism argument, so a caller cannot opt in without editing the
+class.
+
+The consequence is that every sweep, walk-forward fold, and robustness trial
+runs under `legacy()`: pinned `AT_STOP_TRIGGER` entry fills, no commission, no
+exit slippage, no buying-power enforcement, and optimistic intrabar exit
+resolution. That is precisely the model E6 proved inflates QQQ 2022 P&L by 46%
+and overstates expectancy by roughly 0.36R.
+
+**So the realism work does not currently affect any result produced by the
+research path.** Only direct `BacktestEngine` runs and the goldens see it. P9's
+nested walk-forward — the increment whose entire purpose is a trustworthy
+out-of-sample number — selects and evaluates candidates under the optimistic
+model.
+
+This is a wiring defect, not missing design: the config exists, the engine
+honours it, and `optimization.py` already has the seam. It should be closed
+before any further result is produced, and certainly before P11 migrates
+results into the store as though they were trustworthy.
+
+Related: two execution configuration types coexist — `ExecutionRealismConfig`
+(`core/execution_realism.py:157`) and `ExecutionConfig`
+(`core/execution/config.py`). The engine accepts both, independently. Their
+relationship is undocumented and nothing prevents a contradictory pair.
+
 ## 7. Metric Sanity Gates
+
 
 ### Metric definition normalization (prerequisite)
 
@@ -1502,8 +1544,8 @@ make the parent inconclusive instead of stitching survivors.
 | P5b | Cross-sectional universe | **Complete** | `1bc8068` | `vibe/research_pipeline/universe.py`. Pooled **and** per-symbol metrics with dispersion; failing members recorded rather than dropped; zero-trade members are silent, not zero; `universe_hash` and survivorship badge stamped. 34 unit + 12 real-engine tests. Scope correction: the usable universe is **5 symbols** (AMZN, GOOGL, MSFT, QQQ, TSLA), not the 25+ originally assumed. |
 | P6 | Validation gates and lifecycle | **Complete** | `c808710` | `validation.py`: validation profiles, candidate-scoped plausibility and acceptance rules, one-pass findings across every declared category, required leakage evidence and registry-hash drift detection. SQLite migration 2 adds durable validation reports and execution leases; `RUNNING` requires a lease, heartbeats are token-owned, stale leases become `EXECUTION_FAILED`, and direct `VALIDATING -> COMPLETED` transitions are rejected in both Python and SQLite. 50 focused tests plus 585 research-pipeline and 322 backtester regressions. |
 | P7 | SQLite store and importer | **Complete** | `1ccf7a4`, `f46ee74`, `6070d80` | Forward-only schema v3 upgrades v1 databases after P6's validation/lease migration; terminal UPDATE/DELETE triggers; UUIDv7 IDs; `run_evidence`; outbox; deterministic importer and F11 over all 98 checked-in records/158 relationships; canonical tree hash parity; `legacy-uncontrolled` stamping; unusable-until-rebaselined absolute metrics; legacy artifact path preservation/normalization; registry and artifact dual-write with rollback; same-fingerprint concurrent-writer convergence. |
-| P8 | Local MJS viewer | **Not started** | — | |
-| P9 | Optimizer/selector seam and nested walk-forward | **Complete** | `72a05e0` | `optimization.py`: pure injected `Optimizer.fit` and `Selector.select`, a concrete fresh-engine ruleset adapter, canonical grid identities, exact candidate counts, P6 `SWEEP_ROW`/`CANDIDATE` validation scopes, and deterministic connected-plateau medoid selection with signed margin. `walk_forward.py`: session-contamination audit (F9), per-fold train/validation/test control flow, frozen candidate evaluation, explicit inconclusive failure semantics, and chronological all-fold OOS stitching that preserves per-fold dollar P&L. |
+| P2b | Thread execution realism into every runner | **Not started** — *blocks everything downstream* | — | E7. `ParameterSweep`, `WalkForwardEngine`, `RobustnessAnalyzer`, and P9's `RulesetSegmentExecutor` all construct `BacktestEngine` without `execution_realism`, so every sweep, fold, and trial silently runs `legacy()` — the model E6 proved inflates P&L by 46%. E1-E6 currently affect only direct engine runs and the goldens. |
+| P8 | Local MJS viewer | **Not started** | — | || P9 | Optimizer/selector seam and nested walk-forward | **Complete** | `72a05e0` | `optimization.py`: pure injected `Optimizer.fit` and `Selector.select`, a concrete fresh-engine ruleset adapter, canonical grid identities, exact candidate counts, P6 `SWEEP_ROW`/`CANDIDATE` validation scopes, and deterministic connected-plateau medoid selection with signed margin. `walk_forward.py`: session-contamination audit (F9), per-fold train/validation/test control flow, frozen candidate evaluation, explicit inconclusive failure semantics, and chronological all-fold OOS stitching that preserves per-fold dollar P&L. |
 | P10 | Final-holdout lock | **Complete** | `29eaa04` | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader` and was verified to block a real 2025 engine run and a straddling 2019→2026 run. 39 tests. Promotion-blocking on touch count > 1 is the one deferred part, and needs P11's registry. |
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
 | P11 | Registry migration to `ResearchStore` | **Not started** | — | |
@@ -1526,7 +1568,7 @@ found by refusing to re-freeze a red golden without explaining it. The golden
 was neither stale nor a valid regression: a correct-for-live filter merged from
 `main` had been paired with backtest-only stop-trigger fills, and the
 combination inflated QQQ 2022 P&L by 46%. Fixing it properly meant aligning the
-backtest *down* to live, which cut measured expectancy from 0.53R to 0.10R.
+backtest *down* to live, which cut measured expectancy from 0.53R to 0.17R.
 
 Two lessons worth keeping. First, a change that removes optimism must make
 results **worse**; the merged half made them better, which was the signal that
