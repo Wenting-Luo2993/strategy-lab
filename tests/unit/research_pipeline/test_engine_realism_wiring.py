@@ -22,6 +22,7 @@ from vibe.backtester.core.exit_slippage import FixedTickExitSlippage
 from vibe.backtester.core.execution_realism import (
     EXECUTION_MODEL_VERSION,
     BuyingPowerError,
+    EntryFillPolicy,
     ExecutionRealismConfig,
     GapFillPolicy,
     IntrabarExitResolution,
@@ -210,11 +211,21 @@ class TestEndToEndReporting:
 
     @staticmethod
     def _gating_only() -> ExecutionRealismConfig:
-        """Realistic execution with E4 costs switched off."""
+        """Realistic execution with E4 costs *and* E6 entry fills switched off.
+
+        Isolating the buying-power half means stripping everything else
+        ``realistic()`` bundles. Costs are the obvious one. The less obvious
+        one is ``entry_fill_policy``: since E6, ``realistic()`` fills at the
+        next bar's open rather than the stop trigger, which moves the entry
+        price and therefore the R-multiple. Leaving it in would make this test
+        measure gating *and* entry timing while claiming to measure only
+        gating.
+        """
         return replace(
             ExecutionRealismConfig.realistic(),
             commission_model=CommissionModel.zero(),
             exit_slippage=FixedTickExitSlippage.zero(),
+            entry_fill_policy=EntryFillPolicy.AT_STOP_TRIGGER,
         )
 
     def test_costs_reduce_expectancy(self):
