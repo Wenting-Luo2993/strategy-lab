@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from vibe.backtester.core.engine import BacktestEngine
+from vibe.backtester.core.execution_realism import ExecutionRealismConfig
 from vibe.backtester.analysis.metrics import BacktestResult
 from vibe.backtester.data.paths import resolve_market_data_dir
 from vibe.common.ruleset.models import StrategyRuleSet
@@ -100,11 +101,13 @@ class RobustnessAnalyzer:
         data_dir: Path | str | None = None,
         initial_capital: float = 10_000.0,
         baseline_slippage_ticks: int = 5,
+        execution_realism: ExecutionRealismConfig | None = None,
     ):
         self.ruleset = ruleset
         self.data_dir = resolve_market_data_dir(data_dir)
         self.initial_capital = initial_capital
         self.baseline_slippage_ticks = baseline_slippage_ticks
+        self.execution_realism = execution_realism or ExecutionRealismConfig.realistic()
     
     def analyze(
         self,
@@ -139,6 +142,7 @@ class RobustnessAnalyzer:
             data_dir=self.data_dir,
             initial_capital=self.initial_capital,
             slippage_ticks=self.baseline_slippage_ticks,
+            execution_realism=self.execution_realism,
         )
         
         baseline_result = baseline_engine.run(
@@ -230,6 +234,7 @@ class RobustnessAnalyzer:
                 data_dir=self.data_dir,
                 initial_capital=self.initial_capital,
                 slippage_ticks=int(slippage),
+                execution_realism=self.execution_realism,
             )
             
             result = engine.run(

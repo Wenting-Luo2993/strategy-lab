@@ -18,6 +18,7 @@ import yaml
 
 from vibe.backtester.analysis.metrics import BacktestResult
 from vibe.backtester.core.engine import BacktestEngine
+from vibe.backtester.core.execution_realism import ExecutionRealismConfig
 from vibe.backtester.data.paths import resolve_market_data_dir
 from vibe.common.ruleset.models import StrategyRuleSet
 from vibe.research_pipeline.contracts import SessionSegment
@@ -81,6 +82,12 @@ class RulesetSegmentExecutor:
         self._parameter_paths = dict(parameter_paths)
         self._warmup_sessions = warmup_sessions
         self._engine_kwargs = dict(engine_kwargs or {})
+        # P9 selects and evaluates candidates out-of-sample, so it must not
+        # inherit BacktestEngine's optimistic legacy() default by omission.
+        # An explicit engine_kwargs entry still wins.
+        self._engine_kwargs.setdefault(
+            "execution_realism", ExecutionRealismConfig.realistic()
+        )
         if engine_factory is not None:
             self._engine_factory = engine_factory
         else:

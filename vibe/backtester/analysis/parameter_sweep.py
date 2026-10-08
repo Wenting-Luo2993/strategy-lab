@@ -17,6 +17,7 @@ import pandas as pd
 import yaml
 
 from vibe.backtester.core.engine import BacktestEngine, _resample
+from vibe.backtester.core.execution_realism import ExecutionRealismConfig
 from vibe.backtester.analysis.metrics import BacktestResult
 from vibe.backtester.analysis.regime_research.features import FeatureEngine
 from vibe.backtester.analysis.scoring import composite_score, calculate_tail_ratio
@@ -146,6 +147,7 @@ class ParameterSweep:
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 5,
         sweep_mode: str = "one_at_a_time",
+        execution_realism: ExecutionRealismConfig | None = None,
     ):
         """
         Initialize parameter sweep.
@@ -158,6 +160,12 @@ class ParameterSweep:
             initial_capital: Starting capital for each backtest
             slippage_ticks: Slippage simulation (ticks)
             sweep_mode: "one_at_a_time" (vary one param at a time) or "grid" (Cartesian product)
+            execution_realism: Execution model for every run in the sweep.
+                Defaults to ``ExecutionRealismConfig.realistic()``. Pass
+                ``legacy()`` explicitly to reproduce pre-E7 results -- it is
+                deliberately not the default, because a sweep that silently
+                fills at the stop trigger with no commission overstates
+                expectancy enough to change which parameters look best.
         """
         self.base_ruleset_path = Path(base_ruleset_path)
         self.data_dir = resolve_market_data_dir(data_dir)
@@ -165,6 +173,7 @@ class ParameterSweep:
         self.initial_capital = initial_capital
         self.slippage_ticks = slippage_ticks
         self.sweep_mode = sweep_mode
+        self.execution_realism = execution_realism or ExecutionRealismConfig.realistic()
         
         if sweep_mode not in ("one_at_a_time", "grid"):
             raise ValueError(f"Invalid sweep_mode: {sweep_mode}. Must be 'one_at_a_time' or 'grid'")
@@ -223,6 +232,21 @@ class ParameterSweep:
         
         return features
     
+    def _build_engine(self, ruleset: StrategyRuleSet) -> BacktestEngine:
+        """Construct the engine for one sweep point.
+
+        Extracted so the execution model can be pinned by test: it sits inside
+        an async loop otherwise, and E7 was exactly the failure of forgetting
+        to pass ``execution_realism`` at a construction site like this one.
+        """
+        return BacktestEngine(
+            ruleset=ruleset,
+            data_dir=self.data_dir,
+            initial_capital=self.initial_capital,
+            slippage_ticks=self.slippage_ticks,
+            execution_realism=self.execution_realism,
+        )
+
     def _cache_key(
         self, 
         params: Dict[str, Any], 
@@ -251,7 +275,8 @@ class ParameterSweep:
             f"{end_date.isoformat()}_"
             f"{sorted_params}_"
             f"capital_{self.initial_capital}_"
-            f"slippage_{self.slippage_ticks}"
+            f"slippage_{self.slippage_ticks}_"
+            f"exec_{sorted(self.execution_realism.identity().items())}"
         )
         return hashlib.md5(key_string.encode()).hexdigest()
     
@@ -439,12 +464,7 @@ class ParameterSweep:
                     ruleset = self._create_modified_ruleset(params)
                     
                     # Run backtest with pre-computed features
-                    engine = BacktestEngine(
-                        ruleset=ruleset,
-                        data_dir=self.data_dir,
-                        initial_capital=self.initial_capital,
-                        slippage_ticks=self.slippage_ticks,
-                    )
+                    engine = self._build_engine(ruleset)
                     
                     result = engine.run(
                         symbol=symbol,
