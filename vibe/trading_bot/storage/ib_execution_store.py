@@ -65,6 +65,10 @@ class IBExecutionStore:
                 strategy_stop_price REAL,
                 take_profit REAL,
                 exit_reason TEXT,
+                entry_cancel_after_seconds REAL,
+                entry_expiry_bars INTEGER,
+                entry_signal_bar_timestamp TEXT,
+                entry_bar_interval_seconds REAL,
                 benchmark_version INTEGER NOT NULL DEFAULT 2,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -111,6 +115,10 @@ class IBExecutionStore:
                 "strategy_stop_price": "REAL",
                 "take_profit": "REAL",
                 "exit_reason": "TEXT",
+                "entry_cancel_after_seconds": "REAL",
+                "entry_expiry_bars": "INTEGER",
+                "entry_signal_bar_timestamp": "TEXT",
+                "entry_bar_interval_seconds": "REAL",
                 "benchmark_version": "INTEGER NOT NULL DEFAULT 1",
                 "created_at": "TEXT",
                 "updated_at": "TEXT",
@@ -157,8 +165,10 @@ class IBExecutionStore:
                     quantity, order_type, submitted_at, decision_at, benchmark_type,
                     benchmark_price, quote_bid, quote_ask, quote_midpoint, stop_price,
                     limit_price, strategy_name, strategy_stop_price, take_profit,
-                    exit_reason, benchmark_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exit_reason, entry_cancel_after_seconds, entry_expiry_bars,
+                    entry_signal_bar_timestamp, entry_bar_interval_seconds,
+                    benchmark_version, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(broker_order_id) DO UPDATE SET
                     permanent_order_id = COALESCE(excluded.permanent_order_id, permanent_order_id),
                     account_id = COALESCE(excluded.account_id, account_id),
@@ -179,6 +189,10 @@ class IBExecutionStore:
                     strategy_stop_price = COALESCE(excluded.strategy_stop_price, strategy_stop_price),
                     take_profit = COALESCE(excluded.take_profit, take_profit),
                     exit_reason = COALESCE(excluded.exit_reason, exit_reason),
+                    entry_cancel_after_seconds = COALESCE(excluded.entry_cancel_after_seconds, entry_cancel_after_seconds),
+                    entry_expiry_bars = COALESCE(excluded.entry_expiry_bars, entry_expiry_bars),
+                    entry_signal_bar_timestamp = COALESCE(excluded.entry_signal_bar_timestamp, entry_signal_bar_timestamp),
+                    entry_bar_interval_seconds = COALESCE(excluded.entry_bar_interval_seconds, entry_bar_interval_seconds),
                     benchmark_version = excluded.benchmark_version,
                     updated_at = excluded.updated_at
                 """,
@@ -203,6 +217,10 @@ class IBExecutionStore:
                     payload.get("strategy_stop_price"),
                     payload.get("take_profit"),
                     payload.get("exit_reason"),
+                    payload.get("entry_cancel_after_seconds"),
+                    payload.get("entry_expiry_bars"),
+                    _iso(payload.get("entry_signal_bar_timestamp")),
+                    payload.get("entry_bar_interval_seconds"),
                     int(payload.get("benchmark_version") or 2),
                     now,
                     now,

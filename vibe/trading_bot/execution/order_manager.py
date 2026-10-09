@@ -172,8 +172,9 @@ class OrderManager:
             self._orders[order.order_id] = ManagedOrder(
                 order_id=order.order_id,
                 order=order,
-                submitted_at=datetime.now(),
+                submitted_at=order.submitted_at or datetime.now(),
                 filled_qty=float(order.filled_qty or 0.0),
+                cancel_after_seconds=order.entry_cancel_after_seconds,
                 restored=True,
             )
             self._monitoring_tasks[order.order_id] = asyncio.create_task(
@@ -287,9 +288,12 @@ class OrderManager:
 
         while True:
             # Check elapsed time
-            elapsed = (
-                datetime.now() - managed.submitted_at
-            ).total_seconds()
+            now = (
+                datetime.now(managed.submitted_at.tzinfo)
+                if managed.submitted_at.tzinfo is not None
+                else datetime.now()
+            )
+            elapsed = (now - managed.submitted_at).total_seconds()
 
             # Get current order status from exchange
             order = await self.exchange.get_order(order_id)
@@ -315,7 +319,11 @@ class OrderManager:
                 break
 
             # Check if should retry
-            cancel_after_seconds = managed.cancel_after_seconds or self.retry_policy.cancel_after_seconds
+            cancel_after_seconds = (
+                managed.cancel_after_seconds
+                if managed.cancel_after_seconds is not None
+                else self.retry_policy.cancel_after_seconds
+            )
             should_retry = (
                 managed.retry_count < self.retry_policy.max_retries
                 and elapsed < cancel_after_seconds
@@ -414,12 +422,50 @@ class OrderManager:
                         break
 
                     # Submit via OrderManager (proper tracking + new monitoring task)
+                    remaining_timeout = None
+                    if managed.cancel_after_seconds is not None:
+                        remaining_timeout = max(
+                            managed.cancel_after_seconds - elapsed,
+                            0.001,
+                        )
                     await self.submit_order(
                         symbol=order.symbol,
                         side=order.side,
                         quantity=remaining,
                         order_type=order.order_type,
                         price=order.price,
+                        stop_price=getattr(order, "stop_price", None),
+                        limit_price=getattr(order, "limit_price", None),
+                        cancel_after_seconds=remaining_timeout,
+                        lifecycle_metadata={
+                            "strategy_name": getattr(order, "strategy_name", None),
+                            "stop_price": getattr(
+                                order,
+                                "strategy_stop_price",
+                                None,
+                            ),
+                            "take_profit": getattr(order, "take_profit", None),
+                            "entry_cancel_after_seconds": remaining_timeout,
+                            "entry_expiry_bars": getattr(
+                                order,
+                                "entry_expiry_bars",
+                                None,
+                            ),
+                            "entry_signal_bar_timestamp": (
+                                getattr(
+                                    order,
+                                    "entry_signal_bar_timestamp",
+                                    None,
+                                )
+                            ),
+                            "entry_bar_interval_seconds": (
+                                getattr(
+                                    order,
+                                    "entry_bar_interval_seconds",
+                                    None,
+                                )
+                            ),
+                        },
                     )
                     # Break — new order has its own monitoring task
                     break
@@ -489,6 +535,49 @@ class OrderManager:
         """
         return list(self._orders.values())
 
+    async def cancel_order(self, order_id: str) -> bool:
+        """Cancel one managed order and emit the terminal lifecycle callback."""
+        managed = self._orders.get(order_id)
+        if managed is None or managed.terminal_status is not None:
+            return False
+
+        monitoring_task = self._monitoring_tasks.pop(order_id, None)
+        current_task = asyncio.current_task()
+        if (
+            monitoring_task is not None
+            and monitoring_task is not current_task
+            and not monitoring_task.done()
+        ):
+            monitoring_task.cancel()
+            await asyncio.gather(monitoring_task, return_exceptions=True)
+
+        order = await self.exchange.get_order(order_id)
+        if order is None:
+            raise RuntimeError(f"Cannot cancel unknown order {order_id}")
+        cancellation = await self.exchange.cancel_order(order_id)
+        refreshed = await self.exchange.get_order(order_id)
+        terminal_order = refreshed or order
+        confirmed_filled = max(
+            float(getattr(cancellation, "filled_qty", 0.0) or 0.0),
+            float(terminal_order.filled_qty or 0.0),
+        )
+        if confirmed_filled > managed.filled_qty:
+            managed.filled_qty = confirmed_filled
+            await self._emit_callback_ordered(self._on_order_filled, order_id)
+
+        managed.completed_at = datetime.now()
+        if (
+            getattr(cancellation, "status", None) == OrderStatus.FILLED
+            or confirmed_filled >= float(terminal_order.quantity)
+            or getattr(terminal_order, "status", None) == OrderStatus.FILLED
+        ):
+            managed.terminal_status = OrderStatus.FILLED
+            return False
+
+        managed.terminal_status = OrderStatus.CANCELLED
+        await self._emit_callback_ordered(self._on_order_cancelled, order_id)
+        return True
+
     async def cancel_all_orders(self) -> int:
         """
         Cancel all pending/partial orders.
@@ -499,14 +588,14 @@ class OrderManager:
         cancelled_count = 0
         for managed in list(self._orders.values()):
             if managed.order.status in (
+                OrderStatus.CREATED,
                 OrderStatus.PENDING,
+                OrderStatus.SUBMITTED,
                 OrderStatus.PARTIAL,
             ):
                 try:
-                    await self.exchange.cancel_order(
-                        managed.order_id
-                    )
-                    cancelled_count += 1
+                    if await self.cancel_order(managed.order_id):
+                        cancelled_count += 1
                 except Exception as e:
                     logger.error(
                         f"Error cancelling order: {e}"

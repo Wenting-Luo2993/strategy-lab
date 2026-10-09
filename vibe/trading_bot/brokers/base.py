@@ -51,6 +51,10 @@ class BrokerOrder:
     strategy_stop_price: Optional[float] = None
     take_profit: Optional[float] = None
     exit_reason: Optional[str] = None
+    entry_cancel_after_seconds: Optional[float] = None
+    entry_expiry_bars: Optional[int] = None
+    entry_signal_bar_timestamp: Optional[datetime] = None
+    entry_bar_interval_seconds: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:

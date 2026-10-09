@@ -117,27 +117,36 @@ class InteractiveBrokersAPI:
 
     async def connect(self) -> bool:
         """Connect to TWS or IB Gateway."""
-        if self.ib.isConnected():
-            self._reconcile_open_orders()
-            await self.reconcile_executions()
-            return True
-
         last_exception: Optional[BaseException] = None
         for attempt in range(1, self.connect_max_retries + 1):
             self._last_error_code = None
             self._last_error_message = None
             try:
-                await self.ib.connectAsync(
+                if not self.ib.isConnected():
+                    await self.ib.connectAsync(
+                        self.host,
+                        self.port,
+                        clientId=self.client_id,
+                        account=self.account_id or "",
+                        timeout=self.connect_timeout,
+                    )
+                if self._requires_operator_action(None):
+                    raise IBOperatorActionRequired(
+                        "IB Gateway rejected API access because the paper trading disclaimer "
+                        "has not been accepted."
+                    )
+                self._reconcile_open_orders()
+                await self.reconcile_executions(raise_on_timeout=True)
+                logger.info(
+                    "Connected to IB at %s:%s client_id=%s",
                     self.host,
                     self.port,
-                    clientId=self.client_id,
-                    account=self.account_id or "",
-                    timeout=self.connect_timeout,
+                    self.client_id,
                 )
-                break
+                return self.ib.isConnected()
             except Exception as exc:
                 last_exception = exc
-                if self._requires_operator_action(exc):
+                if isinstance(exc, IBOperatorActionRequired) or self._requires_operator_action(exc):
                     await self.disconnect()
                     raise IBOperatorActionRequired(
                         "IB Gateway rejected API access because the paper trading disclaimer "
@@ -162,22 +171,10 @@ class InteractiveBrokersAPI:
                 if self.connect_retry_delay_seconds > 0:
                     await asyncio.sleep(self.connect_retry_delay_seconds)
 
-        if last_exception and not self.ib.isConnected():
-            raise IBConnectionFailed(
-                f"Failed to connect to IB Gateway at {self.host}:{self.port} "
-                f"after {self.connect_max_retries} attempts"
-            ) from last_exception
-
-        if self._requires_operator_action(None):
-            await self.disconnect()
-            raise IBOperatorActionRequired(
-                "IB Gateway rejected API access because the paper trading disclaimer has not been accepted."
-            )
-
-        self._reconcile_open_orders()
-        await self.reconcile_executions()
-        logger.info("Connected to IB at %s:%s client_id=%s", self.host, self.port, self.client_id)
-        return self.ib.isConnected()
+        raise IBConnectionFailed(
+            f"Failed to connect to IB Gateway at {self.host}:{self.port} "
+            f"after {self.connect_max_retries} attempts"
+        ) from last_exception
 
     def _requires_operator_action(self, exc: Optional[BaseException]) -> bool:
         """Return True when the last IB error indicates a manual Gateway action is needed."""
@@ -304,6 +301,10 @@ class InteractiveBrokersAPI:
             strategy_stop_price=order.strategy_stop_price,
             take_profit=order.take_profit,
             exit_reason=order.exit_reason,
+            entry_cancel_after_seconds=order.entry_cancel_after_seconds,
+            entry_expiry_bars=order.entry_expiry_bars,
+            entry_signal_bar_timestamp=order.entry_signal_bar_timestamp,
+            entry_bar_interval_seconds=order.entry_bar_interval_seconds,
         )
         self._trades[broker_order_id] = trade
         self._submitted_orders[broker_order_id] = submitted_order
@@ -455,17 +456,36 @@ class InteractiveBrokersAPI:
                 strategy_stop_price=stored.get("strategy_stop_price"),
                 take_profit=stored.get("take_profit"),
                 exit_reason=stored.get("exit_reason"),
+                entry_cancel_after_seconds=stored.get("entry_cancel_after_seconds"),
+                entry_expiry_bars=stored.get("entry_expiry_bars"),
+                entry_signal_bar_timestamp=self._as_optional_datetime(
+                    stored.get("entry_signal_bar_timestamp")
+                ),
+                entry_bar_interval_seconds=stored.get("entry_bar_interval_seconds"),
             )
             self._trades[broker_order_id] = trade
             self._submitted_orders[broker_order_id] = restored
 
-    async def reconcile_executions(self) -> int:
+    async def reconcile_executions(self, *, raise_on_timeout: bool = False) -> int:
         """Request historical executions without placing or modifying any orders."""
         request = getattr(self.ib, "reqExecutionsAsync", None)
         if request is None or not self.ib.isConnected():
             return 0
         try:
-            fills = await request()
+            fills = await asyncio.wait_for(
+                request(),
+                timeout=self.connect_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            logger.warning(
+                "IB execution reconciliation timed out after %.1fs",
+                self.connect_timeout,
+            )
+            if raise_on_timeout:
+                raise TimeoutError(
+                    "Timed out reconciling IB executions during connection"
+                ) from exc
+            return 0
         except Exception as exc:
             logger.warning("IB execution reconciliation failed: %s", exc)
             return 0
@@ -1090,4 +1110,8 @@ class InteractiveBrokersAPI:
             "strategy_stop_price": order.strategy_stop_price,
             "take_profit": order.take_profit,
             "exit_reason": order.exit_reason,
+            "entry_cancel_after_seconds": order.entry_cancel_after_seconds,
+            "entry_expiry_bars": order.entry_expiry_bars,
+            "entry_signal_bar_timestamp": order.entry_signal_bar_timestamp,
+            "entry_bar_interval_seconds": order.entry_bar_interval_seconds,
         }

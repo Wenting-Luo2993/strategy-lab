@@ -5,7 +5,8 @@ Integrates Position Sizer, Stop Loss Manager, Order Manager, and Exchange.
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, Literal, Optional
 
 from vibe.common.models import Order, OrderStatus, Position
 from vibe.common.risk import PositionSizer
@@ -54,6 +55,27 @@ class ExecutionResult:
 
     fully_closed: bool = False
     """Whether a close execution left the broker position flat."""
+
+    pending: bool = False
+    """Whether an accepted entry order is awaiting its first fill."""
+
+
+@dataclass(frozen=True)
+class EntryOrderIntent:
+    """Exact broker-neutral entry instructions produced by the caller."""
+
+    order_type: Literal["market", "stop"]
+    trigger_price: float
+    cancel_after_seconds: Optional[float] = None
+    expiry_bars: Optional[int] = None
+    signal_bar_timestamp: Optional[datetime] = None
+    bar_interval_seconds: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.trigger_price <= 0:
+            raise ValueError("entry trigger price must be positive")
+        if self.expiry_bars is not None and self.expiry_bars <= 0:
+            raise ValueError("expiry_bars must be positive")
 
 
 class SimpleRiskManager:
@@ -202,6 +224,7 @@ class TradeExecutor:
         stop_price: float,
         take_profit: Optional[float] = None,
         strategy_name: str = "Unknown",
+        entry_order: Optional[EntryOrderIntent] = None,
     ) -> ExecutionResult:
         """
         Execute a trade signal from the strategy.
@@ -252,6 +275,12 @@ class TradeExecutor:
                 reason="Invalid signal",
             )
 
+        order_intent = entry_order or EntryOrderIntent(
+            order_type="market",
+            trigger_price=entry_price,
+        )
+        sizing_entry_price = order_intent.trigger_price
+
         # Get account state
         account = await self.exchange.get_account()
 
@@ -266,7 +295,7 @@ class TradeExecutor:
             symbol=symbol,
             side=side,
             quantity=1,  # Placeholder, will be sized
-            entry_price=entry_price,
+            entry_price=sizing_entry_price,
             current_account_value=account.equity,
             existing_positions=existing_positions,
         )
@@ -284,7 +313,7 @@ class TradeExecutor:
         # Calculate position size
         try:
             size_result = self.position_sizer.calculate(
-                entry_price=entry_price,
+                entry_price=sizing_entry_price,
                 stop_price=stop_price,
                 account_value=account.equity,
             )
@@ -314,12 +343,22 @@ class TradeExecutor:
                 symbol=symbol,
                 side=side,
                 quantity=int(size_result.size),
-                order_type="market",
-                price=entry_price,
+                order_type=order_intent.order_type,
+                price=order_intent.trigger_price,
+                stop_price=(
+                    order_intent.trigger_price
+                    if order_intent.order_type == "stop"
+                    else None
+                ),
+                cancel_after_seconds=order_intent.cancel_after_seconds,
                 lifecycle_metadata={
                     "strategy_name": strategy_name,
                     "stop_price": stop_price,
                     "take_profit": take_profit,
+                    "entry_cancel_after_seconds": order_intent.cancel_after_seconds,
+                    "entry_expiry_bars": order_intent.expiry_bars,
+                    "entry_signal_bar_timestamp": order_intent.signal_bar_timestamp,
+                    "entry_bar_interval_seconds": order_intent.bar_interval_seconds,
                 },
             )
 
@@ -330,13 +369,17 @@ class TradeExecutor:
                 "stop_price": stop_price,
                 "take_profit": take_profit,
                 "strategy_name": strategy_name,
+                "expiry_bars": order_intent.expiry_bars,
+                "bars_elapsed": 0,
+                "last_bar_timestamp": order_intent.signal_bar_timestamp,
             }
 
             if actual_filled == 0:
                 result = ExecutionResult(
                     success=False,
                     order_id=response.order_id,
-                    reason=f"Order not filled (status={response.status}): {response.order_id}",
+                    reason=f"Entry order pending (status={response.status}): {response.order_id}",
+                    pending=True,
                 )
                 if self._on_execution:
                     self._on_execution(result)
@@ -346,7 +389,7 @@ class TradeExecutor:
             if actual_filled < int(size_result.size):
                 logger.warning(
                     f"Partial fill: {symbol} {actual_filled}/{int(size_result.size)} shares "
-                    f"@ {entry_price}. OrderManager will retry remaining "
+                    f"@ {sizing_entry_price}. OrderManager will retry remaining "
                     f"{int(size_result.size) - actual_filled} shares."
                 )
 
@@ -368,7 +411,7 @@ class TradeExecutor:
 
             logger.info(
                 f"Trade executed: {symbol} {side} "
-                f"{actual_filled} shares @ {entry_price}"
+                f"{actual_filled} shares @ {sizing_entry_price}"
             )
 
             return result
@@ -527,6 +570,97 @@ class TradeExecutor:
         """Return entry context retained while a submitted order may still fill."""
         context = self._pending_entries.get(order_id)
         return dict(context) if context is not None else None
+
+    def has_pending_entry(self, symbol: str) -> bool:
+        """Return whether a non-terminal entry order exists for the symbol."""
+        return any(
+            context["symbol"] == symbol
+            for context in self._pending_entries.values()
+        )
+
+    def restore_pending_entries(self, orders: list[Order]) -> int:
+        """Restore entry context required to project fills after a restart."""
+        restored = 0
+        now = datetime.now().astimezone()
+        for order in orders:
+            if order.order_type != "stop" or order.order_id in self._pending_entries:
+                continue
+            signal_bar_timestamp = order.entry_signal_bar_timestamp
+            bars_elapsed = 0
+            last_bar_timestamp = signal_bar_timestamp
+            if (
+                signal_bar_timestamp is not None
+                and order.entry_bar_interval_seconds
+                and order.entry_bar_interval_seconds > 0
+            ):
+                comparison_now = (
+                    now.astimezone(signal_bar_timestamp.tzinfo)
+                    if signal_bar_timestamp.tzinfo is not None
+                    else now.replace(tzinfo=None)
+                )
+                bars_elapsed = max(
+                    0,
+                    int(
+                        (comparison_now - signal_bar_timestamp).total_seconds()
+                        // order.entry_bar_interval_seconds
+                    ),
+                )
+                last_bar_timestamp = signal_bar_timestamp + (
+                    bars_elapsed
+                    * timedelta(seconds=order.entry_bar_interval_seconds)
+                )
+            self._pending_entries[order.order_id] = {
+                "symbol": order.symbol,
+                "side": order.side,
+                "stop_price": order.strategy_stop_price,
+                "take_profit": order.take_profit,
+                "strategy_name": order.strategy_name,
+                "expiry_bars": order.entry_expiry_bars,
+                "bars_elapsed": bars_elapsed,
+                "last_bar_timestamp": last_bar_timestamp,
+            }
+            restored += 1
+        return restored
+
+    async def advance_pending_entry_bar(
+        self,
+        symbol: str,
+        bar_timestamp: datetime,
+    ) -> list[str]:
+        """Cancel bar-expiring entries after the configured completed-bar count."""
+        cancelled: list[str] = []
+        for order_id, context in list(self._pending_entries.items()):
+            if context["symbol"] != symbol or context.get("expiry_bars") is None:
+                continue
+            last_bar_timestamp = context.get("last_bar_timestamp")
+            if last_bar_timestamp is not None and bar_timestamp <= last_bar_timestamp:
+                continue
+            context["last_bar_timestamp"] = bar_timestamp
+            context["bars_elapsed"] = int(context.get("bars_elapsed", 0)) + 1
+            if context["bars_elapsed"] < int(context["expiry_bars"]):
+                continue
+            if await self.order_manager.cancel_order(order_id):
+                cancelled.append(order_id)
+                self._pending_entries.pop(order_id, None)
+                logger.info(
+                    "Pending entry expired after %s bars: %s %s",
+                    context["expiry_bars"],
+                    symbol,
+                    order_id,
+                )
+        return cancelled
+
+    async def cancel_restored_expired_entries(self) -> list[str]:
+        """Cancel restored bar-expiring entries whose original window elapsed."""
+        cancelled: list[str] = []
+        for order_id, context in list(self._pending_entries.items()):
+            expiry_bars = context.get("expiry_bars")
+            if expiry_bars is None or context.get("bars_elapsed", 0) < expiry_bars:
+                continue
+            if await self.order_manager.cancel_order(order_id):
+                cancelled.append(order_id)
+                self._pending_entries.pop(order_id, None)
+        return cancelled
 
     def clear_pending_entry(self, order_id: str) -> None:
         """Forget entry context after its first fill is projected or cancellation."""

@@ -4,10 +4,10 @@ Unit tests for execution components: OrderManager and TradeExecutor.
 
 import asyncio
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from vibe.common.execution.base import OrderResponse
-from vibe.common.models import OrderStatus, Position
+from vibe.common.models import Order, OrderStatus, Position
 from vibe.common.risk import PositionSizer
 from vibe.trading_bot.exchange.mock_exchange import MockExchange
 from vibe.trading_bot.execution.order_manager import (
@@ -20,6 +20,7 @@ from vibe.trading_bot.execution.trade_executor import (
     SimpleRiskManager,
     RiskCheckResult,
     ExecutionResult,
+    EntryOrderIntent,
 )
 
 
@@ -369,6 +370,83 @@ class TestTradeExecutor:
         assert result.success is True
         assert result.order_id is not None
         assert result.position_size > 0
+
+    @pytest.mark.asyncio
+    async def test_stop_entry_stays_pending_and_expires_after_completed_bars(self):
+        exchange = MockExchange(initial_capital=10000)
+        await exchange.set_price("AAPL", 100.00)
+        manager = OrderManager(exchange=exchange)
+        executor = TradeExecutor(
+            exchange=exchange,
+            order_manager=manager,
+            position_sizer=PositionSizer(risk_per_trade=100),
+        )
+        signal_bar = datetime(2026, 7, 20, 9, 40, tzinfo=timezone.utc)
+
+        result = await executor.execute_signal(
+            symbol="AAPL",
+            signal=1,
+            entry_price=100.00,
+            stop_price=95.00,
+            strategy_name="ORB",
+            entry_order=EntryOrderIntent(
+                order_type="stop",
+                trigger_price=101.00,
+                cancel_after_seconds=3600,
+                expiry_bars=3,
+                signal_bar_timestamp=signal_bar,
+                bar_interval_seconds=300,
+            ),
+        )
+
+        assert result.pending is True
+        assert result.success is False
+        assert executor.has_pending_entry("AAPL")
+        assert manager.get_order(result.order_id).order.quantity == 16
+        for bars_elapsed in (1, 2):
+            cancelled = await executor.advance_pending_entry_bar(
+                "AAPL",
+                signal_bar + timedelta(minutes=5 * bars_elapsed),
+            )
+            assert cancelled == []
+
+        cancelled = await executor.advance_pending_entry_bar(
+            "AAPL",
+            signal_bar + timedelta(minutes=15),
+        )
+
+        assert cancelled == [result.order_id]
+        assert not executor.has_pending_entry("AAPL")
+        assert manager.get_order(result.order_id).terminal_status == OrderStatus.CANCELLED
+
+    def test_restore_pending_entry_rebuilds_bar_expiry_progress(self):
+        exchange = MockExchange(initial_capital=10000)
+        executor = TradeExecutor(
+            exchange=exchange,
+            order_manager=OrderManager(exchange=exchange),
+            position_sizer=PositionSizer(risk_per_trade=100),
+        )
+        signal_bar = datetime.now(timezone.utc) - timedelta(minutes=10)
+        order = Order(
+            order_id="restored-stop",
+            symbol="AAPL",
+            side="buy",
+            quantity=10,
+            price=101,
+            order_type="stop",
+            status=OrderStatus.SUBMITTED,
+            stop_price=101,
+            strategy_name="ORB",
+            strategy_stop_price=95,
+            entry_expiry_bars=3,
+            entry_signal_bar_timestamp=signal_bar,
+            entry_bar_interval_seconds=300,
+        )
+
+        assert executor.restore_pending_entries([order]) == 1
+        context = executor.get_pending_entry("restored-stop")
+        assert context["bars_elapsed"] >= 2
+        assert context["stop_price"] == 95
 
     @pytest.mark.asyncio
     async def test_risk_check_blocks_execution(self):
