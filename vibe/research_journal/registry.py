@@ -5,14 +5,16 @@ to provide a unified interface for managing research experiments.
 """
 
 import logging
-import re
-import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from vibe.backtester.core.execution_realism import (
+    EXECUTION_MODEL_VERSION,
+    ExecutionRealismConfig,
+)
 from vibe.research_journal.git_metadata import capture_execution_metadata
-from vibe.research_journal.lineage import LineageGraph, build_lineage_graph, CycleDetectedError
+from vibe.research_journal.lineage import LineageGraph, CycleDetectedError
 from vibe.research_journal.models import (
     Experiment,
     ExperimentStatus,
@@ -21,18 +23,9 @@ from vibe.research_journal.models import (
     RejectedIdea,
     ResearchNote,
 )
-from vibe.research_journal.persistence import (
-    ensure_research_directories,
-    load_experiment,
-    load_hypothesis,
-    save_experiment,
-    save_hypothesis,
-    save_rejected_idea,
-    save_research_note,
-    update_experiment_status,
-    ImmutabilityError,
-)
+from vibe.research_journal.persistence import ensure_research_directories, ImmutabilityError
 from vibe.research_pipeline.paths import research_db_path
+from vibe.research_pipeline.storage.legacy_importer import import_legacy_tree
 from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
 
 logger = logging.getLogger(__name__)
@@ -50,6 +43,9 @@ class ResearchRegistry:
         research_root: Optional[Path] = None,
         *,
         sqlite_store: Optional[SqliteResearchStore] = None,
+        import_legacy_yaml: bool = True,
+        methodology_version: str = "research-store-v1",
+        execution_realism: Optional[ExecutionRealismConfig] = None,
     ):
         """Initialize registry.
 
@@ -58,10 +54,36 @@ class ResearchRegistry:
         """
         self.research_root = ensure_research_directories(research_root)
         self._lineage_graph: Optional[LineageGraph] = None
-        self._sqlite_store = sqlite_store
+        self._owns_store = sqlite_store is None
         self._sqlite_db_path = (
             None if sqlite_store is not None else self._compatibility_db_path(research_root)
         )
+        self._sqlite_store = sqlite_store or SqliteResearchStore(self._sqlite_db_path)
+        self.methodology_version = methodology_version
+        self.execution_realism = (
+            execution_realism or ExecutionRealismConfig.realistic()
+        )
+        if import_legacy_yaml:
+            self._import_legacy_yaml_once()
+
+    def close(self) -> None:
+        if self._owns_store:
+            self._sqlite_store.close()
+            self._owns_store = False
+
+    def __enter__(self) -> "ResearchRegistry":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            # Interpreter shutdown and partially constructed instances must not
+            # turn cleanup into a secondary failure.
+            pass
 
     def create_hypothesis(
         self,
@@ -100,8 +122,7 @@ class ResearchRegistry:
             updated_at=now,
         )
 
-        filepath = save_hypothesis(hypothesis, self.research_root)
-        self._dual_write_or_remove("hypothesis", hypothesis, filepath)
+        self._write_new("hypothesis", hypothesis)
         logger.info(f"Created hypothesis: {hyp_id}")
 
         return hypothesis
@@ -116,6 +137,8 @@ class ResearchRegistry:
         parent_experiment_id: Optional[str] = None,
         tags: Optional[List[str]] = None,
         random_seed: Optional[int] = None,
+        methodology_version: Optional[str] = None,
+        execution_identity: Optional[Dict[str, Any]] = None,
     ) -> Experiment:
         """Create new experiment.
 
@@ -144,7 +167,7 @@ class ResearchRegistry:
 
         if hypothesis_id:
             try:
-                load_hypothesis(hypothesis_id, self.research_root)
+                self.get_hypothesis(hypothesis_id)
             except FileNotFoundError:
                 logger.warning(
                     "Creating experiment with unresolved hypothesis reference: %s",
@@ -154,7 +177,7 @@ class ResearchRegistry:
         # Validate parent exists if provided
         if parent_experiment_id:
             try:
-                load_experiment(parent_experiment_id, self.research_root)
+                self.get_experiment(parent_experiment_id)
             except FileNotFoundError:
                 raise ValueError(
                     f"Parent experiment not found: {parent_experiment_id}"
@@ -168,6 +191,8 @@ class ResearchRegistry:
 
         # Capture git metadata
         execution_metadata = capture_execution_metadata(random_seed=random_seed)
+        identity = execution_identity or self.execution_realism.identity()
+        resolved_methodology = methodology_version or self.methodology_version
 
         experiment = Experiment(
             id=exp_id,
@@ -178,13 +203,17 @@ class ResearchRegistry:
             parameters=parameters,
             dataset_config=dataset_config,
             execution_metadata=execution_metadata,
+            methodology_version=resolved_methodology,
+            execution_model_version=int(
+                identity.get("execution_model_version", EXECUTION_MODEL_VERSION)
+            ),
+            execution_identity=identity,
             status=ExperimentStatus.REGISTERED,
             tags=tags,
             created_at=now,
         )
 
-        filepath = save_experiment(experiment, self.research_root)
-        self._dual_write_or_remove("experiment", experiment, filepath)
+        self._write_new("experiment", experiment, execution_identity=identity)
         logger.info(f"Created experiment: {exp_id}")
 
         # Invalidate lineage cache
@@ -210,28 +239,16 @@ class ResearchRegistry:
             ImmutabilityError: If experiment already completed
             ValueError: If validation fails
         """
-        experiment = load_experiment(experiment_id, self.research_root)
+        experiment = self.get_experiment(experiment_id)
 
         # This will check immutability internally
         experiment.mark_completed(results, conclusion)
 
-        # Remove old file and save new version. Keep a byte-for-byte backup so
-        # a failed SQLite write cannot leave the compatibility stores split.
-        filepath = self.research_root / "experiments" / f"{experiment_id}.yaml"
-        previous = filepath.read_bytes()
-        previous_mode = stat.S_IMODE(filepath.stat().st_mode)
-        try:
-            if filepath.exists():
-                filepath.unlink()
-            save_experiment(experiment, self.research_root)
-            self._dual_write("experiment", experiment, filepath)
-        except Exception:
-            if filepath.exists():
-                filepath.chmod(stat.S_IWRITE)
-                filepath.unlink()
-            filepath.write_bytes(previous)
-            filepath.chmod(previous_mode)
-            raise
+        self._sqlite_store.update_registry_record(
+            record_type="experiment",
+            legacy_id=experiment_id,
+            payload=experiment.model_dump(mode="json"),
+        )
         logger.info(f"Completed experiment: {experiment_id}")
 
         # Invalidate lineage cache
@@ -251,7 +268,14 @@ class ResearchRegistry:
         Raises:
             FileNotFoundError: If experiment not found
         """
-        return load_experiment(experiment_id, self.research_root)
+        payload = self._sqlite_store.get_registry_record(
+            record_type="experiment", legacy_id=experiment_id
+        )
+        if payload is None:
+            raise FileNotFoundError(f"Experiment not found: {experiment_id}")
+        payload.pop("_record_origin", None)
+        payload.pop("_imported_at", None)
+        return Experiment(**payload)
 
     def get_hypothesis(self, hypothesis_id: str) -> Hypothesis:
         """Load hypothesis by ID.
@@ -265,7 +289,14 @@ class ResearchRegistry:
         Raises:
             FileNotFoundError: If hypothesis not found
         """
-        return load_hypothesis(hypothesis_id, self.research_root)
+        payload = self._sqlite_store.get_registry_record(
+            record_type="hypothesis", legacy_id=hypothesis_id
+        )
+        if payload is None:
+            raise FileNotFoundError(f"Hypothesis not found: {hypothesis_id}")
+        payload.pop("_record_origin", None)
+        payload.pop("_imported_at", None)
+        return Hypothesis(**payload)
 
     def list_experiments(
         self,
@@ -283,30 +314,31 @@ class ResearchRegistry:
         Returns:
             List of matching Experiment instances
         """
-        experiments_dir = self.research_root / "experiments"
-        experiments = []
-
-        if not experiments_dir.exists():
-            return experiments
-
-        for yaml_file in experiments_dir.glob("*.yaml"):
-            exp_id = yaml_file.stem
-            try:
-                exp = load_experiment(exp_id, self.research_root)
-
-                # Apply filters
-                if status and exp.status != status:
-                    continue
-                if hypothesis_id and exp.hypothesis_id != hypothesis_id:
-                    continue
-                if tags and not all(tag in exp.tags for tag in tags):
-                    continue
-
-                experiments.append(exp)
-            except Exception as e:
-                logger.warning(f"Failed to load experiment {exp_id}: {e}")
-
+        experiments: List[Experiment] = []
+        for payload in self._sqlite_store.query_registry_records(
+            record_type="experiment"
+        ):
+            payload.pop("_record_origin", None)
+            payload.pop("_imported_at", None)
+            exp = Experiment(**payload)
+            if status and exp.status != status:
+                continue
+            if hypothesis_id and exp.hypothesis_id != hypothesis_id:
+                continue
+            if tags and not all(tag in exp.tags for tag in tags):
+                continue
+            experiments.append(exp)
         return experiments
+
+    def list_hypotheses(self) -> List[Hypothesis]:
+        hypotheses: List[Hypothesis] = []
+        for payload in self._sqlite_store.query_registry_records(
+            record_type="hypothesis"
+        ):
+            payload.pop("_record_origin", None)
+            payload.pop("_imported_at", None)
+            hypotheses.append(Hypothesis(**payload))
+        return hypotheses
 
     def add_research_note(
         self,
@@ -338,8 +370,7 @@ class ResearchRegistry:
             created_at=now,
         )
 
-        filepath = save_research_note(note, self.research_root)
-        self._dual_write_or_remove("note", note, filepath)
+        self._write_new("note", note)
         logger.info(f"Created research note: {note_id}")
 
         return note
@@ -379,15 +410,52 @@ class ResearchRegistry:
             created_at=now,
         )
 
-        filepath = save_rejected_idea(rejected_idea, self.research_root)
-        self._dual_write_or_remove("rejected_idea", rejected_idea, filepath)
+        self._write_new("rejected_idea", rejected_idea)
         logger.info(f"Created rejected idea: {rj_id}")
 
         return rejected_idea
 
-    def dual_write_artifact(self, artifact: Any, filepath: Path) -> None:
-        """Persist an artifact reference to SQLite after its YAML write."""
-        self._dual_write_or_remove("artifact", artifact, filepath)
+    def save_artifact(self, artifact: Any) -> None:
+        """Persist an artifact reference in the authoritative store."""
+        self._write_new("artifact", artifact)
+
+    def get_artifact(self, artifact_id: str) -> Any:
+        from vibe.research_journal.models import ArtifactReference
+
+        payload = self._sqlite_store.get_registry_record(
+            record_type="artifact", legacy_id=artifact_id
+        )
+        if payload is None:
+            raise FileNotFoundError(f"Artifact not found: {artifact_id}")
+        payload.pop("_record_origin", None)
+        payload.pop("_imported_at", None)
+        return ArtifactReference(**payload)
+
+    def list_artifacts(self, experiment_id: Optional[str] = None) -> List[Any]:
+        from vibe.research_journal.models import ArtifactReference
+
+        result = []
+        for payload in self._sqlite_store.query_registry_records(
+            record_type="artifact"
+        ):
+            payload.pop("_record_origin", None)
+            payload.pop("_imported_at", None)
+            artifact = ArtifactReference(**payload)
+            if experiment_id is None or artifact.experiment_id == experiment_id:
+                result.append(artifact)
+        return result
+
+    def list_research_notes(self) -> List[ResearchNote]:
+        result = []
+        for payload in self._sqlite_store.query_registry_records(record_type="note"):
+            payload.pop("_record_origin", None)
+            imported_at = payload.pop("_imported_at", None)
+            if payload.get("legacy_format") == "markdown":
+                payload.setdefault("related_experiment_id", None)
+                payload.setdefault("tags", [])
+                payload.setdefault("created_at", imported_at)
+            result.append(ResearchNote(**payload))
+        return result
 
     def _compatibility_db_path(self, requested_root: Optional[Path]) -> Path:
         if requested_root is None:
@@ -401,30 +469,22 @@ class ResearchRegistry:
         # imports). Keep their compatibility DB isolated beside the tree.
         return root.parent / f".{root.name}-research.sqlite3"
 
-    def _dual_write_or_remove(
-        self, record_type: str, model: Any, filepath: Path
+    def _write_new(
+        self,
+        record_type: str,
+        model: Any,
+        *,
+        execution_identity: Optional[Dict[str, Any]] = None,
     ) -> None:
-        try:
-            self._dual_write(record_type, model, filepath)
-        except Exception:
-            filepath.unlink(missing_ok=True)
-            raise
-
-    def _dual_write(self, record_type: str, model: Any, filepath: Path) -> None:
-        store = self._sqlite_store
-        owns_store = store is None
-        if store is None:
-            store = SqliteResearchStore(self._sqlite_db_path)
-        try:
-            store.upsert_registry_record(
-                record_type=record_type,
-                payload=model.model_dump(mode="json"),
-                source_path=filepath.relative_to(self.research_root).as_posix(),
-                repository_root=self.research_root.parent,
-            )
-        finally:
-            if owns_store:
-                store.close()
+        methodology = getattr(
+            model, "methodology_version", self.methodology_version
+        )
+        self._sqlite_store.create_registry_record(
+            record_type=record_type,
+            payload=model.model_dump(mode="json"),
+            methodology_version=methodology,
+            execution_identity=execution_identity,
+        )
 
     def get_lineage_graph(self) -> LineageGraph:
         """Get current lineage graph (cached).
@@ -433,7 +493,7 @@ class ResearchRegistry:
             LineageGraph instance with all experiments
         """
         if self._lineage_graph is None:
-            self._lineage_graph = build_lineage_graph(self.research_root)
+            self._lineage_graph = LineageGraph(self.list_experiments())
         return self._lineage_graph
 
     def _next_id(self, prefix: str) -> str:
@@ -447,34 +507,18 @@ class ResearchRegistry:
         Returns:
             Next sequential ID (e.g., "HYP-003")
         """
-        # Determine directory based on prefix
-        if prefix == "HYP":
-            dir_path = self.research_root / "hypotheses"
-        elif prefix == "EXP":
-            dir_path = self.research_root / "experiments"
-        elif prefix == "NOTE":
-            dir_path = self.research_root / "notes"
-        elif prefix == "RJ":
-            dir_path = self.research_root / "rejected"
-        elif prefix == "ART":
-            dir_path = self.research_root / "artifacts"
-        else:
+        record_types = {
+            "HYP": "hypothesis",
+            "EXP": "experiment",
+            "NOTE": "note",
+            "RJ": "rejected_idea",
+            "ART": "artifact",
+        }
+        if prefix not in record_types:
             raise ValueError(f"Unknown prefix: {prefix}")
-
-        max_num = 0
-        if dir_path.exists():
-            for file in dir_path.glob(f"{prefix}-*.yaml"):
-                match = re.search(r"{}-(\d+)".format(prefix), file.stem)
-                if match:
-                    num = int(match.group(1))
-                    max_num = max(max_num, num)
-            for file in dir_path.glob(f"{prefix}-*.md"):
-                match = re.search(r"{}-(\d+)".format(prefix), file.stem)
-                if match:
-                    num = int(match.group(1))
-                    max_num = max(max_num, num)
-
-        return f"{prefix}-{max_num + 1:03d}"
+        return self._sqlite_store.allocate_registry_id(
+            record_type=record_types[prefix], prefix=prefix
+        )
 
     def _check_no_cycle(self, parent_experiment_id: str) -> None:
         """Check if parent_experiment_id would create a cycle.
@@ -490,7 +534,74 @@ class ResearchRegistry:
         # If adding parent as parent to any of its descendants would create cycle
         # This is already prevented by the experiment model itself,
         # but we can check here too.
-        parent_exp = load_experiment(parent_experiment_id, self.research_root)
+        parent_exp = self.get_experiment(parent_experiment_id)
         if parent_exp.parent_experiment_id is not None:
             # Parent has a parent, so no cycle possible with new child
             pass
+
+    def _import_legacy_yaml_once(self) -> None:
+        conn = self._sqlite_store._conn
+        audit = conn.execute(
+            "SELECT status FROM registry_import_audit WHERE singleton = 1"
+        ).fetchone()
+        if audit is not None:
+            return
+        legacy_patterns = (
+            "hypotheses/HYP-*.yaml",
+            "experiments/EXP-*.yaml",
+            "notes/NOTE-*.md",
+            "rejected/RJ-*.yaml",
+            "artifacts/ART-*.yaml",
+        )
+        has_legacy_source = any(
+            self.research_root.glob(pattern) for pattern in legacy_patterns
+        )
+        imported_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM registry_records
+            WHERE record_origin = 'legacy_yaml'
+            """
+        ).fetchone()[0]
+        if imported_count:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO registry_import_audit (
+                        singleton, status, canonical_tree_sha256,
+                        record_count, completed_at
+                    ) VALUES (1, 'completed-existing', NULL, ?, ?)
+                    """,
+                    (imported_count, datetime.now(timezone.utc).isoformat()),
+                )
+            return
+        if not has_legacy_source:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO registry_import_audit (
+                        singleton, status, canonical_tree_sha256,
+                        record_count, completed_at
+                    ) VALUES (1, 'no-source', NULL, 0, ?)
+                    """,
+                    (datetime.now(timezone.utc).isoformat(),),
+                )
+            return
+        verification = import_legacy_tree(
+            self.research_root,
+            conn,
+            repository_root=self.research_root.parent,
+        )
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO registry_import_audit (
+                    singleton, status, canonical_tree_sha256,
+                    record_count, completed_at
+                ) VALUES (1, 'completed', ?, ?, ?)
+                """,
+                (
+                    verification.canonical_tree_sha256,
+                    verification.record_count,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )

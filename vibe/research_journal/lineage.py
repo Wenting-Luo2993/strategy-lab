@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from vibe.research_journal.models import Experiment
-from vibe.research_journal.persistence import ensure_research_directories, load_experiment
 
 logger = logging.getLogger(__name__)
 
@@ -196,15 +195,13 @@ def build_lineage_graph(research_root: Optional[Path] = None) -> LineageGraph:
     Raises:
         CycleDetectedError: If cycles detected in lineage
     """
-    research_root = ensure_research_directories(research_root)
-    experiments_dir = research_root / "experiments"
+    # Local import avoids a module cycle: ResearchRegistry itself exposes the
+    # cached graph API.  The registry performs the one-time legacy YAML import,
+    # after which lineage is always built from SQLite.
+    from vibe.research_journal.registry import ResearchRegistry
 
-    experiments = []
-    if experiments_dir.exists():
-        for yaml_file in experiments_dir.glob("*.yaml"):
-            exp_id = yaml_file.stem
-            exp = load_experiment(exp_id, research_root)
-            experiments.append(exp)
+    registry = ResearchRegistry(research_root)
+    experiments = registry.list_experiments()
 
     graph = LineageGraph(experiments)
 

@@ -12,7 +12,6 @@ from typing import List, Optional
 from datetime import datetime, timezone
 from vibe.research_journal.models import ArtifactReference
 from vibe.research_journal.registry import ResearchRegistry
-from vibe.research_journal.persistence import load_artifact_reference, save_artifact_reference
 
 logger = logging.getLogger(__name__)
 
@@ -119,8 +118,7 @@ class ArtifactTracker:
         )
         
         # Save artifact reference
-        filepath = save_artifact_reference(artifact_ref, self.registry.research_root)
-        self.registry.dual_write_artifact(artifact_ref, filepath)
+        self.registry.save_artifact(artifact_ref)
         
         logger.info(
             f"Registered artifact {artifact_id}: {artifact_type} "
@@ -140,6 +138,13 @@ class ArtifactTracker:
         Returns:
             True if artifact is valid and unmodified, False otherwise
         """
+        if artifact_ref.path is None:
+            logger.warning(
+                "Artifact %s is external and cannot be verified locally: %s",
+                artifact_ref.id,
+                artifact_ref.external_uri,
+            )
+            return False
         # Convert relative path to absolute
         file_path = Path(artifact_ref.path)
         if not file_path.is_absolute():
@@ -175,25 +180,7 @@ class ArtifactTracker:
         Returns:
             List of ArtifactReference objects for the experiment
         """
-        artifacts = []
-        artifact_dir = self.registry.research_root / "artifacts"
-        
-        if not artifact_dir.exists():
-            return []
-        
-        for artifact_file in artifact_dir.glob("ART-*.yaml"):
-            try:
-                artifact_ref = load_artifact_reference(
-                    artifact_file.stem,
-                    self.registry.research_root
-                )
-                if artifact_ref.experiment_id == experiment_id:
-                    artifacts.append(artifact_ref)
-            except Exception as e:
-                logger.warning(f"Failed to load artifact {artifact_file}: {e}")
-                continue
-        
-        return artifacts
+        return self.registry.list_artifacts(experiment_id)
     
     def get_artifact(self, artifact_id: str) -> ArtifactReference:
         """Get artifact by ID.
@@ -207,7 +194,7 @@ class ArtifactTracker:
         Raises:
             FileNotFoundError: If artifact doesn't exist
         """
-        return load_artifact_reference(artifact_id, self.registry.research_root)
+        return self.registry.get_artifact(artifact_id)
     
     @staticmethod
     def _compute_sha256(file_path: Path) -> str:
@@ -234,16 +221,4 @@ class ArtifactTracker:
         Returns:
             Next sequential artifact ID
         """
-        artifact_dir = self.registry.research_root / "artifacts"
-        artifact_dir.mkdir(exist_ok=True)
-        
-        # Find max existing ID
-        max_num = 0
-        for artifact_file in artifact_dir.glob("ART-*.yaml"):
-            try:
-                num = int(artifact_file.stem.split("-")[1])
-                max_num = max(max_num, num)
-            except (ValueError, IndexError):
-                continue
-        
-        return f"ART-{max_num + 1:03d}"
+        return self.registry._next_id("ART")

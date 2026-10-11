@@ -17,6 +17,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
+import gc
 from vibe.research_journal.artifact_tracker import ArtifactTracker
 from vibe.research_journal.models import Experiment, ExperimentStatus
 from vibe.research_journal.registry import ResearchRegistry
@@ -28,6 +29,7 @@ def temp_research_dir():
     """Create temporary research directory."""
     with tempfile.TemporaryDirectory() as tmpdir:
         yield Path(tmpdir) / "research"
+        gc.collect()
 
 
 @pytest.fixture
@@ -51,7 +53,10 @@ def registry(temp_research_dir):
         tags=["test"]
     )
     
-    return reg, exp
+    try:
+        yield reg, exp
+    finally:
+        reg.close()
 
 
 @pytest.fixture
@@ -344,3 +349,5 @@ class TestArtifactPersistence:
         retrieved = tracker2.get_artifact(artifact_id)
         assert retrieved.id == artifact_id
         assert retrieved.checksum == artifact_ref.checksum
+        reg1.close()
+        reg2.close()

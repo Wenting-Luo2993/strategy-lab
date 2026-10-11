@@ -20,6 +20,7 @@ Usage:
 """
 
 from typing import Optional, List, Dict, Any
+from vibe.backtester.core.execution_realism import ExecutionRealismConfig
 from vibe.research_journal.registry import ResearchRegistry
 from vibe.research_journal.integration.backtest_adapter import BacktestResultAdapter
 from vibe.research_journal.models import ExperimentStatus
@@ -39,6 +40,7 @@ class ParameterSweepExperimentTracker:
         self,
         registry: Optional[ResearchRegistry] = None,
         hypothesis_id: Optional[str] = None,
+        execution_realism: Optional[ExecutionRealismConfig] = None,
     ):
         """Initialize tracker.
         
@@ -48,6 +50,9 @@ class ParameterSweepExperimentTracker:
         """
         self.registry = registry
         self.hypothesis_id = hypothesis_id
+        self.execution_realism = execution_realism or (
+            registry.execution_realism if registry else None
+        )
         self.adapter = BacktestResultAdapter(registry) if registry else None
         self.enabled = registry is not None
         self.parent_experiment_id = None
@@ -81,7 +86,12 @@ class ParameterSweepExperimentTracker:
             parameters=base_parameters,
             dataset_config=dataset_config,
             hypothesis_id=self.hypothesis_id,
-            tags=tags or ["parameter_sweep"]
+            tags=tags or ["parameter_sweep"],
+            execution_identity=(
+                self.execution_realism.identity()
+                if self.execution_realism is not None
+                else None
+            ),
         )
         
         self.parent_experiment_id = parent.id
@@ -119,7 +129,12 @@ class ParameterSweepExperimentTracker:
             dataset_config=dataset_config,
             hypothesis_id=self.hypothesis_id,
             parent_experiment_id=self.parent_experiment_id,
-            tags=tags or [f"sweep_variation_{variation_number}"]
+            tags=tags or [f"sweep_variation_{variation_number}"],
+            execution_identity=(
+                self.execution_realism.identity()
+                if self.execution_realism is not None
+                else None
+            ),
         )
         
         return child.id

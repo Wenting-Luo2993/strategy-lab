@@ -46,7 +46,7 @@ def test_forward_only_upgrade_from_schema_v1(tmp_path: Path, monkeypatch):
     with monkeypatch.context() as migration_patch:
         migration_patch.setattr(schema, "_MIGRATIONS", [(1, schema._MIGRATION_1)])
         assert schema.migrate(conn) == 1
-    assert schema.migrate(conn) == schema.SCHEMA_VERSION == 3
+    assert schema.migrate(conn) == schema.SCHEMA_VERSION == 4
     tables = {
         row[0]
         for row in conn.execute(
@@ -55,7 +55,7 @@ def test_forward_only_upgrade_from_schema_v1(tmp_path: Path, monkeypatch):
     }
     assert "runs" in tables
     assert "registry_records" in tables
-    assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+    assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
     conn.close()
 
 
@@ -173,7 +173,7 @@ def test_import_is_idempotent_and_detects_source_hash_drift(
     conn.close()
 
 
-def test_dual_write_tracks_registry_creation_and_completion(tmp_path: Path):
+def test_store_first_registry_creation_and_completion(tmp_path: Path):
     store = SqliteResearchStore(tmp_path / "dual.sqlite3")
     registry = ResearchRegistry(tmp_path / "research", sqlite_store=store)
     experiment = registry.create_experiment(
@@ -187,7 +187,8 @@ def test_dual_write_tracks_registry_creation_and_completion(tmp_path: Path):
         "WHERE record_type = 'experiment' AND legacy_id = ?",
         (experiment.id,),
     ).fetchone()
-    assert tuple(registered) == ("registered", LEGACY_METHODOLOGY_VERSION)
+    assert tuple(registered) == ("registered", "research-store-v1")
+    assert not list((tmp_path / "research").rglob("*.yaml"))
 
     registry.complete_experiment(
         experiment.id, {"total_pnl": 123.0, "expectancy_r": 0.2}, "done"
@@ -198,12 +199,14 @@ def test_dual_write_tracks_registry_creation_and_completion(tmp_path: Path):
         (experiment.id,),
     ).fetchone()
     assert completed[0] == "completed"
-    metric = store._conn.execute(
-        "SELECT effective_value, baseline_status FROM legacy_metric_values "
-        "WHERE experiment_id = ? AND metric_key = 'total_pnl'",
+    assert store._conn.execute(
+        "SELECT COUNT(*) FROM legacy_metric_values WHERE experiment_id = ?",
         (experiment.id,),
-    ).fetchone()
-    assert tuple(metric) == (None, "requires-rebaseline")
+    ).fetchone()[0] == 0
+    assert registry.get_experiment(experiment.id).results_summary == {
+        "total_pnl": 123.0,
+        "expectancy_r": 0.2,
+    }
 
     with pytest.raises(sqlite3.IntegrityError, match="terminal"):
         with store._conn:
@@ -215,7 +218,7 @@ def test_dual_write_tracks_registry_creation_and_completion(tmp_path: Path):
     store.close()
 
 
-def test_failed_completion_dual_write_restores_registered_yaml(
+def test_failed_completion_store_update_preserves_registered_record(
     tmp_path: Path, monkeypatch
 ):
     store = SqliteResearchStore(tmp_path / "rollback.sqlite3")
@@ -226,18 +229,15 @@ def test_failed_completion_dual_write_restores_registered_yaml(
         parameters={},
         dataset_config={},
     )
-    filepath = registry.research_root / "experiments" / f"{experiment.id}.yaml"
-    before = filepath.read_bytes()
-
     def fail_write(**_kwargs):
         raise RuntimeError("forced dual-write failure")
 
-    monkeypatch.setattr(store, "upsert_registry_record", fail_write)
+    monkeypatch.setattr(store, "update_registry_record", fail_write)
     with pytest.raises(RuntimeError, match="forced dual-write failure"):
         registry.complete_experiment(experiment.id, {"total_pnl": 1.0}, "done")
 
-    assert filepath.read_bytes() == before
     assert registry.get_experiment(experiment.id).status.value == "registered"
+    assert not list(registry.research_root.rglob("*.yaml"))
     assert store._conn.execute(
         "SELECT status FROM registry_records "
         "WHERE record_type = 'experiment' AND legacy_id = ?",

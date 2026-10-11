@@ -67,6 +67,7 @@ class ResearchStore(Protocol):
         fingerprint: RunFingerprint,
         methodology_version: str,
         notes: Optional[str] = None,
+        lineage_id: Optional[str] = None,
     ) -> str:
         """Create a run in ``REGISTERED`` and return its id.
 
@@ -152,3 +153,35 @@ class ResearchStore(Protocol):
 
         Implementations must reject payloads containing trade or equity data.
         """
+
+    def allocate_registry_id(self, *, record_type: str, prefix: str) -> str:
+        """Atomically allocate a legacy-shaped display ID."""
+
+    def create_registry_record(
+        self,
+        *,
+        record_type: str,
+        payload: dict[str, Any],
+        methodology_version: str,
+        execution_identity: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Persist a new SQLite-authoritative registry record."""
+
+    def update_registry_record(
+        self,
+        *,
+        record_type: str,
+        legacy_id: str,
+        payload: dict[str, Any],
+    ) -> str:
+        """Update a non-terminal SQLite-authoritative registry record."""
+
+    def get_registry_record(
+        self, *, record_type: str, legacy_id: str
+    ) -> Optional[dict[str, Any]]:
+        """Return one canonical registry payload, or ``None``."""
+
+    def query_registry_records(
+        self, *, record_type: str
+    ) -> list[dict[str, Any]]:
+        """Return canonical registry payloads in display-ID order."""

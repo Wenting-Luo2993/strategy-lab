@@ -161,6 +161,24 @@ pre-commit install
 - **HTML reports** — equity curve, regime breakdown, convexity dashboard (Plotly)
 - **Parameter sensitivity** — `scripts/run_parameter_sensitivity.py`
 
+### Research registry (`vibe/research_journal/`, `vibe/research_pipeline/`)
+
+- **SQLite authority** — hypotheses, experiments, notes, artifacts, lineage, and
+  parameter-sweep journal records are written to `ResearchStore`; normal
+  operation creates no YAML/Markdown registry records.
+- **Legacy compatibility** — an existing YAML research tree is imported once
+  into SQLite with canonical-hash parity, `legacy-uncontrolled` methodology
+  stamping, terminal immutability, and pre-P2b execution results kept visibly
+  incomparable. After import, reads come from SQLite only.
+- **Execution identity** — new experiments retain the complete realistic
+  execution-model identity and version.
+- **Final-holdout enforcement** — promotion validation fails when the same
+  research lineage touches the locked final holdout more than once.
+
+The database path defaults outside the repository. Override it with
+`RESEARCH__DB_PATH`; do not place an active SQLite file in Git or a synced
+working tree.
+
 ### Trading Bot (`vibe/trading_bot/`)
 
 - **Multi-provider data** — Polygon (primary), Finnhub (fallback), yfinance (historical)

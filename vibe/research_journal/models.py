@@ -141,6 +141,19 @@ class Experiment(BaseModel):
     execution_metadata: ExecutionMetadata = Field(
         ..., description="Git state and reproducibility info"
     )
+    methodology_version: str = Field(
+        default="legacy-uncontrolled",
+        description="Research methodology identity; legacy imports remain segregated",
+    )
+    execution_model_version: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Backtester execution semantics version, when known",
+    )
+    execution_identity: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Complete execution-realism identity used for this result",
+    )
     status: ExperimentStatus = Field(default=ExperimentStatus.REGISTERED)
     results_summary: Optional[Dict[str, Any]] = Field(
         None, description="Metrics and summary results (Sharpe, expectancy, P&L, etc.)"
@@ -350,8 +363,11 @@ class ArtifactReference(BaseModel):
     experiment_id: str = Field(
         ..., description="ID of related experiment (format EXP-NNN)"
     )
-    path: str = Field(
-        ..., description="Relative path from repo root (must not contain '..')"
+    path: Optional[str] = Field(
+        None, description="Relative path from repo root (must not contain '..')"
+    )
+    external_uri: Optional[str] = Field(
+        None, description="Legacy artifact URI when no repository-relative path exists"
     )
     artifact_type: str = Field(
         ..., description="Type of artifact (parquet|html|csv|image|json|markdown)"
@@ -380,13 +396,21 @@ class ArtifactReference(BaseModel):
 
     @field_validator("path")
     @classmethod
-    def validate_path_no_traversal(cls, v: str) -> str:
+    def validate_path_no_traversal(cls, v: Optional[str]) -> Optional[str]:
         """Prevent directory traversal attacks in artifact paths."""
+        if v is None:
+            return None
         if ".." in v:
             raise ValueError("Artifact path cannot contain '..' (directory traversal)")
         if v.startswith("/") or (len(v) > 1 and v[1] == ":"):
             raise ValueError("Artifact path must be relative (not absolute)")
         return v
+
+    @model_validator(mode="after")
+    def validate_location(self) -> "ArtifactReference":
+        if (self.path is None) == (self.external_uri is None):
+            raise ValueError("exactly one of path or external_uri must be set")
+        return self
 
     @field_validator("checksum")
     @classmethod

@@ -218,10 +218,11 @@ class TestSweepResultExperimentLinker:
             sweep_results_df=results_df
         )
         
-        # Verify note created
-        notes = [n for n in Path(tmp_path, "notes").glob("*.md")
-                 if n.exists()]
-        assert len(notes) > 0
+        # Notes are persisted in SQLite; normal operation writes no Markdown.
+        notes = registry.list_research_notes()
+        assert len(notes) == 1
+        assert notes[0].related_experiment_id == parent.id
+        assert not list(Path(tmp_path, "notes").glob("*.md"))
 
 
 class TestParameterSweepEndToEnd:

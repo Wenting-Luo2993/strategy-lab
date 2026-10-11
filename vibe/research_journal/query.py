@@ -281,22 +281,7 @@ class HypothesisQuery:
         Returns:
             List of hypotheses matching all filter criteria (intersection)
         """
-        # Load all hypotheses from disk
-        research_root = self.registry.research_root
-        hypothesis_dir = research_root / "hypotheses"
-        
-        if not hypothesis_dir.exists():
-            return []
-        
-        all_hypotheses = []
-        for hyp_file in hypothesis_dir.glob("HYP-*.yaml"):
-            hyp_id = hyp_file.stem
-            try:
-                hyp = self.registry.get_hypothesis(hyp_id)
-                all_hypotheses.append(hyp)
-            except Exception:
-                # Skip files that can't be loaded
-                continue
+        all_hypotheses = self.registry.list_hypotheses()
         
         # Apply all filters (AND logic)
         for filter_fn in self._filters:

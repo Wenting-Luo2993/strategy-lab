@@ -274,7 +274,7 @@ def _write_record(
                 record.canonical_payload,
                 record.canonical_sha256,
                 LEGACY_METHODOLOGY_VERSION,
-                _record_status(record),
+                None,
                 int(_git_dirty(record)),
                 record.source_path,
                 now,
@@ -286,14 +286,13 @@ def _write_record(
         conn.execute(
             """
             UPDATE registry_records
-            SET payload_json = ?, canonical_sha256 = ?, status = ?,
+            SET payload_json = ?, canonical_sha256 = ?,
                 git_dirty = ?, source_path = ?, imported_at = ?
             WHERE record_type = ? AND legacy_id = ?
             """,
             (
                 record.canonical_payload,
                 record.canonical_sha256,
-                _record_status(record),
                 int(_git_dirty(record)),
                 record.source_path,
                 now,
@@ -380,6 +379,14 @@ def _write_record(
                     "requires-rebaseline" if is_absolute else "legacy-uncontrolled",
                 ),
             )
+    conn.execute(
+        """
+        UPDATE registry_records
+        SET status = ?
+        WHERE record_type = ? AND legacy_id = ?
+        """,
+        (_record_status(record), record.record_type, record.legacy_id),
+    )
 
 
 def import_legacy_tree(

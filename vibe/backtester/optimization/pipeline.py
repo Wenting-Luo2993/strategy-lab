@@ -23,6 +23,7 @@ from vibe.backtester.analysis.walk_forward import WalkForwardEngine, WalkForward
 from vibe.backtester.analysis.surface import SurfaceAnalyzer, ParameterSurface
 from vibe.backtester.analysis.scoring import rank_results
 from vibe.backtester.data.paths import resolve_market_data_dir
+from vibe.backtester.core.execution_realism import ExecutionRealismConfig
 from vibe.common.ruleset.models import StrategyRuleSet
 from vibe.research_journal.registry import ResearchRegistry
 
@@ -129,6 +130,7 @@ class OptimizationPipeline:
         data_dir: Path | str | None = None,
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 5,
+        execution_realism: Optional[ExecutionRealismConfig] = None,
     ):
         """
         Initialize optimization pipeline.
@@ -143,6 +145,9 @@ class OptimizationPipeline:
         self.data_dir = resolve_market_data_dir(data_dir)
         self.initial_capital = initial_capital
         self.slippage_ticks = slippage_ticks
+        self.execution_realism = (
+            execution_realism or ExecutionRealismConfig.realistic()
+        )
     
     def optimize(
         self,
@@ -201,6 +206,7 @@ class OptimizationPipeline:
             initial_capital=self.initial_capital,
             slippage_ticks=self.slippage_ticks,
             sweep_mode=sweep_mode,
+            execution_realism=self.execution_realism,
         )
         
         sweep_results = sweep.run(
@@ -378,7 +384,9 @@ class OptimizationPipeline:
         Creates (or links) a hypothesis, then writes one experiment per row
         including parameters, dataset config, and metric summaries.
         """
-        registry = ResearchRegistry(research_root)
+        registry = ResearchRegistry(
+            research_root, execution_realism=self.execution_realism
+        )
 
         resolved_hypothesis_id = hypothesis_id
         if resolved_hypothesis_id:

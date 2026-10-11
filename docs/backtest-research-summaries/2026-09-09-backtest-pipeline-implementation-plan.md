@@ -1538,9 +1538,9 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P3, P4, P5, P5b, P6, P7, P9, P10 |
+| Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P9, P10, P11 |
 | Partial | — |
-| Not started | P8, P10b, P11, P12, P13, P14 |
+| Not started | P8, P10b, P12, P13, P14 |
 
 All nine increments required by the "minimum bar before trusting a result"
 (P0-P6, P9, P10) are complete. P6 prevents a run from reaching
@@ -1567,10 +1567,11 @@ make the parent inconclusive instead of stitching survivors.
 | P6 | Validation gates and lifecycle | **Complete** | `c808710` | `validation.py`: validation profiles, candidate-scoped plausibility and acceptance rules, one-pass findings across every declared category, required leakage evidence and registry-hash drift detection. SQLite migration 2 adds durable validation reports and execution leases; `RUNNING` requires a lease, heartbeats are token-owned, stale leases become `EXECUTION_FAILED`, and direct `VALIDATING -> COMPLETED` transitions are rejected in both Python and SQLite. 50 focused tests plus 585 research-pipeline and 322 backtester regressions. |
 | P7 | SQLite store and importer | **Complete** | `1ccf7a4`, `f46ee74`, `6070d80` | Forward-only schema v3 upgrades v1 databases after P6's validation/lease migration; terminal UPDATE/DELETE triggers; UUIDv7 IDs; `run_evidence`; outbox; deterministic importer and F11 over all 98 checked-in records/158 relationships; canonical tree hash parity; `legacy-uncontrolled` stamping; unusable-until-rebaselined absolute metrics; legacy artifact path preservation/normalization; registry and artifact dual-write with rollback; same-fingerprint concurrent-writer convergence. |
 | P2b | Thread execution realism into every runner | **Done** (2026-10) | `vibe/tests/backtester/test_realism_threading.py` (8) | E7 closed. `ParameterSweep`, `WalkForwardEngine`, `RobustnessAnalyzer` and P9's `RulesetSegmentExecutor` now accept `execution_realism` and default to `realistic()`; `legacy()` is opt-in. Sweep cache key includes the execution identity, so pre-E7 cached results can no longer be served. Threading is pinned by engine-construction spies, mutation-checked. |
-| P8 | Local MJS viewer | **Not started** | — | || P9 | Optimizer/selector seam and nested walk-forward | **Complete** | `72a05e0` | `optimization.py`: pure injected `Optimizer.fit` and `Selector.select`, a concrete fresh-engine ruleset adapter, canonical grid identities, exact candidate counts, P6 `SWEEP_ROW`/`CANDIDATE` validation scopes, and deterministic connected-plateau medoid selection with signed margin. `walk_forward.py`: session-contamination audit (F9), per-fold train/validation/test control flow, frozen candidate evaluation, explicit inconclusive failure semantics, and chronological all-fold OOS stitching that preserves per-fold dollar P&L. |
-| P10 | Final-holdout lock | **Complete** | `29eaa04` | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader` and was verified to block a real 2025 engine run and a straddling 2019→2026 run. 39 tests. Promotion-blocking on touch count > 1 is the one deferred part, and needs P11's registry. |
+| P8 | Local MJS viewer | **Not started** | — | Read-only local inspection remains independent of YAML retirement. |
+| P9 | Optimizer/selector seam and nested walk-forward | **Complete** | `72a05e0` | `optimization.py`: pure injected `Optimizer.fit` and `Selector.select`, a concrete fresh-engine ruleset adapter, canonical grid identities, exact candidate counts, P6 `SWEEP_ROW`/`CANDIDATE` validation scopes, and deterministic connected-plateau medoid selection with signed margin. `walk_forward.py`: session-contamination audit (F9), per-fold train/validation/test control flow, frozen candidate evaluation, explicit inconclusive failure semantics, and chronological all-fold OOS stitching that preserves per-fold dollar P&L. |
+| P10 | Final-holdout lock | **Complete** | `29eaa04`, P11 implementation commit | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader`; P11 completed the deferred promotion gate, forcing `VALIDATION_FAILED` with `OOS-001` when a research lineage exceeds one append-only holdout touch. |
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
-| P11 | Registry migration to `ResearchStore` | **Not started** | — | |
+| P11 | Registry migration to `ResearchStore` | **Complete** (2026-10) | P11 implementation commit | Forward-only schema v4 adds transactional compatibility-ID allocation, registry origin/execution identity, and run lineage. Registry, query, lineage, notes, artifacts, sweep tracker, and optimization-journal writes are SQLite-authoritative and write zero YAML/Markdown records. Existing YAML is imported once and then ignored as an authority. Legacy records retain `legacy-uncontrolled` methodology and unknown pre-P2b execution identity; new records stamp execution model v6 plus the full realism identity. Promotion validation is forced to `VALIDATION_FAILED` with `OOS-001` when a lineage's append-only final-holdout touch count exceeds one. |
 | P12 | Supabase publisher and reconciliation | **Not started** | — | |
 | P13 | `/research` route | **Not started** | — | |
 | P14 | YAML retirement | **Not started** | — | Gated on P11 and P12 being validated. |
@@ -1822,11 +1823,12 @@ that prove rejection run against a synthetic diagnostic, and the real-data
 suite carries a `leaky_control` column reproducing the original defective
 construction that each check must still convict.
 
-### Open defect: the ORB golden is red, from a live-trading change
+### Resolved defect: the ORB golden exposed execution-model drift
 
-`tests/integration/test_golden_orb.py` fails on both fixtures as of merge
-`6897d94`. **This is not caused by the P5 leak fix** — the golden deltas are
-byte-identical with that change stashed, which is how it was ruled out.
+This section is retained as the incident record, not as an open warning.
+`tests/integration/test_golden_orb.py` was red after merge `6897d94`.
+**It was not caused by the P5 leak fix** — the golden deltas were byte-identical
+with that change stashed, which is how it was ruled out.
 
 The cause is a stale-wick filter added to `ORBStrategy.evaluate` on `main`:
 
@@ -1850,8 +1852,10 @@ to `wick`, so the filter silently applies to every backtest. Measured effect on
 Trade count is unchanged (251), so entries are being *relocated* rather than
 suppressed — consistent with a breakout being deferred to a later bar.
 
-This needs a decision before any new result is trusted, because it changes the
-simulation, not just its reporting:
+The decision was made and implemented by E6/P2b: shared signal evaluation now
+feeds an explicit execution model, realistic runs fill at the next bar open,
+and every runner defaults to and stamps the same execution-realism identity.
+The two alternatives considered at the time were:
 
 1. **Gate the filter to live execution.** In a backtest, a stop-entry order
    resting at the ORB level would have been filled intrabar when price crossed
@@ -1861,10 +1865,11 @@ simulation, not just its reporting:
 2. **Accept it for both paths and re-freeze the golden**, if the live behavior
    is what the backtest should have been modelling all along.
 
-Option 1 is the likely correct answer, but this is a live-trading-bot change
-and the decision is not the research pipeline's to make unilaterally. The
-golden did exactly its job: it refused to let a silent behavioral change pass
-as a metrics change.
+The final implementation did not simply bless the stale numbers. It aligned the
+backtest to the obtainable live fill, re-froze the golden under execution model
+v6, and added P2b threading/cache-identity tests so the incoherent pairing
+cannot return by omission. The golden did exactly its job: it refused to let a
+silent behavioral change pass as a metrics change.
 
 ### Cross-sectional result from P5b
 
@@ -1888,16 +1893,17 @@ in hindsight, so the run is permanently badged `survivorship_bias=present`.
 
 ### Recommended next increment
 
-**P11, registry migration to `ResearchStore`.**
+**P12, Supabase publisher and reconciliation.**
 
-The correctness path's minimum bar and P7 are complete. P11 can now move the
-registry, query, lineage, notes, artifacts, and sweep write paths from the YAML
-compatibility surface to `ResearchStore` without weakening P6 validation or P9
-fold evidence. It also enables the deferred P10 rule that blocks promotion when
-the final-holdout touch count exceeds one.
+P11 is complete, so the local SQLite store is now the sole normal-operation
+authority and produces no new YAML registry records. The next dependency on the
+YAML-retirement path is P12: publish summary-only records and evidence through
+the same-file outbox, preserve parent-before-child ordering, and prove
+reconciliation/offline recovery. P13 then consumes that remote read model, and
+P14 can remove the checked-in compatibility tree only after P12 is validated.
 
-P8, the local read-only viewer, can proceed independently against the completed
-SQLite schema, but it is not on the critical path for retiring YAML.
+P8, the local read-only viewer, can still proceed independently against schema
+v4 and is useful for inspection, but it does not unblock P12 or P14.
 
 The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
 proceed without further eroding it; runs are now confined to `dev_end` by the

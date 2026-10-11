@@ -234,6 +234,27 @@ def test_terminal_update_blocked_by_database_trigger(store: SqliteResearchStore)
             )
 
 
+def test_terminal_attachment_insert_blocked_by_database_trigger(
+    store: SqliteResearchStore,
+):
+    run_id = _register(store)
+    token = _start(store, run_id)
+    store.transition(run_id, target=RunState.VALIDATING, lease_token=token)
+    store.finalize_validation(run_id, _clean_report())
+
+    with pytest.raises(sqlite3.IntegrityError, match="attachments are immutable"):
+        with store._conn:
+            store._conn.execute(
+                """
+                INSERT INTO run_metrics (
+                    run_id, metric_key, metric_value,
+                    calculation_version, recorded_at
+                ) VALUES (?, 'late', 1.0, 1, ?)
+                """,
+                (run_id, datetime.now(timezone.utc).isoformat()),
+            )
+
+
 # -- attachments ---------------------------------------------------------
 
 

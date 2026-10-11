@@ -27,7 +27,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Rendered into the trigger below so the database's notion of "terminal" can
 # never drift from lifecycle.py.
@@ -285,11 +285,195 @@ BEGIN
 END;
 """
 
+# --------------------------------------------------------------------------
+# Migration 4: P11 registry authority and promotion identity
+# --------------------------------------------------------------------------
+
+_MIGRATION_4 = f"""
+-- Runtime registry IDs are allocated transactionally in SQLite.  The legacy
+-- HYP/EXP/NOTE/RJ/ART spelling remains an API/display compatibility contract,
+-- but directory scans are no longer an authority.
+CREATE TABLE registry_id_counters (
+    prefix      TEXT PRIMARY KEY,
+    last_value INTEGER NOT NULL CHECK (last_value >= 0)
+);
+
+ALTER TABLE registry_records
+    ADD COLUMN record_origin TEXT NOT NULL DEFAULT 'legacy_yaml';
+ALTER TABLE registry_records
+    ADD COLUMN execution_model_version INTEGER;
+ALTER TABLE registry_records
+    ADD COLUMN execution_identity_json TEXT;
+
+CREATE INDEX idx_registry_records_origin
+    ON registry_records(record_type, record_origin);
+
+CREATE TABLE registry_import_audit (
+    singleton             INTEGER PRIMARY KEY CHECK (singleton = 1),
+    status                TEXT NOT NULL,
+    canonical_tree_sha256 TEXT,
+    record_count          INTEGER NOT NULL,
+    completed_at          TEXT NOT NULL
+);
+
+-- A run lineage groups re-runs and the one final-holdout decision they share.
+-- When omitted, the run id is used as its own lineage identity.
+ALTER TABLE runs ADD COLUMN lineage_id TEXT;
+CREATE INDEX idx_runs_lineage ON runs(lineage_id);
+
+CREATE TRIGGER trg_run_metrics_terminal_insert
+BEFORE INSERT ON run_metrics
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = NEW.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal run attachments are immutable');
+END;
+
+CREATE TRIGGER trg_run_metrics_terminal_update
+BEFORE UPDATE ON run_metrics
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = OLD.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal run attachments are immutable');
+END;
+
+CREATE TRIGGER trg_run_metrics_terminal_delete
+BEFORE DELETE ON run_metrics
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = OLD.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal run attachments are immutable');
+END;
+
+CREATE TRIGGER trg_run_evidence_terminal_insert
+BEFORE INSERT ON run_evidence
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = NEW.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal run attachments are immutable');
+END;
+
+CREATE TRIGGER trg_run_evidence_terminal_update
+BEFORE UPDATE ON run_evidence
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = OLD.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal run attachments are immutable');
+END;
+
+CREATE TRIGGER trg_run_evidence_terminal_delete
+BEFORE DELETE ON run_evidence
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = OLD.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal run attachments are immutable');
+END;
+
+CREATE TRIGGER trg_run_findings_terminal_insert
+BEFORE INSERT ON run_findings
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = NEW.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal run attachments are immutable');
+END;
+
+CREATE TRIGGER trg_run_findings_terminal_update
+BEFORE UPDATE ON run_findings
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = OLD.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal run attachments are immutable');
+END;
+
+CREATE TRIGGER trg_run_findings_terminal_delete
+BEFORE DELETE ON run_findings
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = OLD.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal run attachments are immutable');
+END;
+
+CREATE TRIGGER trg_registry_relationship_terminal_insert
+BEFORE INSERT ON registry_relationships
+FOR EACH ROW
+WHEN NEW.record_type = 'experiment'
+ AND (SELECT status FROM registry_records
+      WHERE record_type = NEW.record_type AND legacy_id = NEW.legacy_id)
+     IN ('completed', 'failed', 'superseded', 'archived')
+BEGIN
+    SELECT RAISE(ABORT, 'terminal experiment relationships are immutable');
+END;
+
+CREATE TRIGGER trg_registry_relationship_terminal_update
+BEFORE UPDATE ON registry_relationships
+FOR EACH ROW
+WHEN OLD.record_type = 'experiment'
+ AND (SELECT status FROM registry_records
+      WHERE record_type = OLD.record_type AND legacy_id = OLD.legacy_id)
+     IN ('completed', 'failed', 'superseded', 'archived')
+ AND (
+     NEW.record_type != OLD.record_type
+     OR NEW.legacy_id != OLD.legacy_id
+     OR NEW.relation != OLD.relation
+     OR NEW.target_type != OLD.target_type
+     OR NEW.target_id != OLD.target_id
+     OR NEW.ordinal != OLD.ordinal
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'terminal experiment relationships are immutable');
+END;
+
+CREATE TRIGGER trg_registry_relationship_terminal_delete
+BEFORE DELETE ON registry_relationships
+FOR EACH ROW
+WHEN OLD.record_type = 'experiment'
+ AND (SELECT status FROM registry_records
+      WHERE record_type = OLD.record_type AND legacy_id = OLD.legacy_id)
+     IN ('completed', 'failed', 'superseded', 'archived')
+BEGIN
+    SELECT RAISE(ABORT, 'terminal experiment relationships are immutable');
+END;
+
+CREATE TRIGGER trg_registry_artifact_terminal_insert
+BEFORE INSERT ON registry_artifact_locations
+FOR EACH ROW
+WHEN NEW.record_type = 'experiment'
+ AND (SELECT status FROM registry_records
+      WHERE record_type = NEW.record_type AND legacy_id = NEW.legacy_id)
+     IN ('completed', 'failed', 'superseded', 'archived')
+BEGIN
+    SELECT RAISE(ABORT, 'terminal experiment artifact locations are immutable');
+END;
+
+CREATE TRIGGER trg_registry_artifact_terminal_update
+BEFORE UPDATE ON registry_artifact_locations
+FOR EACH ROW
+WHEN OLD.record_type = 'experiment'
+ AND (SELECT status FROM registry_records
+      WHERE record_type = OLD.record_type AND legacy_id = OLD.legacy_id)
+     IN ('completed', 'failed', 'superseded', 'archived')
+BEGIN
+    SELECT RAISE(ABORT, 'terminal experiment artifact locations are immutable');
+END;
+
+CREATE TRIGGER trg_registry_artifact_terminal_delete
+BEFORE DELETE ON registry_artifact_locations
+FOR EACH ROW
+WHEN OLD.record_type = 'experiment'
+ AND (SELECT status FROM registry_records
+      WHERE record_type = OLD.record_type AND legacy_id = OLD.legacy_id)
+     IN ('completed', 'failed', 'superseded', 'archived')
+BEGIN
+    SELECT RAISE(ABORT, 'terminal experiment artifact locations are immutable');
+END;
+"""
+
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
     (3, _MIGRATION_3),
+    (4, _MIGRATION_4),
 ]
 
 
@@ -316,15 +500,30 @@ def migrate(conn: sqlite3.Connection, *, now: Callable[[], str] = utc_now_iso) -
     """
     _ensure_migrations_table(conn)
     applied = _applied_versions(conn)
+    if applied and applied != set(range(1, max(applied) + 1)):
+        raise RuntimeError(
+            f"Non-contiguous research schema history: {sorted(applied)}"
+        )
+    if applied and max(applied) > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Research schema version {max(applied)} is newer than this "
+            f"binary supports ({SCHEMA_VERSION})."
+        )
     for version, ddl in sorted(_MIGRATIONS):
         if version in applied:
             continue
-        with conn:  # one transaction per migration
-            conn.executescript(ddl)
-            conn.execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
-                (version, now()),
+        applied_at = now().replace("'", "''")
+        try:
+            conn.executescript(
+                "BEGIN IMMEDIATE;\n"
+                f"{ddl}\n"
+                "INSERT INTO schema_migrations (version, applied_at) "
+                f"VALUES ({version}, '{applied_at}');\n"
+                "COMMIT;"
             )
+        except Exception:
+            conn.rollback()
+            raise
     row = conn.execute(
         "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
     ).fetchone()

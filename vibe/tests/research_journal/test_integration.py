@@ -43,7 +43,10 @@ def registry(temp_research_dir):
         tags=["integration", "backtest"]
     )
     
-    return reg, hyp
+    try:
+        yield reg, hyp
+    finally:
+        reg.close()
 
 
 @pytest.fixture

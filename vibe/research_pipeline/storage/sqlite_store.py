@@ -25,6 +25,9 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from vibe.research_pipeline.contracts import RunEvidence, ValidationFinding
+from vibe.research_pipeline.contracts import Severity, ValidationCategory
+from vibe.research_pipeline.holdout import load_lock, read_access_log
+from vibe.research_pipeline.hashing import canonical_json, sha256_hex
 from vibe.research_pipeline.identity import RunFingerprint
 from vibe.research_pipeline.lifecycle import (
     RunState,
@@ -40,7 +43,10 @@ from vibe.research_pipeline.store import (
     StoreError,
     ValidationRequiredError,
 )
-from vibe.research_pipeline.validation import ValidationReport
+from vibe.research_pipeline.validation import (
+    ValidationReport,
+    ValidationScope,
+)
 
 __all__ = ["SqliteResearchStore", "SqliteRunRecord"]
 
@@ -99,6 +105,7 @@ class SqliteRunRecord:
     created_at: str
     lease_owner: Optional[str]
     lease_expires_at: Optional[str]
+    lineage_id: Optional[str]
 
 
 def _to_record(row: sqlite3.Row) -> SqliteRunRecord:
@@ -112,17 +119,26 @@ def _to_record(row: sqlite3.Row) -> SqliteRunRecord:
         created_at=row["created_at"],
         lease_owner=row["lease_owner"],
         lease_expires_at=row["lease_expires_at"],
+        lineage_id=row["lineage_id"],
     )
 
 
 class SqliteResearchStore:
     """Durable local research store backed by a single SQLite file."""
 
-    def __init__(self, db_path: Optional[Path] = None) -> None:
+    def __init__(
+        self,
+        db_path: Optional[Path] = None,
+        *,
+        holdout_config_path: Optional[Path] = None,
+        holdout_access_log_path: Optional[Path] = None,
+    ) -> None:
         path = db_path if db_path is not None else research_db_path(create_parents=True)
         self._conn = sqlite3.connect(str(path), timeout=30.0)
         schema.configure_connection(self._conn)
         schema.migrate(self._conn)
+        self._holdout_config_path = holdout_config_path
+        self._holdout_access_log_path = holdout_access_log_path
 
     def close(self) -> None:
         self._conn.close()
@@ -135,6 +151,7 @@ class SqliteResearchStore:
         fingerprint: RunFingerprint,
         methodology_version: str,
         notes: Optional[str] = None,
+        lineage_id: Optional[str] = None,
     ) -> str:
         """Create a run in ``REGISTERED``; idempotent on the fingerprint hash."""
         fp = fingerprint.fingerprint
@@ -158,8 +175,9 @@ class SqliteResearchStore:
                     INSERT INTO runs (
                         run_id, display_seq, display_alias, fingerprint,
                         fingerprint_version, strategy_id, methodology_version,
-                        state, notes, code_commit, code_dirty, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        state, notes, code_commit, code_dirty, created_at, updated_at,
+                        lineage_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -175,6 +193,7 @@ class SqliteResearchStore:
                         1 if fingerprint.code_dirty else 0,
                         now,
                         now,
+                        lineage_id,
                     ),
                 )
                 self._conn.execute(
@@ -230,6 +249,16 @@ class SqliteResearchStore:
         } and not reason:
             raise ValidationRequiredError(
                 "Resolving REVIEW_REQUIRED requires a non-empty reviewer reason."
+            )
+        if (
+            current is RunState.REVIEW_REQUIRED
+            and target is RunState.COMPLETED
+            and self._is_promotion_report(run_id)
+            and self._holdout_lineage_touch_count(run_id) > 1
+        ):
+            raise ValidationRequiredError(
+                "Promotion cannot be resolved to COMPLETED after more than one "
+                "final-holdout touch for the research lineage."
             )
         assert_legal_transition(current, target)
         now = schema.utc_now_iso()
@@ -410,6 +439,8 @@ class SqliteResearchStore:
             raise ValidationRequiredError(
                 f"Run {run_id!r} is {current.value}, not validating."
             )
+        report = self._apply_holdout_promotion_gate(run_id, report)
+        self._assert_completed_report_is_valid(report)
         assert_legal_transition(current, report.target_state)
         now = schema.utc_now_iso()
         finding_rows = [
@@ -690,6 +721,359 @@ class SqliteResearchStore:
             source_path=source_path,
             repository_root=repository_root,
         )
+
+    def allocate_registry_id(self, *, record_type: str, prefix: str) -> str:
+        """Allocate a prefix-local sequence under SQLite's write lock."""
+        if not record_type.strip() or not prefix.strip():
+            raise ValueError("record_type and prefix must be non-empty")
+        with self._conn:
+            row = self._conn.execute(
+                """
+                INSERT INTO registry_id_counters (prefix, last_value)
+                VALUES (
+                    ?,
+                    COALESCE((
+                        SELECT MAX(
+                            CAST(substr(legacy_id, instr(legacy_id, '-') + 1) AS INTEGER)
+                        )
+                        FROM registry_records
+                        WHERE legacy_id GLOB ? || '-[0-9]*'
+                    ), 0) + 1
+                )
+                ON CONFLICT(prefix) DO UPDATE
+                    SET last_value = registry_id_counters.last_value + 1
+                RETURNING last_value
+                """,
+                (prefix, prefix),
+            ).fetchone()
+        return f"{prefix}-{int(row['last_value']):03d}"
+
+    def create_registry_record(
+        self,
+        *,
+        record_type: str,
+        payload: dict[str, Any],
+        methodology_version: str,
+        execution_identity: Optional[dict[str, Any]] = None,
+    ) -> str:
+        legacy_id = payload.get("id")
+        if not isinstance(legacy_id, str):
+            raise StoreError("Registry payload has no string id")
+        stored_json = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        payload_hash = sha256_hex(canonical_json(payload))
+        identity = execution_identity or {}
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO registry_records (
+                    record_type, legacy_id, payload_json, canonical_sha256,
+                    methodology_version, status, git_dirty, source_path,
+                    imported_at, record_origin, execution_model_version,
+                    execution_identity_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, 'research_store', ?, ?)
+                """,
+                (
+                    record_type,
+                    legacy_id,
+                    stored_json,
+                    payload_hash,
+                    methodology_version,
+                    None,
+                    int(
+                        bool(
+                            (payload.get("execution_metadata") or {}).get(
+                                "git_dirty", False
+                            )
+                        )
+                    ),
+                    schema.utc_now_iso(),
+                    identity.get("execution_model_version"),
+                    canonical_json(identity) if identity else None,
+                ),
+            )
+            self._replace_registry_relationships(record_type, legacy_id, payload)
+            self._conn.execute(
+                """
+                UPDATE registry_records
+                SET status = ?
+                WHERE record_type = ? AND legacy_id = ?
+                """,
+                (payload.get("status"), record_type, legacy_id),
+            )
+        return legacy_id
+
+    def update_registry_record(
+        self,
+        *,
+        record_type: str,
+        legacy_id: str,
+        payload: dict[str, Any],
+    ) -> str:
+        if payload.get("id") != legacy_id:
+            raise StoreError("Registry payload id does not match update target")
+        stored_json = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        payload_hash = sha256_hex(canonical_json(payload))
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM registry_relationships "
+                "WHERE record_type = ? AND legacy_id = ?",
+                (record_type, legacy_id),
+            )
+            self._replace_registry_relationships(record_type, legacy_id, payload)
+            cursor = self._conn.execute(
+                """
+                UPDATE registry_records
+                SET payload_json = ?, canonical_sha256 = ?, status = ?,
+                    git_dirty = ?, imported_at = ?
+                WHERE record_type = ? AND legacy_id = ?
+                """,
+                (
+                    stored_json,
+                    payload_hash,
+                    payload.get("status"),
+                    int(
+                        bool(
+                            (payload.get("execution_metadata") or {}).get(
+                                "git_dirty", False
+                            )
+                        )
+                    ),
+                    schema.utc_now_iso(),
+                    record_type,
+                    legacy_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StoreError(
+                    f"Unknown registry record {record_type}:{legacy_id}"
+                )
+        return payload_hash
+
+    def get_registry_record(
+        self, *, record_type: str, legacy_id: str
+    ) -> Optional[dict[str, Any]]:
+        row = self._conn.execute(
+            """
+            SELECT payload_json, methodology_version, execution_model_version,
+                   execution_identity_json, record_origin, imported_at
+            FROM registry_records
+            WHERE record_type = ? AND legacy_id = ?
+            """,
+            (record_type, legacy_id),
+        ).fetchone()
+        if row is None:
+            return None
+        payload = json.loads(row["payload_json"])
+        payload.setdefault("methodology_version", row["methodology_version"])
+        if row["execution_model_version"] is not None:
+            payload.setdefault(
+                "execution_model_version", row["execution_model_version"]
+            )
+        if row["execution_identity_json"]:
+            payload.setdefault(
+                "execution_identity", json.loads(row["execution_identity_json"])
+            )
+        payload["_record_origin"] = row["record_origin"]
+        payload["_imported_at"] = row["imported_at"]
+        if record_type == "artifact":
+            location = self._conn.execute(
+                """
+                SELECT repository_path, external_uri
+                FROM registry_artifact_locations
+                WHERE record_type = 'artifact' AND legacy_id = ?
+                ORDER BY ordinal LIMIT 1
+                """,
+                (legacy_id,),
+            ).fetchone()
+            if location:
+                payload["path"] = location["repository_path"]
+                payload["external_uri"] = location["external_uri"]
+        return payload
+
+    def query_registry_records(
+        self, *, record_type: str
+    ) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            """
+            SELECT legacy_id FROM registry_records
+            WHERE record_type = ?
+            ORDER BY
+                CASE
+                    WHEN instr(legacy_id, '-') > 0
+                    THEN CAST(substr(legacy_id, instr(legacy_id, '-') + 1) AS INTEGER)
+                    ELSE 0
+                END,
+                legacy_id
+            """,
+            (record_type,),
+        ).fetchall()
+        return [
+            self.get_registry_record(
+                record_type=record_type, legacy_id=row["legacy_id"]
+            )
+            for row in rows
+        ]
+
+    def _replace_registry_relationships(
+        self, record_type: str, legacy_id: str, payload: dict[str, Any]
+    ) -> None:
+        relationships: list[tuple[str, str, str, int]] = []
+        if record_type == "experiment":
+            if payload.get("hypothesis_id"):
+                relationships.append(
+                    ("hypothesis", "hypothesis", payload["hypothesis_id"], 0)
+                )
+            if payload.get("parent_experiment_id"):
+                relationships.append(
+                    ("parent", "experiment", payload["parent_experiment_id"], 0)
+                )
+        elif record_type == "note" and payload.get("related_experiment_id"):
+            relationships.append(
+                ("experiment", "experiment", payload["related_experiment_id"], 0)
+            )
+        elif record_type == "artifact" and payload.get("experiment_id"):
+            relationships.append(
+                ("experiment", "experiment", payload["experiment_id"], 0)
+            )
+        elif record_type == "rejected_idea":
+            relationships.extend(
+                ("evidence", "experiment", target, index)
+                for index, target in enumerate(payload.get("evidence") or [])
+            )
+        for relation, target_type, target_id, ordinal in relationships:
+            resolved = self._conn.execute(
+                "SELECT 1 FROM registry_records "
+                "WHERE record_type = ? AND legacy_id = ?",
+                (target_type, target_id),
+            ).fetchone()
+            self._conn.execute(
+                """
+                INSERT INTO registry_relationships (
+                    record_type, legacy_id, relation, target_type, target_id,
+                    ordinal, resolved
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record_type,
+                    legacy_id,
+                    relation,
+                    target_type,
+                    target_id,
+                    ordinal,
+                    int(resolved is not None),
+                ),
+            )
+        self._conn.execute(
+            """
+            UPDATE registry_relationships AS rel
+            SET resolved = EXISTS (
+                SELECT 1 FROM registry_records AS target
+                WHERE target.record_type = rel.target_type
+                  AND target.legacy_id = rel.target_id
+            )
+            """
+        )
+
+    def _apply_holdout_promotion_gate(
+        self, run_id: str, report: ValidationReport
+    ) -> ValidationReport:
+        if (
+            report.scope is not ValidationScope.PROMOTION
+            or report.target_state is not RunState.COMPLETED
+        ):
+            return report
+        lock = load_lock(self._holdout_config_path)
+        touches = self._holdout_lineage_touch_count(run_id, lock_hash=lock.lock_hash)
+        if touches <= 1:
+            return report
+        row = self._conn.execute(
+            "SELECT COALESCE(lineage_id, run_id) AS lineage_id "
+            "FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        lineage_id = row["lineage_id"]
+        finding = ValidationFinding(
+            code="OOS-001",
+            category=ValidationCategory.RESEARCH_ACCEPTANCE,
+            severity=Severity.BLOCKING,
+            message=(
+                "Promotion blocked: this research lineage touched the final "
+                f"holdout {touches} times; at most one touch is permitted."
+            ),
+            observed=touches,
+            expected="final-holdout touch count <= 1",
+            context={"lineage_id": lineage_id, "lock_hash": lock.lock_hash},
+        )
+        return report.model_copy(
+            update={
+                "target_state": RunState.VALIDATION_FAILED,
+                "findings": (*report.findings, finding),
+            }
+        )
+
+    @staticmethod
+    def _assert_completed_report_is_valid(report: ValidationReport) -> None:
+        if report.target_state is not RunState.COMPLETED:
+            return
+        missing = set(ValidationCategory) - set(report.checked_categories)
+        if missing:
+            names = ", ".join(sorted(category.value for category in missing))
+            raise ValidationRequiredError(
+                f"Completed validation report omitted categories: {names}"
+            )
+        if not report.leakage_passed:
+            raise ValidationRequiredError(
+                "Completed validation report requires passing leakage evidence."
+            )
+        if report.registry_hash_at_execution != report.current_registry_hash:
+            raise ValidationRequiredError(
+                "Completed validation report requires an unchanged feature registry."
+            )
+
+    def _holdout_lineage_touch_count(
+        self, run_id: str, *, lock_hash: Optional[str] = None
+    ) -> int:
+        if lock_hash is None:
+            lock_hash = load_lock(self._holdout_config_path).lock_hash
+        access_rows = read_access_log(self._holdout_access_log_path)
+        touched_run_ids = {
+            str(item.get("run_id"))
+            for item in access_rows
+            if item.get("lock_hash") == lock_hash
+        }
+        if not touched_run_ids:
+            return 0
+        row = self._conn.execute(
+            "SELECT COALESCE(lineage_id, run_id) AS lineage_id "
+            "FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        lineage_id = row["lineage_id"]
+        lineage_runs = {
+            result["run_id"]
+            for result in self._conn.execute(
+                "SELECT run_id FROM runs "
+                "WHERE COALESCE(lineage_id, run_id) = ?",
+                (lineage_id,),
+            )
+        } & touched_run_ids
+        return sum(
+            1
+            for item in access_rows
+            if item.get("lock_hash") == lock_hash
+            and str(item.get("run_id")) in lineage_runs
+        )
+
+    def _is_promotion_report(self, run_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT scope FROM validation_reports WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        return bool(row and row["scope"] == ValidationScope.PROMOTION.value)
 
     # -- internals -------------------------------------------------------
 
