@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -82,6 +83,10 @@ _FORBIDDEN_KEY_ALIASES = frozenset(
         "orderevents",
         "perevent",
         "events",
+        "tradedata",
+        "fillrecords",
+        "equityhistory",
+        "barseries",
     }
 )
 _APPROVED_CHECKSUM_KEYS = frozenset(
@@ -166,6 +171,7 @@ _EXECUTION_IDENTITY_KEYS = frozenset(
         "exit_slippage_default_ticks",
     }
 )
+_EXIT_SLIPPAGE_REASON_KEYS = frozenset({"STOP", "EOD", "TP"})
 _SECRET_PATTERNS = (
     re.compile(
         r"(?i)(authorization|apikey)\s*[:=]\s*(?:bearer\s+)?[^\s,}]+"
@@ -307,6 +313,26 @@ def _validate_approved_shape(
             "Publication field 'identity.execution_identity.exit_slippage_ticks' "
             "must be an object"
         )
+    unexpected_tick_keys = set(exit_ticks) - _EXIT_SLIPPAGE_REASON_KEYS
+    if unexpected_tick_keys:
+        raise StoreError(
+            "Publication field "
+            "'identity.execution_identity.exit_slippage_ticks' contains "
+            f"unapproved exit reasons: {sorted(unexpected_tick_keys)}"
+        )
+    for reason, ticks in exit_ticks.items():
+        if (
+            isinstance(ticks, bool)
+            or not isinstance(ticks, (int, float))
+            or not math.isfinite(float(ticks))
+            or float(ticks) < 0
+            or float(ticks) > 1_000_000
+        ):
+            raise StoreError(
+                "Publication field "
+                f"'identity.execution_identity.exit_slippage_ticks.{reason}' "
+                "must be a finite numeric scalar between 0 and 1000000"
+            )
     for key, value in execution_identity.items():
         if key != "exit_slippage_ticks":
             _require_scalar(value, f"identity.execution_identity.{key}")
@@ -364,6 +390,7 @@ class ResearchPublication:
     publication_version: int
     payload: Mapping[str, Any]
     payload_sha256: str
+    claim_token: str
     sequence: int = 0
     attempts: int = 0
 
@@ -374,6 +401,8 @@ class ResearchPublication:
             raise StoreError(
                 f"Publication checksum mismatch for {self.idempotency_key!r}"
             )
+        if not self.claim_token:
+            raise StoreError("Claimed publication requires a claim token")
 
 
 @dataclass(frozen=True)
@@ -643,11 +672,7 @@ class ResearchReconciler:
         keys = [
             item.idempotency_key
             for item in report.items
-            if item.status
-            in {
-                ReconciliationStatus.MISSING_REMOTE,
-                ReconciliationStatus.DIVERGENT,
-            }
+            if item.status is ReconciliationStatus.MISSING_REMOTE
         ]
         return self.outbox.repair_publications(keys, reason=reason, now=self.clock())
 
@@ -703,7 +728,14 @@ class ResearchHttpTransport(Protocol):
         params: Optional[Mapping[str, str]] = None,
         json_body: Optional[Any] = None,
         timeout_seconds: float,
-    ) -> tuple[int, Any]: ...
+    ) -> "ResearchHttpResponse": ...
+
+
+@dataclass(frozen=True)
+class ResearchHttpResponse:
+    status: int
+    body: Any
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 class AiohttpResearchTransport:
@@ -716,7 +748,7 @@ class AiohttpResearchTransport:
         params: Optional[Mapping[str, str]] = None,
         json_body: Optional[Any] = None,
         timeout_seconds: float,
-    ) -> tuple[int, Any]:
+    ) -> ResearchHttpResponse:
         try:
             import aiohttp
         except ImportError as exc:
@@ -737,7 +769,11 @@ class AiohttpResearchTransport:
                     body = json.loads(text) if text else None
                 except json.JSONDecodeError:
                     body = text
-                return response.status, body
+                return ResearchHttpResponse(
+                    status=response.status,
+                    body=body,
+                    headers=dict(response.headers),
+                )
 
 
 class SupabaseResearchDestination:
@@ -755,6 +791,20 @@ class SupabaseResearchDestination:
         self.clock = clock
 
     def _headers(self) -> dict[str, str]:
+        service_role_key = self.settings.service_role_key
+        return {
+            "apikey": service_role_key,
+            "Authorization": "Bearer " + service_role_key,
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates,return=representation",
+        }
+
+    async def _request(self, *args: Any, **kwargs: Any) -> ResearchHttpResponse:
+        try:
+            return await self.transport.request(*args, **kwargs)
+        except Exception as exc:
+            safe = redact_secrets(exc, (self.settings.service_role_key,))
+            raise RuntimeError(f"Supabase research transport failed: {safe}") from None
         return {
             "apikey": self.settings.service_role_key,
             "Authorization": f"Bearer {self.settings.service_role_key}",
@@ -776,7 +826,7 @@ class SupabaseResearchDestination:
             "payload_sha256": publication.payload_sha256,
             "acknowledged_at": self.clock().isoformat(),
         }
-        status, response = await self.transport.request(
+        response = await self._request(
             "POST",
             endpoint,
             headers=self._headers(),
@@ -784,12 +834,16 @@ class SupabaseResearchDestination:
             json_body=body,
             timeout_seconds=self.settings.timeout_seconds,
         )
-        if not 200 <= status < 300:
-            safe = redact_secrets(response, (self.settings.service_role_key,))
-            raise RuntimeError(
-                f"Supabase research publish failed: status={status} body={safe}"
+        if not 200 <= response.status < 300:
+            safe = redact_secrets(
+                response.body, (self.settings.service_role_key,)
             )
-        row = response[0] if isinstance(response, list) and response else response
+            raise RuntimeError(
+                "Supabase research publish failed: "
+                f"status={response.status} body={safe}"
+            )
+        body = response.body
+        row = body[0] if isinstance(body, list) and body else body
         if not isinstance(row, Mapping):
             raise RuntimeError("Supabase research publish returned no acknowledgement")
         return RemoteAcknowledgement(
@@ -801,28 +855,64 @@ class SupabaseResearchDestination:
 
     async def list_state(self) -> Sequence[RemoteRecordState]:
         endpoint = f"{self.settings.url.rstrip('/')}/rest/v1/{self.settings.table}"
-        status, response = await self.transport.request(
-            "GET",
-            endpoint,
-            headers=self._headers(),
-            params={
-                "select": "idempotency_key,payload_sha256,publication_version",
-                "order": "idempotency_key.asc",
-            },
-            timeout_seconds=self.settings.timeout_seconds,
-        )
-        if not 200 <= status < 300:
-            safe = redact_secrets(response, (self.settings.service_role_key,))
-            raise RuntimeError(
-                f"Supabase research reconciliation failed: status={status} body={safe}"
+        page_size = 1000
+        offset = 0
+        records: list[RemoteRecordState] = []
+        while True:
+            response = await self._request(
+                "GET",
+                endpoint,
+                headers={
+                    **self._headers(),
+                    "Range": f"{offset}-{offset + page_size - 1}",
+                    "Prefer": "count=exact",
+                },
+                params={
+                    "select": (
+                        "idempotency_key,payload_sha256,publication_version"
+                    ),
+                    "order": "idempotency_key.asc",
+                },
+                timeout_seconds=self.settings.timeout_seconds,
             )
-        if not isinstance(response, list):
-            raise RuntimeError("Supabase research state response must be a list")
-        return tuple(
-            RemoteRecordState(
-                idempotency_key=str(row["idempotency_key"]),
-                payload_sha256=str(row["payload_sha256"]),
-                publication_version=int(row["publication_version"]),
+            if not 200 <= response.status < 300:
+                safe = redact_secrets(
+                    response.body, (self.settings.service_role_key,)
+                )
+                raise RuntimeError(
+                    "Supabase research reconciliation failed: "
+                    f"status={response.status} body={safe}"
+                )
+            if not isinstance(response.body, list):
+                raise RuntimeError(
+                    "Supabase research state response must be a list"
+                )
+            page = [
+                RemoteRecordState(
+                    idempotency_key=str(row["idempotency_key"]),
+                    payload_sha256=str(row["payload_sha256"]),
+                    publication_version=int(row["publication_version"]),
+                )
+                for row in response.body
+            ]
+            records.extend(page)
+            content_range = (
+                response.headers.get("Content-Range")
+                or response.headers.get("content-range")
             )
-            for row in response
-        )
+            total = self._content_range_total(content_range)
+            offset += len(page)
+            if (
+                not page
+                or len(page) < page_size
+                or (total is not None and offset >= total)
+            ):
+                break
+        return tuple(records)
+
+    @staticmethod
+    def _content_range_total(content_range: Optional[str]) -> Optional[int]:
+        if not content_range or "/" not in content_range:
+            return None
+        total = content_range.rsplit("/", 1)[1]
+        return None if total == "*" else int(total)

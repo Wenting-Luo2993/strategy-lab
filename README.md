@@ -198,7 +198,8 @@ access through row-level security; it never receives the service-role key.
 python scripts/publish_research.py status
 python scripts/publish_research.py flush
 python scripts/publish_research.py reconcile
-# Repairs are never automatic:
+# Repairs are never automatic and only requeue records missing remotely.
+# Checksum-divergent immutable keys remain visible for administrative resolution.
 python scripts/publish_research.py reconcile --repair --reason "operator-approved"
 ```
 

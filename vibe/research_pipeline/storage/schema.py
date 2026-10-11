@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -657,6 +657,17 @@ BEGIN
 END;
 """
 
+# --------------------------------------------------------------------------
+# Migration 7: publication claim ownership fencing
+# --------------------------------------------------------------------------
+
+_MIGRATION_7 = """
+ALTER TABLE publication_outbox ADD COLUMN claim_token TEXT;
+CREATE UNIQUE INDEX idx_publication_outbox_claim_token
+    ON publication_outbox(claim_token)
+    WHERE claim_token IS NOT NULL;
+"""
+
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
@@ -665,6 +676,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (4, _MIGRATION_4),
     (5, _MIGRATION_5),
     (6, _MIGRATION_6),
+    (7, _MIGRATION_7),
 ]
 
 

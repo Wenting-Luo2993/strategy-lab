@@ -24,6 +24,7 @@ from vibe.research_pipeline.publishing import (
     ReconciliationStatus,
     RemoteAcknowledgement,
     RemoteRecordState,
+    ResearchHttpResponse,
     ResearchPublication,
     ResearchPublisher,
     ResearchReconciler,
@@ -136,6 +137,9 @@ class MemoryDestination:
             publication.payload_sha256,
             publication.publication_version,
         )
+        existing = self.rows.get(publication.idempotency_key)
+        if existing and existing.payload_sha256 != publication.payload_sha256:
+            raise RuntimeError("remote immutable payload divergence")
         self.rows[publication.idempotency_key] = state
         if self.fail_after_apply:
             self.fail_after_apply -= 1
@@ -205,6 +209,10 @@ def test_terminal_summary_contains_only_approved_aggregates_and_identities(
         {"identity": {"nested": {"individual_fills": []}}},
         {"identity": {"nested": {"raw-bars": []}}},
         {"identity": {"nested": {"EquityPoints": []}}},
+        {"identity": {"trade_data": []}},
+        {"identity": {"fill_records": []}},
+        {"identity": {"equity_history": []}},
+        {"identity": {"bar_series": []}},
     ],
 )
 def test_forbidden_nested_aliases_are_rejected(payload: dict[str, Any]):
@@ -322,6 +330,15 @@ async def test_reconciliation_identifies_and_repairs_only_safe_local_records(
         item.idempotency_key: item for item in store.local_publication_state()
     }
     first_state = local_states[f"run:{first}"]
+    with store._conn:
+        store._conn.execute(
+            """
+            UPDATE publication_outbox
+            SET status = 'published', published_at = ?
+            WHERE idempotency_key = ?
+            """,
+            (datetime.now(timezone.utc).isoformat(), f"run:{first}"),
+        )
     destination.rows = {
         first_state.idempotency_key: RemoteRecordState(
             first_state.idempotency_key, "0" * 64, 1
@@ -336,7 +353,33 @@ async def test_reconciliation_identifies_and_repairs_only_safe_local_records(
     assert statuses[f"run:{second}"] is ReconciliationStatus.MISSING_REMOTE
     assert statuses["remote:orphan"] is ReconciliationStatus.ORPHANED_REMOTE
 
-    assert reconciler.repair(report, reason="operator-approved checksum repair") == 2
+    assert reconciler.repair(report, reason="repair missing remote row") == 1
+    first_row = store._conn.execute(
+        """
+        SELECT status, publication_version FROM publication_outbox
+        WHERE idempotency_key = ?
+        """,
+        (f"run:{first}",),
+    ).fetchone()
+    second_row = store._conn.execute(
+        """
+        SELECT status, publication_version FROM publication_outbox
+        WHERE idempotency_key = ?
+        """,
+        (f"run:{second}",),
+    ).fetchone()
+    assert first_row["status"] == "published"
+    assert first_row["publication_version"] == 1
+    assert second_row["publication_version"] == 2
+
+    publisher = ResearchPublisher(store, destination)
+    assert (await publisher.flush_once()).claimed == 1
+    repaired_report = await reconciler.compare()
+    repaired_statuses = {
+        item.idempotency_key: item.status for item in repaired_report.items
+    }
+    assert repaired_statuses[f"run:{first}"] is ReconciliationStatus.DIVERGENT
+    assert repaired_statuses[f"run:{second}"] is ReconciliationStatus.MATCHED
     assert "remote:orphan" not in {
         row["idempotency_key"]
         for row in store._conn.execute(
@@ -404,6 +447,112 @@ def test_concurrent_claims_use_a_single_lease(tmp_path: Path):
     second.close()
 
 
+def test_expired_claim_cannot_complete_or_fail_reclaimed_lease(tmp_path: Path):
+    path = tmp_path / "research.sqlite3"
+    worker_a = SqliteResearchStore(path)
+    _terminal_run(worker_a, "lease-race")
+    worker_b = SqliteResearchStore(path)
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    publication_a = worker_a.claim_publications(
+        limit=1, claimed_by="worker-a", lease_seconds=30, now=start
+    )[0]
+    assert worker_b.reset_stale_publication_claims(
+        now=start + timedelta(seconds=31)
+    ) == 1
+    publication_b = worker_b.claim_publications(
+        limit=1,
+        claimed_by="worker-b",
+        lease_seconds=30,
+        now=start + timedelta(seconds=31),
+    )[0]
+    assert publication_a.claim_token != publication_b.claim_token
+    acknowledgement = RemoteAcknowledgement(
+        publication_b.idempotency_key,
+        publication_b.payload_sha256,
+        publication_b.publication_version,
+        start.isoformat(),
+    )
+
+    assert not worker_a.mark_publication_succeeded(
+        publication_a, acknowledgement, now=start + timedelta(seconds=32)
+    )
+    assert not worker_a.mark_publication_failed(
+        publication_a,
+        error="stale worker failure",
+        next_attempt_at=start + timedelta(seconds=40),
+        dead_letter=False,
+        now=start + timedelta(seconds=32),
+    )
+    assert worker_b.mark_publication_succeeded(
+        publication_b, acknowledgement, now=start + timedelta(seconds=32)
+    )
+    worker_a.close()
+    worker_b.close()
+
+
+def _registry_payload(execution_identity: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "identity": {
+            "record_type": "experiment",
+            "record_id": "EXP-999",
+            "methodology_version": "research-store-v1",
+            "execution_model_version": 6,
+            "execution_identity": dict(execution_identity),
+            "record_origin": "research_store",
+            "origin_device_id": "pytest",
+        },
+        "status": "completed",
+        "checksum": {"canonical_sha256": "a" * 64},
+        "lineage": [],
+        "badges": ["research-store-v1", "execution-model-v6"],
+        "timestamps": {"recorded_at": datetime.now(timezone.utc).isoformat()},
+    }
+
+
+@pytest.mark.parametrize(
+    "ticks",
+    [
+        {"STOP": {"nested": 2}},
+        {"STOP": [2]},
+        {"STOP": float("nan")},
+        {"STOP": float("inf")},
+        {"STOP": -1},
+        {"STOP": 1_000_001},
+        {"TRADE": 2},
+        {"stop": 2},
+    ],
+)
+def test_exit_slippage_ticks_require_exact_bounded_numeric_mapping(ticks: Any):
+    with pytest.raises(StoreError, match="exit_slippage_ticks"):
+        validate_publication_payload(
+            PublicationKind.REGISTRY_RECORD,
+            _registry_payload({"exit_slippage_ticks": ticks}),
+        )
+
+
+def test_public_store_api_rolls_back_invalid_execution_identity(tmp_path: Path):
+    store = SqliteResearchStore(tmp_path / "research.sqlite3")
+    with pytest.raises(StoreError, match="exit_slippage_ticks"):
+        store.create_registry_record(
+            record_type="experiment",
+            payload={
+                "id": "EXP-001",
+                "status": "completed",
+                "execution_metadata": {"git_dirty": False},
+            },
+            methodology_version="research-store-v1",
+            execution_identity={
+                "execution_model_version": 6,
+                "exit_slippage_ticks": {"STOP": {"trade_data": [1]}},
+            },
+        )
+    assert store.get_registry_record(
+        record_type="experiment", legacy_id="EXP-001"
+    ) is None
+    store.close()
+
+
 @pytest.mark.asyncio
 async def test_published_payload_is_immutable_in_database(tmp_path: Path):
     store = SqliteResearchStore(tmp_path / "research.sqlite3")
@@ -423,7 +572,7 @@ async def test_published_payload_is_immutable_in_database(tmp_path: Path):
     store.close()
 
 
-@pytest.mark.parametrize("starting_version", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("starting_version", [1, 2, 3, 4, 5, 6])
 def test_migration_from_every_prior_schema_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, starting_version: int
 ):
@@ -498,9 +647,16 @@ def test_research_credentials_are_separate_and_redacted():
 
 
 class FakeHttpTransport:
-    def __init__(self, response_status: int, response_body: Any) -> None:
+    def __init__(
+        self,
+        response_status: int = 200,
+        response_body: Any = None,
+        *,
+        responses: Optional[list[ResearchHttpResponse]] = None,
+    ) -> None:
         self.response_status = response_status
         self.response_body = response_body
+        self.responses = list(responses or [])
         self.requests: list[dict[str, Any]] = []
 
     async def request(
@@ -512,7 +668,7 @@ class FakeHttpTransport:
         params: Optional[Mapping[str, str]] = None,
         json_body: Optional[Any] = None,
         timeout_seconds: float,
-    ) -> tuple[int, Any]:
+    ) -> ResearchHttpResponse:
         self.requests.append(
             {
                 "method": method,
@@ -523,7 +679,19 @@ class FakeHttpTransport:
                 "timeout": timeout_seconds,
             }
         )
-        return self.response_status, self.response_body
+        if self.responses:
+            return self.responses.pop(0)
+        return ResearchHttpResponse(
+            self.response_status, self.response_body, {}
+        )
+
+
+class RaisingHttpTransport:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def request(self, *_: Any, **__: Any) -> ResearchHttpResponse:
+        raise self.error
 
 
 @pytest.mark.asyncio
@@ -568,4 +736,153 @@ async def test_supabase_adapter_uses_injected_transport_and_redacts_errors(
     with pytest.raises(RuntimeError) as error:
         await failing.publish(publication)
     assert secret not in str(error.value)
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_supabase_adapter_sends_auth_and_redacts_boundaries(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    store = SqliteResearchStore(tmp_path / "research.sqlite3")
+    _terminal_run(store, "adapter-auth")
+    publication = store.claim_publications(
+        limit=1,
+        claimed_by="adapter-test",
+        lease_seconds=60,
+        now=datetime.now(timezone.utc),
+    )[0]
+    secret = "service-role-secret-value"
+    acknowledgement = {
+        "idempotency_key": publication.idempotency_key,
+        "payload_sha256": publication.payload_sha256,
+        "publication_version": publication.publication_version,
+        "acknowledged_at": datetime.now(timezone.utc).isoformat(),
+    }
+    transport = FakeHttpTransport(201, [acknowledgement])
+    settings = ResearchSupabaseSettings(
+        url="https://example.supabase.co", service_role_key=secret
+    )
+    destination = SupabaseResearchDestination(settings, transport=transport)
+    result = await destination.publish(publication)
+
+    assert result.idempotency_key == publication.idempotency_key
+    assert transport.requests[0]["headers"] == {
+        "apikey": secret,
+        "Authorization": f"Bearer {secret}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=representation",
+    }
+    assert secret not in repr(settings)
+    assert secret not in repr(destination.settings)
+
+    failing = SupabaseResearchDestination(
+        settings,
+        transport=FakeHttpTransport(
+            401,
+            {
+                "message": (
+                    f"apikey={secret} Authorization: Bearer {secret} "
+                    f"service_role_key={secret}"
+                )
+            },
+        ),
+    )
+    with caplog.at_level("WARNING"):
+        with pytest.raises(RuntimeError) as error:
+            await failing.publish(publication)
+    assert secret not in str(error.value)
+    assert secret not in caplog.text
+
+    transport_failure = SupabaseResearchDestination(
+        settings,
+        transport=RaisingHttpTransport(
+            RuntimeError(f"Authorization: Bearer {secret}")
+        ),
+    )
+    with pytest.raises(RuntimeError) as transport_error:
+        await transport_failure.publish(publication)
+    assert secret not in str(transport_error.value)
+
+    publisher_clock = datetime.now(timezone.utc) + timedelta(seconds=61)
+    publisher = ResearchPublisher(
+        store,
+        transport_failure,
+        clock=lambda: publisher_clock,
+    )
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        assert (await publisher.flush_once()).failed == 1
+    assert secret not in caplog.text
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_remote_state_paginates_past_1000_rows_before_reconciliation(
+    tmp_path: Path,
+):
+    secret = "pagination-service-role-secret"
+    rows = [
+        {
+            "idempotency_key": f"remote:{index:04d}",
+            "payload_sha256": f"{index:064x}",
+            "publication_version": 1,
+        }
+        for index in range(1001)
+    ]
+    transport = FakeHttpTransport(
+        responses=[
+            ResearchHttpResponse(
+                206, rows[:1000], {"Content-Range": "0-999/1001"}
+            ),
+            ResearchHttpResponse(
+                206, rows[1000:], {"Content-Range": "1000-1000/1001"}
+            ),
+        ]
+    )
+    destination = SupabaseResearchDestination(
+        ResearchSupabaseSettings(
+            url="https://example.supabase.co", service_role_key=secret
+        ),
+        transport=transport,
+    )
+    state = await destination.list_state()
+    assert len(state) == 1001
+    assert [request["headers"]["Range"] for request in transport.requests] == [
+        "0-999",
+        "1000-1999",
+    ]
+
+    store = SqliteResearchStore(tmp_path / "research.sqlite3")
+    run_id = _terminal_run(store, "later-page")
+    local = store.local_publication_state()[0]
+    paged_destination = SupabaseResearchDestination(
+        ResearchSupabaseSettings(
+            url="https://example.supabase.co", service_role_key=secret
+        ),
+        transport=FakeHttpTransport(
+            responses=[
+                ResearchHttpResponse(
+                    206, rows[:1000], {"Content-Range": "0-999/1001"}
+                ),
+                ResearchHttpResponse(
+                    206,
+                    [
+                        {
+                            "idempotency_key": local.idempotency_key,
+                            "payload_sha256": local.payload_sha256,
+                            "publication_version": local.publication_version,
+                        }
+                    ],
+                    {"Content-Range": "1000-1000/1001"},
+                ),
+            ]
+        ),
+    )
+    reconciler = ResearchReconciler(store, paged_destination)
+    report = await reconciler.compare()
+    item = next(
+        item for item in report.items if item.idempotency_key == f"run:{run_id}"
+    )
+    assert item.status is ReconciliationStatus.MATCHED
+    assert reconciler.repair(report, reason="repair missing only") == 0
     store.close()

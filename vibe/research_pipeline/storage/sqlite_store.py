@@ -1010,7 +1010,8 @@ class SqliteResearchStore:
                 """
                 UPDATE publication_outbox
                 SET status = 'failed', claimed_by = NULL, claimed_at = NULL,
-                    lease_expires_at = NULL, next_attempt_at = ?,
+                    lease_expires_at = NULL, claim_token = NULL,
+                    next_attempt_at = ?,
                     last_error = COALESCE(
                         last_error, 'publisher lease expired before acknowledgement'
                     )
@@ -1035,6 +1036,7 @@ class SqliteResearchStore:
         instant = self._utc(now)
         now_iso = instant.isoformat()
         lease_iso = (instant + timedelta(seconds=lease_seconds)).isoformat()
+        claim_token = secrets.token_urlsafe(32)
         schema.begin_immediate(self._conn)
         try:
             row = self._conn.execute(
@@ -1067,10 +1069,16 @@ class SqliteResearchStore:
                 """
                 UPDATE publication_outbox
                 SET status = 'publishing', claimed_by = ?, claimed_at = ?,
-                    lease_expires_at = ?
+                    lease_expires_at = ?, claim_token = ?
                 WHERE event_id = ? AND status IN ('pending', 'failed')
                 """,
-                (claimed_by, now_iso, lease_iso, row["event_id"]),
+                (
+                    claimed_by,
+                    now_iso,
+                    lease_iso,
+                    claim_token,
+                    row["event_id"],
+                ),
             )
             if cursor.rowcount != 1:
                 self._conn.rollback()
@@ -1090,6 +1098,7 @@ class SqliteResearchStore:
                 publication_version=int(row["publication_version"]),
                 payload=payload,
                 payload_sha256=row["payload_sha256"],
+                claim_token=claim_token,
                 sequence=int(row["sequence"]),
                 attempts=int(row["attempts"]),
             )
@@ -1110,16 +1119,19 @@ class SqliteResearchStore:
                 SET status = 'published', attempts = attempts + 1,
                     last_error = NULL, next_attempt_at = NULL,
                     claimed_by = NULL, claimed_at = NULL,
-                    lease_expires_at = NULL, published_at = ?,
+                    lease_expires_at = NULL, claim_token = NULL,
+                    published_at = ?,
                     remote_checksum = ?
                 WHERE event_id = ? AND status = 'publishing'
                   AND publication_version = ?
+                  AND claim_token = ?
                 """,
                 (
                     now_iso,
                     acknowledgement.payload_sha256,
                     publication.event_id,
                     publication.publication_version,
+                    publication.claim_token,
                 ),
             )
             if cursor.rowcount:
@@ -1184,9 +1196,10 @@ class SqliteResearchStore:
                 UPDATE publication_outbox
                 SET status = ?, attempts = attempts + 1, last_error = ?,
                     next_attempt_at = ?, claimed_by = NULL, claimed_at = NULL,
-                    lease_expires_at = NULL
+                    lease_expires_at = NULL, claim_token = NULL
                 WHERE event_id = ? AND status = 'publishing'
                   AND publication_version = ?
+                  AND claim_token = ?
                 """,
                 (
                     status,
@@ -1194,6 +1207,7 @@ class SqliteResearchStore:
                     retry_iso,
                     publication.event_id,
                     publication.publication_version,
+                    publication.claim_token,
                 ),
             )
             if cursor.rowcount:
@@ -1301,7 +1315,8 @@ class SqliteResearchStore:
                         publication_version = publication_version + 1,
                         last_error = ?, next_attempt_at = ?,
                         claimed_by = NULL, claimed_at = NULL,
-                        lease_expires_at = NULL, published_at = NULL,
+                        lease_expires_at = NULL, claim_token = NULL,
+                        published_at = NULL,
                         remote_checksum = NULL
                     WHERE idempotency_key = ?
                       AND idempotency_key NOT LIKE 'legacy-untrusted:%'
