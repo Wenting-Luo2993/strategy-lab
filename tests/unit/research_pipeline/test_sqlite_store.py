@@ -364,14 +364,10 @@ def test_enqueue_rejects_nested_trade_payload(store: SqliteResearchStore):
     assert store.get_outbox(run_id) is None
 
 
-def test_enqueue_is_idempotent_per_run(store: SqliteResearchStore):
+def test_arbitrary_enqueue_is_rejected_by_construction(store: SqliteResearchStore):
     run_id = _register(store)
-    store.enqueue_publication(run_id, {"metric": 1})
-    store.enqueue_publication(run_id, {"metric": 2})
-    count = store._conn.execute(
-        "SELECT COUNT(*) FROM publication_outbox WHERE run_id = ?", (run_id,)
-    ).fetchone()[0]
-    assert count == 1
+    with pytest.raises(StoreError, match="Arbitrary research publication"):
+        store.enqueue_publication(run_id, {"metric": 1})
 
 
 # -- queries -------------------------------------------------------------

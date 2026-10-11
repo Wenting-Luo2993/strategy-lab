@@ -15,7 +15,9 @@ Design choices that matter:
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import socket
 import sqlite3
 import time
 import uuid
@@ -35,6 +37,16 @@ from vibe.research_pipeline.lifecycle import (
     assert_legal_transition,
 )
 from vibe.research_pipeline.paths import research_db_path
+from vibe.research_pipeline.publishing import (
+    PUBLICATION_SCHEMA_VERSION,
+    PublicationKind,
+    PublicationStatus,
+    RemoteAcknowledgement,
+    RemoteRecordState,
+    ResearchPublication,
+    redact_secrets,
+    validate_publication_payload,
+)
 from vibe.research_pipeline.storage import schema
 from vibe.research_pipeline.storage.legacy_importer import upsert_registry_payload
 from vibe.research_pipeline.store import (
@@ -49,13 +61,6 @@ from vibe.research_pipeline.validation import (
 )
 
 __all__ = ["SqliteResearchStore", "SqliteRunRecord"]
-
-# Keys whose presence anywhere in a publication payload means trade or equity
-# data would leave the machine. Publication is summary-only, by construction.
-_FORBIDDEN_PUBLICATION_KEYS = frozenset(
-    {"trades", "trade_ledger", "equity_curve", "equity_points"}
-)
-
 
 def _uuid7() -> str:
     """Return a time-ordered UUIDv7 string using only the stdlib.
@@ -72,25 +77,6 @@ def _uuid7() -> str:
     value |= 0b10 << 62
     value |= rand_b
     return str(uuid.UUID(int=value))
-
-
-def _forbidden_key_path(payload: Any, trail: str = "") -> Optional[str]:
-    """Return the dotted path to the first trade/equity key found, or None."""
-    if isinstance(payload, dict):
-        for key, sub in payload.items():
-            here = f"{trail}.{key}" if trail else str(key)
-            if key in _FORBIDDEN_PUBLICATION_KEYS:
-                return here
-            found = _forbidden_key_path(sub, here)
-            if found:
-                return found
-    elif isinstance(payload, (list, tuple)):
-        for index, item in enumerate(payload):
-            found = _forbidden_key_path(item, f"{trail}[{index}]")
-            if found:
-                return found
-    return None
-
 
 @dataclass(frozen=True)
 class SqliteRunRecord:
@@ -132,6 +118,7 @@ class SqliteResearchStore:
         *,
         holdout_config_path: Optional[Path] = None,
         holdout_access_log_path: Optional[Path] = None,
+        origin_device_id: Optional[str] = None,
     ) -> None:
         path = db_path if db_path is not None else research_db_path(create_parents=True)
         self._conn = sqlite3.connect(str(path), timeout=30.0)
@@ -139,6 +126,12 @@ class SqliteResearchStore:
         schema.migrate(self._conn)
         self._holdout_config_path = holdout_config_path
         self._holdout_access_log_path = holdout_access_log_path
+        self._origin_device_id = (
+            origin_device_id
+            or os.getenv("RESEARCH_ORIGIN_DEVICE_ID")
+            or socket.gethostname()
+        )
+        self.backfill_publications()
 
     def close(self) -> None:
         self._conn.close()
@@ -176,8 +169,8 @@ class SqliteResearchStore:
                         run_id, display_seq, display_alias, fingerprint,
                         fingerprint_version, strategy_id, methodology_version,
                         state, notes, code_commit, code_dirty, created_at, updated_at,
-                        lineage_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        lineage_id, identity_json, origin_device_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -194,6 +187,8 @@ class SqliteResearchStore:
                         now,
                         now,
                         lineage_id,
+                        fingerprint.model_dump_json(),
+                        self._origin_device_id,
                     ),
                 )
                 self._conn.execute(
@@ -500,6 +495,7 @@ class SqliteResearchStore:
                     RunState.VALIDATING.value,
                 ),
             )
+            self._enqueue_run_publication_tx(run_id, now=now)
             if cursor.rowcount != 1:
                 raise ValidationRequiredError(
                     f"Run {run_id!r} changed state during validation finalization."
@@ -592,28 +588,347 @@ class SqliteResearchStore:
             )
 
     def enqueue_publication(self, run_id: str, payload: dict[str, Any]) -> None:
-        """Queue a summary payload for remote publication.
+        """Reject arbitrary caller-authored payloads.
 
-        Refuses any payload containing trade or equity data at any depth, and is
-        idempotent per run id (the second enqueue for a run is a no-op).
+        P12 publication is built from allowlisted database columns only. Keeping
+        this legacy method as a hard failure prevents older callers from
+        bypassing that boundary.
         """
-        offending = _forbidden_key_path(payload)
-        if offending is not None:
-            raise StoreError(
-                f"Refusing to publish payload containing trade/equity data at "
-                f"{offending!r}. Per-trade and equity data never leave the machine."
-            )
-        self._require_state(run_id)  # FK/existence guard with a clear error
+        del run_id, payload
+        raise StoreError(
+            "Arbitrary research publication payloads are disabled. Terminal run "
+            "summaries are enqueued atomically by finalize_validation()."
+        )
+
+    def enqueue_run_publication(self, run_id: str) -> None:
+        """Explicitly enqueue or refresh one terminal run summary."""
+        state = self._require_state(run_id)
+        if state not in TERMINAL_STATES:
+            raise StoreError("Only terminal runs are eligible for publication")
         now = schema.utc_now_iso()
         with self._conn:
-            self._conn.execute(
+            self._enqueue_run_publication_tx(run_id, now=now)
+
+    def backfill_publications(self) -> int:
+        """Queue trusted summaries for records predating schema v6.
+
+        The original P7 outbox accepted arbitrary JSON. Migration v6 preserves
+        those rows as quarantined dead letters and rebuilds publications from
+        authoritative allowlisted columns instead.
+        """
+        before = self._conn.total_changes
+        now = schema.utc_now_iso()
+        with self._conn:
+            terminal_runs = self._conn.execute(
                 """
-                INSERT INTO publication_outbox (run_id, payload_json, enqueued_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(run_id) DO NOTHING
-                """,
-                (run_id, json.dumps(payload, sort_keys=True), now),
+                SELECT run_id FROM runs
+                WHERE state IN ({})
+                ORDER BY display_seq
+                """.format(
+                    ", ".join("?" for _ in TERMINAL_STATES)
+                ),
+                tuple(state.value for state in TERMINAL_STATES),
+            ).fetchall()
+            for row in terminal_runs:
+                self._enqueue_run_publication_tx(row["run_id"], now=now)
+            registry_rows = self._conn.execute(
+                """
+                SELECT record_type, legacy_id FROM registry_records
+                ORDER BY imported_at, record_type, legacy_id
+                """
+            ).fetchall()
+            for row in registry_rows:
+                self._enqueue_registry_publication_tx(
+                    row["record_type"], row["legacy_id"], now=now
+                )
+        return self._conn.total_changes - before
+
+    def _insert_publication_tx(
+        self,
+        *,
+        idempotency_key: str,
+        kind: PublicationKind,
+        aggregate_id: str,
+        payload: dict[str, Any],
+        now: str,
+        parent_idempotency_key: Optional[str] = None,
+    ) -> None:
+        validate_publication_payload(kind, payload)
+        payload_json = canonical_json(payload)
+        payload_sha256 = sha256_hex(payload_json)
+        self._conn.execute(
+            """
+            INSERT INTO publication_outbox (
+                event_id, idempotency_key, aggregate_type, aggregate_id,
+                parent_idempotency_key, schema_version, payload_json,
+                payload_sha256, status, enqueued_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            ON CONFLICT(idempotency_key) DO NOTHING
+            """,
+            (
+                _uuid7(),
+                idempotency_key,
+                kind.value,
+                aggregate_id,
+                parent_idempotency_key,
+                PUBLICATION_SCHEMA_VERSION,
+                payload_json,
+                payload_sha256,
+                now,
+            ),
+        )
+
+    def _enqueue_run_publication_tx(self, run_id: str, *, now: str) -> None:
+        row = self._conn.execute(
+            """
+            SELECT run_id, display_alias, fingerprint, fingerprint_version,
+                   strategy_id, methodology_version, state, code_commit,
+                   code_dirty, created_at, updated_at, lineage_id,
+                   identity_json, origin_device_id
+            FROM runs WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise StoreError(f"Unknown run {run_id!r}")
+        if RunState(row["state"]) not in TERMINAL_STATES:
+            raise StoreError("Only terminal runs are eligible for publication")
+
+        identity = json.loads(row["identity_json"]) if row["identity_json"] else {}
+        execution_version = identity.get("execution_model_version")
+        execution_badge = (
+            "unknown-pre-p2b"
+            if execution_version is None
+            else (
+                "pre-p2b"
+                if int(execution_version) < 6
+                else f"execution-model-v{int(execution_version)}"
             )
+        )
+        metrics = [
+            {
+                "key": metric["metric_key"],
+                "value": metric["metric_value"],
+                "calculation_version": metric["calculation_version"],
+            }
+            for metric in self._conn.execute(
+                """
+                SELECT metric_key, metric_value, calculation_version
+                FROM run_metrics WHERE run_id = ? ORDER BY metric_key, id
+                """,
+                (run_id,),
+            ).fetchall()
+        ]
+        evidence_row = self._conn.execute(
+            """
+            SELECT trade_count, trade_ledger_sha256, equity_curve_sha256,
+                   equity_points, retention_profile, payload_json
+            FROM run_evidence WHERE run_id = ? ORDER BY id DESC LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        evidence: dict[str, Any] = {}
+        if evidence_row:
+            raw_evidence = json.loads(evidence_row["payload_json"])
+            evidence = {
+                "aggregate_trade_count": evidence_row["trade_count"],
+                "trade_ledger_sha256": evidence_row["trade_ledger_sha256"],
+                "equity_curve_sha256": evidence_row["equity_curve_sha256"],
+                "equity_point_count": evidence_row["equity_points"],
+                "retention_profile": evidence_row["retention_profile"],
+                "first_session": raw_evidence.get("first_session"),
+                "last_session": raw_evidence.get("last_session"),
+                "starting_equity": raw_evidence.get("starting_equity"),
+                "ending_equity": raw_evidence.get("ending_equity"),
+                "gross_pnl": raw_evidence.get("gross_pnl"),
+                "total_costs": raw_evidence.get("total_costs"),
+                "net_pnl": raw_evidence.get("net_pnl"),
+                "max_observed_leverage": raw_evidence.get(
+                    "max_observed_leverage"
+                ),
+                "min_cash": raw_evidence.get("min_cash"),
+            }
+        report = self._conn.execute(
+            """
+            SELECT profile_name, scope, target_state,
+                   registry_hash_at_execution, current_registry_hash,
+                   leakage_passed
+            FROM validation_reports WHERE run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        finding_counts = {
+            item["severity"]: item["count"]
+            for item in self._conn.execute(
+                """
+                SELECT severity, COUNT(*) AS count
+                FROM run_findings WHERE run_id = ?
+                GROUP BY severity ORDER BY severity
+                """,
+                (run_id,),
+            ).fetchall()
+        }
+        validation = (
+            {
+                "profile_name": report["profile_name"],
+                "scope": report["scope"],
+                "target_state": report["target_state"],
+                "registry_hash_at_execution": report[
+                    "registry_hash_at_execution"
+                ],
+                "current_registry_hash": report["current_registry_hash"],
+                "leakage_passed": bool(report["leakage_passed"]),
+                "finding_counts": finding_counts,
+            }
+            if report
+            else {"finding_counts": finding_counts}
+        )
+        payload = {
+            "identity": {
+                "run_id": row["run_id"],
+                "display_alias": row["display_alias"],
+                "fingerprint": row["fingerprint"],
+                "fingerprint_version": row["fingerprint_version"],
+                "strategy_id": row["strategy_id"],
+                "methodology_version": row["methodology_version"],
+                "execution_model_version": execution_version,
+                "metric_calculation_version": identity.get(
+                    "metric_calculation_version"
+                ),
+                "feature_set_version": identity.get("feature_set_version"),
+                "dataset_fingerprint": identity.get("data_snapshot_id"),
+                "split_manifest_hash": identity.get("split_manifest_hash"),
+                "code_commit": row["code_commit"],
+                "code_dirty": bool(row["code_dirty"]),
+                "lineage_id": row["lineage_id"] or row["run_id"],
+                "origin_device_id": row["origin_device_id"] or "unknown",
+                "badges": [
+                    (
+                        "legacy-uncontrolled"
+                        if row["methodology_version"] == "legacy-uncontrolled"
+                        else row["methodology_version"]
+                    ),
+                    execution_badge,
+                ],
+            },
+            "state": row["state"],
+            "timestamps": {
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            },
+            "metrics": metrics,
+            "evidence": evidence,
+            "validation": validation,
+        }
+        self._insert_publication_tx(
+            idempotency_key=f"run:{run_id}",
+            kind=PublicationKind.RUN_SUMMARY,
+            aggregate_id=run_id,
+            payload=payload,
+            now=now,
+        )
+
+    def _enqueue_registry_publication_tx(
+        self,
+        record_type: str,
+        legacy_id: str,
+        *,
+        now: str,
+        visited: Optional[set[tuple[str, str]]] = None,
+    ) -> Optional[str]:
+        visited = visited or set()
+        identity = (record_type, legacy_id)
+        if identity in visited:
+            return None
+        visited.add(identity)
+        row = self._conn.execute(
+            """
+            SELECT canonical_sha256, methodology_version, status, git_dirty,
+                   imported_at, record_origin, execution_model_version,
+                   execution_identity_json
+            FROM registry_records
+            WHERE record_type = ? AND legacy_id = ?
+            """,
+            identity,
+        ).fetchone()
+        if row is None:
+            return None
+        relations = self._conn.execute(
+            """
+            SELECT relation, target_type, target_id
+            FROM registry_relationships
+            WHERE record_type = ? AND legacy_id = ? AND resolved = 1
+            ORDER BY ordinal, relation
+            """,
+            identity,
+        ).fetchall()
+        parent_key: Optional[str] = None
+        lineage: list[dict[str, str]] = []
+        for relation in relations:
+            target_key = self._enqueue_registry_publication_tx(
+                relation["target_type"],
+                relation["target_id"],
+                now=now,
+                visited=visited,
+            )
+            lineage.append(
+                {
+                    "relation": relation["relation"],
+                    "record_type": relation["target_type"],
+                    "record_id": relation["target_id"],
+                }
+            )
+            parent_key = parent_key or target_key
+
+        checksum = row["canonical_sha256"]
+        idempotency_key = f"registry:{record_type}:{legacy_id}:{checksum}"
+        execution_version = row["execution_model_version"]
+        execution_identity = (
+            json.loads(row["execution_identity_json"])
+            if row["execution_identity_json"]
+            else {}
+        )
+        badges = [
+            (
+                "legacy-uncontrolled"
+                if row["methodology_version"] == "legacy-uncontrolled"
+                else row["methodology_version"]
+            ),
+            (
+                "unknown-pre-p2b"
+                if execution_version is None
+                else (
+                    "pre-p2b"
+                    if int(execution_version) < 6
+                    else f"execution-model-v{int(execution_version)}"
+                )
+            ),
+        ]
+        payload = {
+            "identity": {
+                "record_type": record_type,
+                "record_id": legacy_id,
+                "methodology_version": row["methodology_version"],
+                "execution_model_version": execution_version,
+                "execution_identity": execution_identity,
+                "record_origin": row["record_origin"],
+                "origin_device_id": self._origin_device_id,
+            },
+            "status": row["status"],
+            "checksum": {"canonical_sha256": checksum},
+            "lineage": lineage,
+            "badges": badges,
+            "timestamps": {"recorded_at": row["imported_at"]},
+        }
+        self._insert_publication_tx(
+            idempotency_key=idempotency_key,
+            kind=PublicationKind.REGISTRY_RECORD,
+            aggregate_id=f"{record_type}:{legacy_id}",
+            payload=payload,
+            now=now,
+            parent_idempotency_key=parent_key,
+        )
+        return idempotency_key
 
     # -- queries ---------------------------------------------------------
 
@@ -679,10 +994,402 @@ class SqliteResearchStore:
 
     def get_outbox(self, run_id: str) -> Optional[sqlite3.Row]:
         return self._conn.execute(
-            "SELECT run_id, payload_json, status FROM publication_outbox "
-            "WHERE run_id = ?",
-            (run_id,),
+            """
+            SELECT aggregate_id AS run_id, payload_json, status, attempts,
+                   last_error, next_attempt_at, payload_sha256
+            FROM publication_outbox
+            WHERE idempotency_key = ?
+            """,
+            (f"run:{run_id}",),
         ).fetchone()
+
+    def reset_stale_publication_claims(self, *, now: datetime) -> int:
+        now_iso = self._utc(now).isoformat()
+        with self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE publication_outbox
+                SET status = 'failed', claimed_by = NULL, claimed_at = NULL,
+                    lease_expires_at = NULL, next_attempt_at = ?,
+                    last_error = COALESCE(
+                        last_error, 'publisher lease expired before acknowledgement'
+                    )
+                WHERE status = 'publishing'
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at <= ?
+                """,
+                (now_iso, now_iso),
+            )
+        return cursor.rowcount
+
+    def claim_publications(
+        self,
+        *,
+        limit: int,
+        claimed_by: str,
+        lease_seconds: int,
+        now: datetime,
+    ) -> list[ResearchPublication]:
+        if limit <= 0 or lease_seconds <= 0 or not claimed_by.strip():
+            raise ValueError("claim arguments must be positive/non-empty")
+        instant = self._utc(now)
+        now_iso = instant.isoformat()
+        lease_iso = (instant + timedelta(seconds=lease_seconds)).isoformat()
+        schema.begin_immediate(self._conn)
+        try:
+            row = self._conn.execute(
+                """
+                SELECT *
+                FROM publication_outbox
+                WHERE status IN ('pending', 'failed', 'publishing')
+                ORDER BY sequence
+                LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                self._conn.commit()
+                return []
+            if row["status"] == PublicationStatus.PUBLISHING.value:
+                self._conn.commit()
+                return []
+            if row["next_attempt_at"] and row["next_attempt_at"] > now_iso:
+                self._conn.commit()
+                return []
+            if row["parent_idempotency_key"]:
+                parent = self._conn.execute(
+                    "SELECT status FROM publication_outbox WHERE idempotency_key = ?",
+                    (row["parent_idempotency_key"],),
+                ).fetchone()
+                if parent is not None and parent["status"] != PublicationStatus.PUBLISHED.value:
+                    self._conn.commit()
+                    return []
+            cursor = self._conn.execute(
+                """
+                UPDATE publication_outbox
+                SET status = 'publishing', claimed_by = ?, claimed_at = ?,
+                    lease_expires_at = ?
+                WHERE event_id = ? AND status IN ('pending', 'failed')
+                """,
+                (claimed_by, now_iso, lease_iso, row["event_id"]),
+            )
+            if cursor.rowcount != 1:
+                self._conn.rollback()
+                return []
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        payload = json.loads(row["payload_json"])
+        return [
+            ResearchPublication(
+                event_id=row["event_id"],
+                idempotency_key=row["idempotency_key"],
+                kind=PublicationKind(row["aggregate_type"]),
+                aggregate_id=row["aggregate_id"],
+                schema_version=int(row["schema_version"]),
+                publication_version=int(row["publication_version"]),
+                payload=payload,
+                payload_sha256=row["payload_sha256"],
+                sequence=int(row["sequence"]),
+                attempts=int(row["attempts"]),
+            )
+        ]
+
+    def mark_publication_succeeded(
+        self,
+        publication: ResearchPublication,
+        acknowledgement: RemoteAcknowledgement,
+        *,
+        now: datetime,
+    ) -> bool:
+        now_iso = self._utc(now).isoformat()
+        with self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE publication_outbox
+                SET status = 'published', attempts = attempts + 1,
+                    last_error = NULL, next_attempt_at = NULL,
+                    claimed_by = NULL, claimed_at = NULL,
+                    lease_expires_at = NULL, published_at = ?,
+                    remote_checksum = ?
+                WHERE event_id = ? AND status = 'publishing'
+                  AND publication_version = ?
+                """,
+                (
+                    now_iso,
+                    acknowledgement.payload_sha256,
+                    publication.event_id,
+                    publication.publication_version,
+                ),
+            )
+            if cursor.rowcount:
+                self._conn.execute(
+                    """
+                    INSERT INTO publication_attempts (
+                        event_id, attempt_number, outcome, error, attempted_at
+                    ) VALUES (?, ?, 'published', NULL, ?)
+                    """,
+                    (
+                        publication.event_id,
+                        publication.attempts + 1,
+                        now_iso,
+                    ),
+                )
+                self._conn.execute(
+                    """
+                    INSERT INTO publication_acknowledgements (
+                        idempotency_key, remote_checksum, publication_version,
+                        acknowledged_at, last_reconciled_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(idempotency_key) DO UPDATE SET
+                        remote_checksum = excluded.remote_checksum,
+                        publication_version = excluded.publication_version,
+                        acknowledged_at = excluded.acknowledged_at,
+                        last_reconciled_at = excluded.last_reconciled_at
+                    """,
+                    (
+                        acknowledgement.idempotency_key,
+                        acknowledgement.payload_sha256,
+                        acknowledgement.publication_version,
+                        acknowledgement.acknowledged_at,
+                        now_iso,
+                    ),
+                )
+        return bool(cursor.rowcount)
+
+    def mark_publication_failed(
+        self,
+        publication: ResearchPublication,
+        *,
+        error: str,
+        next_attempt_at: Optional[datetime],
+        dead_letter: bool,
+        now: datetime,
+    ) -> bool:
+        now_iso = self._utc(now).isoformat()
+        safe_error = redact_secrets(error)
+        status = (
+            PublicationStatus.DEAD_LETTER.value
+            if dead_letter
+            else PublicationStatus.FAILED.value
+        )
+        retry_iso = (
+            self._utc(next_attempt_at).isoformat()
+            if next_attempt_at is not None
+            else None
+        )
+        with self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE publication_outbox
+                SET status = ?, attempts = attempts + 1, last_error = ?,
+                    next_attempt_at = ?, claimed_by = NULL, claimed_at = NULL,
+                    lease_expires_at = NULL
+                WHERE event_id = ? AND status = 'publishing'
+                  AND publication_version = ?
+                """,
+                (
+                    status,
+                    safe_error,
+                    retry_iso,
+                    publication.event_id,
+                    publication.publication_version,
+                ),
+            )
+            if cursor.rowcount:
+                self._conn.execute(
+                    """
+                    INSERT INTO publication_attempts (
+                        event_id, attempt_number, outcome, error, attempted_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        publication.event_id,
+                        publication.attempts + 1,
+                        status,
+                        safe_error,
+                        now_iso,
+                    ),
+                )
+                if dead_letter:
+                    self._conn.execute(
+                        """
+                        INSERT INTO publication_dead_letters (
+                            event_id, idempotency_key, payload_sha256, attempts,
+                            last_error, dead_lettered_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(event_id) DO UPDATE SET
+                            replay_count = publication_dead_letters.replay_count + 1
+                        """,
+                        (
+                            publication.event_id,
+                            publication.idempotency_key,
+                            publication.payload_sha256,
+                            publication.attempts + 1,
+                            safe_error,
+                            now_iso,
+                        ),
+                    )
+        return bool(cursor.rowcount)
+
+    def local_publication_state(self) -> list[RemoteRecordState]:
+        rows = self._conn.execute(
+            """
+            SELECT idempotency_key, payload_sha256, publication_version
+            FROM publication_outbox
+            WHERE idempotency_key NOT LIKE 'legacy-untrusted:%'
+            ORDER BY idempotency_key
+            """
+        ).fetchall()
+        return [
+            RemoteRecordState(
+                idempotency_key=row["idempotency_key"],
+                payload_sha256=row["payload_sha256"],
+                publication_version=int(row["publication_version"]),
+            )
+            for row in rows
+        ]
+
+    def record_reconciliation_state(
+        self, remote: Iterable[RemoteRecordState], *, now: datetime
+    ) -> None:
+        now_iso = self._utc(now).isoformat()
+        with self._conn:
+            self._conn.executemany(
+                """
+                INSERT INTO publication_acknowledgements (
+                    idempotency_key, remote_checksum, publication_version,
+                    acknowledged_at, last_reconciled_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(idempotency_key) DO UPDATE SET
+                    remote_checksum = excluded.remote_checksum,
+                    publication_version = excluded.publication_version,
+                    last_reconciled_at = excluded.last_reconciled_at
+                """,
+                [
+                    (
+                        item.idempotency_key,
+                        item.payload_sha256,
+                        item.publication_version,
+                        now_iso,
+                        now_iso,
+                    )
+                    for item in remote
+                ],
+            )
+
+    def repair_publications(
+        self,
+        idempotency_keys: Iterable[str],
+        *,
+        reason: str,
+        now: datetime,
+    ) -> int:
+        if not reason.strip():
+            raise ValueError("repair reason must be non-empty")
+        keys = tuple(dict.fromkeys(idempotency_keys))
+        if not keys:
+            return 0
+        now_iso = self._utc(now).isoformat()
+        repaired = 0
+        with self._conn:
+            for key in keys:
+                cursor = self._conn.execute(
+                    """
+                    UPDATE publication_outbox
+                    SET status = 'pending',
+                        publication_version = publication_version + 1,
+                        last_error = ?, next_attempt_at = ?,
+                        claimed_by = NULL, claimed_at = NULL,
+                        lease_expires_at = NULL, published_at = NULL,
+                        remote_checksum = NULL
+                    WHERE idempotency_key = ?
+                      AND idempotency_key NOT LIKE 'legacy-untrusted:%'
+                    """,
+                    (f"explicit repair: {reason}", now_iso, key),
+                )
+                repaired += cursor.rowcount
+                if cursor.rowcount:
+                    self._conn.execute(
+                        """
+                        UPDATE publication_dead_letters
+                        SET replay_count = replay_count + 1
+                        WHERE idempotency_key = ?
+                        """,
+                        (key,),
+                    )
+        return repaired
+
+    def requeue_dead_letter(
+        self,
+        event_id: str,
+        *,
+        reason: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        row = self._conn.execute(
+            """
+            SELECT idempotency_key FROM publication_outbox
+            WHERE event_id = ? AND status = 'dead_letter'
+              AND idempotency_key NOT LIKE 'legacy-untrusted:%'
+            """,
+            (event_id,),
+        ).fetchone()
+        return bool(
+            row
+            and self.repair_publications(
+                [row["idempotency_key"]],
+                reason=reason,
+                now=self._utc(now),
+            )
+        )
+
+    def replay_publication(
+        self,
+        idempotency_key: str,
+        *,
+        reason: str,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        return bool(
+            self.repair_publications(
+                [idempotency_key],
+                reason=reason,
+                now=self._utc(now),
+            )
+        )
+
+    def publication_status_counts(self) -> dict[str, int]:
+        counts = {
+            row["status"]: int(row["count"])
+            for row in self._conn.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM publication_outbox GROUP BY status
+                """
+            ).fetchall()
+        }
+        return {
+            status.value: counts.get(status.value, 0)
+            for status in PublicationStatus
+        }
+
+    def pending_publications_older_than(
+        self, age: timedelta, *, now: Optional[datetime] = None
+    ) -> int:
+        if age.total_seconds() < 0:
+            raise ValueError("age must be non-negative")
+        instant = self._utc(now)
+        cutoff = (instant - age).isoformat()
+        row = self._conn.execute(
+            """
+            SELECT COUNT(*) AS count FROM publication_outbox
+            WHERE status IN ('pending', 'failed', 'publishing')
+              AND enqueued_at <= ?
+            """,
+            (cutoff,),
+        ).fetchone()
+        return int(row["count"])
 
     def get_validation_report(self, run_id: str) -> Optional[ValidationReport]:
         row = self._conn.execute(
@@ -802,6 +1509,9 @@ class SqliteResearchStore:
                 """,
                 (payload.get("status"), record_type, legacy_id),
             )
+            self._enqueue_registry_publication_tx(
+                record_type, legacy_id, now=schema.utc_now_iso()
+            )
         return legacy_id
 
     def update_registry_record(
@@ -851,6 +1561,9 @@ class SqliteResearchStore:
                 raise StoreError(
                     f"Unknown registry record {record_type}:{legacy_id}"
                 )
+            self._enqueue_registry_publication_tx(
+                record_type, legacy_id, now=schema.utc_now_iso()
+            )
         return payload_hash
 
     def get_registry_record(

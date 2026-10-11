@@ -148,10 +148,12 @@ class ResearchStore(Protocol):
     ) -> list[RunRecord]:
         """Paginated run query."""
 
-    def enqueue_publication(self, run_id: str, payload: dict[str, Any]) -> None:
-        """Queue a summary payload for remote publication.
+    def enqueue_run_publication(self, run_id: str) -> None:
+        """Queue an allowlisted terminal-run summary for remote publication.
 
-        Implementations must reject payloads containing trade or equity data.
+        Normal callers do not need this method: finalization must persist the
+        terminal state and enqueue the publication in the same transaction.
+        This explicit operation exists for reconciliation and controlled repair.
         """
 
     def allocate_registry_id(self, *, record_type: str, prefix: str) -> str:

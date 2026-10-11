@@ -46,7 +46,7 @@ def test_forward_only_upgrade_from_schema_v1(tmp_path: Path, monkeypatch):
     with monkeypatch.context() as migration_patch:
         migration_patch.setattr(schema, "_MIGRATIONS", [(1, schema._MIGRATION_1)])
         assert schema.migrate(conn) == 1
-    assert schema.migrate(conn) == schema.SCHEMA_VERSION == 5
+    assert schema.migrate(conn) == schema.SCHEMA_VERSION
     tables = {
         row[0]
         for row in conn.execute(
@@ -55,7 +55,10 @@ def test_forward_only_upgrade_from_schema_v1(tmp_path: Path, monkeypatch):
     }
     assert "runs" in tables
     assert "registry_records" in tables
-    assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 5
+    assert (
+        conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+        == schema.SCHEMA_VERSION
+    )
     conn.close()
 
 

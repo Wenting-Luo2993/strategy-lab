@@ -174,10 +174,33 @@ pre-commit install
   execution-model identity and version.
 - **Final-holdout enforcement** — promotion validation fails when the same
   research lineage touches the locked final holdout more than once.
+- **Durable remote publication** — terminal summaries and registry identity
+  records enter a same-file SQLite outbox atomically, then publish to Supabase
+  in deterministic order with idempotent upserts, bounded retry, dead letters,
+  restart recovery, and explicit reconciliation/repair.
+- **Summary-only boundary** — remote payloads are built from allowlisted
+  aggregate columns. Trades, fills, ledgers, equity points/curves, raw bars,
+  and other event-level data are rejected recursively at storage and transport
+  boundaries; only aggregate counts and evidence checksums leave the device.
 
 The database path defaults outside the repository. Override it with
 `RESEARCH__DB_PATH`; do not place an active SQLite file in Git or a synced
 working tree.
+
+To enable trusted local publication, apply
+`docs/backtest-research-summaries/supabase-research-schema.sql`, then set
+`RESEARCH_SUPABASE_URL` and `RESEARCH_SUPABASE_SERVICE_ROLE_KEY`. The research
+service-role key must be distinct from live-trading credentials and must never
+use a `NEXT_PUBLIC_*` name. Browser/dashboard code receives read-only anonymous
+access through row-level security; it never receives the service-role key.
+
+```bash
+python scripts/publish_research.py status
+python scripts/publish_research.py flush
+python scripts/publish_research.py reconcile
+# Repairs are never automatic:
+python scripts/publish_research.py reconcile --repair --reason "operator-approved"
+```
 
 ### Trading Bot (`vibe/trading_bot/`)
 

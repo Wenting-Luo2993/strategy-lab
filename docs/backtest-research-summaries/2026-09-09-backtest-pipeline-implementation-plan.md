@@ -1538,7 +1538,7 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P9, P10, P11 |
+| Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P9, P10, P11, P12 |
 | Partial | — |
 | Not started | P8, P10b, P12, P13, P14 |
 
@@ -1572,7 +1572,7 @@ make the parent inconclusive instead of stitching survivors.
 | P10 | Final-holdout lock | **Complete** | `29eaa04`, P11 implementation commit | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader`; P11 completed the deferred promotion gate, forcing `VALIDATION_FAILED` with `OOS-001` when a research lineage exceeds one append-only holdout touch. |
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
 | P11 | Registry migration to `ResearchStore` | **Complete** (2026-10) | P11 implementation and hardening commits | Forward-only schema v4 adds transactional compatibility-ID allocation, registry origin/execution identity, and run lineage; v5 protects terminal validation reports. Migration startup and one-time legacy import/audit are serialized under bounded `BEGIN IMMEDIATE` locking. Registry, query, lineage, notes, artifacts, sweep tracker, and optimization-journal writes are SQLite-authoritative and write zero YAML/Markdown records. Existing YAML is imported once with verified canonical-tree parity and then ignored as an authority. Legacy records retain `legacy-uncontrolled` methodology and unknown pre-P2b execution identity; new records stamp execution model v6 plus the full realism identity. Promotion validation is forced to `VALIDATION_FAILED` with `OOS-001` when a lineage's append-only final-holdout touch count exceeds one. |
-| P12 | Supabase publisher and reconciliation | **Not started** | — | |
+| P12 | Supabase publisher and reconciliation | **Complete** (2026-10) | P12 implementation commit | Forward-only schema v6 upgrades the original same-file outbox with ordered idempotent events, attempts, bounded retry scheduling, claim leases, dead letters, acknowledgements, failure-age visibility, and explicit replay/requeue. Terminal run finalization and registry writes enqueue allowlisted summaries/identity records in the same SQLite transaction. Payload construction publishes aggregate metrics, evidence counts/checksums, lineage, methodology, execution identity, and legacy/unknown-pre-P2b badges while recursively refusing trades, fills, ledgers, equity series/points, raw bars, and aliases. The typed publisher supports injected transports and jitter/clock controls; the Supabase service-role adapter uses research-specific credentials, redacts failures, and is paired with a read-only RLS schema. F12 covers interrupted acknowledgements, restart recovery, deterministic ordering, duplicate delivery, backoff, dead letters, leases, reconciliation, safe repair, v1-v5 migration, terminal payload immutability, and failure visibility. |
 | P13 | `/research` route | **Not started** | — | |
 | P14 | YAML retirement | **Not started** | — | Gated on P11 and P12 being validated. |
 
@@ -1893,17 +1893,18 @@ in hindsight, so the run is permanently badged `survivorship_bias=present`.
 
 ### Recommended next increment
 
-**P12, Supabase publisher and reconciliation.**
+**P13, the shared `/research` dashboard route.**
 
-P11 is complete, so the local SQLite store is now the sole normal-operation
-authority and produces no new YAML registry records. The next dependency on the
-YAML-retirement path is P12: publish summary-only records and evidence through
-the same-file outbox, preserve parent-before-child ordering, and prove
-reconciliation/offline recovery. P13 then consumes that remote read model, and
-P14 can remove the checked-in compatibility tree only after P12 is validated.
+P12 is complete: summary-only records and evidence checksums now publish through
+the same-file SQLite outbox with parent-before-child ordering, restart recovery,
+idempotent delivery, dead letters, and explicit reconciliation/repair. P13 can
+now consume the `research_publications` remote read model through a fixture-backed
+adapter and the anonymous select-only RLS policy. P14 remains gated on validating
+that shared read surface and performing the separately reviewed compatibility
+archive/removal step.
 
 P8, the local read-only viewer, can still proceed independently against schema
-v4 and is useful for inspection, but it does not unblock P12 or P14.
+v6 and remains useful for offline inspection, but it does not block P13.
 
 The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
 proceed without further eroding it; runs are now confined to `dev_end` by the

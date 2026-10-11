@@ -117,14 +117,14 @@ def _holdout_files(tmp_path: Path) -> tuple[Path, Path, HoldoutLock]:
     return config, tmp_path / "access.jsonl", lock
 
 
-def test_schema_v5_is_forward_only_and_store_protocol_is_extended(tmp_path: Path):
+def test_schema_is_forward_only_and_store_protocol_is_extended(tmp_path: Path):
     path = tmp_path / "research.sqlite3"
     conn = sqlite3.connect(path)
     schema.configure_connection(conn)
-    assert schema.migrate(conn) == 5
+    assert schema.migrate(conn) == schema.SCHEMA_VERSION
     assert [row[0] for row in conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    )    ] == [1, 2, 3, 4, 5]
+    )    ] == list(range(1, schema.SCHEMA_VERSION + 1))
     conn.close()
 
     store = SqliteResearchStore(path)
@@ -142,14 +142,15 @@ def test_failed_migration_rolls_back_ddl_and_version(
     conn = sqlite3.connect(path)
     schema.configure_connection(conn)
     schema.migrate(conn)
-    monkeypatch.setattr(schema, "SCHEMA_VERSION", 6)
+    next_version = schema.SCHEMA_VERSION + 1
+    monkeypatch.setattr(schema, "SCHEMA_VERSION", next_version)
     monkeypatch.setattr(
         schema,
         "_MIGRATIONS",
         [
             *schema._MIGRATIONS,
             (
-                6,
+                next_version,
                 "CREATE TABLE migration_must_rollback (id INTEGER); "
                 "THIS IS INVALID SQL;",
             ),
@@ -164,7 +165,8 @@ def test_failed_migration_rolls_back_ddl_and_version(
         "WHERE type = 'table' AND name = 'migration_must_rollback'"
     ).fetchone()[0] == 0
     assert conn.execute(
-        "SELECT COUNT(*) FROM schema_migrations WHERE version = 6"
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
+        (next_version,),
     ).fetchone()[0] == 0
     conn.close()
 

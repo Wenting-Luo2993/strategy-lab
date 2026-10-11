@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -519,6 +519,144 @@ BEGIN
 END;
 """
 
+# --------------------------------------------------------------------------
+# Migration 6: P12 durable publication and reconciliation
+# --------------------------------------------------------------------------
+
+_MIGRATION_6 = """
+ALTER TABLE runs ADD COLUMN identity_json TEXT;
+ALTER TABLE runs ADD COLUMN origin_device_id TEXT;
+
+ALTER TABLE publication_outbox RENAME TO publication_outbox_v1;
+
+CREATE TABLE publication_outbox (
+    sequence               INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id               TEXT NOT NULL UNIQUE,
+    idempotency_key        TEXT NOT NULL UNIQUE,
+    aggregate_type         TEXT NOT NULL,
+    aggregate_id           TEXT NOT NULL,
+    parent_idempotency_key TEXT,
+    schema_version         INTEGER NOT NULL,
+    publication_version    INTEGER NOT NULL DEFAULT 1,
+    payload_json           TEXT NOT NULL,
+    payload_sha256         TEXT NOT NULL,
+    status                 TEXT NOT NULL DEFAULT 'pending'
+                           CHECK (status IN (
+                               'pending', 'publishing', 'failed',
+                               'published', 'dead_letter'
+                           )),
+    attempts               INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    last_error             TEXT,
+    next_attempt_at        TEXT,
+    claimed_by             TEXT,
+    claimed_at             TEXT,
+    lease_expires_at       TEXT,
+    enqueued_at            TEXT NOT NULL,
+    published_at           TEXT,
+    remote_checksum        TEXT,
+    FOREIGN KEY (parent_idempotency_key)
+        REFERENCES publication_outbox(idempotency_key)
+);
+CREATE INDEX idx_publication_outbox_ready
+    ON publication_outbox(status, sequence, next_attempt_at);
+CREATE INDEX idx_publication_outbox_lease
+    ON publication_outbox(status, lease_expires_at);
+
+INSERT INTO publication_outbox (
+    event_id, idempotency_key, aggregate_type, aggregate_id,
+    schema_version, payload_json, payload_sha256, status, enqueued_at
+)
+SELECT
+    'legacy-' || run_id,
+    'legacy-untrusted:' || run_id,
+    'run_summary',
+    run_id,
+    1,
+    payload_json,
+    '',
+    'dead_letter',
+    enqueued_at
+FROM publication_outbox_v1;
+DROP TABLE publication_outbox_v1;
+
+CREATE TABLE publication_attempts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id        TEXT NOT NULL REFERENCES publication_outbox(event_id),
+    attempt_number  INTEGER NOT NULL,
+    outcome         TEXT NOT NULL,
+    error           TEXT,
+    attempted_at    TEXT NOT NULL
+);
+CREATE INDEX idx_publication_attempts_event
+    ON publication_attempts(event_id, attempt_number);
+
+CREATE TABLE publication_dead_letters (
+    event_id         TEXT PRIMARY KEY REFERENCES publication_outbox(event_id),
+    idempotency_key  TEXT NOT NULL,
+    payload_sha256   TEXT NOT NULL,
+    attempts         INTEGER NOT NULL,
+    last_error       TEXT NOT NULL,
+    dead_lettered_at TEXT NOT NULL,
+    replay_count     INTEGER NOT NULL DEFAULT 0
+);
+
+INSERT INTO publication_dead_letters (
+    event_id, idempotency_key, payload_sha256, attempts,
+    last_error, dead_lettered_at
+)
+SELECT
+    event_id, idempotency_key, payload_sha256, attempts,
+    'legacy arbitrary payload quarantined during P12 migration', enqueued_at
+FROM publication_outbox
+WHERE idempotency_key LIKE 'legacy-untrusted:%';
+
+CREATE TABLE publication_acknowledgements (
+    idempotency_key     TEXT PRIMARY KEY,
+    remote_checksum    TEXT NOT NULL,
+    publication_version INTEGER NOT NULL,
+    acknowledged_at    TEXT NOT NULL,
+    last_reconciled_at TEXT NOT NULL
+);
+
+CREATE TRIGGER trg_publication_payload_immutable_after_delivery
+BEFORE UPDATE ON publication_outbox
+FOR EACH ROW
+WHEN OLD.status IN ('published', 'dead_letter')
+ AND (
+     NEW.event_id != OLD.event_id
+     OR NEW.idempotency_key != OLD.idempotency_key
+     OR NEW.aggregate_type != OLD.aggregate_type
+     OR NEW.aggregate_id != OLD.aggregate_id
+     OR COALESCE(NEW.parent_idempotency_key, '') !=
+        COALESCE(OLD.parent_idempotency_key, '')
+     OR NEW.schema_version != OLD.schema_version
+     OR NEW.payload_json != OLD.payload_json
+     OR NEW.payload_sha256 != OLD.payload_sha256
+ )
+BEGIN
+    SELECT RAISE(ABORT, 'delivered publication payload is immutable');
+END;
+
+CREATE TRIGGER trg_publication_dead_letters_immutable_update
+BEFORE UPDATE ON publication_dead_letters
+FOR EACH ROW
+WHEN NEW.event_id != OLD.event_id
+ OR NEW.idempotency_key != OLD.idempotency_key
+ OR NEW.payload_sha256 != OLD.payload_sha256
+ OR NEW.attempts != OLD.attempts
+ OR NEW.last_error != OLD.last_error
+ OR NEW.dead_lettered_at != OLD.dead_lettered_at
+BEGIN
+    SELECT RAISE(ABORT, 'dead-letter evidence is immutable');
+END;
+
+CREATE TRIGGER trg_publication_dead_letters_immutable_delete
+BEFORE DELETE ON publication_dead_letters
+BEGIN
+    SELECT RAISE(ABORT, 'dead-letter evidence is append-only');
+END;
+"""
+
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
@@ -526,6 +664,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (3, _MIGRATION_3),
     (4, _MIGRATION_4),
     (5, _MIGRATION_5),
+    (6, _MIGRATION_6),
 ]
 
 
