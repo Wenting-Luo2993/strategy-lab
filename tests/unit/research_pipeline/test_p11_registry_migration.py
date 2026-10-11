@@ -6,6 +6,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 import yaml
@@ -116,14 +117,14 @@ def _holdout_files(tmp_path: Path) -> tuple[Path, Path, HoldoutLock]:
     return config, tmp_path / "access.jsonl", lock
 
 
-def test_schema_v4_is_forward_only_and_store_protocol_is_extended(tmp_path: Path):
+def test_schema_v5_is_forward_only_and_store_protocol_is_extended(tmp_path: Path):
     path = tmp_path / "research.sqlite3"
     conn = sqlite3.connect(path)
     schema.configure_connection(conn)
-    assert schema.migrate(conn) == 4
+    assert schema.migrate(conn) == 5
     assert [row[0] for row in conn.execute(
         "SELECT version FROM schema_migrations ORDER BY version"
-    )] == [1, 2, 3, 4]
+    )    ] == [1, 2, 3, 4, 5]
     conn.close()
 
     store = SqliteResearchStore(path)
@@ -141,14 +142,14 @@ def test_failed_migration_rolls_back_ddl_and_version(
     conn = sqlite3.connect(path)
     schema.configure_connection(conn)
     schema.migrate(conn)
-    monkeypatch.setattr(schema, "SCHEMA_VERSION", 5)
+    monkeypatch.setattr(schema, "SCHEMA_VERSION", 6)
     monkeypatch.setattr(
         schema,
         "_MIGRATIONS",
         [
             *schema._MIGRATIONS,
             (
-                5,
+                6,
                 "CREATE TABLE migration_must_rollback (id INTEGER); "
                 "THIS IS INVALID SQL;",
             ),
@@ -163,8 +164,73 @@ def test_failed_migration_rolls_back_ddl_and_version(
         "WHERE type = 'table' AND name = 'migration_must_rollback'"
     ).fetchone()[0] == 0
     assert conn.execute(
-        "SELECT COUNT(*) FROM schema_migrations WHERE version = 5"
+        "SELECT COUNT(*) FROM schema_migrations WHERE version = 6"
     ).fetchone()[0] == 0
+    conn.close()
+
+
+def test_concurrent_fresh_migration_serializes_initialization(tmp_path: Path):
+    path = tmp_path / "concurrent-fresh.sqlite3"
+    barrier = Barrier(4)
+
+    def initialize(_: int) -> int:
+        conn = sqlite3.connect(path, timeout=0.05)
+        schema.configure_connection(conn)
+        barrier.wait(timeout=10)
+        try:
+            return schema.migrate(conn)
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        versions = list(pool.map(initialize, range(4)))
+
+    assert versions == [schema.SCHEMA_VERSION] * 4
+    conn = sqlite3.connect(path)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM schema_migrations"
+    ).fetchone()[0] == schema.SCHEMA_VERSION
+    conn.close()
+
+
+@pytest.mark.parametrize("starting_version", [1, 2, 3])
+def test_concurrent_upgrade_serializes_version_reread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, starting_version: int
+):
+    path = tmp_path / f"upgrade-v{starting_version}.sqlite3"
+    conn = sqlite3.connect(path)
+    schema.configure_connection(conn)
+    with monkeypatch.context() as migration_patch:
+        migration_patch.setattr(
+            schema,
+            "_MIGRATIONS",
+            schema._MIGRATIONS[:starting_version],
+        )
+        migration_patch.setattr(schema, "SCHEMA_VERSION", starting_version)
+        assert schema.migrate(conn) == starting_version
+    conn.close()
+    barrier = Barrier(3)
+
+    def upgrade(_: int) -> int:
+        worker = sqlite3.connect(path, timeout=0.05)
+        schema.configure_connection(worker)
+        barrier.wait(timeout=10)
+        try:
+            return schema.migrate(worker)
+        finally:
+            worker.close()
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        versions = list(pool.map(upgrade, range(3)))
+
+    assert versions == [schema.SCHEMA_VERSION] * 3
+    conn = sqlite3.connect(path)
+    assert [
+        row[0]
+        for row in conn.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        )
+    ] == list(range(1, schema.SCHEMA_VERSION + 1))
     conn.close()
 
 
@@ -273,6 +339,46 @@ def test_legacy_yaml_is_imported_once_then_sqlite_is_authoritative(tmp_path: Pat
         ).fetchone()
         assert audit["status"] == "completed"
         assert audit["record_count"] == 2
+
+
+def test_concurrent_legacy_initialization_has_one_verified_audit(tmp_path: Path):
+    root = tmp_path / "research"
+    now = datetime.now(timezone.utc)
+    save_hypothesis(
+        Hypothesis(
+            id="HYP-001",
+            title="Concurrent import",
+            rationale="Concurrent startup must converge on one verified import.",
+            status=HypothesisStatus.PROPOSED,
+            created_at=now,
+            updated_at=now,
+        ),
+        root,
+    )
+    barrier = Barrier(3)
+
+    def initialize(_: int) -> str:
+        barrier.wait(timeout=10)
+        with ResearchRegistry(root) as registry:
+            return registry.get_hypothesis("HYP-001").title
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        titles = list(pool.map(initialize, range(3)))
+
+    assert titles == ["Concurrent import"] * 3
+    db_path = root.parent / f".{root.name}-research.sqlite3"
+    conn = sqlite3.connect(db_path)
+    audit = conn.execute(
+        "SELECT status, canonical_tree_sha256, record_count "
+        "FROM registry_import_audit"
+    ).fetchone()
+    assert audit[0] == "completed"
+    assert audit[1]
+    assert audit[2] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM registry_import_audit"
+    ).fetchone()[0] == 1
+    conn.close()
 
 
 def test_concurrent_registry_id_allocation_is_unique(tmp_path: Path):

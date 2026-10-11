@@ -255,6 +255,52 @@ def test_terminal_attachment_insert_blocked_by_database_trigger(
             )
 
 
+def test_terminal_validation_report_is_immutable_in_database(
+    store: SqliteResearchStore,
+):
+    run_id = _register(store)
+    token = _start(store, run_id)
+    store.transition(run_id, target=RunState.VALIDATING, lease_token=token)
+    store.finalize_validation(run_id, _clean_report())
+
+    with pytest.raises(sqlite3.IntegrityError, match="validation evidence"):
+        with store._conn:
+            store._conn.execute(
+                "UPDATE validation_reports SET profile_name = 'tampered' "
+                "WHERE run_id = ?",
+                (run_id,),
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="validation evidence"):
+        with store._conn:
+            store._conn.execute(
+                "DELETE FROM validation_reports WHERE run_id = ?",
+                (run_id,),
+            )
+
+
+def test_validation_report_insert_requires_validating_state(
+    store: SqliteResearchStore,
+):
+    run_id = _register(store)
+    with pytest.raises(sqlite3.IntegrityError, match="validating run"):
+        with store._conn:
+            store._conn.execute(
+                """
+                INSERT INTO validation_reports (
+                    run_id, profile_name, scope, target_state,
+                    registry_hash_at_execution, current_registry_hash,
+                    leakage_passed, payload_json, recorded_at
+                ) VALUES (?, 'late', 'run', 'completed', ?, ?, 1, '{}', ?)
+                """,
+                (
+                    run_id,
+                    "a" * 64,
+                    "a" * 64,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+
 # -- attachments ---------------------------------------------------------
 
 

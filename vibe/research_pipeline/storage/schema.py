@@ -13,6 +13,7 @@ in local time (``Experiment.mark_completed``); that is the bug being corrected.
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -21,13 +22,18 @@ from vibe.research_pipeline.lifecycle import TERMINAL_STATES
 __all__ = [
     "SCHEMA_VERSION",
     "connect",
+    "begin_immediate",
     "configure_connection",
     "migrate",
     "utc_now_iso",
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+
+_LOCK_RETRY_ATTEMPTS = 8
+_LOCK_RETRY_BASE_SECONDS = 0.01
+_LOCK_BUSY_TIMEOUT_MS = 50
 
 # Rendered into the trigger below so the database's notion of "terminal" can
 # never drift from lifecycle.py.
@@ -48,7 +54,22 @@ def configure_connection(conn: sqlite3.Connection) -> None:
     on every connection, not once at creation.
     """
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
+    previous_timeout = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+    conn.execute(f"PRAGMA busy_timeout = {_LOCK_BUSY_TIMEOUT_MS}")
+    try:
+        for attempt in range(_LOCK_RETRY_ATTEMPTS):
+            try:
+                conn.execute("PRAGMA journal_mode = WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" not in message and "busy" not in message:
+                    raise
+                if attempt == _LOCK_RETRY_ATTEMPTS - 1:
+                    raise
+                time.sleep(_LOCK_RETRY_BASE_SECONDS * (attempt + 1))
+    finally:
+        conn.execute(f"PRAGMA busy_timeout = {previous_timeout}")
     conn.execute("PRAGMA foreign_keys = ON")
 
 
@@ -468,12 +489,43 @@ BEGIN
 END;
 """
 
+# --------------------------------------------------------------------------
+# Migration 5: immutable terminal validation evidence
+# --------------------------------------------------------------------------
+
+_MIGRATION_5 = f"""
+CREATE TRIGGER trg_validation_reports_terminal_insert
+BEFORE INSERT ON validation_reports
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = NEW.run_id) != 'validating'
+BEGIN
+    SELECT RAISE(ABORT, 'validation report requires a validating run');
+END;
+
+CREATE TRIGGER trg_validation_reports_terminal_update
+BEFORE UPDATE ON validation_reports
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = OLD.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal validation evidence is immutable');
+END;
+
+CREATE TRIGGER trg_validation_reports_terminal_delete
+BEFORE DELETE ON validation_reports
+FOR EACH ROW
+WHEN (SELECT state FROM runs WHERE run_id = OLD.run_id) IN ({_TERMINAL_SQL_LIST})
+BEGIN
+    SELECT RAISE(ABORT, 'terminal validation evidence is immutable');
+END;
+"""
+
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
     (3, _MIGRATION_3),
     (4, _MIGRATION_4),
+    (5, _MIGRATION_5),
 ]
 
 
@@ -493,38 +545,80 @@ def _applied_versions(conn: sqlite3.Connection) -> set[int]:
     return {row[0] for row in rows}
 
 
+def begin_immediate(
+    conn: sqlite3.Connection,
+    *,
+    attempts: int = _LOCK_RETRY_ATTEMPTS,
+    base_delay_seconds: float = _LOCK_RETRY_BASE_SECONDS,
+) -> None:
+    """Acquire SQLite's write lock with bounded startup contention retries."""
+    if attempts <= 0:
+        raise ValueError("attempts must be positive")
+    previous_timeout = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+    conn.execute(f"PRAGMA busy_timeout = {_LOCK_BUSY_TIMEOUT_MS}")
+    try:
+        for attempt in range(attempts):
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" not in message and "busy" not in message:
+                    raise
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(base_delay_seconds * (attempt + 1))
+    finally:
+        conn.execute(f"PRAGMA busy_timeout = {previous_timeout}")
+
+
+def _execute_ddl(conn: sqlite3.Connection, ddl: str) -> None:
+    """Execute a migration script without ``executescript`` auto-commits."""
+    statement = ""
+    for line in ddl.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            sql = statement.strip()
+            if sql:
+                conn.execute(sql)
+            statement = ""
+    if statement.strip():
+        raise RuntimeError("Incomplete SQL statement in research schema migration")
+
+
 def migrate(conn: sqlite3.Connection, *, now: Callable[[], str] = utc_now_iso) -> int:
     """Apply pending migrations in order. Idempotent; returns the resulting version.
 
     Running this twice is a no-op: already-recorded versions are skipped.
     """
-    _ensure_migrations_table(conn)
-    applied = _applied_versions(conn)
-    if applied and applied != set(range(1, max(applied) + 1)):
-        raise RuntimeError(
-            f"Non-contiguous research schema history: {sorted(applied)}"
-        )
-    if applied and max(applied) > SCHEMA_VERSION:
-        raise RuntimeError(
-            f"Research schema version {max(applied)} is newer than this "
-            f"binary supports ({SCHEMA_VERSION})."
-        )
-    for version, ddl in sorted(_MIGRATIONS):
-        if version in applied:
-            continue
-        applied_at = now().replace("'", "''")
-        try:
-            conn.executescript(
-                "BEGIN IMMEDIATE;\n"
-                f"{ddl}\n"
-                "INSERT INTO schema_migrations (version, applied_at) "
-                f"VALUES ({version}, '{applied_at}');\n"
-                "COMMIT;"
+    begin_immediate(conn)
+    try:
+        _ensure_migrations_table(conn)
+        applied = _applied_versions(conn)
+        if applied and applied != set(range(1, max(applied) + 1)):
+            raise RuntimeError(
+                f"Non-contiguous research schema history: {sorted(applied)}"
             )
-        except Exception:
-            conn.rollback()
-            raise
-    row = conn.execute(
-        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
-    ).fetchone()
-    return int(row[0])
+        if applied and max(applied) > SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Research schema version {max(applied)} is newer than this "
+                f"binary supports ({SCHEMA_VERSION})."
+            )
+        for version, ddl in sorted(_MIGRATIONS):
+            if version in applied:
+                continue
+            _execute_ddl(conn, ddl)
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                (version, now()),
+            )
+        row = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()
+        resulting_version = int(row[0])
+    except Exception:
+        conn.rollback()
+        raise
+    else:
+        conn.commit()
+        return resulting_version

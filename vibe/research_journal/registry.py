@@ -541,41 +541,58 @@ class ResearchRegistry:
 
     def _import_legacy_yaml_once(self) -> None:
         conn = self._sqlite_store._conn
-        audit = conn.execute(
-            "SELECT status FROM registry_import_audit WHERE singleton = 1"
-        ).fetchone()
-        if audit is not None:
-            return
-        legacy_patterns = (
-            "hypotheses/HYP-*.yaml",
-            "experiments/EXP-*.yaml",
-            "notes/NOTE-*.md",
-            "rejected/RJ-*.yaml",
-            "artifacts/ART-*.yaml",
-        )
-        has_legacy_source = any(
-            self.research_root.glob(pattern) for pattern in legacy_patterns
-        )
-        imported_count = conn.execute(
-            """
-            SELECT COUNT(*) FROM registry_records
-            WHERE record_origin = 'legacy_yaml'
-            """
-        ).fetchone()[0]
-        if imported_count:
-            with conn:
+        from vibe.research_pipeline.storage import schema
+
+        schema.begin_immediate(conn)
+        try:
+            audit = conn.execute(
+                "SELECT status FROM registry_import_audit WHERE singleton = 1"
+            ).fetchone()
+            if audit is not None:
+                conn.commit()
+                return
+            legacy_patterns = (
+                "hypotheses/HYP-*.yaml",
+                "experiments/EXP-*.yaml",
+                "notes/NOTE-*.md",
+                "rejected/RJ-*.yaml",
+                "artifacts/ART-*.yaml",
+            )
+            has_legacy_source = any(
+                self.research_root.glob(pattern) for pattern in legacy_patterns
+            )
+            imported_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM registry_records
+                WHERE record_origin = 'legacy_yaml'
+                """
+            ).fetchone()[0]
+            if imported_count and not has_legacy_source:
+                raise RuntimeError(
+                    "Legacy registry rows exist without an import audit marker, "
+                    "but the YAML source tree is unavailable for parity recovery."
+                )
+            if has_legacy_source:
+                verification = import_legacy_tree(
+                    self.research_root,
+                    conn,
+                    repository_root=self.research_root.parent,
+                    manage_transaction=False,
+                )
                 conn.execute(
                     """
                     INSERT INTO registry_import_audit (
                         singleton, status, canonical_tree_sha256,
                         record_count, completed_at
-                    ) VALUES (1, 'completed-existing', NULL, ?, ?)
+                    ) VALUES (1, 'completed', ?, ?, ?)
                     """,
-                    (imported_count, datetime.now(timezone.utc).isoformat()),
+                    (
+                        verification.canonical_tree_sha256,
+                        verification.record_count,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
                 )
-            return
-        if not has_legacy_source:
-            with conn:
+            else:
                 conn.execute(
                     """
                     INSERT INTO registry_import_audit (
@@ -585,23 +602,8 @@ class ResearchRegistry:
                     """,
                     (datetime.now(timezone.utc).isoformat(),),
                 )
-            return
-        verification = import_legacy_tree(
-            self.research_root,
-            conn,
-            repository_root=self.research_root.parent,
-        )
-        with conn:
-            conn.execute(
-                """
-                INSERT INTO registry_import_audit (
-                    singleton, status, canonical_tree_sha256,
-                    record_count, completed_at
-                ) VALUES (1, 'completed', ?, ?, ?)
-                """,
-                (
-                    verification.canonical_tree_sha256,
-                    verification.record_count,
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
+        except Exception:
+            conn.rollback()
+            raise
+        else:
+            conn.commit()

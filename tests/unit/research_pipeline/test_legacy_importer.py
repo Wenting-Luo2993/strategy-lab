@@ -46,7 +46,7 @@ def test_forward_only_upgrade_from_schema_v1(tmp_path: Path, monkeypatch):
     with monkeypatch.context() as migration_patch:
         migration_patch.setattr(schema, "_MIGRATIONS", [(1, schema._MIGRATION_1)])
         assert schema.migrate(conn) == 1
-    assert schema.migrate(conn) == schema.SCHEMA_VERSION == 4
+    assert schema.migrate(conn) == schema.SCHEMA_VERSION == 5
     tables = {
         row[0]
         for row in conn.execute(
@@ -55,7 +55,7 @@ def test_forward_only_upgrade_from_schema_v1(tmp_path: Path, monkeypatch):
     }
     assert "runs" in tables
     assert "registry_records" in tables
-    assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 5
     conn.close()
 
 
@@ -170,6 +170,76 @@ def test_import_is_idempotent_and_detects_source_hash_drift(
     source.write_text(source.read_text(encoding="utf-8").replace("title: A", "title: B"))
     with pytest.raises(LegacyParityError, match="differs"):
         import_legacy_tree(research_root, conn, repository_root=tmp_path)
+    conn.close()
+
+
+def test_registry_recovers_import_without_audit_by_reverifying_parity(
+    tmp_path: Path,
+):
+    research_root = tmp_path / "research"
+    hypotheses = research_root / "hypotheses"
+    hypotheses.mkdir(parents=True)
+    (hypotheses / "HYP-001.yaml").write_text(
+        "id: HYP-001\ntitle: Recovery\n"
+        "rationale: recovery verifies the complete source tree\n"
+        "status: proposed\ntags: []\n"
+        "created_at: '2026-01-01T00:00:00Z'\n"
+        "updated_at: '2026-01-01T00:00:00Z'\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / ".research-research.sqlite3"
+    conn = sqlite3.connect(db_path)
+    expected = import_legacy_tree(
+        research_root, conn, repository_root=tmp_path
+    )
+    assert conn.execute(
+        "SELECT COUNT(*) FROM registry_import_audit"
+    ).fetchone()[0] == 0
+    conn.close()
+
+    with ResearchRegistry(research_root) as registry:
+        audit = registry._sqlite_store._conn.execute(
+            "SELECT status, canonical_tree_sha256, record_count "
+            "FROM registry_import_audit"
+        ).fetchone()
+        assert tuple(audit) == (
+            "completed",
+            expected.canonical_tree_sha256,
+            expected.record_count,
+        )
+
+
+def test_registry_recovery_refuses_unverified_imported_rows(tmp_path: Path):
+    research_root = tmp_path / "research"
+    hypotheses = research_root / "hypotheses"
+    hypotheses.mkdir(parents=True)
+    source = hypotheses / "HYP-001.yaml"
+    source.write_text(
+        "id: HYP-001\ntitle: Recovery\n"
+        "rationale: recovery detects interrupted or corrupted imports\n"
+        "status: proposed\ntags: []\n"
+        "created_at: '2026-01-01T00:00:00Z'\n"
+        "updated_at: '2026-01-01T00:00:00Z'\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / ".research-research.sqlite3"
+    conn = sqlite3.connect(db_path)
+    import_legacy_tree(research_root, conn, repository_root=tmp_path)
+    conn.execute(
+        "UPDATE registry_records SET canonical_sha256 = ? "
+        "WHERE record_type = 'hypothesis' AND legacy_id = 'HYP-001'",
+        ("0" * 64,),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(LegacyParityError, match="differs"):
+        ResearchRegistry(research_root)
+
+    conn = sqlite3.connect(db_path)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM registry_import_audit"
+    ).fetchone()[0] == 0
     conn.close()
 
 

@@ -394,16 +394,27 @@ def import_legacy_tree(
     conn: sqlite3.Connection,
     *,
     repository_root: Optional[Path] = None,
+    manage_transaction: bool = True,
 ) -> ImportVerification:
-    """Import a complete YAML tree atomically, then verify exact parity."""
-    schema.configure_connection(conn)
-    schema.migrate(conn)
+    """Import a complete YAML tree, then verify exact parity.
+
+    By default this owns an immediate transaction. Registry startup passes
+    ``manage_transaction=False`` so import and its audit marker share the
+    caller's already-held write lock and commit boundary.
+    """
+    if manage_transaction:
+        schema.configure_connection(conn)
+        schema.migrate(conn)
+        schema.begin_immediate(conn)
+    elif not conn.in_transaction:
+        raise LegacyImportError(
+            "manage_transaction=False requires an active transaction"
+        )
     root = Path(research_root)
     repo_root = Path(repository_root) if repository_root else root.parent
     records = load_legacy_records(root)
     now = schema.utc_now_iso()
 
-    conn.execute("BEGIN IMMEDIATE")
     try:
         for record in records:
             _write_record(
@@ -427,10 +438,12 @@ def import_legacy_tree(
         )
         verification = verify_legacy_import(root, conn)
     except Exception:
-        conn.rollback()
+        if manage_transaction:
+            conn.rollback()
         raise
     else:
-        conn.commit()
+        if manage_transaction:
+            conn.commit()
     return verification
 
 
