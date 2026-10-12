@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Mapping
 import pandas as pd
 from vibe.common.models.trade import Trade
 
@@ -122,3 +122,19 @@ class BacktestResult:
     ``ambiguous_exit_bars``, ``gap_through_exits``, ``min_cash``,
     ``max_gross_exposure_ratio``, ``execution_model_version``.
     """
+
+
+@dataclass
+class PortfolioBacktestResult:
+    """Shared-capital result from a multi-symbol portfolio simulation.
+
+    ``aggregate`` is calculated from the one shared equity curve and pooled
+    trade ledger. ``by_symbol`` contains trade metrics only; it intentionally
+    does not invent independent per-symbol equity curves or returns.
+    """
+
+    aggregate: BacktestResult
+    by_symbol: Mapping[str, ConvexityMetrics]
+    symbols: tuple[str, ...]
+    portfolio_identity: Mapping[str, object]
+    validation_identity: str

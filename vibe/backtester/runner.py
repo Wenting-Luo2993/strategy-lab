@@ -75,6 +75,19 @@ class RuleSetRunner:
             reject_retraced_wick=self.reject_retraced_wick,
         )
 
+    def entry_stop_trigger(
+        self,
+        signal: int,
+        metadata: Dict[str, Any],
+    ) -> Optional[float]:
+        """Return the strategy's resting stop trigger, when it declares one."""
+        tick_size = 0.01
+        if signal == 1 and metadata.get("orb_high") is not None:
+            return float(metadata["orb_high"]) + tick_size
+        if signal == -1 and metadata.get("orb_low") is not None:
+            return float(metadata["orb_low"]) - tick_size
+        return None
+
     def track_position(
         self,
         symbol: str,

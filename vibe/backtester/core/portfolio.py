@@ -80,6 +80,8 @@ class PortfolioManager:
         self.min_cash = initial_capital
         self.max_gross_exposure_ratio = 0.0
         self.max_funded_entry_leverage = 0.0
+        self.max_single_symbol_concentration = 0.0
+        self.max_simultaneous_positions = 0
         self.total_costs = 0.0
 
         self.cash_ledger: List[CashLedgerEntry] = []
@@ -149,16 +151,21 @@ class PortfolioManager:
         )
 
     def equity_basis(self) -> float:
-        """Equity used for funding decisions: cash plus long positions at cost.
+        """Equity used for funding decisions, marking positions at entry cost.
 
         Entry cost is used rather than mark-to-market so the figure does not
         move intrabar, which keeps a sizing decision and the assertion that
-        validates it from disagreeing within the same bar.
+        validates it from disagreeing within the same bar. Short sale proceeds
+        are offset by the entry-cost liability; otherwise opening a short would
+        manufacture equity and recursively increase buying power.
         """
         return self.cash + sum(
-            pos.quantity * pos.entry_price
+            (
+                pos.quantity * pos.entry_price
+                if pos.side == "buy"
+                else -pos.quantity * pos.entry_price
+            )
             for pos in self.positions.values()
-            if pos.side == "buy"
         )
 
     def committed_notional(self) -> float:
@@ -582,9 +589,21 @@ class PortfolioManager:
         # Peak leverage is evidence, not a setting. Recorded even when
         # enforcement is off, so an unfunded strategy is visible after the fact.
         if equity > 0:
-            gross = self.gross_exposure(
-                {sym: bar.close for sym, bar in current_bars.items()}
-            )
+            prices = {sym: bar.close for sym, bar in current_bars.items()}
+            gross = self.gross_exposure(prices)
             self.max_gross_exposure_ratio = max(
                 self.max_gross_exposure_ratio, gross / equity
+            )
+            symbol_exposures = [
+                abs(position.quantity) * prices[symbol] / equity
+                for symbol, position in self.positions.items()
+                if symbol in prices
+            ]
+            if symbol_exposures:
+                self.max_single_symbol_concentration = max(
+                    self.max_single_symbol_concentration,
+                    max(symbol_exposures),
+                )
+            self.max_simultaneous_positions = max(
+                self.max_simultaneous_positions, len(self.positions)
             )
