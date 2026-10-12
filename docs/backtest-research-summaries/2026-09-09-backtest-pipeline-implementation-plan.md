@@ -1897,7 +1897,8 @@ in hindsight, so the run is permanently badged `survivorship_bias=present`.
 ### Recommended next increment
 
 **Validate the deployed P13 read surface and P12 reconciliation while P14
-remains paused.**
+remains paused, then implement the approved-data and analysis read model from
+`2026-10-12-shared-data-analysis-and-artifact-design.md`.**
 
 P13 is complete in the shared static dashboard: `/research` consumes the
 `research_publications` remote read model through the fixture or anonymous
@@ -1908,6 +1909,14 @@ detail identities, and decoding of representative current and legacy records.
 P14 remains paused and gated on that validated shared read surface and the
 separately reviewed compatibility release, tagged archive, import-parity
 re-check, and removal step. Do not begin YAML retirement as part of P8.
+
+The follow-on design replaces fixed comparison-family UI with a field-catalog
+driven analyzer: composable filters, screening, arbitrary user-selected
+grouping dimensions, aggregate measures, and chart encodings over the complete
+eligible population. It also separates private licensed dataset distribution
+from opt-in research artifact previews. Raw market data must not be uploaded
+until its manifest, checksum, coverage, converter identity, and private-cloud
+license gate are approved.
 
 P8 is complete against schema v7 and provides the independent local inspection
 surface for offline review, publication/outbox diagnosis, and exact local
