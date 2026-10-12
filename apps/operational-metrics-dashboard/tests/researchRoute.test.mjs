@@ -16,5 +16,12 @@ test("research route is static-export compatible and uses the shared client surf
   assert.match(component, /DashboardSectionMenu/);
   assert.match(menu, /aria-label="Dashboard sections"/);
   assert.match(menu, /aria-label="Open dashboard navigation"/);
+  assert.match(menu, /aria-expanded=\{open\}/);
+  assert.match(menu, /OverlayDrawer/);
+  assert.match(menu, /NavigationRegular/);
+  assert.match(menu, /DismissRegular/);
+  assert.match(menu, /onOpenChange/);
+  assert.match(menu, /position="end"/);
+  assert.match(menu, /height: "100dvh"/);
   assert.match(config, /output: "export"/);
 });

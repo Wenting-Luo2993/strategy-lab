@@ -20,7 +20,8 @@
 }
 
 :root[data-theme="dark"],
-.dashboard-shell[data-theme="dark"] {
+.dashboard-shell[data-theme="dark"],
+.dashboard-navigation[data-theme="dark"] {
   color-scheme: dark;
   --background: #151b18;
   --foreground: #eef5f1;

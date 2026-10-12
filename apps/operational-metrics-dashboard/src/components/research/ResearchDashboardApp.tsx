@@ -47,7 +47,11 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
   const [selected, setSelected] = useState<ResearchPublication | null>(null);
   const [loading, setLoading] = useState(!initialData || adapter.source === "supabase");
   const [error, setError] = useState<string | null>(null);
-  const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, () => "light");
+  const theme = useSyncExternalStore<"light" | "dark">(
+    subscribeTheme,
+    getThemeSnapshot,
+    () => "light",
+  );
 
   useEffect(() => {
     const selectedKey = new URL(window.location.href).searchParams.get("publication");
@@ -100,6 +104,7 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
   const totalPages = pageCount(result.total, result.pageSize);
   return (
     <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
+      <DashboardSectionMenu current="research" theme={theme} />
       <header className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-5 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -114,7 +119,6 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
             <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm" onClick={() => setDashboardTheme(theme === "dark" ? "light" : "dark")}>
               {theme === "dark" ? "Light" : "Dark"}
             </button>
-            <DashboardSectionMenu current="research" />
           </div>
         </div>
       </header>

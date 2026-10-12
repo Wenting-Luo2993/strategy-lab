@@ -118,6 +118,7 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
 
   return (
     <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
+      <DashboardSectionMenu current="live" theme={theme} />
       <header className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-5 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -148,7 +149,6 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
             <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm" onClick={() => setDashboardTheme(theme === "dark" ? "light" : "dark")}>
               {theme === "dark" ? "Light" : "Dark"}
             </button>
-            <DashboardSectionMenu current="live" />
           </div>
         </div>
       </header>
@@ -207,6 +207,7 @@ function setDashboardTheme(theme: Theme): void {
 function LoadingDashboard({ theme }: { theme: Theme }) {
   return (
     <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
+      <DashboardSectionMenu current="live" theme={theme} />
       <header className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-5 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -232,6 +233,7 @@ function LoadingDashboard({ theme }: { theme: Theme }) {
 function ErrorDashboard({ theme, message }: { theme: Theme; message: string }) {
   return (
     <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
+      <DashboardSectionMenu current="live" theme={theme} />
       <div className="mx-auto grid min-h-screen w-full max-w-3xl place-items-center px-5 py-10">
         <section className="surface rounded-lg border p-6">
           <p className="text-xs font-semibold uppercase text-[var(--warning)]">Live data unavailable</p>
