@@ -109,6 +109,49 @@ dt { color: var(--muted); font-size: .72rem; font-weight: 800; text-transform: u
 dd { margin: .3rem 0 0; white-space: pre-wrap; }
 .detail-card span, .detail-card small, .finding small { display: block; color: var(--muted); }
 .detail-card strong { display: block; font-size: 1.25rem; }
+.detail-table table { min-width: 0; }
+.detail-table th { width: 45%; }
+.detail-table td { font-family: ui-monospace, monospace; }
+.artifact-preview-button { margin-top: .5rem; }
+.artifact-preview {
+  border-top: 1px solid var(--border);
+  padding-top: 1.5rem;
+}
+.artifact-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 65vh;
+  margin: 1rem auto 0;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: white;
+}
+.artifact-preview pre {
+  max-height: 65vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: var(--bg);
+  padding: 1rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.artifact-csv { max-height: 65vh; }
+.markdown-preview {
+  max-height: 65vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: var(--surface-2);
+  padding: 1rem 1.25rem;
+}
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3 { margin-top: 1.25rem; }
+.markdown-preview h1:first-child,
+.markdown-preview h2:first-child,
+.markdown-preview h3:first-child { margin-top: 0; }
+.markdown-list-item { padding-left: 1rem; text-indent: -1rem; }
 .finding.blocking { border-color: var(--danger); }
 .finding.review { border-color: var(--warning); }
 .artifact-boundary p:last-child { margin-bottom: 0; color: var(--muted); }

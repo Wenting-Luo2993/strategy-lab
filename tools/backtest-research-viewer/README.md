@@ -64,8 +64,12 @@ Open `http://127.0.0.1:4178`. `--port` may select another local port.
 Schema v7 durably stores aggregate evidence counts and checksums but does not
 define local `trades` or `equity_points` tables. The UI therefore reports those
 details as unavailable instead of implying that summary-retained rows exist.
-Artifact records are shown as references only; the server never follows or
-reads their paths.
+Artifact previews are available only for database-referenced,
+repository-relative files that resolve beneath the checkout after symlink
+resolution. Images are limited to PNG/JPEG/GIF/WebP and 5 MB; Markdown, CSV,
+JSON, text, YAML, HTML, XML, and logs are rendered as escaped text and limited
+to 1 MB. External, absolute, missing, oversized, and unsupported files remain
+references only.
 
 ## Test
 

@@ -262,13 +262,25 @@ async function showRegistry(recordType, recordId) {
         "Publication": detail.publication.state,
       })}
       ${detailGrid("Record data (secret-redacted)", selectRegistrySummary(detail.payload))}
+      ${resultSummaryTable(detail.payload?.results_summary)}
+      ${tagList(detail.payload?.tags)}
       ${cards("Lineage", detail.relationships, (relation) => `
         <article class="detail-card"><strong>${escapeHtml(relation.relation)}</strong><p>${escapeHtml(relation.targetType)} · ${escapeHtml(relation.targetId)}</p><small>${relation.resolved ? "resolved" : "unresolved"}</small></article>
       `, "No registry relationships.")}
       ${cards("Artifact references", detail.artifacts, (artifact) => `
-        <article class="detail-card"><strong>Artifact ${artifact.ordinal + 1}</strong><p>${escapeHtml(artifact.repositoryPath || artifact.externalLocation || "Location unavailable")}</p><small>Reference only; the viewer never reads artifact files.</small></article>
+        <article class="detail-card">
+          <strong>Artifact ${artifact.ordinal + 1}</strong>
+          <p>${escapeHtml(artifact.repositoryPath || artifact.externalLocation || "Location unavailable")}</p>
+          ${artifact.preview?.available
+            ? `<button class="artifact-preview-button" data-artifact-endpoint="${escapeAttribute(artifact.preview.endpoint)}">Preview ${escapeHtml(artifact.preview.fileName)}</button>`
+            : `<small>${escapeHtml(artifact.preview?.reason || "Preview unavailable.")}</small>`}
+        </article>
       `, "No artifact locations.")}
+      <div id="artifact-preview"></div>
     `;
+    elements["detail-content"].querySelectorAll("[data-artifact-endpoint]").forEach((button) => {
+      button.addEventListener("click", () => showArtifactPreview(button.dataset.artifactEndpoint));
+    });
   } catch (error) {
     elements["detail-content"].innerHTML = errorState(error);
   }
@@ -277,11 +289,147 @@ async function showRegistry(recordType, recordId) {
 function selectRegistrySummary(payload) {
   const allowed = [
     "title", "rationale", "content", "idea", "reason_rejected", "strategy_name",
-    "strategy_version", "parameters", "dataset_config", "results_summary",
-    "conclusion", "tags", "artifact_type", "checksum", "size_bytes",
+    "strategy_version", "parameters", "dataset_config",
+    "conclusion", "artifact_type", "checksum", "size_bytes",
     "hypothesis_id", "parent_experiment_id", "related_experiment_id", "evidence",
   ];
   return Object.fromEntries(allowed.filter((key) => payload?.[key] !== undefined).map((key) => [humanize(key), formatValue(payload[key])]));
+}
+
+function resultSummaryTable(summary) {
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) return "";
+  const rows = Object.entries(summary).map(([key, value]) => `
+    <tr><th scope="row">${escapeHtml(humanize(key))}</th><td>${escapeHtml(formatValue(value))}</td></tr>
+  `).join("");
+  return `
+    <section class="detail-section">
+      <h3>Results summary</h3>
+      <div class="table-wrap detail-table"><table><tbody>${rows}</tbody></table></div>
+    </section>
+  `;
+}
+
+function tagList(tags) {
+  if (!Array.isArray(tags) || tags.length === 0) return "";
+  return `
+    <section class="detail-section">
+      <h3>Tags</h3>
+      <div class="badge-list">${tags.map((tag) => badge(tag, "neutral")).join("")}</div>
+    </section>
+  `;
+}
+
+async function showArtifactPreview(endpoint) {
+  const container = document.getElementById("artifact-preview");
+  if (!container) return;
+  container.innerHTML = loadingState();
+  try {
+    const preview = await api(endpoint);
+    container.innerHTML = `
+      <section class="detail-section artifact-preview">
+        <h3>${escapeHtml(preview.fileName)}</h3>
+        <p class="mono">${escapeHtml(preview.contentType)} · ${preview.sizeBytes.toLocaleString()} bytes</p>
+        ${renderArtifactContent(preview)}
+      </section>
+    `;
+    container.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  } catch (error) {
+    container.innerHTML = errorState(error);
+  }
+}
+
+function renderArtifactContent(preview) {
+  if (preview.kind === "image") {
+    return `<img src="${escapeAttribute(preview.content)}" alt="Preview of ${escapeAttribute(preview.fileName)}">`;
+  }
+  if (preview.contentType === "text/csv") return renderCsvPreview(preview.content);
+  if (preview.contentType === "text/markdown") return renderMarkdownPreview(preview.content);
+  if (preview.contentType === "application/json") {
+    try {
+      return `<pre>${escapeHtml(JSON.stringify(JSON.parse(preview.content), null, 2))}</pre>`;
+    } catch {
+      return `<pre>${escapeHtml(preview.content)}</pre>`;
+    }
+  }
+  return `<pre>${escapeHtml(preview.content)}</pre>`;
+}
+
+function renderCsvPreview(content) {
+  const rows = parseCsv(content);
+  const visibleRows = rows.slice(0, 200);
+  const width = Math.min(30, Math.max(0, ...visibleRows.map((row) => row.length)));
+  if (visibleRows.length === 0 || width === 0) return '<p class="empty">The CSV file is empty.</p>';
+  const [header, ...body] = visibleRows;
+  const truncated = rows.length > visibleRows.length || rows.some((row) => row.length > width);
+  return `
+    <div class="table-wrap artifact-csv">
+      <table>
+        <thead><tr>${header.slice(0, width).map((value) => `<th>${escapeHtml(value)}</th>`).join("")}</tr></thead>
+        <tbody>${body.map((row) => `<tr>${Array.from({ length: width }, (_, index) => `<td>${escapeHtml(row[index] || "")}</td>`).join("")}</tr>`).join("")}</tbody>
+      </table>
+    </div>
+    ${truncated ? '<p class="empty">Preview limited to 200 rows and 30 columns.</p>' : ""}
+  `;
+}
+
+function parseCsv(content) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let quoted = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    if (character === '"' && quoted && content[index + 1] === '"') {
+      field += '"';
+      index += 1;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      row.push(field);
+      field = "";
+    } else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && content[index + 1] === "\n") index += 1;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += character;
+    }
+  }
+  if (field || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+function renderMarkdownPreview(content) {
+  let inCode = false;
+  const rendered = [];
+  for (const line of content.split(/\r?\n/)) {
+    if (line.startsWith("```")) {
+      rendered.push(inCode ? "</code></pre>" : '<pre><code>');
+      inCode = !inCode;
+    } else if (inCode) {
+      rendered.push(`${escapeHtml(line)}\n`);
+    } else {
+      const heading = line.match(/^(#{1,6})\s+(.+)$/);
+      const listItem = line.match(/^\s*[-*]\s+(.+)$/);
+      if (heading) {
+        const level = heading[1].length;
+        rendered.push(`<h${level}>${escapeHtml(heading[2])}</h${level}>`);
+      } else if (listItem) {
+        rendered.push(`<div class="markdown-list-item">• ${escapeHtml(listItem[1])}</div>`);
+      } else if (line.trim()) {
+        rendered.push(`<p>${escapeHtml(line)}</p>`);
+      } else {
+        rendered.push("");
+      }
+    }
+  }
+  if (inCode) rendered.push("</code></pre>");
+  return `<div class="markdown-preview">${rendered.join("\n")}</div>`;
 }
 
 function localArtifactSection(localArtifacts) {

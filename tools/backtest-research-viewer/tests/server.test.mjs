@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -331,6 +331,11 @@ function createFixture() {
     INSERT INTO registry_artifact_locations
     VALUES ('experiment', 'EXP-001', 1, 'file:///C:/secret/chart.png', NULL, 'file:///C:/secret/chart.png')
   `).run();
+  writeFileSync(join(directory, "preview.md"), "# Safe preview\n\n<script>alert('no')</script>\n");
+  database.prepare(`
+    INSERT INTO registry_artifact_locations
+    VALUES ('experiment', 'EXP-001', 2, 'preview.md', 'preview.md', NULL)
+  `).run();
   database.prepare(`
     INSERT INTO publication_outbox (
       event_id, idempotency_key, aggregate_type, aggregate_id, schema_version,
@@ -352,7 +357,12 @@ function createFixture() {
 
 async function startFixtureServer() {
   const fixture = createFixture();
-  const viewer = createViewerServer({ dbPath: fixture.dbPath, host: "127.0.0.1", port: 0 });
+  const viewer = createViewerServer({
+    dbPath: fixture.dbPath,
+    host: "127.0.0.1",
+    port: 0,
+    repositoryRoot: fixture.directory,
+  });
   const address = await viewer.listen();
   const origin = `http://127.0.0.1:${address.port}`;
   return {
@@ -524,8 +534,18 @@ test("returns registry notes, lineage, and artifact references with redaction", 
     assert.equal(response.json.relationships.items[0].targetId, "HYP-001");
     assert.equal(response.json.artifacts.items[0].repositoryPath, null);
     assert.equal(response.json.artifacts.items[1].externalLocation, "chart.png");
+    assert.equal(response.json.artifacts.items[2].preview.available, true);
+    assert.equal(response.json.artifacts.items[2].preview.kind, "text");
     assert.equal(response.json.publication.state, "published");
     assert.equal(JSON.stringify(response.json).includes("C:\\secret"), false);
+
+    const preview = await rawRequest(fixture.origin, "/api/artifacts/experiment/EXP-001/2");
+    assert.equal(preview.status, 200);
+    assert.equal(preview.json.contentType, "text/markdown");
+    assert.match(preview.json.content, /<script>alert\('no'\)<\/script>/);
+    assert.equal((await rawRequest(fixture.origin, "/api/artifacts/experiment/EXP-001/0")).status, 403);
+    assert.equal((await rawRequest(fixture.origin, "/api/artifacts/experiment/EXP-001/1")).status, 404);
+    assert.equal((await rawRequest(fixture.origin, "/api/artifacts/experiment/EXP-001/99")).status, 404);
   } finally {
     await fixture.cleanupAll();
   }

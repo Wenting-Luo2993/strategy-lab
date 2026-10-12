@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, platform } from "node:os";
@@ -15,6 +15,24 @@ const MAX_SEARCH_LENGTH = 100;
 const MAX_JSON_DEPTH = 12;
 const MAX_JSON_ITEMS = 500;
 const MAX_JSON_CHARS = 1_000_000;
+const MAX_ARTIFACT_IMAGE_BYTES = 5_000_000;
+const MAX_ARTIFACT_TEXT_BYTES = 1_000_000;
+const ARTIFACT_FORMATS = new Map([
+  [".png", { kind: "image", contentType: "image/png" }],
+  [".jpg", { kind: "image", contentType: "image/jpeg" }],
+  [".jpeg", { kind: "image", contentType: "image/jpeg" }],
+  [".gif", { kind: "image", contentType: "image/gif" }],
+  [".webp", { kind: "image", contentType: "image/webp" }],
+  [".md", { kind: "text", contentType: "text/markdown" }],
+  [".csv", { kind: "text", contentType: "text/csv" }],
+  [".json", { kind: "text", contentType: "application/json" }],
+  [".txt", { kind: "text", contentType: "text/plain" }],
+  [".log", { kind: "text", contentType: "text/plain" }],
+  [".yaml", { kind: "text", contentType: "application/yaml" }],
+  [".yml", { kind: "text", contentType: "application/yaml" }],
+  [".html", { kind: "text", contentType: "text/html" }],
+  [".xml", { kind: "text", contentType: "application/xml" }],
+]);
 const DETAIL_LIMITS = Object.freeze({
   metrics: 250,
   findings: 250,
@@ -614,7 +632,7 @@ function listRegistry(database, searchParams) {
   return pageResponse(rows, total, page, pageSize);
 }
 
-function getRegistryRecord(database, recordType, recordId) {
+function getRegistryRecord(database, recordType, recordId, repositoryRoot) {
   validateIdentity(recordType, "record type");
   validateIdentity(recordId, "record id");
   const row = database.prepare(`
@@ -658,6 +676,13 @@ function getRegistryRecord(database, recordType, recordId) {
       ordinal: Number(artifact.ordinal),
       repositoryPath: safeRepositoryPath(artifact.repositoryPath),
       externalLocation: artifact.externalUri ? basename(String(artifact.externalUri).replaceAll("\\", sep)) : null,
+      preview: artifactPreviewMetadata(
+        repositoryRoot,
+        artifact.repositoryPath,
+        recordType,
+        recordId,
+        Number(artifact.ordinal),
+      ),
     }),
   });
   const outbox = database.prepare(`
@@ -806,6 +831,76 @@ function safeRepositoryPath(value) {
   return normalized;
 }
 
+function artifactPreviewMetadata(repositoryRoot, repositoryPath, recordType, recordId, ordinal) {
+  try {
+    const artifact = resolveArtifactFile(repositoryRoot, repositoryPath);
+    return {
+      available: true,
+      fileName: basename(artifact.path),
+      kind: artifact.format.kind,
+      contentType: artifact.format.contentType,
+      sizeBytes: artifact.size,
+      endpoint: `/api/artifacts/${encodeURIComponent(recordType)}/${encodeURIComponent(recordId)}/${ordinal}`,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      reason: error instanceof HttpError ? error.message : "Artifact preview is unavailable.",
+    };
+  }
+}
+
+function resolveArtifactFile(repositoryRoot, repositoryPath) {
+  if (typeof repositoryPath !== "string" || !repositoryPath.trim()) {
+    throw new HttpError(404, "Only repository-relative artifact references can be previewed.");
+  }
+  if (isAbsolute(repositoryPath)) {
+    throw new HttpError(403, "Absolute artifact paths cannot be previewed.");
+  }
+  const root = realpathSync(resolve(repositoryRoot));
+  let artifactPath;
+  try {
+    artifactPath = realpathSync(resolve(root, repositoryPath));
+  } catch {
+    throw new HttpError(404, "Referenced artifact file is not available in this checkout.");
+  }
+  if (artifactPath !== root && !artifactPath.startsWith(`${root}${sep}`)) {
+    throw new HttpError(403, "Artifact path escapes the repository root.");
+  }
+  const format = ARTIFACT_FORMATS.get(extname(artifactPath).toLowerCase());
+  if (!format) throw new HttpError(415, "Artifact type is not supported for inline preview.");
+  const info = statSync(artifactPath);
+  if (!info.isFile()) throw new HttpError(404, "Referenced artifact is not a file.");
+  const limit = format.kind === "image" ? MAX_ARTIFACT_IMAGE_BYTES : MAX_ARTIFACT_TEXT_BYTES;
+  if (info.size > limit) {
+    throw new HttpError(413, `Artifact exceeds the ${Math.floor(limit / 1_000_000)} MB preview limit.`);
+  }
+  return { path: artifactPath, format, size: info.size };
+}
+
+function getArtifactPreview(database, repositoryRoot, recordType, recordId, ordinalText) {
+  validateIdentity(recordType, "record type");
+  validateIdentity(recordId, "record id");
+  const ordinal = parseInteger(ordinalText, "artifact ordinal", 0, DETAIL_LIMITS.artifacts - 1);
+  const row = database.prepare(`
+    SELECT repository_path AS repositoryPath
+    FROM registry_artifact_locations
+    WHERE record_type = ? AND legacy_id = ? AND ordinal = ?
+  `).get(recordType, recordId, ordinal);
+  if (!row) throw new HttpError(404, "Artifact reference not found.");
+  const artifact = resolveArtifactFile(repositoryRoot, row.repositoryPath);
+  const body = readFileSync(artifact.path);
+  return {
+    fileName: basename(artifact.path),
+    kind: artifact.format.kind,
+    contentType: artifact.format.contentType,
+    sizeBytes: artifact.size,
+    content: artifact.format.kind === "image"
+      ? `data:${artifact.format.contentType};base64,${body.toString("base64")}`
+      : body.toString("utf8"),
+  };
+}
+
 function safeDisplayPath(dbPath, env = process.env) {
   const normalized = resolve(dbPath);
   if (env.RESEARCH__DB_PATH && normalized === resolve(env.RESEARCH__DB_PATH)) {
@@ -828,7 +923,7 @@ function displayHost(host) {
   return host.includes(":") ? `[${host}]` : host;
 }
 
-function routeApi(database, pathname, searchParams) {
+function routeApi(database, pathname, searchParams, repositoryRoot) {
   if (pathname === "/api/meta") return null;
   if (pathname === "/api/overview") return getOverview(database);
   if (pathname === "/api/runs") return listRuns(database, searchParams);
@@ -842,6 +937,17 @@ function routeApi(database, pathname, searchParams) {
       database,
       decodeURIComponent(registryMatch[1]),
       decodeURIComponent(registryMatch[2]),
+      repositoryRoot,
+    );
+  }
+  const artifactMatch = pathname.match(/^\/api\/artifacts\/([^/]+)\/([^/]+)\/(\d+)$/);
+  if (artifactMatch) {
+    return getArtifactPreview(
+      database,
+      repositoryRoot,
+      decodeURIComponent(artifactMatch[1]),
+      decodeURIComponent(artifactMatch[2]),
+      artifactMatch[3],
     );
   }
   throw new HttpError(404, "Endpoint not found.");
@@ -870,7 +976,12 @@ function sendError(response, error) {
   sendJson(response, status, { error: message });
 }
 
-export function createViewerServer({ dbPath, host = DEFAULT_HOST, port = DEFAULT_PORT }) {
+export function createViewerServer({
+  dbPath,
+  host = DEFAULT_HOST,
+  port = DEFAULT_PORT,
+  repositoryRoot = resolve(HERE, "..", ".."),
+}) {
   validateBindHost(host);
   const safeDbPath = assertSafeDbPath(dbPath);
   const inspection = inspectDatabase(safeDbPath);
@@ -909,7 +1020,10 @@ export function createViewerServer({ dbPath, host = DEFAULT_HOST, port = DEFAULT
       try {
         const result = parsed.pathname === "/api/meta"
           ? meta
-          : withDatabase(safeDbPath, (database) => routeApi(database, parsed.pathname, parsed.searchParams));
+          : withDatabase(
+            safeDbPath,
+            (database) => routeApi(database, parsed.pathname, parsed.searchParams, repositoryRoot),
+          );
         if (request.method === "HEAD") {
           response.writeHead(200, securityHeaders("application/json; charset=utf-8", true));
           response.end();
