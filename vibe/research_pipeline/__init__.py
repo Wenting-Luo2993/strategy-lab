@@ -28,6 +28,18 @@ from vibe.research_pipeline.contracts import (
     ValidationCategory,
     ValidationFinding,
 )
+from vibe.research_pipeline.artifacts import (
+    ARTIFACT_MANIFEST_VERSION,
+    ArtifactClass,
+    ArtifactManifest,
+    ArtifactPolicy,
+    ArtifactPublicationRequest,
+    ArtifactPublisher,
+    ArtifactReconciler,
+    ArtifactStager,
+    PreviewPolicy,
+    SqliteArtifactOutbox,
+)
 from vibe.research_pipeline.hashing import (
     CANONICAL_ENCODING_VERSION,
     NonCanonicalValueError,
@@ -55,6 +67,7 @@ from vibe.research_pipeline.lifecycle import (
 )
 from vibe.research_pipeline.paths import (
     UnsafeDatabaseLocationError,
+    artifact_staging_path,
     research_db_path,
 )
 from vibe.research_pipeline.publishing import (
@@ -106,6 +119,7 @@ from vibe.research_pipeline.validation import (
 
 __all__ = [
     "CANONICAL_ENCODING_VERSION",
+    "ARTIFACT_MANIFEST_VERSION",
     "DEFAULT_CALENDAR",
     "DatasetManifest",
     "DatasetStatus",
@@ -118,6 +132,13 @@ __all__ = [
     "SCHEMA_VERSION",
     "TERMINAL_STATES",
     "FeatureDeclaration",
+    "ArtifactClass",
+    "ArtifactManifest",
+    "ArtifactPolicy",
+    "ArtifactPublicationRequest",
+    "ArtifactPublisher",
+    "ArtifactReconciler",
+    "ArtifactStager",
     "FeatureKind",
     "IllegalTransitionError",
     "ImmutableRecordError",
@@ -140,6 +161,7 @@ __all__ = [
     "RunEvidence",
     "RunFingerprint",
     "RunState",
+    "PreviewPolicy",
     "SegmentRole",
     "SessionCalendar",
     "SessionReconciliation",
@@ -150,6 +172,7 @@ __all__ = [
     "SplitPlanError",
     "SplitSpec",
     "SqliteResearchStore",
+    "SqliteArtifactOutbox",
     "SqliteRunRecord",
     "StoreError",
     "SupabaseResearchDestination",
@@ -171,6 +194,7 @@ __all__ = [
     "ValidationReport",
     "ValidationScope",
     "assert_legal_transition",
+    "artifact_staging_path",
     "canonical_json",
     "hash_file",
     "hash_object",

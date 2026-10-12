@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,7 +27,7 @@ function createFixture() {
     INSERT INTO schema_migrations VALUES
       (1, '2026-01-01'), (2, '2026-01-01'), (3, '2026-01-01'),
       (4, '2026-01-01'), (5, '2026-01-01'), (6, '2026-01-01'),
-      (7, '2026-01-01');
+      (7, '2026-01-01'), (8, '2026-01-01');
     CREATE TABLE runs (
       run_id TEXT PRIMARY KEY,
       display_seq INTEGER NOT NULL UNIQUE,
@@ -178,6 +179,31 @@ function createFixture() {
       publication_version INTEGER NOT NULL,
       acknowledged_at TEXT NOT NULL,
       last_reconciled_at TEXT NOT NULL
+    );
+    CREATE TABLE artifact_publication_outbox (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      artifact_id TEXT NOT NULL UNIQUE,
+      owning_publication_key TEXT NOT NULL,
+      object_key TEXT NOT NULL UNIQUE,
+      staging_path TEXT NOT NULL,
+      manifest_json TEXT NOT NULL,
+      manifest_sha256 TEXT NOT NULL,
+      content_sha256 TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      media_type TEXT NOT NULL,
+      preview_policy TEXT NOT NULL,
+      status TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at TEXT,
+      claimed_by TEXT,
+      claimed_at TEXT,
+      lease_expires_at TEXT,
+      claim_token TEXT,
+      remote_object_sha256 TEXT,
+      enqueued_at TEXT NOT NULL,
+      updated_at TEXT,
+      published_at TEXT
     );
   `);
   const insertRun = database.prepare(`
@@ -345,10 +371,50 @@ function createFixture() {
               'registry_record', 'experiment:EXP-001', 1, '{}', ?, 'published',
               1, '2026-01-01', '2026-01-01', ?)
   `).run("f".repeat(64), "f".repeat(64));
+  const artifactId = `artifact:${"a".repeat(64)}`;
+  const artifactStagingRoot = join(directory, "artifact-staging");
+  const artifactBody = Buffer.from("# Published summary\n\nAggregate only.\n");
+  const artifactSha = createHash("sha256").update(artifactBody).digest("hex");
+  const actualRelativePath = join("v1", artifactSha, "summary.md");
+  const actualArtifactPath = join(artifactStagingRoot, actualRelativePath);
+  mkdirSync(join(artifactStagingRoot, "v1", artifactSha), { recursive: true });
+  writeFileSync(actualArtifactPath, artifactBody, { flush: true });
+  const artifactManifest = JSON.stringify({
+    artifact_id: artifactId,
+    owning_publication_key: "run:fixture",
+    sha256: artifactSha,
+    size_bytes: artifactBody.length,
+    media_type: "text/markdown",
+    display_name: "summary.md",
+    artifact_class: "markdown",
+    object_key: `v1/${artifactSha}/summary.md`,
+    preview_policy: "inline",
+    sanitizer_version: 1,
+    manifest_version: 1,
+    source_registry_checksum: "c".repeat(64),
+  });
+  database.prepare(`
+    INSERT INTO artifact_publication_outbox (
+      artifact_id, owning_publication_key, object_key, staging_path,
+      manifest_json, manifest_sha256, content_sha256, size_bytes, media_type,
+      preview_policy, status, enqueued_at, published_at
+    ) VALUES (?, 'run:fixture', ?, ?, ?, ?, ?, ?, 'text/markdown',
+              'inline', 'published', '2026-01-01', '2026-01-01')
+  `).run(
+    artifactId,
+    `v1/${artifactSha}/summary.md`,
+    actualRelativePath.replaceAll("\\", "/"),
+    artifactManifest,
+    createHash("sha256").update(artifactManifest).digest("hex"),
+    artifactSha,
+    artifactBody.length,
+  );
   database.close();
   return {
     directory,
     dbPath,
+    artifactId,
+    artifactStagingRoot,
     cleanup() {
       rmSync(directory, { recursive: true, force: true });
     },
@@ -362,6 +428,7 @@ async function startFixtureServer() {
     host: "127.0.0.1",
     port: 0,
     repositoryRoot: fixture.directory,
+    artifactStagingRoot: fixture.artifactStagingRoot,
   });
   const address = await viewer.listen();
   const origin = `http://127.0.0.1:${address.port}`;
@@ -459,7 +526,7 @@ test("serves endpoint shapes, deterministic pagination, and refreshed rows", asy
   try {
     const meta = await rawRequest(fixture.origin, "/api/meta");
     assert.equal(meta.status, 200);
-    assert.equal(meta.json.schemaVersion, 7);
+    assert.equal(meta.json.schemaVersion, 8);
     assert.equal(meta.json.database.mode, "read-only");
     assert.equal(meta.json.database.queryOnly, true);
     assert.equal(meta.json.database.immutableUri, false);
@@ -546,6 +613,39 @@ test("returns registry notes, lineage, and artifact references with redaction", 
     assert.equal((await rawRequest(fixture.origin, "/api/artifacts/experiment/EXP-001/0")).status, 403);
     assert.equal((await rawRequest(fixture.origin, "/api/artifacts/experiment/EXP-001/1")).status, 404);
     assert.equal((await rawRequest(fixture.origin, "/api/artifacts/experiment/EXP-001/99")).status, 404);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("serves identity-addressed local artifact metadata and safe preview", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const encoded = encodeURIComponent(fixture.artifactId);
+    const list = await rawRequest(
+      fixture.origin,
+      "/api/artifacts?owningPublicationKey=run%3Afixture&limit=10&offset=0",
+    );
+    assert.equal(list.status, 200);
+    assert.equal(list.json[0].artifactId, fixture.artifactId);
+    assert.equal(JSON.stringify(list.json).includes("objectKey"), false);
+    assert.equal(JSON.stringify(list.json).includes("staging"), false);
+
+    const metadata = await rawRequest(fixture.origin, `/api/artifacts/${encoded}`);
+    assert.equal(metadata.status, 200);
+    assert.equal(metadata.json.displayName, "summary.md");
+
+    const preview = await rawRequest(
+      fixture.origin,
+      `/api/artifacts/${encoded}/preview`,
+    );
+    assert.equal(preview.status, 200);
+    assert.equal(preview.json.artifactId, fixture.artifactId);
+    assert.match(preview.json.url, /\/content$/);
+
+    const content = await rawRequest(fixture.origin, preview.json.url);
+    assert.equal(content.status, 200);
+    assert.match(content.json.content, /Published summary/);
   } finally {
     await fixture.cleanupAll();
   }

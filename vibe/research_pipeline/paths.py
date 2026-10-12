@@ -21,8 +21,10 @@ __all__ = [
     "DB_FILENAME",
     "ENV_RESEARCH_DB_PATH",
     "ENV_RESEARCH_DATA_DIR",
+    "ENV_RESEARCH_ARTIFACT_STAGING_DIR",
     "UnsafeDatabaseLocationError",
     "default_data_dir",
+    "artifact_staging_path",
     "research_db_path",
     "assert_safe_db_location",
 ]
@@ -32,6 +34,7 @@ DB_FILENAME = "research.sqlite3"
 
 ENV_RESEARCH_DB_PATH = "RESEARCH__DB_PATH"
 ENV_RESEARCH_DATA_DIR = "RESEARCH__DATA_DIR"
+ENV_RESEARCH_ARTIFACT_STAGING_DIR = "RESEARCH__ARTIFACT_STAGING_DIR"
 
 # Directory names that indicate a cloud-sync root. Matched case-insensitively
 # against every parent component of a candidate path.
@@ -118,4 +121,19 @@ def research_db_path(*, create_parents: bool = False) -> Path:
 
     if create_parents:
         path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def artifact_staging_path(*, create_parents: bool = False) -> Path:
+    """Return the local, unsynced content-addressed artifact staging root."""
+    override = os.environ.get(ENV_RESEARCH_ARTIFACT_STAGING_DIR)
+    path = (
+        Path(override).expanduser()
+        if override
+        else default_data_dir() / "artifact-staging"
+    )
+    path = path if path.is_absolute() else path.resolve()
+    assert_safe_db_location(path)
+    if create_parents:
+        path.mkdir(parents=True, exist_ok=True)
     return path

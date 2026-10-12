@@ -1,6 +1,6 @@
 # Local Backtest Research Viewer
 
-Dependency-light, local-only inspection for the schema v7 research SQLite
+Dependency-light, local-only inspection for the schema v8 research SQLite
 database. The server uses Node's built-in `node:sqlite`; the browser receives
 only allowlisted JSON views and static HTML/CSS/MJS.
 
@@ -61,7 +61,7 @@ Open `http://127.0.0.1:4178`. `--port` may select another local port.
   registry/configuration data and error surfaces. Browser-visible database and
   artifact paths are home/environment-relative or basename-only.
 
-Schema v7 durably stores aggregate evidence counts and checksums but does not
+Schema v8 durably stores aggregate evidence counts and checksums but does not
 define local `trades` or `equity_points` tables. The UI therefore reports those
 details as unavailable instead of implying that summary-retained rows exist.
 Artifact previews are available only for database-referenced,
@@ -70,6 +70,13 @@ resolution. Images are limited to PNG/JPEG/GIF/WebP and 5 MB; Markdown, CSV,
 JSON, text, YAML, HTML, XML, and logs are rendered as escaped text and limited
 to 1 MB. External, absolute, missing, oversized, and unsupported files remain
 references only.
+
+Schema v8 artifact-publication metadata is also available through
+artifact-ID-addressed endpoints. Staged bytes resolve from
+`RESEARCH__ARTIFACT_STAGING_DIR`, or from `artifact-staging` beside an explicit
+viewer database when that variable is unset. The server verifies containment,
+size, and SHA-256 before returning a bounded preview; browser requests never
+provide a staging path or object key.
 
 ## Test
 

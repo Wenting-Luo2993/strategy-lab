@@ -187,7 +187,7 @@ The database path defaults outside the repository. Override it with
 `RESEARCH__DB_PATH`; do not place an active SQLite file in Git or a synced
 working tree.
 
-Review the current device's schema v7 database with the dependency-light local
+Review the current device's schema v8 database with the dependency-light local
 viewer (Node.js 22.13.0+):
 
 ```powershell

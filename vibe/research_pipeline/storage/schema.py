@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -668,6 +668,79 @@ CREATE UNIQUE INDEX idx_publication_outbox_claim_token
     WHERE claim_token IS NOT NULL;
 """
 
+# --------------------------------------------------------------------------
+# Migration 8: explicit artifact staging and publication
+# --------------------------------------------------------------------------
+
+_MIGRATION_8 = """
+CREATE TABLE artifact_publication_outbox (
+    sequence               INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_id            TEXT NOT NULL UNIQUE,
+    owning_publication_key TEXT NOT NULL,
+    object_key             TEXT NOT NULL,
+    staging_path           TEXT NOT NULL,
+    manifest_json          TEXT NOT NULL,
+    manifest_sha256        TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+    content_sha256         TEXT NOT NULL CHECK (length(content_sha256) = 64),
+    size_bytes             INTEGER NOT NULL CHECK (size_bytes > 0),
+    media_type             TEXT NOT NULL,
+    preview_policy         TEXT NOT NULL
+                           CHECK (preview_policy IN (
+                               'inline', 'download', 'metadata_only'
+                           )),
+    status                 TEXT NOT NULL DEFAULT 'staged'
+                           CHECK (status IN (
+                               'staged', 'publishing', 'object_stored',
+                               'published', 'failed', 'dead_letter'
+                           )),
+    attempts               INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    last_error             TEXT,
+    next_attempt_at        TEXT,
+    claimed_by             TEXT,
+    claimed_at             TEXT,
+    lease_expires_at       TEXT,
+    claim_token            TEXT,
+    remote_object_sha256   TEXT,
+    enqueued_at            TEXT NOT NULL,
+    updated_at             TEXT,
+    published_at           TEXT
+);
+CREATE INDEX idx_artifact_object_identity
+    ON artifact_publication_outbox(object_key);
+CREATE INDEX idx_artifact_publication_ready
+    ON artifact_publication_outbox(status, sequence, next_attempt_at);
+CREATE INDEX idx_artifact_publication_owner
+    ON artifact_publication_outbox(owning_publication_key, sequence);
+CREATE UNIQUE INDEX idx_artifact_publication_claim
+    ON artifact_publication_outbox(claim_token)
+    WHERE claim_token IS NOT NULL;
+
+CREATE TRIGGER trg_artifact_identity_immutable
+BEFORE UPDATE ON artifact_publication_outbox
+FOR EACH ROW
+WHEN NEW.artifact_id != OLD.artifact_id
+ OR NEW.owning_publication_key != OLD.owning_publication_key
+ OR NEW.object_key != OLD.object_key
+ OR NEW.staging_path != OLD.staging_path
+ OR NEW.manifest_json != OLD.manifest_json
+ OR NEW.manifest_sha256 != OLD.manifest_sha256
+ OR NEW.content_sha256 != OLD.content_sha256
+ OR NEW.size_bytes != OLD.size_bytes
+ OR NEW.media_type != OLD.media_type
+ OR NEW.preview_policy != OLD.preview_policy
+BEGIN
+    SELECT RAISE(ABORT, 'artifact publication identity is immutable');
+END;
+
+CREATE TRIGGER trg_artifact_delivered_delete_immutable
+BEFORE DELETE ON artifact_publication_outbox
+FOR EACH ROW
+WHEN OLD.status IN ('published', 'dead_letter')
+BEGIN
+    SELECT RAISE(ABORT, 'delivered artifact publication evidence is immutable');
+END;
+"""
+
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
@@ -677,6 +750,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (5, _MIGRATION_5),
     (6, _MIGRATION_6),
     (7, _MIGRATION_7),
+    (8, _MIGRATION_8),
 ]
 
 

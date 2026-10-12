@@ -440,7 +440,7 @@ function localArtifactSection(localArtifacts) {
       <div class="artifact-boundary">
         <p><strong>Trades:</strong> ${escapeHtml(localArtifacts.trades.reason)}</p>
         <p><strong>Equity:</strong> ${escapeHtml(localArtifacts.equity.reason)}</p>
-        <p>The current schema v7 stores durable counts and checksums. This viewer does not read arbitrary files or imply that omitted rows exist.</p>
+        <p>The current schema v8 stores durable counts, checksums, and the private artifact publication outbox. This viewer does not read arbitrary files or imply that omitted rows exist.</p>
       </div>
     </section>
   `;

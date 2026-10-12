@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
@@ -7,7 +8,7 @@ import { homedir, platform } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
-const SUPPORTED_SCHEMA_VERSION = 7;
+const SUPPORTED_SCHEMA_VERSION = 8;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4178;
 const MAX_PAGE_SIZE = 100;
@@ -240,12 +241,16 @@ function assertSchemaContract(database) {
     publication_outbox: ["sequence", "idempotency_key", "aggregate_type", "aggregate_id", "claim_token"],
     publication_dead_letters: ["event_id", "dead_lettered_at", "replay_count"],
     publication_acknowledgements: ["idempotency_key", "remote_checksum", "last_reconciled_at"],
+    artifact_publication_outbox: [
+      "artifact_id", "owning_publication_key", "object_key", "staging_path",
+      "manifest_sha256", "content_sha256", "preview_policy", "status", "claim_token",
+    ],
   };
   for (const [table, columns] of Object.entries(required)) {
     const present = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
     const missing = columns.filter((column) => !present.has(column));
     if (missing.length) {
-      throw new Error(`Research schema v7 contract is missing ${table}.${missing.join(`, ${table}.`)}.`);
+      throw new Error(`Research schema v8 contract is missing ${table}.${missing.join(`, ${table}.`)}.`);
     }
   }
 }
@@ -901,6 +906,110 @@ function getArtifactPreview(database, repositoryRoot, recordType, recordId, ordi
   };
 }
 
+function artifactOutboxRow(database, artifactId) {
+  validateIdentity(artifactId, "artifact id");
+  if (!/^artifact:[0-9a-f]{64}$/.test(artifactId)) {
+    throw new HttpError(400, "Invalid artifact id.");
+  }
+  const row = database.prepare(`
+    SELECT artifact_id, owning_publication_key, object_key, staging_path,
+           manifest_json, content_sha256, size_bytes, media_type,
+           preview_policy, status, published_at, enqueued_at
+    FROM artifact_publication_outbox WHERE artifact_id = ?
+  `).get(artifactId);
+  if (!row || row.status === "dead_letter") throw new HttpError(404, "Artifact not found.");
+  return row;
+}
+
+function artifactOutboxMetadata(row) {
+  const manifest = safeJsonParse(row.manifest_json, {});
+  return {
+    artifactId: row.artifact_id,
+    owningPublicationKey: row.owning_publication_key,
+    sizeBytes: Number(row.size_bytes),
+    mediaType: row.media_type,
+    displayName: String(manifest.display_name || "artifact"),
+    artifactClass: String(manifest.artifact_class || "text"),
+    previewPolicy: row.preview_policy,
+    sanitizerVersion: Number(manifest.sanitizer_version || 0),
+    manifestVersion: Number(manifest.manifest_version || 0),
+    publishedAt: row.published_at || row.enqueued_at,
+  };
+}
+
+function listArtifactOutbox(database, searchParams) {
+  const owner = parseOptional(searchParams, "owningPublicationKey");
+  if (!owner) throw new HttpError(400, "owningPublicationKey is required.");
+  const limit = parseInteger(searchParams.get("limit") || "50", "limit", 1, 100);
+  const offset = parseInteger(searchParams.get("offset") || "0", "offset", 0, 1_000_000);
+  return database.prepare(`
+    SELECT artifact_id, owning_publication_key, object_key, staging_path,
+           manifest_json, content_sha256, size_bytes, media_type,
+           preview_policy, status, published_at, enqueued_at
+    FROM artifact_publication_outbox
+    WHERE owning_publication_key = ? AND status != 'dead_letter'
+    ORDER BY enqueued_at DESC, artifact_id
+    LIMIT ? OFFSET ?
+  `).all(owner, limit, offset).map(artifactOutboxMetadata);
+}
+
+function resolveOutboxArtifactFile(stagingRoot, row) {
+  let root;
+  let artifactPath;
+  try {
+    root = realpathSync(resolve(stagingRoot));
+    artifactPath = realpathSync(resolve(root, row.staging_path));
+  } catch {
+    throw new HttpError(404, "Staged artifact bytes are unavailable.");
+  }
+  if (artifactPath !== root && !artifactPath.startsWith(`${root}${sep}`)) {
+    throw new HttpError(403, "Artifact staging path escapes the configured root.");
+  }
+  const info = statSync(artifactPath);
+  if (!info.isFile() || info.size !== Number(row.size_bytes)) {
+    throw new HttpError(409, "Staged artifact size does not match its manifest.");
+  }
+  const body = readFileSync(artifactPath);
+  const checksum = createHash("sha256").update(body).digest("hex");
+  if (checksum !== row.content_sha256) {
+    throw new HttpError(409, "Staged artifact checksum does not match its manifest.");
+  }
+  const format = ARTIFACT_FORMATS.get(extname(artifactPath).toLowerCase());
+  if (!format) throw new HttpError(415, "Artifact type is not supported for preview.");
+  return { body, format };
+}
+
+function getArtifactIdentityPreview(database, stagingRoot, artifactId) {
+  const row = artifactOutboxRow(database, artifactId);
+  if (!["inline", "download"].includes(row.preview_policy)) {
+    throw new HttpError(403, "Artifact policy does not permit preview.");
+  }
+  resolveOutboxArtifactFile(stagingRoot, row);
+  return {
+    ...artifactOutboxMetadata(row),
+    url: `/api/artifacts/${encodeURIComponent(artifactId)}/content`,
+    expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+  };
+}
+
+function getArtifactIdentityContent(database, stagingRoot, artifactId) {
+  const row = artifactOutboxRow(database, artifactId);
+  if (!["inline", "download"].includes(row.preview_policy)) {
+    throw new HttpError(403, "Artifact policy does not permit preview.");
+  }
+  const artifact = resolveOutboxArtifactFile(stagingRoot, row);
+  return {
+    artifactId,
+    fileName: artifactOutboxMetadata(row).displayName,
+    kind: artifact.format.kind,
+    contentType: row.media_type,
+    sizeBytes: Number(row.size_bytes),
+    content: artifact.format.kind === "image"
+      ? `data:${row.media_type};base64,${artifact.body.toString("base64")}`
+      : artifact.body.toString("utf8"),
+  };
+}
+
 function safeDisplayPath(dbPath, env = process.env) {
   const normalized = resolve(dbPath);
   if (env.RESEARCH__DB_PATH && normalized === resolve(env.RESEARCH__DB_PATH)) {
@@ -923,12 +1032,13 @@ function displayHost(host) {
   return host.includes(":") ? `[${host}]` : host;
 }
 
-function routeApi(database, pathname, searchParams, repositoryRoot) {
+function routeApi(database, pathname, searchParams, repositoryRoot, artifactStagingRoot) {
   if (pathname === "/api/meta") return null;
   if (pathname === "/api/overview") return getOverview(database);
   if (pathname === "/api/runs") return listRuns(database, searchParams);
   if (pathname === "/api/registry") return listRegistry(database, searchParams);
   if (pathname === "/api/publications") return listPublications(database, searchParams);
+  if (pathname === "/api/artifacts") return listArtifactOutbox(database, searchParams);
   const runMatch = pathname.match(/^\/api\/runs\/([^/]+)$/);
   if (runMatch) return getRun(database, decodeURIComponent(runMatch[1]));
   const registryMatch = pathname.match(/^\/api\/registry\/([^/]+)\/([^/]+)$/);
@@ -948,6 +1058,24 @@ function routeApi(database, pathname, searchParams, repositoryRoot) {
       decodeURIComponent(artifactMatch[1]),
       decodeURIComponent(artifactMatch[2]),
       artifactMatch[3],
+    );
+  }
+  const artifactIdentityMatch = pathname.match(/^\/api\/artifacts\/([^/]+)$/);
+  if (artifactIdentityMatch) {
+    return artifactOutboxMetadata(
+      artifactOutboxRow(database, decodeURIComponent(artifactIdentityMatch[1])),
+    );
+  }
+  const artifactPreviewMatch = pathname.match(/^\/api\/artifacts\/([^/]+)\/preview$/);
+  if (artifactPreviewMatch) {
+    return getArtifactIdentityPreview(
+      database, artifactStagingRoot, decodeURIComponent(artifactPreviewMatch[1]),
+    );
+  }
+  const artifactContentMatch = pathname.match(/^\/api\/artifacts\/([^/]+)\/content$/);
+  if (artifactContentMatch) {
+    return getArtifactIdentityContent(
+      database, artifactStagingRoot, decodeURIComponent(artifactContentMatch[1]),
     );
   }
   throw new HttpError(404, "Endpoint not found.");
@@ -981,6 +1109,9 @@ export function createViewerServer({
   host = DEFAULT_HOST,
   port = DEFAULT_PORT,
   repositoryRoot = resolve(HERE, "..", ".."),
+  artifactStagingRoot = resolve(
+    process.env.RESEARCH__ARTIFACT_STAGING_DIR || join(dirname(dbPath), "artifact-staging"),
+  ),
 }) {
   validateBindHost(host);
   const safeDbPath = assertSafeDbPath(dbPath);
@@ -1022,7 +1153,13 @@ export function createViewerServer({
           ? meta
           : withDatabase(
             safeDbPath,
-            (database) => routeApi(database, parsed.pathname, parsed.searchParams, repositoryRoot),
+            (database) => routeApi(
+              database,
+              parsed.pathname,
+              parsed.searchParams,
+              repositoryRoot,
+              artifactStagingRoot,
+            ),
           );
         if (request.method === "HEAD") {
           response.writeHead(200, securityHeaders("application/json; charset=utf-8", true));
