@@ -15,6 +15,8 @@ import {
   DataTrendingRegular,
   DismissRegular,
   NavigationRegular,
+  WeatherMoonRegular,
+  WeatherSunnyRegular,
 } from "@fluentui/react-icons";
 import { dashboardHref } from "@/data/researchPresentation";
 
@@ -23,9 +25,11 @@ type DashboardTheme = "light" | "dark";
 
 export function DashboardSectionMenu({
   current,
+  onThemeToggle,
   theme,
 }: {
   current: DashboardSection;
+  onThemeToggle: () => void;
   theme: DashboardTheme;
 }) {
   const [open, setOpen] = useState(false);
@@ -34,12 +38,31 @@ export function DashboardSectionMenu({
   return (
     <>
       <div
-        className="fixed z-40"
+        className="fixed z-40 flex items-center gap-2"
         style={{
           right: "max(1rem, env(safe-area-inset-right))",
           top: "max(1rem, env(safe-area-inset-top))",
         }}
       >
+        <Tooltip
+          content={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+          relationship="label"
+        >
+          <Button
+            appearance="secondary"
+            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+            icon={theme === "dark" ? <WeatherSunnyRegular /> : <WeatherMoonRegular />}
+            onClick={onThemeToggle}
+            shape="circular"
+            size="large"
+            style={{
+              backgroundColor: "var(--surface)",
+              borderColor: "var(--border)",
+              boxShadow: "0 10px 28px rgba(14, 39, 31, 0.14)",
+              color: "var(--foreground)",
+            }}
+          />
+        </Tooltip>
         <Tooltip content="Open dashboard navigation" relationship="label">
           <Button
             appearance="primary"
@@ -115,10 +138,7 @@ export function DashboardSectionMenu({
           </DrawerHeaderTitle>
         </DrawerHeader>
 
-        <DrawerBody
-          className="flex flex-col"
-          style={{ padding: "1.5rem 1.75rem" }}
-        >
+        <DrawerBody style={{ padding: "1.5rem 1.75rem" }}>
           <nav aria-label="Dashboard navigation" className="grid gap-3">
             <SectionLink
               active={current === "live"}
@@ -137,15 +157,6 @@ export function DashboardSectionMenu({
               onNavigate={() => setOpen(false)}
             />
           </nav>
-
-          <div className="mt-auto border-t border-[var(--border)] px-2 pt-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[var(--muted)]">
-              Research surfaces are read only
-            </p>
-            <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-              Detailed local artifacts remain outside the published dashboard.
-            </p>
-          </div>
         </DrawerBody>
       </OverlayDrawer>
     </>

@@ -23,6 +23,9 @@ test("research route is static-export compatible and uses the shared client surf
   assert.match(menu, /OverlayDrawer/);
   assert.match(menu, /NavigationRegular/);
   assert.match(menu, /DismissRegular/);
+  assert.match(menu, /WeatherMoonRegular/);
+  assert.match(menu, /WeatherSunnyRegular/);
+  assert.doesNotMatch(menu, /Research surfaces are read only/);
   assert.match(menu, /onOpenChange/);
   assert.match(menu, /position="end"/);
   assert.match(menu, /height: "100dvh"/);
