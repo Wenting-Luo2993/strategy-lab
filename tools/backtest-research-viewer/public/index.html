@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark light">
+    <title>Local Backtest Research</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2367a7ff'/%3E%3Cpath d='M8 9h16v4H8zm0 6h16v4H8zm0 6h10v4H8z' fill='%230b1220'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.mjs"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">LOCAL SQLITE · READ ONLY</p>
+        <h1>Backtest Research</h1>
+        <p class="lede">Runs, validation evidence, registry records, and publication health from this device only.</p>
+      </div>
+      <button id="refresh" type="button">Refresh local data</button>
+    </header>
+    <main>
+      <section class="notice" aria-label="Local data boundary">
+        <strong>Local-only boundary.</strong>
+        This server listens on loopback and never uploads or switches databases. Trade/equity detail appears only when retained locally; summary retention exposes counts and checksums, not missing rows.
+        <span id="db-path" class="path"></span>
+      </section>
+      <div id="error" class="error hidden" role="alert"></div>
+      <div id="loading" class="loading">Loading local research data…</div>
+      <div id="app" class="hidden">
+        <section id="overview" class="overview" aria-label="Research overview"></section>
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Run explorer</h2>
+              <p>Deterministic newest-first review with trust and publication states.</p>
+            </div>
+            <form id="run-filters" class="filters">
+              <label>Search <input name="search" maxlength="100" placeholder="Run ID or alias"></label>
+              <label>State <input name="state" maxlength="100" placeholder="completed"></label>
+              <label>Strategy <input name="strategy" maxlength="100" placeholder="orb"></label>
+              <button type="submit">Apply</button>
+            </form>
+          </div>
+          <div id="runs"></div>
+          <div id="run-pagination" class="pagination"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Registry</h2>
+              <p>Hypotheses, experiments, notes, rejected ideas, artifacts, and lineage.</p>
+            </div>
+            <form id="registry-filters" class="filters">
+              <label>Search <input name="search" maxlength="100" placeholder="Record ID"></label>
+              <label>Type <input name="type" maxlength="100" placeholder="experiment"></label>
+              <label>Status <input name="status" maxlength="100" placeholder="completed"></label>
+              <button type="submit">Apply</button>
+            </form>
+          </div>
+          <div id="registry"></div>
+          <div id="registry-pagination" class="pagination"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-heading">
+            <div>
+              <h2>Publication and outbox health</h2>
+              <p>Pending, failed, published, dead-letter, acknowledgement, and reconciliation states.</p>
+            </div>
+          </div>
+          <div id="publications"></div>
+        </section>
+      </div>
+    </main>
+    <dialog id="detail">
+      <form method="dialog"><button class="close" aria-label="Close">Close</button></form>
+      <div id="detail-content"></div>
+    </dialog>
+  </body>
+</html>

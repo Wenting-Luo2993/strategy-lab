@@ -187,6 +187,20 @@ The database path defaults outside the repository. Override it with
 `RESEARCH__DB_PATH`; do not place an active SQLite file in Git or a synced
 working tree.
 
+Review the current device's schema v7 database with the dependency-light local
+viewer (Node.js 22.13.0+):
+
+```powershell
+node tools\backtest-research-viewer\server.mjs
+```
+
+The command resolves the same `RESEARCH__DB_PATH` / `RESEARCH__DATA_DIR`
+defaults as Python and serves `http://127.0.0.1:4178`. An explicit database can
+be selected only at process startup with `--db C:\local\research.sqlite3`.
+The server is read-only/query-only, rejects non-loopback binds and Host headers,
+and exposes only allowlisted, parameterized, paginated views. See
+`tools/backtest-research-viewer/README.md`.
+
 To enable trusted local publication, apply
 `docs/backtest-research-summaries/supabase-research-schema.sql`, then set
 `RESEARCH_SUPABASE_URL` and `RESEARCH_SUPABASE_SERVICE_ROLE_KEY`. The research

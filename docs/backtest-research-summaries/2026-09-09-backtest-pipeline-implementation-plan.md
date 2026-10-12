@@ -1489,7 +1489,10 @@ the richer dashboard views.
 
 ## 16. Remaining Open Items
 
-- Pin the Node.js version required by the local viewer's `node:sqlite` usage.
+- ~~Pin the Node.js version required by the local viewer's `node:sqlite`
+  usage.~~ Done — Node 22.13.0 is the minimum LTS baseline, pinned in
+  `tools/backtest-research-viewer/.node-version` and enforced by the tool's
+  `package.json`.
 - Define the pruning schedule for locally retained `diagnostic`/`full` debug
   rows.
 - Confirm the `static_declared` member list and freeze it with a
@@ -1523,8 +1526,8 @@ above. The following recommendations were **not** adopted, with reasons.
 
 ## 18. Execution Status
 
-**Last updated:** September 24, 2026
-**Branch:** `wentingluo/user/plan-backtest-pipeline`
+**Last updated:** October 11, 2026
+**Branch:** `wenting-luo2993-p8-local-research-viewer`
 
 This section tracks implementation against §13. It is the authoritative view of
 what exists; the increment table in §13 describes intent, not state.
@@ -1538,9 +1541,9 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P9, P10, P11, P12, P13 |
+| Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P8, P9, P10, P11, P12, P13 |
 | Partial | — |
-| Not started | P8, P10b, P14 |
+| Not started | P10b, P14 |
 
 All nine increments required by the "minimum bar before trusting a result"
 (P0-P6, P9, P10) are complete. P6 prevents a run from reaching
@@ -1567,7 +1570,7 @@ make the parent inconclusive instead of stitching survivors.
 | P6 | Validation gates and lifecycle | **Complete** | `c808710` | `validation.py`: validation profiles, candidate-scoped plausibility and acceptance rules, one-pass findings across every declared category, required leakage evidence and registry-hash drift detection. SQLite migration 2 adds durable validation reports and execution leases; `RUNNING` requires a lease, heartbeats are token-owned, stale leases become `EXECUTION_FAILED`, and direct `VALIDATING -> COMPLETED` transitions are rejected in both Python and SQLite. 50 focused tests plus 585 research-pipeline and 322 backtester regressions. |
 | P7 | SQLite store and importer | **Complete** | `1ccf7a4`, `f46ee74`, `6070d80` | Forward-only schema v3 upgrades v1 databases after P6's validation/lease migration; terminal UPDATE/DELETE triggers; UUIDv7 IDs; `run_evidence`; outbox; deterministic importer and F11 over all 98 checked-in records/158 relationships; canonical tree hash parity; `legacy-uncontrolled` stamping; unusable-until-rebaselined absolute metrics; legacy artifact path preservation/normalization; registry and artifact dual-write with rollback; same-fingerprint concurrent-writer convergence. |
 | P2b | Thread execution realism into every runner | **Done** (2026-10) | `vibe/tests/backtester/test_realism_threading.py` (8) | E7 closed. `ParameterSweep`, `WalkForwardEngine`, `RobustnessAnalyzer` and P9's `RulesetSegmentExecutor` now accept `execution_realism` and default to `realistic()`; `legacy()` is opt-in. Sweep cache key includes the execution identity, so pre-E7 cached results can no longer be served. Threading is pinned by engine-construction spies, mutation-checked. |
-| P8 | Local MJS viewer | **Not started** | — | Read-only local inspection remains independent of YAML retirement. |
+| P8 | Local MJS viewer | **Complete** (2026-10) | P8 implementation commit | `tools/backtest-research-viewer/` provides a no-build HTML/CSS/MJS interface over schema v7 using built-in `node:sqlite`, with Node 22.13.0 as the pinned minimum LTS baseline. The database is selected only at startup and opened per request with `readOnly: true`, `query_only=ON`, `trusted_schema=OFF`, and schema/integrity checks. The server binds to loopback only, validates the peer and Host header, accepts only GET/HEAD, serves an exact static-file allowlist, and exposes parameterized/paginated endpoints for runs, metrics, validation/findings, checksums, lineage/identity, registry records/notes/artifact references, and outbox/dead-letter/acknowledgement/reconciliation health. Secrets and unsafe external paths are redacted. Schema v7 has no retained `trades`/`equity_points` tables, so the UI truthfully reports bounded detail as unavailable rather than implying summary-retained rows exist. Windows security and data-shape tests cover read-only behavior, loopback/Host enforcement, methods, traversal, SQL injection, bounds, pagination, redaction, refresh, and absence of arbitrary SQL. |
 | P9 | Optimizer/selector seam and nested walk-forward | **Complete** | `72a05e0` | `optimization.py`: pure injected `Optimizer.fit` and `Selector.select`, a concrete fresh-engine ruleset adapter, canonical grid identities, exact candidate counts, P6 `SWEEP_ROW`/`CANDIDATE` validation scopes, and deterministic connected-plateau medoid selection with signed margin. `walk_forward.py`: session-contamination audit (F9), per-fold train/validation/test control flow, frozen candidate evaluation, explicit inconclusive failure semantics, and chronological all-fold OOS stitching that preserves per-fold dollar P&L. |
 | P10 | Final-holdout lock | **Complete** | `29eaa04`, P11 implementation commit | `config/final_holdout.yaml` (`dev_end 2024-12-31`, OOS 2025-01-01..2026-04-27, 329 sessions) and `vibe/research_pipeline/holdout.py`. Guard binds at `ParquetLoader`; P11 completed the deferred promotion gate, forcing `VALIDATION_FAILED` with `OOS-001` when a research lineage exceeds one append-only holdout touch. |
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
@@ -1893,7 +1896,8 @@ in hindsight, so the run is permanently badged `survivorship_bias=present`.
 
 ### Recommended next increment
 
-**P14 readiness validation, followed by the compatibility archive/removal.**
+**Validate the deployed P13 read surface and P12 reconciliation while P14
+remains paused.**
 
 P13 is complete in the shared static dashboard: `/research` consumes the
 `research_publications` remote read model through the fixture or anonymous
@@ -1901,12 +1905,16 @@ Supabase adapter, exposes no mutation API, and renders only P12's summary-safe
 publication fields. Before retiring YAML, deploy this route against the intended
 Supabase project and validate anonymous multi-page reads, select-only RLS, stable
 detail identities, and decoding of representative current and legacy records.
-P14 remains gated on that validated shared read surface and the separately
-reviewed compatibility release, tagged archive, import-parity re-check, and
-removal step.
+P14 remains paused and gated on that validated shared read surface and the
+separately reviewed compatibility release, tagged archive, import-parity
+re-check, and removal step. Do not begin YAML retirement as part of P8.
 
-P8, the local read-only viewer, can still proceed independently against schema
-v6 and remains useful for offline inspection, but it does not block P13.
+P8 is complete against schema v7 and provides the independent local inspection
+surface for offline review, publication/outbox diagnosis, and exact local
+retention boundaries. A subsequent storage increment may add normalized,
+bounded local `trades` and `equity_points` tables for `diagnostic`/`full`
+profiles; until then P8 shows the durable aggregate counts/checksums without
+claiming row-level detail exists.
 
 The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
 proceed without further eroding it; runs are now confined to `dev_end` by the
