@@ -15,6 +15,7 @@ import type {
   SortDirection,
 } from "@/data/researchTypes";
 import { DashboardSectionMenu } from "@/components/DashboardSectionMenu";
+import { ResearchAnalyzer } from "@/components/research/ResearchAnalyzer";
 
 type InitialResearchData = {
   overview: ResearchOverview;
@@ -134,6 +135,8 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
           <OverviewMetric label="Completed runs" value={overview.completedRuns} />
           <OverviewMetric label="Needs validation review" value={overview.validationAttention} warning={overview.validationAttention > 0} />
         </section>
+
+        <ResearchAnalyzer adapter={adapter} />
 
         <section className="surface mt-5 rounded-lg border p-4" aria-labelledby="research-explorer-title">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">

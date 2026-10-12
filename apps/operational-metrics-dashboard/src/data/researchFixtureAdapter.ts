@@ -1,4 +1,5 @@
-import { clonedResearchFixtures } from "./researchFixtures.ts";
+import { FixtureAnalysisAdapter } from "./researchAnalysis.ts";
+import { analysisFixtureRows, clonedResearchFixtures } from "./researchFixtures.ts";
 import type {
   ResearchDataAdapter,
   ResearchListQuery,
@@ -10,9 +11,11 @@ import type {
 export class FixtureResearchDataAdapter implements ResearchDataAdapter {
   readonly source = "fixture" as const;
   readonly #items: ResearchPublication[];
+  readonly #analysis: FixtureAnalysisAdapter;
 
   constructor(items = clonedResearchFixtures()) {
     this.#items = items;
+    this.#analysis = new FixtureAnalysisAdapter(items, analysisFixtureRows);
   }
 
   async getOverview(): Promise<ResearchOverview> {
@@ -56,6 +59,18 @@ export class FixtureResearchDataAdapter implements ResearchDataAdapter {
 
   async getPublication(idempotencyKey: string): Promise<ResearchPublication | null> {
     return this.#items.find((item) => item.idempotencyKey === idempotencyKey) ?? null;
+  }
+
+  getAnalysisFieldCatalog() {
+    return this.#analysis.getAnalysisFieldCatalog();
+  }
+
+  estimateAnalysis(query: Parameters<FixtureAnalysisAdapter["estimateAnalysis"]>[0]) {
+    return this.#analysis.estimateAnalysis(query);
+  }
+
+  runAnalysis(query: Parameters<FixtureAnalysisAdapter["runAnalysis"]>[0]) {
+    return this.#analysis.runAnalysis(query);
   }
 }
 

@@ -1,5 +1,6 @@
 import { decodeResearchPublication } from "./researchDecoder.ts";
 import type { ResearchPublication, ResearchPublicationRow } from "./researchTypes.ts";
+import type { AnalysisRow } from "./researchAnalysis.ts";
 
 const sha = (character: string) => character.repeat(64);
 const executionIdentity = {
@@ -151,3 +152,47 @@ function registryRow(
 export function clonedResearchFixtures(): ResearchPublication[] {
   return researchFixtureRows.map((item) => decodeResearchPublication(structuredClone(item)));
 }
+
+export const analysisFixtureRows: AnalysisRow[] = researchFixtureRows
+  .slice(0, 3)
+  .map((row, index) => {
+    const publication = decodeResearchPublication(structuredClone(row)) as Extract<
+      ResearchPublication,
+      { kind: "run_summary" }
+    >;
+    const legacy = index === 2;
+    return {
+      runId: publication.runId ?? publication.aggregateId,
+      trust: {
+        "trust.state": legacy ? "legacy" : index === 1 ? "validation_attention" : "current_validated",
+        "trust.legacy": legacy,
+        "trust.current": !legacy,
+        "trust.code_dirty": publication.codeDirty,
+      },
+      dimensions: {
+        "identity.display_alias": index === 0 ? "RUN-000003" : publication.displayAlias,
+        "identity.strategy_id": publication.strategyId,
+        "identity.methodology_version": publication.methodologyVersion,
+        "identity.execution_model_version": publication.executionModelVersion,
+        "identity.metric_calculation_version": publication.metricCalculationVersion,
+        "identity.feature_set_version": publication.featureSetVersion,
+        "parameter.opening_range_minutes": [15, 30, 5][index],
+        "parameter.stop_multiple": [1, 1.5, 0.75][index],
+        "parameter.reward_multiple": [2, 2.5, 1.5][index],
+        "dataset.snapshot_id": publication.datasetFingerprint,
+        "dataset.split_manifest_hash": publication.splitManifestHash,
+        "dataset.symbol": "QQQ",
+        "validation.state": publication.status,
+        "validation.profile": publication.validation.profileName,
+        "validation.leakage_passed": publication.validation.leakagePassed,
+        "validation.blocking_findings": publication.validation.findings.blocking,
+        "validation.review_findings": publication.validation.findings.review,
+        "validation.advisory_findings": publication.validation.findings.advisory,
+        "lineage.id": publication.lineageId ?? publication.runId,
+      },
+      metrics: Object.fromEntries(publication.metrics.map((metric) => [
+        `metric.${metric.key}`,
+        typeof metric.value === "number" ? metric.value : null,
+      ])),
+    };
+  });

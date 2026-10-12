@@ -140,6 +140,15 @@ export type ResearchDataAdapter = {
   getOverview(): Promise<ResearchOverview>;
   listPublications(query: ResearchListQuery): Promise<ResearchPage>;
   getPublication(idempotencyKey: string): Promise<ResearchPublication | null>;
+  getAnalysisFieldCatalog(): Promise<import("./researchAnalysis.ts").AnalysisField[]>;
+  estimateAnalysis(query: import("./researchAnalysis.ts").AnalysisQuery): Promise<
+    Omit<import("./researchAnalysis.ts").AnalysisMetadata,
+      "returnedRows" | "totalResultRows" | "truncated" | "sampled" | "aggregated" |
+      "chartMarks" | "chartMarksTruncated">
+  >;
+  runAnalysis(query: import("./researchAnalysis.ts").AnalysisQuery): Promise<
+    import("./researchAnalysis.ts").AnalysisResult
+  >;
 };
 
 export type ResearchPublicationRow = {

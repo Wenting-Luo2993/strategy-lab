@@ -49,11 +49,26 @@ test("adapter contract exposes no mutation methods and has exactly two implement
 
   assert.deepEqual(
     Object.getOwnPropertyNames(Object.getPrototypeOf(fixture)).sort(),
-    ["constructor", "getOverview", "getPublication", "listPublications"].sort(),
+    [
+      "constructor",
+      "estimateAnalysis",
+      "getAnalysisFieldCatalog",
+      "getOverview",
+      "getPublication",
+      "listPublications",
+      "runAnalysis",
+    ].sort(),
   );
   assert.deepEqual(
     Object.getOwnPropertyNames(Object.getPrototypeOf(supabase)).filter((name) => name !== "constructor").sort(),
-    ["getOverview", "getPublication", "listPublications"].sort(),
+    [
+      "estimateAnalysis",
+      "getAnalysisFieldCatalog",
+      "getOverview",
+      "getPublication",
+      "listPublications",
+      "runAnalysis",
+    ].sort(),
   );
   for (const adapter of [fixture, supabase]) {
     assert.equal("create" in adapter, false);

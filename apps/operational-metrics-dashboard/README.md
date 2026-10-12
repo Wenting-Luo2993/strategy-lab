@@ -6,8 +6,8 @@ shared read-only backtest research surface.
 Routes:
 
 - `/`: live trading state, chart context, operations health, and execution quality.
-- `/research`: published run summaries and registry records from the P12
-  `research_publications` read model.
+- `/research`: a flexible run-summary analyzer plus the retained publication
+  explorer/detail surface.
 
 ## Data Source
 
@@ -36,7 +36,28 @@ implementations:
 - `FixtureResearchDataAdapter`: deterministic development and UI-test records.
 - `SupabaseResearchDataAdapter`: anonymous `GET` requests to
   `research_publications`, with server-side filtering, stable ordering, exact
-  counts, and range pagination.
+  counts, and range pagination; catalog `GET` and a read-only PostgREST RPC
+  provide the analysis surface.
+
+Both adapters implement the same field-catalog-driven analysis contract. The
+workspace supports typed AND/OR filters, selectable screening columns, arbitrary
+grouping dimensions, aggregate measures, trust populations, and chart
+encodings. It intentionally has no fixed experiment compare tray. Operational
+limits are visible in the UI: 5,000 candidate runs, 500 groups, 500 response
+rows, 300 chart marks, 512 KiB responses, 40 filter nodes at depth 5, 24
+screening columns, and 8 order rules. Queries above cost/cardinality policy are
+rejected rather than silently sampled. Truncation metadata remains visible
+above the inspectable result table.
+
+Current validated summaries are the default population. Legacy/pre-P2b and
+validation-attention records require explicit opt-in. Metric calculation
+versions cannot be aggregated together unless version is a grouping dimension.
+Analysis definitions can be saved to a bounded URL (4 KiB) and bounded local
+storage (16 KiB); malformed, oversized, or unknown-field state falls back to
+the safe default.
+
+The fixture includes current `RUN-000003`-shaped parameter, dataset, validation,
+lineage, and metric fields. No event-level data is present.
 
 Set `NEXT_PUBLIC_RESEARCH_DATA_SOURCE=supabase` to use the remote read model.
 The route decodes publication schema version 1 defensively and preserves
@@ -61,6 +82,13 @@ The applied Supabase schema grants `SELECT` on `research_publications` to
 `anon`/`authenticated`, enables RLS, and revokes insert, update, delete,
 truncate, references, and trigger privileges. The dashboard adapter exposes no
 mutation method.
+
+Apply `docs/backtest-research-summaries/supabase-research-schema.sql` to add the
+normalized `research_analysis_*` read model, field catalog, typed filter
+evaluator, bounded aggregate RPC, RLS, and grants. Browsers cannot select the
+normalized run/dimension/metric tables directly and never receive a service-role
+credential. The RPC is `STABLE`, summary-only, and validates field references as
+catalog values rather than interpolating SQL identifiers.
 
 Monetary values are formatted with their explicit field currency. Missing net
 liquidation, position P&L, and legacy-trade currencies are preserved as unknown

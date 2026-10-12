@@ -147,6 +147,40 @@ pip install pre-commit
 pre-commit install
 ```
 
+### Flexible research analysis
+
+`/research` includes a read-only, adapter-neutral analyzer for terminal run
+summaries. Local research tooling uses
+`vibe.research_pipeline.analysis.SqliteAnalysisAdapter` against the SQLite
+authority; the static dashboard uses the same JSON-compatible query/result
+contract through fixtures or the bounded Supabase RPC. The field catalog drives
+parameters, datasets, validation, lineage, trust, and metrics, so newly
+published fields do not require a fixed compare UI.
+
+Legacy/pre-P2b results are excluded by default. Candidate rows, group
+cardinality, response rows/bytes, and chart marks are explicitly limited and
+reported. Trades, fills, raw bars, ledgers, artifact upload, and dataset
+distribution are outside this analysis surface.
+
+```python
+from vibe.research_pipeline.analysis import SqliteAnalysisAdapter
+
+adapter = SqliteAnalysisAdapter("path/to/research.sqlite3")
+result = adapter.query({
+    "population": {
+        "includeLegacy": False,
+        "trustStates": ["current_validated"],
+    },
+    "filters": {"op": "and", "children": []},
+    "screeningColumns": ["identity.display_alias", "metric.expectancy_r"],
+    "groupBy": ["parameter.opening_range_minutes"],
+    "measures": [{"field": "metric.expectancy_r", "aggregate": "mean"}],
+    "orderBy": [],
+    "chart": {"kind": "bar"},
+})
+adapter.close()
+```
+
 ---
 
 ## ✨ Key Features
