@@ -32,8 +32,8 @@ test("typed filters, arbitrary grouping fields, and aggregate measures compose",
   const query = {
     ...structuredClone(defaultAnalysisQuery),
     population: {
-      includeLegacy: true,
-      trustStates: ["current_validated", "validation_attention", "legacy"],
+      includeLegacy: false,
+      trustStates: ["current_validated", "validation_attention"],
     },
     filters: {
       op: "and",
@@ -66,13 +66,28 @@ test("typed filters, arbitrary grouping fields, and aggregate measures compose",
   };
   const result = await adapter.runAnalysis(query);
 
-  assert.equal(result.rows.length, 3);
+  assert.equal(result.rows.length, 2);
   assert.deepEqual(
     result.rows.map((row) => row["parameter.opening_range_minutes"]),
-    [5, 15, 30],
+    [15, 30],
   );
   assert.equal(result.metadata.aggregated, true);
-  assert.equal(result.metadata.estimatedGroups, 3);
+  assert.equal(result.metadata.estimatedGroups, 2);
+});
+
+test("saved analysis state cannot re-enable legacy populations", async () => {
+  const adapter = new FixtureAnalysisAdapter(clonedResearchFixtures(), analysisFixtureRows);
+  const catalog = await adapter.getAnalysisFieldCatalog();
+  const sanitized = sanitizeAnalysisQuery({
+    ...structuredClone(defaultAnalysisQuery),
+    population: {
+      includeLegacy: true,
+      trustStates: ["legacy"],
+    },
+  }, catalog);
+
+  assert.equal(sanitized.population.includeLegacy, false);
+  assert.deepEqual(sanitized.population.trustStates, ["current_validated"]);
 });
 
 test("analysis state decoding is bounded and rejects unknown or malformed fields", async () => {

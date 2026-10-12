@@ -214,6 +214,7 @@ export function sanitizeAnalysisQuery(
   if (!isObject(value)) throw new Error("Analysis state must be an object.");
   const population = isObject(value.population) ? value.population : {};
   const trustStates = stringArray(population.trustStates, 8, 64);
+  const currentTrustStates = trustStates.filter((state) => state !== "legacy");
   const filters = sanitizeFilter(value.filters, fields);
   const screeningColumns = fieldArray(
     value.screeningColumns,
@@ -254,8 +255,10 @@ export function sanitizeAnalysisQuery(
   const chart = sanitizeChart(value.chart, resultFields);
   return {
     population: {
-      includeLegacy: population.includeLegacy === true,
-      trustStates: trustStates.length ? trustStates : ["current_validated"],
+      includeLegacy: false,
+      trustStates: currentTrustStates.length
+        ? currentTrustStates
+        : ["current_validated"],
     },
     filters,
     screeningColumns,

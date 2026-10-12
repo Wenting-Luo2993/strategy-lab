@@ -159,8 +159,19 @@ export function ResearchAnalyzer({ adapter }: { adapter: ResearchDataAdapter }) 
           </p>
         </div>
         <div className="flex gap-2">
-          <Button appearance="secondary" onClick={saveState}>Save view</Button>
-          <Button appearance="primary" disabled={loading || !catalog.length} onClick={execute}>
+          <Button
+            appearance="secondary"
+            onClick={saveState}
+            title="Save the current controls to this URL and this browser without rerunning the query."
+          >
+            Save view
+          </Button>
+          <Button
+            appearance="primary"
+            disabled={loading || !catalog.length}
+            onClick={execute}
+            title="Execute the current controls against the selected research data source."
+          >
             {loading ? "Running…" : "Run analysis"}
           </Button>
         </div>
@@ -197,25 +208,16 @@ export function ResearchAnalyzer({ adapter }: { adapter: ResearchDataAdapter }) 
             />
             Validation attention
           </label>
-          <label className="mt-2 flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={query.population.includeLegacy}
-              onChange={(event) => update({
-                ...query,
-                population: {
-                  includeLegacy: event.target.checked,
-                  trustStates: toggleValue(query.population.trustStates, "legacy", event.target.checked),
-                },
-              })}
-            />
-            Legacy / pre-P2b overlay
-          </label>
-          <p className="mt-3 text-xs text-[var(--muted)]">Legacy is excluded by default and always remains visibly distinct.</p>
+          <p className="mt-3 text-xs text-[var(--muted)]">
+            Choose completed, trusted runs and optionally include runs that need validation review.
+          </p>
         </fieldset>
 
         <fieldset className="rounded-md border border-[var(--border)] p-3 xl:col-span-2">
           <legend className="px-1 text-sm font-bold">Typed composable filters</legend>
+          <p className="mb-3 text-xs text-[var(--muted)]">
+            Filters narrow individual runs before grouping. Add conditions, choose AND to require all or OR to require any, and click a filter chip to remove it.
+          </p>
           <div className="grid gap-2 sm:grid-cols-[1fr_9rem_1fr_auto]">
             <select className="control" value={draftFilterField} onChange={(event) => {
               const field = catalog.find((item) => item.field === event.target.value);
@@ -268,20 +270,23 @@ export function ResearchAnalyzer({ adapter }: { adapter: ResearchDataAdapter }) 
 
         <FieldMultiSelect
           title="Screening columns"
-          help={`Up to ${analysisLimits.maxScreeningColumns} columns.`}
+          help={`Choose the fields shown for each matching run when no grouping or measures are active. Up to ${analysisLimits.maxScreeningColumns} columns.`}
           fields={catalog.filter((field) => field.screenable)}
           selected={query.screeningColumns}
           onChange={(screeningColumns) => update({ ...query, screeningColumns })}
         />
         <FieldMultiSelect
           title="Grouping dimensions"
-          help={`No fixed compare tray; estimated cardinality must stay within ${analysisLimits.maxGroups} groups.`}
+          help={`Create one result row for each unique combination of selected fields. Estimated cardinality must stay within ${analysisLimits.maxGroups} groups.`}
           fields={catalog.filter((field) => field.groupable)}
           selected={query.groupBy}
           onChange={(groupBy) => update({ ...query, groupBy })}
         />
         <fieldset className="rounded-md border border-[var(--border)] p-3">
           <legend className="px-1 text-sm font-bold">Aggregate measures</legend>
+          <p className="mb-3 text-xs text-[var(--muted)]">
+            Calculate statistics such as mean, median, min, max, or count within each group.
+          </p>
           <div className="grid gap-2 sm:grid-cols-[1fr_7rem_auto]">
             <select className="control" value={draftMeasureField} onChange={(event) => {
               const field = catalog.find((item) => item.field === event.target.value);

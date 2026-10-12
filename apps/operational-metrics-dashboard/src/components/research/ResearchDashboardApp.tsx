@@ -312,7 +312,7 @@ function DetailIdentity({ publication }: { publication: ResearchPublication }) {
       <h3 className="font-bold">Publication identity</h3>
       <dl className="mt-3 grid gap-3 rounded-md border border-[var(--border)] p-4 text-sm sm:grid-cols-2">
         <DetailStat label="Aggregate ID" value={publication.aggregateId} mono />
-        <DetailStat label="Payload SHA-256" value={publication.payloadSha256} mono />
+        <DetailStat label="Publication payload checksum" value={publication.payloadSha256} mono />
         <DetailStat label="Published" value={formatDate(publication.acknowledgedAt)} />
         <DetailStat label="Publication version" value={String(publication.publicationVersion)} />
         <DetailStat label="Methodology" value={publication.methodologyVersion ?? "--"} />
@@ -375,7 +375,7 @@ function RegistryDetail({ publication }: { publication: ResearchRegistryRecord }
         <DetailStat label="Record type" value={publication.recordType ?? "--"} />
         <DetailStat label="Record ID" value={publication.recordId ?? "--"} mono />
         <DetailStat label="Record origin" value={publication.recordOrigin ?? "--"} />
-        <DetailStat label="Canonical checksum" value={publication.canonicalSha256 ?? "--"} mono />
+        <DetailStat label="Registry content checksum" value={publication.canonicalSha256 ?? "--"} mono />
         <DetailStat label="Recorded" value={publication.recordedAt ? formatDate(publication.recordedAt) : "--"} />
       </DetailSection>
       <DetailSection title="Execution realism identity">

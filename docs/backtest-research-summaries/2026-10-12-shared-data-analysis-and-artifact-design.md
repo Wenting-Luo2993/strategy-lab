@@ -382,3 +382,10 @@ remain mandatory external gates.
 
 No licensed dataset or artifact bytes were uploaded, and no Supabase mutation
 was attempted during implementation.
+
+After the external archive was verified, the owner-device SQLite store was
+backed up and cleaned of all 98 imported `legacy_yaml` registry records, their
+dependent relationships and metric baselines, and all 98 pending legacy
+publication events. The hypotheses and narrative notes remain only as
+source-controlled learning documents; the three real run-summary publication
+events remain in SQLite.

@@ -91,7 +91,6 @@ function renderOverview(data) {
     metricCard("Completed", data.runs.completed || 0),
     metricCard("Validation attention", (data.runs.review_required || 0) + (data.runs.validation_failed || 0), true),
     metricCard("Registry records", totalRegistry),
-    metricCard("Archived registry", data.archivedRegistry || 0),
     metricCard("Pending / failed", (data.publications.pending || 0) + (data.publications.failed || 0), true),
     metricCard("Dead letters", data.publications.dead_letter || 0, true),
   );

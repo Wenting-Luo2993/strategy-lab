@@ -295,15 +295,6 @@ function parseOptional(searchParams, name, allowed = null) {
   return raw;
 }
 
-function parseBoolean(searchParams, name) {
-  const raw = searchParams.get(name);
-  if (raw === null || raw === "") return false;
-  if (raw !== "true" && raw !== "false") {
-    throw new HttpError(400, `Unsupported ${name}.`);
-  }
-  return raw === "true";
-}
-
 function parseOrder(searchParams, sorts, defaultSort) {
   const sort = parseOptional(searchParams, "sort", new Set(Object.keys(sorts))) || defaultSort;
   const direction = parseOptional(searchParams, "direction", new Set(["asc", "desc"])) || "desc";
@@ -372,14 +363,8 @@ function getOverview(database) {
   const registryCounts = database.prepare(
     `SELECT record_type, COUNT(*) AS count
      FROM registry_records
-     WHERE NOT (record_origin = 'legacy_yaml' AND record_type IN ('experiment', 'artifact'))
      GROUP BY record_type ORDER BY record_type`,
   ).all();
-  const archivedRegistry = database.prepare(
-    `SELECT COUNT(*) AS count
-     FROM registry_records
-     WHERE record_origin = 'legacy_yaml' AND record_type IN ('experiment', 'artifact')`,
-  ).get().count;
   const findings = database.prepare(
     "SELECT severity, COUNT(*) AS count FROM run_findings GROUP BY severity ORDER BY severity",
   ).all();
@@ -387,7 +372,6 @@ function getOverview(database) {
     runs: Object.fromEntries(runCounts.map((row) => [row.state, Number(row.count)])),
     publications: Object.fromEntries(publicationCounts.map((row) => [row.status, Number(row.count)])),
     registry: Object.fromEntries(registryCounts.map((row) => [row.record_type, Number(row.count)])),
-    archivedRegistry: Number(archivedRegistry),
     findings: Object.fromEntries(findings.map((row) => [row.severity, Number(row.count)])),
   };
 }
@@ -604,13 +588,9 @@ function listRegistry(database, searchParams) {
   const type = parseOptional(searchParams, "type");
   const status = parseOptional(searchParams, "status");
   const search = parseOptional(searchParams, "search");
-  const includeArchived = parseBoolean(searchParams, "includeArchived");
   const order = parseOrder(searchParams, REGISTRY_SORTS, "recorded");
   const clauses = [];
   const params = [];
-  if (!includeArchived) {
-    clauses.push("NOT (rr.record_origin = 'legacy_yaml' AND rr.record_type IN ('experiment', 'artifact'))");
-  }
   if (type) {
     clauses.push("rr.record_type = ?");
     params.push(type);
