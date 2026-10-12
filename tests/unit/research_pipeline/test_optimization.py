@@ -173,6 +173,38 @@ def test_ruleset_executor_materializes_candidate_with_fresh_engine(monkeypatch):
     assert base["strategy"]["orb_duration_minutes"] != 15
 
 
+def test_ruleset_executor_verifies_fingerprinted_dataset_once(
+    monkeypatch, tmp_path
+):
+    base = RuleSetLoader.from_name("orb_production").model_dump(mode="python")
+    checks = []
+    fingerprint = SimpleNamespace(
+        assert_materialized_dataset=lambda data_dir, symbol: checks.append(
+            (data_dir, symbol)
+        )
+    )
+    monkeypatch.setattr(
+        "vibe.research_pipeline.optimization.run_segment",
+        lambda engine, symbol, segment, warmup_sessions: SimpleNamespace(
+            segment=segment, result=SimpleNamespace()
+        ),
+    )
+    executor = RulesetSegmentExecutor(
+        base,
+        {"duration": "strategy.orb_duration_minutes"},
+        data_dir=tmp_path,
+        fingerprint=fingerprint,
+        engine_factory=lambda ruleset: SimpleNamespace(ruleset=ruleset),
+    )
+    candidate = generate_grid((ParameterAxis("duration", (15,)),))[0]
+    segment = _segment(SegmentRole.TRAIN)
+
+    executor(candidate, segment)
+    executor(candidate, segment)
+
+    assert checks == [(tmp_path, "QQQ")]
+
+
 def test_optimizer_uses_train_scope_and_reconciles_candidate_counts():
     candidates = generate_grid((ParameterAxis("p", (1, 2, 3)),))
     calls = []

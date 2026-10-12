@@ -23,6 +23,7 @@ from vibe.backtester.data.paths import resolve_market_data_dir
 from vibe.common.ruleset.models import StrategyRuleSet
 from vibe.research_pipeline.contracts import SessionSegment
 from vibe.research_pipeline.hashing import canonical_json, hash_object
+from vibe.research_pipeline.identity import RunFingerprint
 from vibe.research_pipeline.lifecycle import RunState
 from vibe.research_pipeline.segment_runner import SegmentResult, run_segment
 from vibe.research_pipeline.validation import ValidationReport, ValidationScope
@@ -72,6 +73,7 @@ class RulesetSegmentExecutor:
         parameter_paths: Mapping[str, str],
         *,
         data_dir: Path | str | None = None,
+        fingerprint: RunFingerprint | None = None,
         warmup_sessions: int = 0,
         engine_kwargs: Mapping[str, Any] | None = None,
         engine_factory: Callable[[StrategyRuleSet], BacktestEngine] | None = None,
@@ -82,6 +84,8 @@ class RulesetSegmentExecutor:
         self._parameter_paths = dict(parameter_paths)
         self._warmup_sessions = warmup_sessions
         self._engine_kwargs = dict(engine_kwargs or {})
+        self._fingerprint = fingerprint
+        self._verified_dataset_symbols: set[str] = set()
         # P9 selects and evaluates candidates out-of-sample, so it must not
         # inherit BacktestEngine's optimistic legacy() default by omission.
         # An explicit engine_kwargs entry still wins.
@@ -90,8 +94,14 @@ class RulesetSegmentExecutor:
         )
         if engine_factory is not None:
             self._engine_factory = engine_factory
+            self._data_dir = (
+                resolve_market_data_dir(data_dir)
+                if fingerprint is not None
+                else None
+            )
         else:
             resolved_data_dir = resolve_market_data_dir(data_dir)
+            self._data_dir = resolved_data_dir
             self._engine_factory = lambda ruleset: BacktestEngine(
                 ruleset=ruleset,
                 data_dir=resolved_data_dir,
@@ -129,6 +139,15 @@ class RulesetSegmentExecutor:
         ruleset = StrategyRuleSet(**config)
         engine = self._engine_factory(ruleset)
         symbol = ruleset.instruments.symbols[0]
+        if (
+            self._fingerprint is not None
+            and symbol not in self._verified_dataset_symbols
+        ):
+            assert self._data_dir is not None
+            self._fingerprint.assert_materialized_dataset(
+                self._data_dir, symbol=symbol
+            )
+            self._verified_dataset_symbols.add(symbol)
         return run_segment(
             engine,
             symbol,

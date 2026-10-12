@@ -123,6 +123,25 @@ class RunFingerprint(BaseModel):
         """
         return self.fingerprint
 
+    @property
+    def dataset_id(self) -> str:
+        """Canonical dataset ID used by new dataset-aware callers.
+
+        ``data_snapshot_id`` remains the serialized field so fingerprints
+        created before dataset synchronization keep byte-identical hashes.
+        """
+        return self.data_snapshot_id
+
+    def assert_materialized_dataset(
+        self, data_dir: str | Path, *, symbol: str
+    ) -> None:
+        """Refuse an alias whose verified manifest does not match this run."""
+        from vibe.research_pipeline.datasets import verify_materialized_dataset
+
+        verify_materialized_dataset(
+            data_dir, symbol=symbol, dataset_id=self.data_snapshot_id
+        )
+
     @staticmethod
     def hash_ruleset(path: str | Path) -> str:
         """Content hash of a ruleset file, for ``ruleset_content_sha256``."""

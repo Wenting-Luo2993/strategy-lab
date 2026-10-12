@@ -1,6 +1,6 @@
 # Shared research data, analysis, and artifact design
 
-**Status:** Proposed  
+**Status:** Dataset storage/synchronization slice implemented; deployment gated
 **Date:** 2026-10-12  
 **Scope:** Approved market-data snapshots, flexible research analysis, and
 remote artifact previews for the P8/P13 research surfaces.
@@ -326,3 +326,45 @@ the Supabase project, and does not permit arbitrary remote origins.
 P14 remains paused. None of these changes justify retiring the legacy YAML
 compatibility surface until deployed read-model, storage, and reconciliation
 behavior are independently validated.
+
+## Implemented dataset tooling
+
+The dataset slice is available through:
+
+```text
+python -m vibe.research_pipeline.datasets generate ...
+python -m vibe.research_pipeline.datasets verify ...
+python -m vibe.research_pipeline.datasets sync <dataset_id>
+python -m vibe.research_pipeline.datasets transition <dataset_id> <status>
+```
+
+Logical `dataset_id` hashes the bar identity and source provenance, while
+`object_sha256` independently identifies the exact Parquet bytes. Converter
+versions, validation output, licensing evidence, and lifecycle state remain in
+the canonical manifest without making equivalent logical rows acquire a new
+identity solely because PyArrow or compression bytes changed.
+
+Synchronization accepts only `approved` metadata, streams into a temporary
+content-addressed cache object, verifies its hash, size, schema, coverage,
+timezone, row count, nulls, and duplicate timestamps, then atomically copies it
+to `BACKTEST__DATA_DIR` with a sidecar manifest. Dataset-aware research
+execution calls `RunFingerprint.assert_materialized_dataset()` so a mutable
+symbol filename cannot stand in for the fingerprint's dataset ID. The
+serialized `data_snapshot_id` field is retained to preserve all existing run
+fingerprints. `RulesetSegmentExecutor` accepts the fingerprint and performs
+this verification before the first candidate for each symbol.
+
+`supabase-dataset-schema.sql` creates the private bucket metadata, immutable
+object records, legal lifecycle transition trigger, and explicit browser-role
+revocations. Trusted publisher/downloader credentials use the separate
+`RESEARCH_DATASET_SUPABASE_*` namespace and are rejected if reused in a
+`NEXT_PUBLIC_*` variable.
+
+The QQQ values in this document are the candidate inputs: source bytes
+`24,648,396`, source SHA-256
+`86e447e025fd830962535176ff4da031bc018fb0042bf995681d17e7d8df2b19`,
+`781,508` rows over `2,008` sessions, and Parquet bytes `14,885,247` with
+SHA-256 `9624638a8c6fe4009e14b7f93acd0d350c037219e0701fe761b1f7eb80890f48`.
+They have not been uploaded or marked approved. Private multi-device
+redistribution entitlement and an owner-supplied licensing evidence reference
+remain mandatory external gates.

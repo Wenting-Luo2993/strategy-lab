@@ -37,6 +37,13 @@ from vibe.research_pipeline.hashing import (
     sha256_hex,
 )
 from vibe.research_pipeline.identity import FINGERPRINT_VERSION, RunFingerprint
+from vibe.research_pipeline.datasets import (
+    DatasetManifest,
+    DatasetStatus,
+    DatasetSynchronizer,
+    DatasetSupabaseSettings,
+    SupabaseDatasetClient,
+)
 from vibe.research_pipeline.lifecycle import (
     LEGAL_TRANSITIONS,
     TERMINAL_STATES,
@@ -100,6 +107,10 @@ from vibe.research_pipeline.validation import (
 __all__ = [
     "CANONICAL_ENCODING_VERSION",
     "DEFAULT_CALENDAR",
+    "DatasetManifest",
+    "DatasetStatus",
+    "DatasetSynchronizer",
+    "DatasetSupabaseSettings",
     "FINGERPRINT_VERSION",
     "LEGAL_TRANSITIONS",
     "PLANNER_VERSION",
@@ -142,6 +153,7 @@ __all__ = [
     "SqliteRunRecord",
     "StoreError",
     "SupabaseResearchDestination",
+    "SupabaseDatasetClient",
     "SurvivorshipBias",
     "TemporalSplitPlanner",
     "UniverseSpec",
