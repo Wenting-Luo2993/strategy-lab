@@ -3,7 +3,13 @@ import { SupabaseResearchDataAdapter } from "./researchSupabaseAdapter.ts";
 import type { ResearchDataAdapter } from "./researchTypes.ts";
 
 export function createResearchDataAdapter(
-  environment: Record<string, string | undefined> = process.env,
+  environment: Record<string, string | undefined> = {
+    NEXT_PUBLIC_RESEARCH_DATA_SOURCE:
+      process.env.NEXT_PUBLIC_RESEARCH_DATA_SOURCE,
+    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    NEXT_PUBLIC_SUPABASE_ANON_KEY:
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+  },
 ): ResearchDataAdapter {
   if (environment.NEXT_PUBLIC_RESEARCH_DATA_SOURCE === "supabase") {
     const url = environment.NEXT_PUBLIC_SUPABASE_URL;

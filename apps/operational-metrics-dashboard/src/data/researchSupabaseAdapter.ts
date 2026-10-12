@@ -24,7 +24,8 @@ export class SupabaseResearchDataAdapter implements ResearchDataAdapter {
     }
     this.#url = url.replace(/\/$/, "");
     this.#anonKey = anonKey;
-    this.#fetch = fetchImplementation;
+    this.#fetch = (input, init) =>
+      fetchImplementation.call(globalThis, input, init);
   }
 
   async getOverview(): Promise<ResearchOverview> {
