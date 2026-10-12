@@ -500,15 +500,15 @@ class MetricValidator:
                     expected=f">= {-self.profile.declared_margin}",
                 )
             )
-        leverage = diagnostics.get("max_gross_exposure_ratio")
+        leverage = diagnostics.get("max_funded_entry_leverage")
         if leverage is None or leverage > self.profile.max_gross_leverage + 1e-9:
             findings.append(
                 _finding(
                     "EXEC-002",
                     ValidationCategory.EXECUTION_REALISM,
                     Severity.BLOCKING,
-                    "Observed leverage exceeded the declared ceiling.",
-                    metric_key="max_gross_exposure_ratio",
+                    "Funded entry leverage exceeded the declared ceiling.",
+                    metric_key="max_funded_entry_leverage",
                     observed=leverage,
                     expected=f"<= {self.profile.max_gross_leverage}",
                 )

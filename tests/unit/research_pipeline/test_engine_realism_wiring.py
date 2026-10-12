@@ -138,6 +138,7 @@ class TestEndToEndReporting:
             "gap_through_exits",
             "min_cash",
             "max_gross_exposure_ratio",
+            "max_funded_entry_leverage",
         ):
             assert key in diagnostics
 

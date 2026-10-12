@@ -88,6 +88,7 @@ def _result(**metric_overrides) -> BacktestResult:
             "ambiguous_exit_bars": 0.0,
             "min_cash": 100.0,
             "max_gross_exposure_ratio": 0.5,
+            "max_funded_entry_leverage": 0.5,
             "total_costs": 10.0,
             "execution_model_version": 4.0,
             "accounting_failures": 0.0,
@@ -201,10 +202,18 @@ def test_accounting_reconciliation_failure_blocks_completion():
 
 def test_execution_limit_failure_blocks_completion():
     result = _result()
-    result.execution_diagnostics["max_gross_exposure_ratio"] = 1.5
+    result.execution_diagnostics["max_funded_entry_leverage"] = 1.5
     report = _validate(_input(result=result), max_gross_leverage=1.0)
     assert report.target_state is RunState.VALIDATION_FAILED
     assert "EXEC-002" in {finding.code for finding in report.findings}
+
+
+def test_post_entry_price_drift_does_not_violate_funding_ceiling():
+    result = _result()
+    result.execution_diagnostics["max_gross_exposure_ratio"] = 1.5
+    result.execution_diagnostics["max_funded_entry_leverage"] = 1.0
+    report = _validate(_input(result=result), max_gross_leverage=1.0)
+    assert "EXEC-002" not in {finding.code for finding in report.findings}
 
 
 def test_data_integrity_failures_are_blocking_and_all_reported():

@@ -537,6 +537,9 @@ class BacktestEngine:
                 "exit_slippage_cost": float(portfolio.exit_slippage_cost),
                 "min_cash": float(portfolio.min_cash),
                 "max_gross_exposure_ratio": float(portfolio.max_gross_exposure_ratio),
+                "max_funded_entry_leverage": float(
+                    portfolio.max_funded_entry_leverage
+                ),
                 "total_costs": float(portfolio.total_costs),
                 "execution_model_version": float(EXECUTION_MODEL_VERSION),
                 "orders_capped_by_buying_power": float(

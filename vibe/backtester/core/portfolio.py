@@ -79,6 +79,7 @@ class PortfolioManager:
         """
         self.min_cash = initial_capital
         self.max_gross_exposure_ratio = 0.0
+        self.max_funded_entry_leverage = 0.0
         self.total_costs = 0.0
 
         self.cash_ledger: List[CashLedgerEntry] = []
@@ -219,10 +220,22 @@ class PortfolioManager:
                 f"sizing should have clamped this order."
             )
 
+    def _record_funded_entry_leverage(self, added_notional: float) -> None:
+        """Record leverage at the funding decision, before market-price drift."""
+        funding_equity = self.equity_basis()
+        if funding_equity <= 0:
+            return
+        leverage = (self.committed_notional() + abs(added_notional)) / funding_equity
+        self.max_funded_entry_leverage = max(
+            self.max_funded_entry_leverage, leverage
+        )
+
     def open_position(
         self, fill: FillResult, stop_price: float, timestamp: datetime, take_profit: Optional[float] = None
     ) -> None:
-        self.assert_buying_power(abs(fill.filled_qty) * fill.avg_price)
+        notional = abs(fill.filled_qty) * fill.avg_price
+        self.assert_buying_power(notional)
+        self._record_funded_entry_leverage(notional)
         cash_before = self.cash
         entry_commission = self._charge_commission(
             fill.filled_qty, fill.avg_price
@@ -276,6 +289,10 @@ class PortfolioManager:
             raise ValueError(
                 f"Cannot add {fill.side} fill to existing {pos.side} position for {fill.symbol}"
             )
+
+        self._record_funded_entry_leverage(
+            abs(fill.filled_qty) * fill.avg_price
+        )
         
         # Calculate weighted average entry price
         old_value = pos.quantity * pos.entry_price
