@@ -1,4 +1,7 @@
 import type { NextConfig } from "next";
+import { assertSafeDashboardEnvironment } from "./src/data/researchEnvironment";
+
+assertSafeDashboardEnvironment(process.env);
 
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || undefined;
 

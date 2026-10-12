@@ -15,6 +15,7 @@ import {
   type PnlPresentation,
 } from "@/data/dashboardSelectors";
 import { formatCurrency } from "@/data/formatters";
+import { dashboardHref } from "@/data/researchPresentation";
 import type { DashboardData, Position, PriceBar, StrategyAnnotation, StrategyConfigSummary } from "@/data/types";
 import { EquityCurveChart, TradePnlChart } from "./PerformanceCharts";
 import { PriceChart } from "./PriceChart";
@@ -151,6 +152,10 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
       </header>
 
       <div className="mx-auto w-full max-w-7xl px-5 py-6 sm:px-8">
+        <nav aria-label="Dashboard sections" className="mb-5 flex gap-2 overflow-x-auto">
+          <a aria-current="page" className="rounded-md border border-[var(--accent)] bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white" href={dashboardHref("/")}>Live Trading</a>
+          <a className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-semibold" href={dashboardHref("/research/")}>Backtest Research</a>
+        </nav>
         <nav className="mb-5 flex gap-2 overflow-x-auto">
           {views.map((item) => (
             <button

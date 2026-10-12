@@ -15,8 +15,11 @@ const plexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Live Trading Dashboard",
-  description: "Static live dashboard for IB paper trading state and execution quality",
+  title: {
+    default: "Strategy Lab Dashboard",
+    template: "%s | Strategy Lab",
+  },
+  description: "Static live trading and published backtest research dashboards",
 };
 
 export default function RootLayout({

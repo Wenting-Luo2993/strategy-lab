@@ -1538,9 +1538,9 @@ this section is to make gaps visible rather than to show progress.
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P9, P10, P11, P12 |
+| Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P9, P10, P11, P12, P13 |
 | Partial | — |
-| Not started | P8, P10b, P12, P13, P14 |
+| Not started | P8, P10b, P14 |
 
 All nine increments required by the "minimum bar before trusting a result"
 (P0-P6, P9, P10) are complete. P6 prevents a run from reaching
@@ -1573,8 +1573,8 @@ make the parent inconclusive instead of stitching survivors.
 | P10b | Portfolio simulation | **Not started** (optional) | — | Tracked in `memory-bank/features/portfolio-simulation-constraint.md`. Blocker B2 resolved for single-symbol runs; B1 remains. |
 | P11 | Registry migration to `ResearchStore` | **Complete** (2026-10) | P11 implementation and hardening commits | Forward-only schema v4 adds transactional compatibility-ID allocation, registry origin/execution identity, and run lineage; v5 protects terminal validation reports. Migration startup and one-time legacy import/audit are serialized under bounded `BEGIN IMMEDIATE` locking. Registry, query, lineage, notes, artifacts, sweep tracker, and optimization-journal writes are SQLite-authoritative and write zero YAML/Markdown records. Existing YAML is imported once with verified canonical-tree parity and then ignored as an authority. Legacy records retain `legacy-uncontrolled` methodology and unknown pre-P2b execution identity; new records stamp execution model v6 plus the full realism identity. Promotion validation is forced to `VALIDATION_FAILED` with `OOS-001` when a lineage's append-only final-holdout touch count exceeds one. |
 | P12 | Supabase publisher and reconciliation | **Complete** (2026-10) | P12 implementation and review-hardening commits | Forward-only schema v6 upgrades the original same-file outbox with ordered idempotent events, attempts, bounded retry scheduling, dead letters, acknowledgements, failure-age visibility, and explicit replay/requeue; schema v7 adds unique per-claim fencing tokens so an expired worker cannot complete or fail a reclaimed lease. Terminal run finalization and registry writes enqueue allowlisted summaries/identity records in the same SQLite transaction. Payload construction publishes aggregate metrics, evidence counts/checksums, lineage, methodology, typed execution identity, and legacy/unknown-pre-P2b badges while recursively refusing trades, fills, ledgers, equity series/points, raw bars, and aliases. The Supabase adapter sends the real research service-role Bearer JWT only at the injected HTTP boundary, redacts repr/error/log surfaces, and paginates the complete deterministic PostgREST state before reconciliation. Safe repair requeues only records missing remotely; checksum divergence under an immutable idempotency key remains visible for explicit administration. F12 covers interrupted acknowledgements, restart recovery, deterministic ordering, duplicate delivery, backoff, dead letters, claim races, reconciliation, remote immutability, multi-page state, v1-v6 migration, terminal payload immutability, and failure visibility. |
-| P13 | `/research` route | **Not started** | — | |
-| P14 | YAML retirement | **Not started** | — | Gated on P11 and P12 being validated. |
+| P13 | `/research` route | **Complete** (2026-10) | P13 implementation commit | The existing static-export dashboard now includes a shared `/research` route with top-level Live Trading/Backtest Research navigation. A strict read-only contract has exactly two implementations: deterministic fixtures and anonymous Supabase `GET` reads. The versioned decoder preserves methodology, execution-realism identity, validation findings, evidence counts/checksums, lineage, publication/reconciliation identity, and legacy/pre-P2b/survivorship badges while refusing prohibited event-level payloads. The explorer provides remote pagination, filtering, sorting, overview/list/detail states, shareable detail query URLs, responsive trust badges, and explicit local-only artifact boundaries. Build-time credential validation rejects service-role variable names and service-role JWT values. Adapter, decoding, pagination, read-only boundary, route, lint, type-check, and static-export coverage are included. |
+| P14 | YAML retirement | **Not started** | — | Gated on validating the deployed P13 anonymous shared read surface against the intended Supabase project, then completing the separately reviewed compatibility release, tagged archive, parity re-check, and removal. |
 
 The integrated P6/P7/P9 tree passes 610 research-pipeline unit tests and both
 ORB golden integration tests.
@@ -1893,15 +1893,17 @@ in hindsight, so the run is permanently badged `survivorship_bias=present`.
 
 ### Recommended next increment
 
-**P13, the shared `/research` dashboard route.**
+**P14 readiness validation, followed by the compatibility archive/removal.**
 
-P12 is complete: summary-only records and evidence checksums now publish through
-the same-file SQLite outbox with parent-before-child ordering, restart recovery,
-idempotent delivery, dead letters, and explicit reconciliation/repair. P13 can
-now consume the `research_publications` remote read model through a fixture-backed
-adapter and the anonymous select-only RLS policy. P14 remains gated on validating
-that shared read surface and performing the separately reviewed compatibility
-archive/removal step.
+P13 is complete in the shared static dashboard: `/research` consumes the
+`research_publications` remote read model through the fixture or anonymous
+Supabase adapter, exposes no mutation API, and renders only P12's summary-safe
+publication fields. Before retiring YAML, deploy this route against the intended
+Supabase project and validate anonymous multi-page reads, select-only RLS, stable
+detail identities, and decoding of representative current and legacy records.
+P14 remains gated on that validated shared read surface and the separately
+reviewed compatibility release, tagged archive, import-parity re-check, and
+removal step.
 
 P8, the local read-only viewer, can still proceed independently against schema
 v6 and remains useful for offline inspection, but it does not block P13.

@@ -1,6 +1,13 @@
-# Live Trading Dashboard
+# Strategy Lab Dashboard
 
-Static-exportable Next.js dashboard for IB paper-trading state, chart context, operations health, and execution quality.
+Static-exportable Next.js dashboard for IB paper-trading operations and the
+shared read-only backtest research surface.
+
+Routes:
+
+- `/`: live trading state, chart context, operations health, and execution quality.
+- `/research`: published run summaries and registry records from the P12
+  `research_publications` read model.
 
 ## Data Source
 
@@ -9,6 +16,7 @@ The dashboard defaults to bundled fixture data so it can build and render withou
 ```bash
 NEXT_PUBLIC_DASHBOARD_DATA_SOURCE=fixture
 NEXT_PUBLIC_DASHBOARD_FIXTURE=live
+NEXT_PUBLIC_RESEARCH_DATA_SOURCE=fixture
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 ```
@@ -21,6 +29,38 @@ Fixture names:
 - `unavailable`: degraded remote store state with publish backlog counts.
 
 The Supabase adapter reads `accounts`, `equity_snapshots`, `positions`, `order_events`, `price_bars`, `trades`, `operational_metrics`, and `strategy_annotations` using only the anonymous key and RLS read policies. Never expose a service-role key to this app.
+
+The research route has one strict read-only adapter contract and exactly two
+implementations:
+
+- `FixtureResearchDataAdapter`: deterministic development and UI-test records.
+- `SupabaseResearchDataAdapter`: anonymous `GET` requests to
+  `research_publications`, with server-side filtering, stable ordering, exact
+  counts, and range pagination.
+
+Set `NEXT_PUBLIC_RESEARCH_DATA_SOURCE=supabase` to use the remote read model.
+The route decodes publication schema version 1 defensively and preserves
+methodology, execution-realism identity, validation findings, aggregate evidence
+counts/checksums, lineage, legacy/pre-P2b/survivorship badges, publication
+versions, and reconciliation-visible IDs.
+
+P12 deliberately does not publish trades, fills, raw bars, trade ledgers, equity
+points, or equity curves. The remote research UI never requests or implies access
+to those local-only artifacts.
+
+### Browser credential boundary
+
+Only `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are accepted.
+The build fails if a research/Supabase service-role variable is present or if
+the anonymous-key setting contains a service-role JWT. Do not add
+`RESEARCH_SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or any
+service-role value to dashboard environment configuration or GitHub Pages
+secrets. Research writes remain in trusted Python tooling.
+
+The applied Supabase schema grants `SELECT` on `research_publications` to
+`anon`/`authenticated`, enables RLS, and revokes insert, update, delete,
+truncate, references, and trigger privileges. The dashboard adapter exposes no
+mutation method.
 
 Monetary values are formatted with their explicit field currency. Missing net
 liquidation, position P&L, and legacy-trade currencies are preserved as unknown
@@ -67,7 +107,9 @@ npx next dev --port 3007
 npm run build
 ```
 
-The app uses `output: "export"` and writes the static site to `out/`.
+The app uses `output: "export"` and writes the static site to `out/`, including
+`out/index.html` and `out/research/index.html`. Both routes perform browser-side
+anonymous reads and require no API route or server runtime.
 
 ## Deploy To GitHub Pages Or Vercel
 
@@ -75,4 +117,7 @@ The app uses `output: "export"` and writes the static site to `out/`.
 2. Add the browser-safe Supabase environment variables if live data is enabled.
 3. Deploy with static export enabled, or publish the generated `out/` directory to GitHub Pages.
 
-The dashboard is client-rendered from static fixtures or public Supabase REST reads and does not require a server runtime after export.
+The dashboard is client-rendered from static fixtures or public Supabase REST
+reads and does not require a server runtime after export. Configure
+`NEXT_PUBLIC_RESEARCH_DATA_SOURCE=supabase` only after the select-only RLS schema
+has been applied to the intended project.
