@@ -54,6 +54,7 @@ export function DashboardSectionMenu({
             style={{
               backgroundColor: "var(--accent)",
               boxShadow: "0 10px 28px rgba(14, 39, 31, 0.24)",
+              color: "#ffffff",
             }}
           />
         </Tooltip>
@@ -83,7 +84,10 @@ export function DashboardSectionMenu({
           width: "26rem",
         }}
       >
-        <DrawerHeader className="border-b border-[var(--border)] px-7 pb-6 pt-7">
+        <DrawerHeader
+          className="border-b border-[var(--border)]"
+          style={{ padding: "1.75rem 1.75rem 1.5rem" }}
+        >
           <DrawerHeaderTitle
             action={
               <Button
@@ -111,7 +115,10 @@ export function DashboardSectionMenu({
           </DrawerHeaderTitle>
         </DrawerHeader>
 
-        <DrawerBody className="flex flex-col px-5 py-6">
+        <DrawerBody
+          className="flex flex-col"
+          style={{ padding: "1.5rem 1.75rem" }}
+        >
           <nav aria-label="Dashboard navigation" className="grid gap-3">
             <SectionLink
               active={current === "live"}

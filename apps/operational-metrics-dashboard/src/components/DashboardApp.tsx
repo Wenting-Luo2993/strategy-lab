@@ -126,6 +126,9 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
             <h1 className="mt-2 text-3xl font-bold">Live Trading Dashboard</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-md border border-[var(--health)] px-3 py-2 text-sm font-semibold text-[var(--health)]">
+              READ ONLY
+            </span>
             {accounts.length > 1 && (
               <label className="flex items-center gap-2 text-sm text-[var(--muted)]">
                 Account
