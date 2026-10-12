@@ -87,3 +87,8 @@ textarea {
   outline: 2px solid var(--accent-strong);
   outline-offset: 1px;
 }
+
+.control option {
+  background: var(--surface);
+  color: var(--foreground);
+}

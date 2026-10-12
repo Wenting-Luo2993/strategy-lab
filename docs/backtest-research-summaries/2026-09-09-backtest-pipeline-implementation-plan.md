@@ -1900,20 +1900,24 @@ in hindsight, so the run is permanently badged `survivorship_bias=present`.
 then close P14's external activation gate.**
 
 The local implementation now includes approved-dataset manifests and verified
-content-addressed synchronization (`75ad363`), opt-in private artifact
-publication and identity-only previews (`48b785d`), shared-capital portfolio
-simulation (`7a97ddb`), and the field-catalog-driven analyzer (`8179428`).
+content-addressed synchronization (`75ad363`), opt-in artifact staging,
+publication fencing/reconciliation, and identity-only preview contracts
+(`48b785d`), shared-capital portfolio simulation (`7a97ddb`), and the
+field-catalog-driven analyzer (`8179428`).
 Legacy experiment and artifact YAML has been archived and removed (`f5f4a37`).
 
-The remaining work requires the intended Supabase environment and owner
-decisions rather than more local feature code: confirm Databento private
-multi-device entitlement; apply and review dataset, artifact, analysis, RLS,
-and RPC schemas; deploy the signed-preview Edge Function; provision dedicated
-server-side credentials; backfill and reconcile terminal runs including
-`RUN-000003`; validate anonymous multi-page reads and stable detail identities;
-load-test cardinality, response bytes, timeouts, and query plans; and exercise
-interrupted upload/reconciliation recovery. Raw QQQ data and artifacts must not
-be uploaded before those licensing, security, and deployment gates pass.
+Artifact publication still requires one local implementation increment: a
+concrete Supabase `ArtifactDestination` for immutable object storage, manifest
+publication, paginated state reconciliation, and conditional cleanup. The
+remaining external work requires the intended Supabase environment and owner
+decisions: confirm Databento private multi-device entitlement; apply and review
+dataset, artifact, analysis, RLS, and RPC schemas; deploy the signed-preview
+Edge Function; provision dedicated server-side credentials; backfill and
+reconcile terminal runs including `RUN-000003`; validate anonymous multi-page
+reads and stable detail identities; load-test cardinality, response bytes,
+timeouts, and query plans; and exercise interrupted upload/reconciliation
+recovery. Raw QQQ data and artifacts must not be uploaded before those
+licensing, security, and deployment gates pass.
 
 P8 is complete against schema v7 and provides the independent local inspection
 surface for offline review, publication/outbox diagnosis, and exact local

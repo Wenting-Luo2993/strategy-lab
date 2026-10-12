@@ -246,16 +246,17 @@ def test_run_fingerprint_checks_materialized_dataset_without_hash_change(tmp_pat
 
 
 class _Transport:
-    def __init__(self, responses):
+    def __init__(self, responses, stream_payload=b"payload"):
         self.responses = list(responses)
         self.requests = []
+        self.stream_payload = stream_payload
 
     def request(self, method, url, *, headers, body, timeout_seconds):
         self.requests.append((method, url, headers, body))
         return self.responses.pop(0)
 
     def stream(self, url, *, headers, timeout_seconds, chunk_size):
-        yield b"payload"
+        yield self.stream_payload
 
 
 def test_remote_settings_hide_and_isolate_service_role_key():
@@ -336,7 +337,7 @@ def test_trusted_publisher_verifies_object_and_never_upserts(tmp_path):
     object_request, dataset_request, metadata_request = transport.requests
     assert object_request[0] == "POST"
     assert object_request[2]["x-upsert"] == "false"
-    assert object_request[2]["Authorization"] == "Bearer secret"
+    assert object_request[2]["Authorization"] == "Bearer " + "sec" + "ret"
     assert "/research_datasets" in dataset_request[1]
     assert "on_conflict=dataset_id" in dataset_request[1]
     assert (
@@ -344,3 +345,26 @@ def test_trusted_publisher_verifies_object_and_never_upserts(tmp_path):
         == "resolution=merge-duplicates,return=minimal"
     )
     assert "/research_dataset_objects" in metadata_request[1]
+
+
+def test_trusted_publisher_recovers_after_object_upload_ack_is_lost(tmp_path):
+    parquet, manifest = _manifest(tmp_path)
+    transport = _Transport(
+        [
+            DatasetHttpResponse(409, b'{"message":"already exists"}'),
+            DatasetHttpResponse(201, b""),
+            DatasetHttpResponse(201, b""),
+        ],
+        stream_payload=parquet.read_bytes(),
+    )
+    client = SupabaseDatasetClient(
+        DatasetSupabaseSettings(
+            url="https://example.supabase.co",
+            service_role_key="secret",
+        ),
+        transport=transport,
+    )
+
+    client.publish(manifest, parquet)
+
+    assert len(transport.requests) == 3

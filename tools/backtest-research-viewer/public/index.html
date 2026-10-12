@@ -48,12 +48,13 @@
           <div class="panel-heading">
             <div>
               <h2>Registry</h2>
-              <p>Hypotheses, experiments, notes, rejected ideas, artifacts, and lineage.</p>
+              <p>Active hypotheses, experiments, notes, rejected ideas, artifacts, and lineage. Archived legacy experiment/artifact records are hidden by default.</p>
             </div>
             <form id="registry-filters" class="filters">
               <label>Search <input name="search" maxlength="100" placeholder="Record ID"></label>
               <label>Type <input name="type" maxlength="100" placeholder="experiment"></label>
               <label>Status <input name="status" maxlength="100" placeholder="completed"></label>
+              <label><input name="includeArchived" type="checkbox" value="true"> Include archived legacy records</label>
               <button type="submit">Apply</button>
             </form>
           </div>

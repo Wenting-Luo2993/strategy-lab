@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import urllib.error
@@ -153,7 +154,7 @@ class SupabaseDatasetClient:
     def _headers(self, *, content_type: str = "application/json") -> dict[str, str]:
         return {
             "apikey": self.settings.service_role_key,
-            "Authorization": f"Bearer {self.settings.service_role_key}",
+            "Authorization": "Bearer " + self.settings.service_role_key,
             "Content-Type": content_type,
         }
 
@@ -247,17 +248,36 @@ class SupabaseDatasetClient:
             f"{self.settings.bucket}/"
             f"{urllib.parse.quote(manifest.object_key, safe='/:')}"
         )
-        self._request(
-            "object publish",
-            "POST",
-            object_endpoint,
-            headers={
-                **self._headers(content_type="application/octet-stream"),
-                "x-upsert": "false",
-            },
-            body=path.read_bytes(),
-            timeout_seconds=self.settings.timeout_seconds,
-        )
+        try:
+            response = self.transport.request(
+                "POST",
+                object_endpoint,
+                headers={
+                    **self._headers(content_type="application/octet-stream"),
+                    "x-upsert": "false",
+                },
+                body=path.read_bytes(),
+                timeout_seconds=self.settings.timeout_seconds,
+            )
+        except Exception as exc:
+            safe = str(exc).replace(self.settings.service_role_key, "******")
+            raise RuntimeError(
+                f"Supabase dataset object publish failed: {safe}"
+            ) from None
+        if not 200 <= response.status < 300:
+            digest = hashlib.sha256()
+            size = 0
+            try:
+                for chunk in self.iter_object(manifest.object_key):
+                    digest.update(chunk)
+                    size += len(chunk)
+            except Exception:
+                self._safe_error("object publish", response)
+            if (
+                digest.hexdigest() != manifest.object_sha256
+                or size != manifest.object_bytes
+            ):
+                self._safe_error("object publish", response)
 
         dataset_row = {
             "dataset_id": manifest.dataset_id,

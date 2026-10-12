@@ -166,7 +166,7 @@ export function ResearchAnalyzer({ adapter }: { adapter: ResearchDataAdapter }) 
         </div>
       </div>
 
-      <div className="mt-4 grid gap-4 xl:grid-cols-3">
+      <div className="mt-4 grid items-start gap-4 xl:grid-cols-3">
         <fieldset className="rounded-md border border-[var(--border)] p-3">
           <legend className="px-1 text-sm font-bold">Population and trust</legend>
           <label className="mt-2 flex items-center gap-2 text-sm">

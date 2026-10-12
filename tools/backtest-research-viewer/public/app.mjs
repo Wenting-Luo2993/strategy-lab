@@ -11,12 +11,12 @@ const elements = Object.fromEntries(
 document.getElementById("refresh").addEventListener("click", () => loadAll());
 document.getElementById("run-filters").addEventListener("submit", (event) => {
   event.preventDefault();
-  state.runs = { ...state.runs, page: 1, ...formValues(event.currentTarget) };
+  state.runs = { page: 1, pageSize: state.runs.pageSize, ...formValues(event.currentTarget) };
   loadRuns();
 });
 document.getElementById("registry-filters").addEventListener("submit", (event) => {
   event.preventDefault();
-  state.registry = { ...state.registry, page: 1, ...formValues(event.currentTarget) };
+  state.registry = { page: 1, pageSize: state.registry.pageSize, ...formValues(event.currentTarget) };
   loadRegistry();
 });
 
@@ -91,6 +91,7 @@ function renderOverview(data) {
     metricCard("Completed", data.runs.completed || 0),
     metricCard("Validation attention", (data.runs.review_required || 0) + (data.runs.validation_failed || 0), true),
     metricCard("Registry records", totalRegistry),
+    metricCard("Archived registry", data.archivedRegistry || 0),
     metricCard("Pending / failed", (data.publications.pending || 0) + (data.publications.failed || 0), true),
     metricCard("Dead letters", data.publications.dead_letter || 0, true),
   );

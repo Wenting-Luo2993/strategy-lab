@@ -894,10 +894,14 @@ class PortfolioBacktestEngine(BacktestEngine):
                     continue
                 observed_open = min(timestamps)
                 observed_last = max(timestamps)
-                if (
-                    observed_open != expected_open
-                    or observed_last != expected_last_bar
-                ):
+                expected_timestamps = list(
+                    pd.date_range(
+                        start=expected_open,
+                        end=expected_last_bar,
+                        freq=interval,
+                    )
+                )
+                if timestamps != expected_timestamps:
                     incomplete.append(
                         f"{symbol}:{session}:expected_"
                         f"{expected_open.isoformat()}.."

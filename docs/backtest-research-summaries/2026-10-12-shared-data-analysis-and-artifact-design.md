@@ -1,6 +1,6 @@
 # Shared research data, analysis, and artifact design
 
-**Status:** Local implementation complete; deployment, credentials, and licensing gated
+**Status:** Dataset and analyzer implementation complete; artifact transport and external activation gated
 **Date:** 2026-10-12  
 **Scope:** Approved market-data snapshots, flexible research analysis, and
 remote artifact previews for the P8/P13 research surfaces.
@@ -73,7 +73,7 @@ An approval command should produce a canonical JSON manifest before upload:
   "timezone": "America/New_York",
   "first_timestamp": "2018-05-01T09:30:00-04:00",
   "last_timestamp": "2026-04-27T15:59:00-04:00",
-  "row_count": 781508,
+  "row_count": 779810,
   "source_sha256": "86e447e025fd830962535176ff4da031bc018fb0042bf995681d17e7d8df2b19",
   "object_sha256": "c8068bf0ae4e63b9f898b81ce0dc5993272b6ddcefe2b6fbe9be492c090b497d",
   "converter": {
@@ -377,7 +377,7 @@ remain mandatory external gates.
 | --- | --- | --- | --- |
 | Approved dataset manifests, lifecycle, private schema, verified cache, and atomic materialization | Complete | `75ad363` | Confirm Databento entitlement, record owner approval, deploy schema, and provision trusted credentials |
 | Field catalog, bounded query contract, local SQLite adapter, Supabase RPC, and flexible analyzer UI | Complete | `8179428` | Deploy/review RLS and RPC, backfill terminal runs, load-test cardinality/bytes/timeouts, and review anonymous summary exposure |
-| Opt-in artifact staging, durable publication/reconciliation, private schema, identity-only local preview, and signed-preview client contract | Complete | `48b785d` | Deploy/review private bucket and Edge Function, provision server-only secrets, test interrupted uploads, and verify CSP origins |
+| Opt-in artifact staging, durable publication/reconciliation, private schema, identity-only local preview, and signed-preview client contract | **Partial** | `48b785d` | Implement and test a concrete Supabase `ArtifactDestination`; then deploy/review the private bucket and Edge Function, provision server-only secrets, test interrupted uploads, and verify CSP origins |
 | Legacy archive and active-tree retirement | Complete | `f5f4a37` | Remote activation remains gated; retained hypotheses and narrative notes continue as non-authoritative learning records |
 
 No licensed dataset or artifact bytes were uploaded, and no Supabase mutation

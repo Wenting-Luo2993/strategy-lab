@@ -82,16 +82,17 @@ def _frame(
     final_close: float = 101.0,
     omit_middle: bool = False,
 ) -> pd.DataFrame:
-    timestamps = [
-        datetime(2024, 1, 2, 9, 30, tzinfo=ET),
-        datetime(2024, 1, 2, 9, 35, tzinfo=ET),
-        datetime(2024, 1, 2, 15, 55, tzinfo=ET),
-    ]
+    timestamps = list(
+        pd.date_range(
+            datetime(2024, 1, 2, 9, 30, tzinfo=ET),
+            datetime(2024, 1, 2, 15, 55, tzinfo=ET),
+            freq="5min",
+        )
+    )
     if omit_middle:
         timestamps.pop(1)
-    closes = [100.0, 100.0, final_close]
-    if omit_middle:
-        closes.pop(1)
+    closes = [100.0] * len(timestamps)
+    closes[-1] = final_close
     return pd.DataFrame(
         {
             "open": closes,
@@ -106,21 +107,26 @@ def _frame(
 
 
 def _four_bar_frame(*, stop_at_940: bool = False) -> pd.DataFrame:
-    timestamps = [
-        datetime(2024, 1, 2, 9, 30, tzinfo=ET),
-        datetime(2024, 1, 2, 9, 35, tzinfo=ET),
-        datetime(2024, 1, 2, 9, 40, tzinfo=ET),
-        datetime(2024, 1, 2, 15, 55, tzinfo=ET),
-    ]
-    lows = [99.75, 99.75, 98.5 if stop_at_940 else 99.75, 100.75]
+    timestamps = list(
+        pd.date_range(
+            datetime(2024, 1, 2, 9, 30, tzinfo=ET),
+            datetime(2024, 1, 2, 15, 55, tzinfo=ET),
+            freq="5min",
+        )
+    )
+    closes = [100.0] * len(timestamps)
+    closes[-1] = 101.0
+    lows = [value - 0.25 for value in closes]
+    if stop_at_940:
+        lows[2] = 98.5
     return pd.DataFrame(
         {
-            "open": [100.0, 100.0, 100.0, 101.0],
-            "high": [100.25, 100.25, 100.25, 101.25],
+            "open": closes,
+            "high": [value + 0.25 for value in closes],
             "low": lows,
-            "close": [100.0, 100.0, 100.0, 101.0],
-            "volume": [10_000.0] * 4,
-            "ATR_14": [1.0] * 4,
+            "close": closes,
+            "volume": [10_000.0] * len(timestamps),
+            "ATR_14": [1.0] * len(timestamps),
         },
         index=pd.DatetimeIndex(timestamps),
     )
@@ -311,7 +317,7 @@ def test_next_open_contention_cannot_use_later_intrabar_exit():
 
 def test_penultimate_signal_fills_at_final_bar_open_then_closes():
     result = _run(
-        _custom_engine({("AAA", 9, 40): 1}),
+        _custom_engine({("AAA", 15, 50): 1}),
         {"AAA": _four_bar_frame()},
     )
 
@@ -361,6 +367,17 @@ def test_adv_uses_completed_sessions_and_ignores_future_volume():
 
 def test_incomplete_exchange_session_fails_by_default():
     incomplete = _frame().iloc[:-1]
+
+    with pytest.raises(ValueError, match="Incomplete exchange-session data"):
+        _run(
+            _custom_engine({("AAA", 9, 30): 1}),
+            {"AAA": incomplete},
+        )
+
+
+def test_missing_interior_bar_fails_session_alignment():
+    frame = _frame()
+    incomplete = frame.drop(frame.index[10])
 
     with pytest.raises(ValueError, match="Incomplete exchange-session data"):
         _run(

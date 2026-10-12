@@ -591,7 +591,9 @@ test("returns bounded run detail without secrets and labels unavailable retained
 test("returns registry notes, lineage, and artifact references with redaction", async () => {
   const fixture = await startFixtureServer();
   try {
-    const list = await rawRequest(fixture.origin, "/api/registry");
+    const archived = await rawRequest(fixture.origin, "/api/registry");
+    assert.equal(archived.json.total, 0);
+    const list = await rawRequest(fixture.origin, "/api/registry?includeArchived=true");
     assert.equal(list.json.items[0].publicationState, "published");
     const response = await rawRequest(fixture.origin, "/api/registry/experiment/EXP-001");
     assert.equal(response.status, 200);
