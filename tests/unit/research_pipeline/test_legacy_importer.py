@@ -80,73 +80,36 @@ def test_terminal_run_delete_is_blocked_by_database_trigger(tmp_path: Path):
     store.close()
 
 
-def test_f11_imports_complete_repository_tree_with_exact_parity(tmp_path: Path):
-    """F11: every checked-in legacy record survives import and verification."""
+def test_p14_imports_retained_repository_tree_with_exact_parity(tmp_path: Path):
+    """P14: retained hypotheses and notes remain exactly importable."""
     conn = sqlite3.connect(tmp_path / "f11.sqlite3")
     verification = import_legacy_tree(
         LEGACY_ROOT, conn, repository_root=REPOSITORY_ROOT
     )
 
     assert verification.source_counts == {
-        "artifact": 16,
-        "experiment": 73,
         "hypothesis": 4,
         "note": 5,
     }
     assert verification.database_counts == verification.source_counts
-    assert verification.record_count == 98
-    assert verification.relationship_count == 158
-    assert verification.terminal_experiment_count == 73
+    assert verification.record_count == 9
+    assert verification.relationship_count == 3
+    assert verification.terminal_experiment_count == 0
     assert (
         verification.canonical_tree_sha256
-        == "1c137756c9a83d5351270005d190bdb060fa51ff444692f83be6a0d09d462d60"
+        == "50795b19aa9bd83eec6c1fff9f87e4f3e337dcaefd603f07fadaaa1d8e92af9f"
     )
     assert verify_legacy_import(LEGACY_ROOT, conn) == verification
+    # Three retained notes point at archived experiments. Keeping those links
+    # unresolved preserves their meaning without recreating retired records.
     assert conn.execute(
         "SELECT COUNT(*) FROM registry_relationships WHERE resolved = 0"
-    ).fetchone()[0] == 0
+    ).fetchone()[0] == 3
 
     methodologies = conn.execute(
         "SELECT DISTINCT methodology_version FROM registry_records"
     ).fetchall()
     assert [row[0] for row in methodologies] == [LEGACY_METHODOLOGY_VERSION]
-    assert conn.execute(
-        "SELECT git_dirty FROM registry_records "
-        "WHERE record_type = 'experiment' AND legacy_id = 'EXP-073'"
-    ).fetchone()[0] == 1
-
-    # The original absolute locations remain auditable while paths beneath an
-    # older checkout of this repository are normalized for the current clone.
-    locations = conn.execute(
-        "SELECT original_location, repository_path, external_uri "
-        "FROM registry_artifact_locations "
-        "WHERE record_type = 'experiment' AND legacy_id = 'EXP-073' "
-        "ORDER BY ordinal"
-    ).fetchall()
-    assert len(locations) == 2
-    assert locations[0][0].startswith(
-        "C:/Users/wentingluo/OneDrive - Microsoft/Development/strategy-lab/"
-    )
-    assert locations[0][1].startswith("reports/optimization/orb_reality_check_exp073/")
-    assert locations[0][2] is None
-
-    # Inflated capital-denominated values are retained as evidence but cannot
-    # be consumed as an effective baseline.
-    total_pnl = conn.execute(
-        "SELECT original_value, effective_value, baseline_status "
-        "FROM legacy_metric_values "
-        "WHERE experiment_id = 'EXP-073' AND metric_key = 'total_pnl'"
-    ).fetchone()
-    assert total_pnl[0] == pytest.approx(-45088.568178426256)
-    assert total_pnl[1] is None
-    assert total_pnl[2] == "requires-rebaseline"
-    expectancy = conn.execute(
-        "SELECT original_value, effective_value, baseline_status "
-        "FROM legacy_metric_values "
-        "WHERE experiment_id = 'EXP-073' AND metric_key = 'expectancy_r'"
-    ).fetchone()
-    assert expectancy[1] == expectancy[0]
-    assert expectancy[2] == "legacy-uncontrolled"
     conn.close()
 
 
