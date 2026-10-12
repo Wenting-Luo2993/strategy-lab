@@ -170,7 +170,7 @@ export const analysisFixtureRows: AnalysisRow[] = researchFixtureRows
         "trust.code_dirty": publication.codeDirty,
       },
       dimensions: {
-        "identity.display_alias": index === 0 ? "RUN-000003" : publication.displayAlias,
+        "identity.display_alias": index === 0 ? "RUN-FIXTURE-001" : publication.displayAlias,
         "identity.strategy_id": publication.strategyId,
         "identity.methodology_version": publication.methodologyVersion,
         "identity.execution_model_version": publication.executionModelVersion,

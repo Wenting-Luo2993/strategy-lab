@@ -1,6 +1,6 @@
 # Shared research data, analysis, and artifact design
 
-**Status:** Dataset storage/synchronization slice implemented; deployment gated
+**Status:** Local implementation complete; deployment, credentials, and licensing gated
 **Date:** 2026-10-12  
 **Scope:** Approved market-data snapshots, flexible research analysis, and
 remote artifact previews for the P8/P13 research surfaces.
@@ -32,13 +32,13 @@ The archive at
 | Source file | `xnas-itch-20180501-20260428.ohlcv-1m.QQQ.csv.zst` |
 | Source bytes | `24,648,396` |
 | Source SHA-256 | `86e447e025fd830962535176ff4da031bc018fb0042bf995681d17e7d8df2b19` |
-| Converted rows | `781,508` regular-session one-minute bars |
+| Converted rows | `779,810` XNYS-session one-minute bars |
 | Converted coverage | `2018-05-01 09:30 America/New_York` through `2026-04-27 15:59 America/New_York` |
 | Trading sessions | `2,008` |
 | Columns | `open`, `high`, `low`, `close`, `volume` |
 | Null/duplicate timestamps | `0` / `0` |
-| Parquet bytes | `14,885,247` |
-| Parquet SHA-256 | `9624638a8c6fe4009e14b7f93acd0d350c037219e0701fe761b1f7eb80890f48` |
+| Parquet bytes | `14,850,719` |
+| Parquet SHA-256 | `c8068bf0ae4e63b9f898b81ce0dc5993272b6ddcefe2b6fbe9be492c090b497d` |
 
 The source hash matches Databento's manifest and the existing converter reports
 the dataset clean. This is an **approval candidate**, not yet a globally
@@ -75,7 +75,7 @@ An approval command should produce a canonical JSON manifest before upload:
   "last_timestamp": "2026-04-27T15:59:00-04:00",
   "row_count": 781508,
   "source_sha256": "86e447e025fd830962535176ff4da031bc018fb0042bf995681d17e7d8df2b19",
-  "object_sha256": "9624638a8c6fe4009e14b7f93acd0d350c037219e0701fe761b1f7eb80890f48",
+  "object_sha256": "c8068bf0ae4e63b9f898b81ce0dc5993272b6ddcefe2b6fbe9be492c090b497d",
   "converter": {
     "path": "scripts/convert_databento.py",
     "code_commit": "<clean-commit>",
@@ -323,9 +323,9 @@ the Supabase project, and does not permit arbitrary remote origins.
 6. **Remote preview UI**
    - Reuse the local preview components against signed remote artifacts.
 
-P14 remains paused. None of these changes justify retiring the legacy YAML
-compatibility surface until deployed read-model, storage, and reconciliation
-behavior are independently validated.
+The P14 archive and repository-removal work is complete. Remote activation
+remains paused until the read model, private storage, signed-preview function,
+and reconciliation behavior are deployed and independently validated.
 
 ## Implemented dataset tooling
 
@@ -360,11 +360,25 @@ revocations. Trusted publisher/downloader credentials use the separate
 `RESEARCH_DATASET_SUPABASE_*` namespace and are rejected if reused in a
 `NEXT_PUBLIC_*` variable.
 
-The QQQ values in this document are the candidate inputs: source bytes
-`24,648,396`, source SHA-256
+The QQQ values in this document are the corrected candidate inputs: source
+bytes `24,648,396`, source SHA-256
 `86e447e025fd830962535176ff4da031bc018fb0042bf995681d17e7d8df2b19`,
-`781,508` rows over `2,008` sessions, and Parquet bytes `14,885,247` with
-SHA-256 `9624638a8c6fe4009e14b7f93acd0d350c037219e0701fe761b1f7eb80890f48`.
-They have not been uploaded or marked approved. Private multi-device
+`779,810` XNYS-session rows over `2,008` sessions, and Parquet bytes
+`14,850,719` with SHA-256
+`c8068bf0ae4e63b9f898b81ce0dc5993272b6ddcefe2b6fbe9be492c090b497d`.
+The XNYS conversion removes holidays and post-close early-session bars. The
+snapshot has not been uploaded or marked approved. Private multi-device
 redistribution entitlement and an owner-supplied licensing evidence reference
 remain mandatory external gates.
+
+## Implementation status
+
+| Slice | Local status | Commit | External gate |
+| --- | --- | --- | --- |
+| Approved dataset manifests, lifecycle, private schema, verified cache, and atomic materialization | Complete | `75ad363` | Confirm Databento entitlement, record owner approval, deploy schema, and provision trusted credentials |
+| Field catalog, bounded query contract, local SQLite adapter, Supabase RPC, and flexible analyzer UI | Complete | `8179428` | Deploy/review RLS and RPC, backfill terminal runs, load-test cardinality/bytes/timeouts, and review anonymous summary exposure |
+| Opt-in artifact staging, durable publication/reconciliation, private schema, identity-only local preview, and signed-preview client contract | Complete | `48b785d` | Deploy/review private bucket and Edge Function, provision server-only secrets, test interrupted uploads, and verify CSP origins |
+| Legacy archive and active-tree retirement | Complete | `f5f4a37` | Remote activation remains gated; retained hypotheses and narrative notes continue as non-authoritative learning records |
+
+No licensed dataset or artifact bytes were uploaded, and no Supabase mutation
+was attempted during implementation.

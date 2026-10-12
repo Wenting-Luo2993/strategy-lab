@@ -11,7 +11,7 @@ import {
 } from "../src/data/researchAnalysis.ts";
 import { analysisFixtureRows, clonedResearchFixtures } from "../src/data/researchFixtures.ts";
 
-test("field-catalog analysis defaults to current validated RUN-000003-shaped data", async () => {
+test("field-catalog analysis defaults to clearly labeled current fixture data", async () => {
   const adapter = new FixtureAnalysisAdapter(clonedResearchFixtures(), analysisFixtureRows);
   const catalog = await adapter.getAnalysisFieldCatalog();
   const result = await adapter.runAnalysis(defaultAnalysisQuery);
@@ -22,7 +22,7 @@ test("field-catalog analysis defaults to current validated RUN-000003-shaped dat
     && field.filterOperators.includes("between")
   ));
   assert.equal(result.rows.length, 1);
-  assert.equal(result.rows[0]["identity.display_alias"], "RUN-000003");
+  assert.equal(result.rows[0]["identity.display_alias"], "RUN-FIXTURE-001");
   assert.equal(result.metadata.sampled, false);
   assert.equal(result.metadata.truncated, false);
 });
