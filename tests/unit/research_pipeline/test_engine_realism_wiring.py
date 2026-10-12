@@ -19,6 +19,8 @@ import pytest
 from vibe.backtester.core.engine import BacktestEngine
 from vibe.backtester.core.commission import CommissionModel
 from vibe.backtester.core.exit_slippage import FixedTickExitSlippage
+from vibe.backtester.core.fill_simulator import FillResult
+from vibe.backtester.core.portfolio import PortfolioManager
 from vibe.backtester.core.execution_realism import (
     EXECUTION_MODEL_VERSION,
     BuyingPowerError,
@@ -78,6 +80,30 @@ class TestExplicitConfigIsHonoured:
         legacy = ExecutionRealismConfig.legacy().identity()
         realistic = ExecutionRealismConfig.realistic().identity()
         assert legacy != realistic
+
+    def test_actual_fill_price_is_clamped_to_buying_power(self):
+        """Dynamic slippage cannot turn a funded order into a runtime abort."""
+        realism = ExecutionRealismConfig.realistic()
+        engine = _engine(execution_realism=realism)
+        portfolio = PortfolioManager(
+            100_000.0,
+            execution_realism=realism,
+        )
+        fill = FillResult(
+            symbol="QQQ",
+            side="buy",
+            filled_qty=1_000,
+            avg_price=100.01,
+        )
+
+        clamped, was_capped = engine._clamp_fill_to_buying_power(fill, portfolio)
+
+        assert was_capped is True
+        assert clamped.filled_qty < fill.filled_qty
+        available = portfolio.available_buying_power(clamped.avg_price)
+        assert available is not None
+        assert clamped.filled_qty * clamped.avg_price <= available + 0.01
+        assert engine.sizing_caps["buying_power_fill"] == 1
 
 
 def _data_available() -> bool:

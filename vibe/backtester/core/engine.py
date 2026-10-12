@@ -457,6 +457,14 @@ class BacktestEngine:
                 if fill_result is None or fill_result.filled_qty <= 0:
                     continue
 
+                fill_result, buying_power_fill_capped = (
+                    self._clamp_fill_to_buying_power(fill_result, portfolio)
+                )
+                if fill_result.filled_qty <= 0:
+                    pending_queue.mark_filled(order.id)
+                    pending_order_meta.pop(order.id, None)
+                    continue
+
                 order_meta = pending_order_meta.get(order.id, {})
                 stop_price = float(order_meta.get("stop_loss", bar.close * 0.99))
                 take_profit = order_meta.get("take_profit")
@@ -482,7 +490,10 @@ class BacktestEngine:
 
                 pending_queue.mark_filled(order.id)
 
-                if fill_result.filled_qty < order.size:
+                if (
+                    fill_result.filled_qty < order.size
+                    and not buying_power_fill_capped
+                ):
                     remainder = order.remaining(fill_result.filled_qty)
                     pending_queue.add(remainder)
                 else:
@@ -530,6 +541,7 @@ class BacktestEngine:
                 "execution_model_version": float(EXECUTION_MODEL_VERSION),
                 "orders_capped_by_buying_power": float(
                     self.sizing_caps.get("buying_power", 0)
+                    + self.sizing_caps.get("buying_power_fill", 0)
                 ),
                 "orders_capped_by_declared_limits": float(
                     self.sizing_caps.get("max_position_size", 0)
@@ -549,6 +561,38 @@ class BacktestEngine:
                 "warmup_sessions_excluded": float(len(warmup_sessions_seen)),
             },
         )
+
+    def _clamp_fill_to_buying_power(
+        self,
+        fill: FillResult,
+        portfolio: PortfolioManager,
+    ) -> tuple[FillResult, bool]:
+        """Reconcile funded size against the actual simulated fill price.
+
+        Position sizing runs before dynamic slippage and impact are known. A
+        size affordable at the next bar's open can therefore become a few
+        dollars too large at the final execution price. The portfolio assertion
+        remains the backstop; this final gate performs the expected clamp and
+        cancels the unfunded remainder instead of retrying it on later bars.
+        """
+        available = portfolio.available_buying_power(fill.avg_price)
+        if available is None:
+            return fill, False
+
+        max_qty = max(0, int(available / fill.avg_price))
+        if fill.filled_qty <= max_qty:
+            return fill, False
+
+        self.sizing_caps["buying_power_fill"] = (
+            self.sizing_caps.get("buying_power_fill", 0) + 1
+        )
+        return FillResult(
+            symbol=fill.symbol,
+            side=fill.side,
+            filled_qty=float(max_qty),
+            avg_price=fill.avg_price,
+            commission=fill.commission,
+        ), True
 
     def _position_size(
         self,
