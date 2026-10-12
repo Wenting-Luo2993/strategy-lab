@@ -37,7 +37,11 @@ from vibe.trading_bot.exchange.mock_exchange import MockExchange
 from vibe.trading_bot.exchange.ib_exchange import InteractiveBrokersExecutionEngine
 from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
 from vibe.trading_bot.execution.order_manager import OrderManager, OrderRetryPolicy
-from vibe.trading_bot.execution.trade_executor import ExecutionResult, TradeExecutor
+from vibe.trading_bot.execution.trade_executor import (
+    EntryOrderIntent,
+    ExecutionResult,
+    TradeExecutor,
+)
 from vibe.common.models import Trade
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
@@ -189,6 +193,7 @@ class TradingOrchestrator:
         self._daily_stats: Dict[str, Any] = self._initialize_daily_stats()
         self._last_summary_date: Optional[str] = None
         self._orb_notification_sent_date: Optional[str] = None  # Track ORB Discord notification
+        self._entry_attempts: Dict[tuple[str, str], int] = {}
 
         # Market closed state tracking (to avoid log spam after cooldown completes)
         # Note: Cooldown manager has its own internal state
@@ -215,6 +220,7 @@ class TradingOrchestrator:
         # Phase managers (warmup, cooldown)
         self.warmup_manager: Optional[WarmupPhaseManager] = None
         self.cooldown_manager: Optional[CooldownPhaseManager] = None
+        self._warmup_ready = False
 
         # Log active ruleset at initialization
         self.logger.info(
@@ -1772,13 +1778,39 @@ class TradingOrchestrator:
                 await self._recover_durable_lifecycle_projections()
                 list_open_orders = getattr(self.exchange, "list_open_orders", None)
                 if list_open_orders is not None and self.trade_executor is not None:
+                    open_orders = list_open_orders()
                     restored_count = self.trade_executor.order_manager.restore_open_orders(
-                        list_open_orders()
+                        open_orders
                     )
+                    pending_count = self.trade_executor.restore_pending_entries(
+                        open_orders
+                    )
+                    expired_restored = (
+                        await self.trade_executor.cancel_restored_expired_entries()
+                    )
+                    for order in open_orders:
+                        if (
+                            order.order_type == "stop"
+                            and order.entry_signal_bar_timestamp is not None
+                        ):
+                            trading_date = order.entry_signal_bar_timestamp.astimezone(
+                                self.market_scheduler.timezone
+                            ).date()
+                            self._record_entry_attempt(order.symbol, trading_date)
                     if restored_count:
                         self.logger.info(
                             "Restored %s open broker orders into lifecycle monitoring",
                             restored_count,
+                        )
+                    if pending_count:
+                        self.logger.info(
+                            "Restored %s pending entry contexts",
+                            pending_count,
+                        )
+                    if expired_restored:
+                        self.logger.info(
+                            "Cancelled %s restored entries beyond bar expiry",
+                            len(expired_restored),
                         )
             except Exception as e:
                 self.logger.error(f"Failed to initialize strategy: {e}")
@@ -1968,6 +2000,100 @@ class TradingOrchestrator:
             "trades_executed": 0,
             "signals_by_symbol": {},  # symbol -> count
         }
+
+    def _entry_attempt_key(self, symbol: str, trading_date: Any) -> tuple[str, str]:
+        date_value = (
+            trading_date.isoformat()
+            if hasattr(trading_date, "isoformat")
+            else str(trading_date)
+        )
+        return symbol, date_value
+
+    def _entry_attempt_count(self, symbol: str, trading_date: Any) -> int:
+        return self._entry_attempts.get(
+            self._entry_attempt_key(symbol, trading_date),
+            0,
+        )
+
+    def _record_entry_attempt(self, symbol: str, trading_date: Any) -> None:
+        key = self._entry_attempt_key(symbol, trading_date)
+        self._entry_attempts[key] = self._entry_attempts.get(key, 0) + 1
+
+    def _build_entry_order_intent(
+        self,
+        *,
+        signal_value: int,
+        current_bar: Dict[str, Any],
+        trading_date: Any,
+    ) -> EntryOrderIntent:
+        policy = getattr(
+            getattr(self.ruleset, "strategy", None),
+            "entry_order",
+            None,
+        )
+        current_price = float(current_bar["close"])
+        if policy is None or policy.type == "market":
+            return EntryOrderIntent(
+                order_type="market",
+                trigger_price=current_price,
+            )
+
+        side = "buy" if signal_value > 0 else "sell"
+        reference_field = (
+            policy.buy_reference
+            if side == "buy"
+            else policy.sell_reference
+        )
+        reference_price = float(current_bar[reference_field])
+        direction = 1 if side == "buy" else -1
+        trigger_price = round(
+            reference_price
+            + direction * policy.offset_ticks * policy.tick_size,
+            10,
+        )
+        signal_bar_timestamp = _as_aware_datetime(current_bar.get("timestamp"))
+        if signal_bar_timestamp is None:
+            raise ValueError("stop entry requires a signal bar timestamp")
+
+        cutoff_hour, cutoff_minute = map(
+            int,
+            self.ruleset.strategy.entry_cutoff_time.split(":"),
+        )
+        cutoff_naive = datetime.combine(
+            trading_date,
+            datetime.min.time().replace(
+                hour=cutoff_hour,
+                minute=cutoff_minute,
+            ),
+        )
+        market_timezone = self.market_scheduler.timezone
+        localize = getattr(market_timezone, "localize", None)
+        cutoff = (
+            localize(cutoff_naive)
+            if localize is not None
+            else cutoff_naive.replace(tzinfo=market_timezone)
+        )
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        now = get_market_now(self.market_scheduler)
+        seconds_to_cutoff = max((cutoff - now).total_seconds(), 0.001)
+        cancel_after_seconds = seconds_to_cutoff
+        if policy.expiry_minutes is not None:
+            cancel_after_seconds = min(
+                cancel_after_seconds,
+                float(policy.expiry_minutes) * 60,
+            )
+
+        return EntryOrderIntent(
+            order_type="stop",
+            trigger_price=trigger_price,
+            cancel_after_seconds=cancel_after_seconds,
+            expiry_bars=policy.expiry_bars,
+            signal_bar_timestamp=signal_bar_timestamp,
+            bar_interval_seconds=float(
+                pd.Timedelta(self.ruleset.instruments.timeframe).total_seconds()
+            ),
+        )
 
     def _update_daily_stats(self, symbol: str, signal_value: int, metadata: Dict[str, Any]) -> None:
         """Update daily statistics based on strategy evaluation."""
@@ -2591,7 +2717,7 @@ class TradingOrchestrator:
                         # Reset cooldown from previous day
                         self.cooldown_manager.reset()
 
-                        await self.warmup_manager.execute()
+                        self._warmup_ready = await self.warmup_manager.execute()
 
                         # Sleep until market actually opens
                         market_open = self.market_scheduler.get_open_time()
@@ -2613,9 +2739,20 @@ class TradingOrchestrator:
                     elif self.market_scheduler.is_market_open():
                         # If bot started during market hours, run warmup (without Discord notification)
                         # Note: Warmup phase handles all state reset (bars, flags, stats, etc.)
-                        if self.primary_provider and not self.primary_provider.connected:
+                        if (
+                            not self._warmup_ready
+                            or (self.primary_provider and not self.primary_provider.connected)
+                        ):
                             self.logger.info("Bot started during market hours - running warmup phase...")
-                            await self.warmup_manager.execute(send_notification=False)
+                            self._warmup_ready = await self.warmup_manager.execute(
+                                send_notification=False
+                            )
+                            if not self._warmup_ready:
+                                self.logger.error(
+                                    "Warm-up failed; trading cycle is blocked until dependencies recover"
+                                )
+                                await asyncio.sleep(1 if self._testing_mode else 60)
+                                continue
 
                         # Run trading cycle
                         success = await self._trading_cycle()
@@ -2949,6 +3086,17 @@ class TradingOrchestrator:
                     # Get the latest bar for incremental signal generation
                     current_bar = bars.iloc[-1].to_dict()
                     self._latest_bar_prices[symbol] = float(current_bar.get("close", 0.0))
+                    current_bar_timestamp = _as_aware_datetime(
+                        current_bar.get("timestamp")
+                    )
+                    if (
+                        self.trade_executor is not None
+                        and current_bar_timestamp is not None
+                    ):
+                        await self.trade_executor.advance_pending_entry_bar(
+                            symbol,
+                            current_bar_timestamp,
+                        )
 
                     # Generate signal for current bar with historical context
                     signal_value, signal_metadata = self.strategy.generate_signal_incremental(
@@ -2985,6 +3133,44 @@ class TradingOrchestrator:
                                 f"[STRATEGY] {symbol}: No signal - carryover_position_active "
                                 f"({broker_position.side} {broker_position.quantity}). "
                                 "New entries are blocked until the position is flattened."
+                            )
+                            continue
+
+                        entry_policy = getattr(
+                            getattr(self.ruleset, "strategy", None),
+                            "entry_order",
+                            None,
+                        )
+                        trading_date = signal_metadata.get("orb_trading_date")
+                        if trading_date is None:
+                            trading_date = (
+                                current_bar_timestamp.astimezone(
+                                    self.market_scheduler.timezone
+                                ).date()
+                                if current_bar_timestamp is not None
+                                else datetime.now(
+                                    self.market_scheduler.timezone
+                                ).date()
+                            )
+                        max_attempts = (
+                            entry_policy.max_attempts_per_day
+                            if entry_policy is not None
+                            else 1
+                        )
+                        if self._entry_attempt_count(symbol, trading_date) >= max_attempts:
+                            self.logger.info(
+                                "[STRATEGY] %s: No entry - max_entry_attempts_reached (%s)",
+                                symbol,
+                                max_attempts,
+                            )
+                            continue
+                        if (
+                            self.trade_executor is not None
+                            and self.trade_executor.has_pending_entry(symbol)
+                        ):
+                            self.logger.info(
+                                "[STRATEGY] %s: No entry - entry_order_already_pending",
+                                symbol,
                             )
                             continue
 
@@ -3033,6 +3219,11 @@ class TradingOrchestrator:
                                 f"est_shares={est_shares}{cap_msg}, "
                                 f"est_cost=${est_shares * entry_price:.0f}"
                             )
+                            entry_order_intent = self._build_entry_order_intent(
+                                signal_value=signal_value,
+                                current_bar=current_bar,
+                                trading_date=trading_date,
+                            )
                             result = await self.trade_executor.execute_signal(
                                 symbol=symbol,
                                 signal=signal_value,
@@ -3040,7 +3231,10 @@ class TradingOrchestrator:
                                 stop_price=stop_price,
                                 take_profit=signal_metadata.get('take_profit'),
                                 strategy_name=self.strategy.config.name,
+                                entry_order=entry_order_intent,
                             )
+                            if result.order_id and (result.success or result.pending):
+                                self._record_entry_attempt(symbol, trading_date)
 
                             if result.success:
                                 # Use actual fill price from exchange (includes slippage).
@@ -3099,6 +3293,17 @@ class TradingOrchestrator:
                                     trading_date = signal_metadata.get("orb_trading_date") or entry_time.date()
                                     self.strategy.mark_traded_today(symbol, trading_date)
 
+                            elif result.pending:
+                                pending = self.trade_executor.get_pending_entry(
+                                    result.order_id
+                                )
+                                self.logger.info(
+                                    "[ENTRY PENDING] %s: order=%s trigger=$%.2f expiry_bars=%s",
+                                    symbol,
+                                    result.order_id,
+                                    entry_order_intent.trigger_price,
+                                    pending.get("expiry_bars") if pending else None,
+                                )
                             else:
                                 self.logger.warning(
                                     f"[TRADE] {symbol}: Execution failed — {result.reason}"

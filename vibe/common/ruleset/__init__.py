@@ -3,6 +3,7 @@
 from vibe.common.ruleset.models import (
     StrategyRuleSet,
     InstrumentConfig,
+    EntryOrderPolicy,
     ORBStrategyParams,
     StrategyParams,
     PositionSizeConfig,
@@ -33,6 +34,7 @@ __all__ = [
     # Main models
     "StrategyRuleSet",
     "InstrumentConfig",
+    "EntryOrderPolicy",
     "ORBStrategyParams",
     "StrategyParams",
     "PositionSizeConfig",

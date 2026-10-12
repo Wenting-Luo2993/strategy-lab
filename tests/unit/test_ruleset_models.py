@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from vibe.common.ruleset.models import (
     StrategyRuleSet,
     InstrumentConfig,
+    EntryOrderPolicy,
     ORBStrategyParams,
     PositionSizeConfig,
     ExitConfig,
@@ -67,6 +68,7 @@ class TestORBStrategyParams:
         assert config.orb_start_time == "09:30"
         assert config.orb_duration_minutes == 5
         assert config.one_trade_per_day is True
+        assert config.entry_order.type == "market"
 
     def test_invalid_start_time_format(self):
         """Test that invalid time format is rejected."""
@@ -82,6 +84,31 @@ class TestORBStrategyParams:
         """Test that invalid minute is rejected."""
         with pytest.raises(ValidationError):
             ORBStrategyParams(orb_start_time="09:60")
+
+    def test_stop_entry_policy_supports_reference_and_bar_expiry(self):
+        policy = EntryOrderPolicy(
+            type="stop",
+            buy_reference="high",
+            sell_reference="low",
+            offset_ticks=10,
+            expiry_bars=3,
+        )
+
+        assert policy.offset_ticks == 10
+        assert policy.expiry_bars == 3
+        assert policy.max_attempts_per_day == 1
+
+    def test_stop_entry_policy_rejects_both_expiry_modes(self):
+        with pytest.raises(ValidationError, match="only one expiry mode"):
+            EntryOrderPolicy(
+                type="stop",
+                expiry_bars=3,
+                expiry_minutes=15,
+            )
+
+    def test_stop_entry_policy_requires_an_expiry(self):
+        with pytest.raises(ValidationError, match="require"):
+            EntryOrderPolicy(type="stop")
 
 
 class TestTakeProfitConfigs:

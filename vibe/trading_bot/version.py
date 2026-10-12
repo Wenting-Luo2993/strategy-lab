@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.12"  # isolate validation data and reject foreign-account lifecycle recovery
+VERSION = "1.4.13"  # configurable continuation-stop entries with durable expiry
 
 
 def get_build_timestamp() -> str:

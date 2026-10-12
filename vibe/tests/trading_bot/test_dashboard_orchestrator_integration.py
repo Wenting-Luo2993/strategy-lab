@@ -16,6 +16,7 @@ from vibe.trading_bot.brokers.base import BrokerPosition
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
 from vibe.common.strategies.orb import ORBStrategyConfig
+from vibe.common.ruleset import RuleSetLoader
 from vibe.trading_bot.execution.trade_executor import TradeExecutor
 
 
@@ -86,6 +87,40 @@ def test_completed_bar_persists_price_bar_and_outbox_event(tmp_path):
     orchestrator.dashboard_store.close()
     orchestrator.dashboard_outbox_store.close()
     orchestrator.trade_store.close()
+
+
+def test_paper_ruleset_builds_directional_stop_entry_intents(tmp_path):
+    ruleset = RuleSetLoader.from_name("orb_exp073_paper_burn_in")
+    orchestrator = TradingOrchestrator(
+        config=_dashboard_config(tmp_path),
+        ruleset=ruleset,
+        market_scheduler=_scheduler(),
+        testing_mode=True,
+    )
+    signal_bar = {
+        "timestamp": datetime(2026, 7, 20, 9, 40, tzinfo=timezone.utc),
+        "open": 99.5,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+    }
+
+    long_intent = orchestrator._build_entry_order_intent(
+        signal_value=1,
+        current_bar=signal_bar,
+        trading_date=datetime(2026, 7, 20).date(),
+    )
+    short_intent = orchestrator._build_entry_order_intent(
+        signal_value=-1,
+        current_bar=signal_bar,
+        trading_date=datetime(2026, 7, 20).date(),
+    )
+
+    assert long_intent.order_type == "stop"
+    assert long_intent.trigger_price == 101.1
+    assert short_intent.trigger_price == 98.9
+    assert long_intent.expiry_bars == 3
+    assert long_intent.bar_interval_seconds == 300
 
 
 

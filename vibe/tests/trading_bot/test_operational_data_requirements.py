@@ -187,6 +187,52 @@ class _ExecutionIB:
 
 
 @pytest.mark.asyncio
+async def test_ib_connect_retries_then_fails_when_execution_reconciliation_times_out(
+    monkeypatch,
+    tmp_path,
+):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    class HangingExecutionIB(_ExecutionIB):
+        def __init__(self):
+            super().__init__()
+            self.connected = False
+            self.connect_attempts = 0
+            self.reconciliation_attempts = 0
+
+        def isConnected(self):
+            return self.connected
+
+        async def connectAsync(self, *args, **kwargs):
+            self.connect_attempts += 1
+            self.connected = True
+
+        def disconnect(self):
+            self.connected = False
+
+        async def reqExecutionsAsync(self):
+            self.reconciliation_attempts += 1
+            await asyncio.Event().wait()
+
+        def openTrades(self):
+            return []
+
+    ib = HangingExecutionIB()
+    monkeypatch.setattr(ib_module, "IB", lambda: ib)
+    api = InteractiveBrokersAPI(
+        connect_timeout=0.01,
+        connect_retry_delay_seconds=0,
+        execution_db_path=str(tmp_path / "executions.db"),
+    )
+
+    with pytest.raises(ib_module.IBConnectionFailed, match="after 3 attempts"):
+        await asyncio.wait_for(api.connect(), timeout=0.2)
+
+    assert ib.connect_attempts == 3
+    assert ib.reconciliation_attempts == 3
+
+
+@pytest.mark.asyncio
 async def test_restored_open_order_emits_lifecycle_updates_for_later_fills():
     order = Order(
         order_id="restored-1",
@@ -1908,6 +1954,10 @@ def test_ib_execution_store_migrates_legacy_tables(tmp_path):
             "strategy_stop_price": 95.0,
             "take_profit": 110.0,
             "exit_reason": "take_profit",
+            "entry_cancel_after_seconds": 1200.0,
+            "entry_expiry_bars": 3,
+            "entry_signal_bar_timestamp": datetime(2026, 7, 20, 13, 40, tzinfo=timezone.utc),
+            "entry_bar_interval_seconds": 300.0,
         }
     )
     assert store.upsert_execution(
@@ -1928,6 +1978,8 @@ def test_ib_execution_store_migrates_legacy_tables(tmp_path):
     assert store.get_submitted_order("1001")["benchmark_price"] == 100.0
     assert store.get_submitted_order("1001")["strategy_stop_price"] == 95.0
     assert store.get_submitted_order("1001")["exit_reason"] == "take_profit"
+    assert store.get_submitted_order("1001")["entry_expiry_bars"] == 3
+    assert store.get_submitted_order("1001")["entry_bar_interval_seconds"] == 300.0
     execution = store.get_execution("exec-1")
     assert execution["commission_currency"] == "CAD"
     assert execution["order_metadata"]["benchmark_price"] == 100.0

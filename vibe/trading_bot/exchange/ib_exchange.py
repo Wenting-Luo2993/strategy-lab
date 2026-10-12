@@ -76,6 +76,13 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                             restored.benchmark_version == 2
                             and restored.benchmark_price not in (None, 0)
                         ),
+                        strategy_name=restored.strategy_name,
+                        strategy_stop_price=restored.strategy_stop_price,
+                        take_profit=restored.take_profit,
+                        entry_cancel_after_seconds=restored.entry_cancel_after_seconds,
+                        entry_expiry_bars=restored.entry_expiry_bars,
+                        entry_signal_bar_timestamp=restored.entry_signal_bar_timestamp,
+                        entry_bar_interval_seconds=restored.entry_bar_interval_seconds,
                     )
                     self._orders[order_id] = order
                 else:
@@ -146,6 +153,15 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 permanent_order_id=execution.get("permanent_order_id"),
                 account_id=execution.get("account_id"),
                 trade_currency=execution.get("trade_currency"),
+                strategy_name=metadata.get("strategy_name"),
+                strategy_stop_price=metadata.get("strategy_stop_price"),
+                take_profit=metadata.get("take_profit"),
+                entry_cancel_after_seconds=metadata.get("entry_cancel_after_seconds"),
+                entry_expiry_bars=metadata.get("entry_expiry_bars"),
+                entry_signal_bar_timestamp=self._as_datetime(
+                    metadata.get("entry_signal_bar_timestamp")
+                ),
+                entry_bar_interval_seconds=metadata.get("entry_bar_interval_seconds"),
             )
             self._orders[broker_order_id] = order
 
@@ -289,6 +305,16 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             strategy_stop_price=(lifecycle_metadata or {}).get("stop_price"),
             take_profit=(lifecycle_metadata or {}).get("take_profit"),
             exit_reason=(lifecycle_metadata or {}).get("exit_reason"),
+            entry_cancel_after_seconds=(lifecycle_metadata or {}).get(
+                "entry_cancel_after_seconds"
+            ),
+            entry_expiry_bars=(lifecycle_metadata or {}).get("entry_expiry_bars"),
+            entry_signal_bar_timestamp=(lifecycle_metadata or {}).get(
+                "entry_signal_bar_timestamp"
+            ),
+            entry_bar_interval_seconds=(lifecycle_metadata or {}).get(
+                "entry_bar_interval_seconds"
+            ),
         )
         # Validate immediately before the call that reaches placeOrder. There
         # must be no contract qualification after this point.
@@ -313,7 +339,15 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         )
 
         try:
-            fill = await self.broker.wait_for_fill(broker_order_id, timeout_seconds=self.fill_timeout_seconds)
+            initial_fill_wait = (
+                min(self.fill_timeout_seconds, 0.5)
+                if order_type == "stop"
+                else self.fill_timeout_seconds
+            )
+            fill = await self.broker.wait_for_fill(
+                broker_order_id,
+                timeout_seconds=initial_fill_wait,
+            )
         except TimeoutError:
             order = Order(
                 order_id=broker_order_id,
@@ -334,6 +368,13 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 limit_price=broker_order.limit_price,
                 benchmark_version=2,
                 benchmark_valid=True,
+                strategy_name=broker_order.strategy_name,
+                strategy_stop_price=broker_order.strategy_stop_price,
+                take_profit=broker_order.take_profit,
+                entry_cancel_after_seconds=broker_order.entry_cancel_after_seconds,
+                entry_expiry_bars=broker_order.entry_expiry_bars,
+                entry_signal_bar_timestamp=broker_order.entry_signal_bar_timestamp,
+                entry_bar_interval_seconds=broker_order.entry_bar_interval_seconds,
             )
             self._orders[broker_order_id] = order
             return OrderResponse(
@@ -364,6 +405,13 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             limit_price=fill.limit_price,
             benchmark_version=fill.benchmark_version,
             benchmark_valid=fill.benchmark_valid,
+            strategy_name=broker_order.strategy_name,
+            strategy_stop_price=broker_order.strategy_stop_price,
+            take_profit=broker_order.take_profit,
+            entry_cancel_after_seconds=broker_order.entry_cancel_after_seconds,
+            entry_expiry_bars=broker_order.entry_expiry_bars,
+            entry_signal_bar_timestamp=broker_order.entry_signal_bar_timestamp,
+            entry_bar_interval_seconds=broker_order.entry_bar_interval_seconds,
             execution_id=fill.execution_id,
             execution_ids=[item["execution_id"] for item in fill.executions],
             permanent_order_id=fill.permanent_order_id,

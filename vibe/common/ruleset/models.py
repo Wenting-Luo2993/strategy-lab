@@ -231,6 +231,27 @@ TrailingStopConfig = Annotated[
 # Strategy Configurations
 # ============================================================================
 
+class EntryOrderPolicy(BaseModel):
+    """How a valid strategy signal is converted into an entry order."""
+
+    type: Literal["market", "stop"] = "market"
+    buy_reference: Literal["open", "close", "high", "low"] = "high"
+    sell_reference: Literal["open", "close", "high", "low"] = "low"
+    offset_ticks: int = Field(default=0, ge=0)
+    tick_size: float = Field(default=0.01, gt=0)
+    expiry_bars: Optional[int] = Field(default=None, gt=0)
+    expiry_minutes: Optional[float] = Field(default=None, gt=0)
+    max_attempts_per_day: int = Field(default=1, ge=1)
+
+    @model_validator(mode="after")
+    def validate_expiry(self) -> "EntryOrderPolicy":
+        if self.expiry_bars is not None and self.expiry_minutes is not None:
+            raise ValueError("entry order supports only one expiry mode")
+        if self.type == "stop" and self.expiry_bars is None and self.expiry_minutes is None:
+            raise ValueError("stop entry orders require expiry_bars or expiry_minutes")
+        return self
+
+
 class ORBStrategyParams(BaseModel):
     """ORB (Opening Range Breakout) strategy parameters."""
 
@@ -256,6 +277,7 @@ class ORBStrategyParams(BaseModel):
         description="Cancel opposite order if one side triggers",
     )
     allow_reentry: bool = Field(default=False, description="Allow re-entry after exit")
+    entry_order: EntryOrderPolicy = Field(default_factory=EntryOrderPolicy)
 
     @model_validator(mode="after")
     def validate_times(self) -> "ORBStrategyParams":

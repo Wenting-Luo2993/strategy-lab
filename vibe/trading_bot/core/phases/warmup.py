@@ -13,7 +13,9 @@ from vibe.trading_bot.core.phases.base import BasePhase
 from vibe.trading_bot.data.providers.types import WebSocketDataProvider
 from vibe.trading_bot.api.health import set_health_state
 from vibe.trading_bot.notifications.discord import DiscordNotifier
-from vibe.trading_bot.notifications.payloads import SystemStatusPayload
+from vibe.trading_bot.notifications.helper import discord_notification_context
+from vibe.trading_bot.notifications.payloads import SystemAlertPayload, SystemStatusPayload
+from vibe.trading_bot.utils.datetime_utils import get_market_now
 from vibe.trading_bot.version import BUILD_VERSION
 from vibe.common.models import Position
 
@@ -36,6 +38,10 @@ class WarmupPhaseManager(BasePhase):
 
     WEBSOCKET_PING_TIMEOUT = 70  # Finnhub pings ~60s, wait up to 70s
     CARRYOVER_FLATTEN_TIMEOUT_SECONDS = 360
+
+    def __init__(self, orchestrator) -> None:
+        super().__init__(orchestrator)
+        self._critical_broker_alert_sent = False
 
     async def execute(self, send_notification: bool = True) -> bool:
         """Execute warm-up phase: prefetch data, connect provider, verify health.
@@ -413,13 +419,59 @@ class WarmupPhaseManager(BasePhase):
                     quote.symbol,
                     quote.market_price,
                 )
+                self._critical_broker_alert_sent = False
                 return True
             finally:
                 await broker.disconnect()
 
         except Exception as e:
             self.logger.error("   [!] Interactive Brokers health check failed: %s", e, exc_info=True)
+            await self._send_critical_broker_alert(e)
             return False
+
+    async def _send_critical_broker_alert(self, error: Exception) -> None:
+        """Notify operators when all IB warm-up connection attempts fail."""
+        if self._critical_broker_alert_sent:
+            return
+
+        webhook_url = self.config.notifications.discord_webhook_url
+        if not webhook_url:
+            self.logger.warning(
+                "Critical IB warm-up failure could not be sent to Discord: webhook not configured"
+            )
+            return
+
+        payload = SystemAlertPayload(
+            event_type="SYSTEM_ERROR",
+            timestamp=get_market_now(self.market_scheduler),
+            severity="critical",
+            title="Critical: IB Warm-up Failed",
+            message=(
+                "The trading bot could not complete Interactive Brokers connection "
+                "and synchronization after all configured attempts. Trading is disabled."
+            ),
+            component="interactive_brokers",
+            action_required="Check IB Gateway connectivity and restart the trading bot.",
+            version=BUILD_VERSION,
+            details={
+                "attempts": self.config.broker.ib_connect_max_retries,
+                "error": str(error),
+            },
+        )
+
+        try:
+            async with discord_notification_context(webhook_url) as notifier:
+                sent = await notifier.send_system_alert(payload)
+            if not sent:
+                self.logger.error("Discord rejected the critical IB warm-up alert")
+                return
+            self._critical_broker_alert_sent = True
+        except Exception as notification_error:
+            self.logger.error(
+                "Failed to send critical IB warm-up alert: %s",
+                notification_error,
+                exc_info=True,
+            )
 
     async def _apply_carryover_position_policy(self, send_notification: bool) -> bool:
         """Apply configured policy for broker positions carried into a new trading day.

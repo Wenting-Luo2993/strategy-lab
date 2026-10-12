@@ -107,3 +107,75 @@ async def test_compressed_multi_day_warmup_market_cooldown_cycle(monkeypatch):
         "cooldown_reset:2026-07-16",
         "warmup:2026-07-16:True",
     ]
+
+
+@pytest.mark.asyncio
+async def test_failed_warmup_blocks_market_hours_trading(monkeypatch):
+    scheduler = MockMarketScheduler(
+        initial_date=datetime(2026, 7, 15, 9, 25),
+        timezone="America/New_York",
+    )
+    config = AppSettings(
+        environment="test",
+        database_path=":memory:",
+        health_check_port=0,
+        trading={"symbols": ["QQQ"]},
+        data={"primary_provider": "finnhub"},
+        broker={"broker_type": "mock"},
+    )
+    orchestrator = TradingOrchestrator(
+        config=config,
+        market_scheduler=scheduler,
+        testing_mode=True,
+    )
+    provider = SimpleNamespace(connected=True)
+    events: list[str] = []
+
+    class FakeWarmupManager:
+        async def execute(self, send_notification: bool = True) -> bool:
+            events.append(f"warmup:{send_notification}")
+            if not send_notification:
+                orchestrator._shutdown_event.set()
+            return False
+
+    class FakeCooldownManager:
+        def reset(self) -> None:
+            events.append("cooldown_reset")
+
+    async def fake_initialize() -> bool:
+        orchestrator.active_provider = provider
+        orchestrator.primary_provider = provider
+        orchestrator.warmup_manager = FakeWarmupManager()
+        orchestrator.cooldown_manager = FakeCooldownManager()
+        return True
+
+    async def fake_trading_cycle() -> bool:
+        events.append("trading")
+        return True
+
+    async def fake_sleep(seconds: float) -> None:
+        if scheduler.is_warmup_phase():
+            scheduler.set_time(9, 30)
+
+    async def fake_start_health_server_task(*args, **kwargs):
+        return None
+
+    async def fake_shutdown() -> None:
+        orchestrator._running = False
+
+    monkeypatch.setattr(orchestrator, "initialize", fake_initialize)
+    monkeypatch.setattr(orchestrator, "_trading_cycle", fake_trading_cycle)
+    monkeypatch.setattr(orchestrator, "shutdown", fake_shutdown)
+    monkeypatch.setattr("vibe.trading_bot.core.orchestrator.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr(
+        "vibe.trading_bot.core.orchestrator.start_health_server_task",
+        fake_start_health_server_task,
+    )
+
+    await orchestrator.run()
+
+    assert events == [
+        "cooldown_reset",
+        "warmup:True",
+        "warmup:False",
+    ]

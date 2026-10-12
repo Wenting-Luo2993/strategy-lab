@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createResearchDataAdapter } from "@/data/researchAdapter";
-import { dashboardHref, pageCount, trustBadges, type TrustBadge } from "@/data/researchPresentation";
+import { pageCount, trustBadges, type TrustBadge } from "@/data/researchPresentation";
 import type {
   ResearchListQuery,
   ResearchOverview,
@@ -14,6 +14,7 @@ import type {
   ResearchSortField,
   SortDirection,
 } from "@/data/researchTypes";
+import { DashboardSectionMenu } from "@/components/DashboardSectionMenu";
 
 type InitialResearchData = {
   overview: ResearchOverview;
@@ -113,16 +114,12 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
             <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm" onClick={() => setDashboardTheme(theme === "dark" ? "light" : "dark")}>
               {theme === "dark" ? "Light" : "Dark"}
             </button>
+            <DashboardSectionMenu current="research" />
           </div>
         </div>
       </header>
 
       <div className="mx-auto w-full max-w-7xl px-5 py-6 sm:px-8">
-        <nav aria-label="Dashboard sections" className="mb-6 flex gap-2 overflow-x-auto">
-          <a className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-4 py-2 text-sm font-semibold" href={dashboardHref("/")}>Live Trading</a>
-          <a aria-current="page" className="rounded-md border border-[var(--accent)] bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white" href={dashboardHref("/research/")}>Backtest Research</a>
-        </nav>
-
         <section aria-label="Research overview" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           <OverviewMetric label="Publications" value={overview.total} />
           <OverviewMetric label="Run summaries" value={overview.runSummaries} />

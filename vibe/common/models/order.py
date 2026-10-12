@@ -59,6 +59,13 @@ class Order(BaseModel):
     benchmark_version: int = Field(default=1, description="Slippage benchmark definition version")
     benchmark_valid: bool = Field(default=False, description="Whether slippage is valid for analysis")
     executions: List[dict] = Field(default_factory=list, description="One item per distinct broker execution")
+    strategy_name: Optional[str] = None
+    strategy_stop_price: Optional[float] = None
+    take_profit: Optional[float] = None
+    entry_cancel_after_seconds: Optional[float] = None
+    entry_expiry_bars: Optional[int] = None
+    entry_signal_bar_timestamp: Optional[datetime] = None
+    entry_bar_interval_seconds: Optional[float] = None
 
     @field_validator("side")
     @classmethod
