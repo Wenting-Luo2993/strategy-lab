@@ -14,6 +14,21 @@ const plexMono = IBM_Plex_Mono({
   weight: ["400", "500", "600"],
 });
 
+const themeInitializationScript = `
+(() => {
+  try {
+    const stored = localStorage.getItem("dashboard-theme");
+    const theme = stored === "dark" || stored === "light"
+      ? stored
+      : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    document.documentElement.dataset.theme = theme;
+  } catch {
+    document.documentElement.dataset.theme =
+      matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  }
+})();
+`;
+
 export const metadata: Metadata = {
   title: {
     default: "Strategy Lab Dashboard",
@@ -33,6 +48,9 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${plexSans.variable} ${plexMono.variable} h-full antialiased`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitializationScript }} />
+      </head>
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );

@@ -498,6 +498,7 @@ function getThemeSnapshot(): "light" | "dark" {
 
 function setDashboardTheme(theme: "light" | "dark"): void {
   window.localStorage.setItem(themeStorageKey, theme);
+  document.documentElement.dataset.theme = theme;
   window.dispatchEvent(new Event(themeChangeEvent));
 }
 

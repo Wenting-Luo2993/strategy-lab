@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("research route is static-export compatible and uses the shared client surface", async () => {
-  const [route, component, liveComponent, menu, config] = await Promise.all([
+  const [route, layout, component, liveComponent, menu, config] = await Promise.all([
     readFile(new URL("../src/app/research/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/app/layout.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/components/research/ResearchDashboardApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/components/DashboardApp.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/components/DashboardSectionMenu.tsx", import.meta.url), "utf8"),
@@ -13,6 +14,9 @@ test("research route is static-export compatible and uses the shared client surf
 
   assert.match(route, /ResearchDashboardApp/);
   assert.doesNotMatch(route, /cookies\(|headers\(|force-dynamic|revalidate/);
+  assert.match(layout, /localStorage\.getItem\("dashboard-theme"\)/);
+  assert.match(layout, /document\.documentElement\.dataset\.theme = theme/);
+  assert.match(layout, /dangerouslySetInnerHTML/);
   assert.match(component, /Trades, fills, raw bars, ledgers, and equity curves are intentionally unavailable/);
   assert.match(component, /DashboardSectionMenu/);
   assert.match(component, /READ ONLY/);

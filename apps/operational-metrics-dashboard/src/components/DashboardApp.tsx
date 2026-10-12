@@ -207,6 +207,7 @@ function getThemeServerSnapshot(): Theme {
 
 function setDashboardTheme(theme: Theme): void {
   window.localStorage.setItem(themeStorageKey, theme);
+  document.documentElement.dataset.theme = theme;
   window.dispatchEvent(new Event(themeChangeEvent));
 }
 
