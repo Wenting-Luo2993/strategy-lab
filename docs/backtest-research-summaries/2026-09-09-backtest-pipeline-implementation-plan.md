@@ -1552,7 +1552,7 @@ this section is to make gaps visible rather than to show progress.
 | --- | --- |
 | Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P8, P9, P10, P10b, P11, P12, P13 |
 | Partial | P14 |
-| Not started | — |
+| Not started | P15 |
 
 All nine increments required by the "minimum bar before trusting a result"
 (P0-P6, P9, P10) are complete. P6 prevents a run from reaching
@@ -1588,8 +1588,14 @@ make the parent inconclusive instead of stitching survivors.
 | P13 | `/research` route | **Complete** (2026-10) | P13 implementation commit, `8179428` | The existing static-export dashboard now includes a shared `/research` route with top-level Live Trading/Backtest Research navigation. A strict read-only contract has fixture/local and anonymous Supabase implementations. The versioned decoder preserves methodology, execution-realism identity, validation findings, evidence counts/checksums, lineage, publication/reconciliation identity, and legacy/pre-P2b/survivorship badges while refusing prohibited event-level payloads. The explorer provides remote pagination, filtering, sorting, overview/list/detail states, shareable detail query URLs, responsive trust badges, and explicit artifact boundaries. The flexible analyzer adds a field catalog, typed composable filters, arbitrary grouping dimensions, aggregate measures, chart encodings, bounded URL state, explicit cost/cardinality/truncation feedback, normalized SQLite execution, and a bounded Supabase RPC. Build-time credential validation rejects service-role variable names and service-role JWT values. |
 | P14 | YAML retirement | **Partial** (2026-10) | `f5f4a37` | All 98 legacy records were archived externally with per-file SHA-256 inventory; 73 experiment YAML files and 16 artifact descriptors were removed from the active tree after parity verification. The owner-device SQLite store was subsequently backed up and purged of all 98 imported registry records, their relationships/metrics, and all 98 pending `legacy_yaml` publication events. Four hypotheses and five narrative notes remain only as source-controlled, non-authoritative learning records. Final activation remains gated on validating the deployed P13/P12 read and reconciliation surfaces, private dataset/artifact storage, signed previews, and the compatibility release against the intended Supabase project. |
 
+| P15 | Result visibility | **Not started** | — | Nothing currently writes a backtest run into the research store, the store has no row-level retention, and `/research` renders fixtures. See "The result-visibility gap" below. |
+
 The integrated P6/P7/P9 tree passes 610 research-pipeline unit tests and both
-ORB golden integration tests.
+ORB golden integration tests. As of 2026-10-13 the full local suite
+(`vibe/tests/backtester`, `vibe/tests/backtester_integration`,
+`tests/unit/research_pipeline`, `vibe/tests/research_journal`) passes 1238
+tests, the P8 viewer passes 13, and both ORB goldens pass after the
+`max_funded_entry_leverage` re-freeze (`c603afe`).
 
 ### Completed increments: caveats
 
@@ -1903,10 +1909,70 @@ because trade counts are nearly equal; they will diverge on an unbalanced
 universe, which is why both are reported. All five names are survivors chosen
 in hindsight, so the run is permanently badged `survivorship_bias=present`.
 
+### The result-visibility gap (found 2026-10-13)
+
+§18 reads as though research results are captured and inspectable. They are
+not. Three independent breaks sit between running a backtest and seeing its
+result, and each was verified in code rather than inferred from the status
+table:
+
+1. **Nothing produces a stored run.** `scripts/run_backtest.py` imports only
+   `BacktestEngine` and `ReportGenerator`; it writes an HTML report and a
+   trades CSV and never touches the store. Outside tests, `register_run(` and
+   `RunFingerprint(` appear only at their own definition sites
+   (`identity.py:36`, `store.py:64`, `storage/sqlite_store.py:141`), and
+   `SqliteResearchStore(` is constructed only by `scripts/publish_research.py`
+   and `research_journal/registry.py`. P11 made *registry* writes
+   SQLite-authoritative; it did not wire the backtest run path.
+2. **The store does not exist, and could not hold detail if it did.**
+   `research_db_path()` resolves to
+   `%LOCALAPPDATA%/strategy-lab/research.sqlite3`, which is absent on the
+   owner device. Schema v8 has no trade-ledger or equity-curve table;
+   `run_evidence.equity_points` is an INTEGER *count*. So
+   `RetentionProfile.DIAGNOSTIC` ("adds the local trade ledger") and
+   `RetentionProfile.FULL` ("adds the local equity curve") are declared in
+   `contracts.py:144` with no storage behind them.
+3. **`/research` renders fixtures.** `app/research/page.tsx:10` loads
+   `FixtureResearchDataAdapter` unless
+   `NEXT_PUBLIC_RESEARCH_DATA_SOURCE === "supabase"`. Supabase is not
+   deployed, so the dashboard shows synthetic demo data. There is no local
+   adapter at all: the real store is reachable only from the separate P8 Node
+   viewer.
+
+The consequence is that the dashboards are not under-featured, they are
+disconnected. No amount of UI work makes them informative while layers 1 and 2
+are missing. P15 therefore sequences producer and retention before
+presentation:
+
+- **P15a — producer.** Record completed runs into the store from
+  `run_backtest.py` and the sweep/walk-forward/robustness runners, creating the
+  database on first use.
+- **P15b — local retention.** Back `DIAGNOSTIC`/`FULL` with bounded local
+  `trades` and `equity_points` tables. Remote safety already holds
+  independently: the publication allowlist in `publishing.py:69` recursively
+  refuses trades, fills, ledgers, equity series, and raw bars, so local
+  retention cannot leak into a publication payload.
+- **P15c — local data path.** Give `/research` a local adapter so it can read
+  the real store instead of fixtures.
+- **P15d — evaluation views.** Equity curve, drawdown, trade distribution, and
+  run-to-run comparison, across both the P8 viewer and `/research`.
+
+**Regenerating pre-P2b sweep results is moot.** The concern was that results
+produced before `1247a91` came out of `legacy()` execution realism and should
+not drive selection. Nothing survives to regenerate: the store is absent, P14
+deleted all 73 experiment YAMLs and 16 artifact descriptors, `cache_dir` in
+`ParameterSweep.run_sweep` is opt-in and never defaulted so no `.pkl` sweep
+cache exists, and `reports/` holds a single file. Going forward every stored
+run stamps execution identity, so a legacy-realism result can no longer be
+mistaken for a current one.
+
 ### Recommended next increment
 
-**Deploy and independently validate the completed shared research platform,
-then close P14's external activation gate.**
+**P15 — make backtest results visible before publishing them anywhere.**
+
+Artifact publication (`ArtifactDestination`) is deferred by owner decision
+(2026-10-13). It moves results to a place nobody can yet read usefully, so it
+is sequenced after P15.
 
 The local implementation now includes approved-dataset manifests and verified
 content-addressed synchronization (`75ad363`), opt-in artifact staging,
@@ -1928,12 +1994,14 @@ timeouts, and query plans; and exercise interrupted upload/reconciliation
 recovery. Raw QQQ data and artifacts must not be uploaded before those
 licensing, security, and deployment gates pass.
 
-P8 is complete against schema v7 and provides the independent local inspection
-surface for offline review, publication/outbox diagnosis, and exact local
-retention boundaries. A subsequent storage increment may add normalized,
+P8 is complete against schema v8 (migration 8 added
+`artifact_publication_outbox`; the P8 row and the P12 notes above describe the
+v7 state they were written against) and provides the independent local
+inspection surface for offline review, publication/outbox diagnosis, and exact
+local retention boundaries. A subsequent storage increment may add normalized,
 bounded local `trades` and `equity_points` tables for `diagnostic`/`full`
 profiles; until then P8 shows the durable aggregate counts/checksums without
-claiming row-level detail exists.
+claiming row-level detail exists. That increment is now P15b below.
 
 The holdout is locked as of `config/final_holdout.yaml`, so ORB research may
 proceed without further eroding it; runs are now confined to `dev_end` by the
