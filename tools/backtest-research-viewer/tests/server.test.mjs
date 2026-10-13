@@ -17,6 +17,10 @@ import {
   validateBindHost,
   validateHostHeader,
 } from "../server.mjs";
+import {
+  isGroupingField,
+  isReviewField,
+} from "../../../apps/operational-metrics-dashboard/src/components/research/research-analysis-workspace.mjs";
 
 function createFixture() {
   const directory = mkdtempSync(join(tmpdir(), "research-viewer-"));
@@ -521,6 +525,18 @@ test("redacts credential-shaped keys and values recursively", () => {
   );
 });
 
+test("curates review and grouping fields semantically", () => {
+  assert.equal(isReviewField("metric.expectancy_r"), true);
+  assert.equal(isReviewField("identity.strategy_id"), true);
+  assert.equal(isReviewField("identity.run_id"), false);
+  assert.equal(isReviewField("dataset.split_manifest_hash"), false);
+  assert.equal(isGroupingField({ field: "identity.strategy_id", cardinality: 8 }), true);
+  assert.equal(isGroupingField({ field: "parameter.opening_range_minutes", cardinality: 12 }), true);
+  assert.equal(isGroupingField({ field: "metric.expectancy_r", cardinality: 8 }), false);
+  assert.equal(isGroupingField({ field: "identity.run_id", cardinality: 8 }), false);
+  assert.equal(isGroupingField({ field: "parameter.threshold", cardinality: 101 }), false);
+});
+
 test("serves endpoint shapes, deterministic pagination, and refreshed rows", async () => {
   const fixture = await startFixtureServer();
   try {
@@ -757,6 +773,20 @@ test("static UI has strict security headers and local-only copy", async () => {
     assert.equal(response.headers["x-frame-options"], "DENY");
     assert.match(response.body, /LOCAL SQLITE/);
     assert.match(response.body, /never uploads or switches databases/);
+    assert.match(response.body, /<research-analysis-workspace/);
+    assert.equal(response.body.includes("Screening columns"), false);
+    const workspaceScript = await rawRequest(
+      fixture.origin,
+      "/research-analysis-workspace.mjs",
+    );
+    assert.equal(workspaceScript.status, 200);
+    assert.match(workspaceScript.body, /class ResearchAnalysisWorkspace/);
+    const workspaceStyles = await rawRequest(
+      fixture.origin,
+      "/research-analysis-workspace.css",
+    );
+    assert.equal(workspaceStyles.status, 200);
+    assert.match(workspaceStyles.body, /\.workspace/);
     assert.equal((await rawRequest(fixture.origin, "/public/../server.mjs")).status, 404);
   } finally {
     await fixture.cleanupAll();

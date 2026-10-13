@@ -170,13 +170,24 @@ The adapter also returns a field catalog describing data type, unit,
 cardinality, filter operators, aggregation support, and trust restrictions.
 Unknown fields remain queryable after publication without a dashboard release.
 
-Both review surfaces implement this contract. The shared dashboard uses its
-fixture or Supabase adapter; the loopback SQLite viewer delegates catalog,
-estimate, and query operations to the canonical `SqliteAnalysisAdapter` through
-a bounded JSON subprocess bridge. Both surfaces use persistent checkbox lists
-for screening and grouping, place Save view and Run analysis after chart
-selection, and support table, bar, and line results. Legacy/pre-P2b population
-selection is not exposed and saved state cannot reactivate it.
+Both review surfaces mount the same framework-neutral Web Component. The shared
+dashboard injects its fixture or Supabase adapter; the loopback SQLite viewer
+injects an HTTP adapter backed by the canonical `SqliteAnalysisAdapter` through
+a bounded JSON subprocess bridge. The component owns persistent checkbox lists,
+accessible information callouts, URL/local state, results, and table/bar/line
+rendering. Save view and Run analysis precede chart selection because chart
+fields are derived from the latest result.
+
+Field choice is semantic rather than a dump of every queryable catalog field.
+Screening includes review-relevant identifiers, dimensions, validation state,
+parameters, and metrics while excluding hashes, fingerprints, internal run IDs,
+and publication bookkeeping. Grouping is narrower: stable categorical identity,
+dataset, validation, lineage, and bounded-cardinality parameter dimensions only.
+Metrics, timestamps, checksums, per-run aliases/IDs, and dimensions above the
+cardinality ceiling are excluded. Filters remain broad because filtering by an
+internal identity or diagnostic can still be useful without making it a visible
+column or group. Legacy/pre-P2b population selection remains unavailable and
+saved state cannot reactivate it.
 
 ### Query model
 

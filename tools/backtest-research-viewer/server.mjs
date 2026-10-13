@@ -44,10 +44,24 @@ const DETAIL_LIMITS = Object.freeze({
   artifacts: 250,
 });
 const STATIC_FILES = new Map([
-  ["/", ["index.html", "text/html; charset=utf-8"]],
-  ["/index.html", ["index.html", "text/html; charset=utf-8"]],
-  ["/app.mjs", ["app.mjs", "text/javascript; charset=utf-8"]],
-  ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
+  ["/", [join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8"]],
+  ["/index.html", [join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8"]],
+  ["/app.mjs", [join(PUBLIC_DIR, "app.mjs"), "text/javascript; charset=utf-8"]],
+  ["/styles.css", [join(PUBLIC_DIR, "styles.css"), "text/css; charset=utf-8"]],
+  [
+    "/research-analysis-workspace.mjs",
+    [
+      resolve(HERE, "..", "..", "apps", "operational-metrics-dashboard", "src", "components", "research", "research-analysis-workspace.mjs"),
+      "text/javascript; charset=utf-8",
+    ],
+  ],
+  [
+    "/research-analysis-workspace.css",
+    [
+      resolve(HERE, "..", "..", "apps", "operational-metrics-dashboard", "src", "components", "research", "research-analysis-workspace.css"),
+      "text/css; charset=utf-8",
+    ],
+  ],
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
 const SYNC_MARKERS = [
@@ -1237,8 +1251,8 @@ export function createViewerServer({
       return;
     }
     try {
-      const [fileName, contentType] = staticEntry;
-      const body = readFileSync(join(PUBLIC_DIR, fileName));
+      const [filePath, contentType] = staticEntry;
+      const body = readFileSync(filePath);
       response.writeHead(200, securityHeaders(contentType));
       response.end(request.method === "HEAD" ? undefined : body);
     } catch {

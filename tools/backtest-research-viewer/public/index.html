@@ -7,6 +7,7 @@
     <title>Local Backtest Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2367a7ff'/%3E%3Cpath d='M8 9h16v4H8zm0 6h16v4H8zm0 6h10v4H8z' fill='%230b1220'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/research-analysis-workspace.mjs"></script>
     <script type="module" src="/app.mjs"></script>
   </head>
   <body>
@@ -28,82 +29,7 @@
       <div id="loading" class="loading">Loading local research data…</div>
       <div id="app" class="hidden">
         <section id="overview" class="overview" aria-label="Research overview"></section>
-        <section class="panel" id="analysis-workspace">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">LOCAL SQLITE · BOUNDED ANALYSIS</p>
-              <h2>Flexible analysis workspace</h2>
-              <p>Filter individual run summaries, select visible fields, group compatible runs, and calculate aggregate measures.</p>
-            </div>
-          </div>
-          <div class="analysis-grid">
-            <fieldset>
-              <legend>Population and trust</legend>
-              <label class="check-row"><input id="analysis-current" type="checkbox" checked> Current validated runs</label>
-              <label class="check-row"><input id="analysis-attention" type="checkbox"> Validation attention</label>
-              <small>Choose trusted completed runs and optionally include runs needing validation review.</small>
-            </fieldset>
-            <fieldset class="analysis-wide">
-              <legend>Typed composable filters</legend>
-              <small>Filters narrow individual runs before grouping. Add conditions, then choose whether all or any must match.</small>
-              <div class="analysis-filter-row">
-                <select id="analysis-filter-field" aria-label="Filter field"></select>
-                <select id="analysis-filter-operator" aria-label="Filter operator"></select>
-                <input id="analysis-filter-value" aria-label="Filter value" placeholder="value">
-                <button id="analysis-add-filter" type="button">Add</button>
-              </div>
-              <div class="analysis-filter-controls">
-                <select id="analysis-filter-mode" aria-label="Filter group operation">
-                  <option value="and">Match all (AND)</option>
-                  <option value="or">Match any (OR)</option>
-                </select>
-                <div id="analysis-filter-chips" class="chip-list"></div>
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Screening columns</legend>
-              <div id="analysis-screening" class="check-list"></div>
-              <small>Fields shown for each matching run when grouping and measures are empty.</small>
-            </fieldset>
-            <fieldset>
-              <legend>Grouping dimensions</legend>
-              <div id="analysis-grouping" class="check-list"></div>
-              <small>One result row is created for each unique selected-field combination.</small>
-            </fieldset>
-            <fieldset>
-              <legend>Aggregate measures</legend>
-              <small>Calculate statistics within each group.</small>
-              <div class="analysis-measure-row">
-                <select id="analysis-measure-field" aria-label="Measure field"></select>
-                <select id="analysis-measure-operation" aria-label="Aggregate operation"></select>
-                <button id="analysis-add-measure" type="button">Add</button>
-              </div>
-              <div id="analysis-measures" class="measure-list"></div>
-            </fieldset>
-          </div>
-          <fieldset class="analysis-chart-controls">
-            <legend>Chart encodings</legend>
-            <label>Chart
-              <select id="analysis-chart-kind">
-                <option value="auto">auto</option>
-                <option value="table">table</option>
-                <option value="bar">bar</option>
-                <option value="line">line</option>
-              </select>
-            </label>
-            <label>X / category <select id="analysis-chart-x"></select></label>
-            <label>Y / value <select id="analysis-chart-y"></select></label>
-          </fieldset>
-          <div class="analysis-actions">
-            <small>Run applies the controls. Save stores them in the URL and this browser.</small>
-            <button id="analysis-save" type="button">Save view</button>
-            <button id="analysis-run" class="primary" type="button">Run analysis</button>
-          </div>
-          <div id="analysis-error" class="error hidden" role="alert"></div>
-          <div id="analysis-cost"></div>
-          <div id="analysis-chart"></div>
-          <div id="analysis-results"></div>
-        </section>
+        <research-analysis-workspace id="analysis-workspace" storage-key="local-research-analysis-v2"></research-analysis-workspace>
         <section class="panel">
           <div class="panel-heading">
             <div>
