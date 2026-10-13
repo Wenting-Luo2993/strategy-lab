@@ -532,6 +532,59 @@ test("serves endpoint shapes, deterministic pagination, and refreshed rows", asy
     assert.equal(meta.json.database.immutableUri, false);
     assert.equal(meta.json.database.displayPath.includes(fixture.directory), false);
 
+    const catalog = await rawRequest(fixture.origin, "/api/analysis/catalog");
+    assert.equal(catalog.status, 200, catalog.body);
+    assert.ok(catalog.json.some((field) => field.field === "identity.display_alias"));
+    assert.ok(catalog.json.some((field) => field.field === "metric.expectancy_r"));
+    const analysisQuery = {
+      population: {
+        includeLegacy: false,
+        trustStates: ["current_validated", "validation_attention"],
+      },
+      filters: { op: "and", children: [] },
+      screeningColumns: ["identity.display_alias", "metric.expectancy_r"],
+      groupBy: [],
+      measures: [],
+      orderBy: [],
+      chart: { kind: "table" },
+    };
+    const analysis = await rawRequest(
+      fixture.origin,
+      `/api/analysis/query?query=${encodeURIComponent(JSON.stringify(analysisQuery))}`,
+    );
+    assert.equal(analysis.status, 200);
+    assert.equal(analysis.json.metadata.sampled, false);
+    assert.ok(analysis.json.rows.length > 0);
+    assert.deepEqual(
+      Object.keys(analysis.json.rows[0]),
+      ["identity.display_alias", "metric.expectancy_r"],
+    );
+    const legacyRequest = structuredClone(analysisQuery);
+    legacyRequest.population.includeLegacy = true;
+    const legacyResponse = await rawRequest(
+      fixture.origin,
+      `/api/analysis/query?query=${encodeURIComponent(JSON.stringify(legacyRequest))}`,
+    );
+    assert.equal(legacyResponse.status, 200);
+    assert.equal(
+      legacyResponse.json.rows.some((row) => row["identity.display_alias"] === "RUN-000003"),
+      false,
+    );
+    assert.equal(
+      (await rawRequest(fixture.origin, "/api/analysis/query?query=%7Bbad")).status,
+      400,
+    );
+    assert.ok(
+      [400, 431].includes(
+        (
+          await rawRequest(
+            fixture.origin,
+            `/api/analysis/query?query=${"x".repeat(16_385)}`,
+          )
+        ).status,
+      ),
+    );
+
     const firstPage = await rawRequest(fixture.origin, "/api/runs?page=1&pageSize=2&sort=alias&direction=asc");
     const secondPage = await rawRequest(fixture.origin, "/api/runs?page=2&pageSize=2&sort=alias&direction=asc");
     assert.equal(firstPage.status, 200);

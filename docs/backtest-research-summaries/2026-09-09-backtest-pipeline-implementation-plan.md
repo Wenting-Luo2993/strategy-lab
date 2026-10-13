@@ -525,6 +525,14 @@ The browser does not open or upload the SQLite file. `server.mjs` owns database
 access and returns only the requested view data. Pin the minimum Node version
 before implementation so `node:sqlite` behavior is consistent across devices.
 
+Implementation status: the local viewer now includes the same bounded flexible
+analysis workspace as the shared dashboard. A JSON-only Python bridge reuses the
+canonical read-only `SqliteAnalysisAdapter` for field discovery, cost estimates,
+typed filters, grouping, and aggregate measures. Browser controls use persistent
+checkbox lists, save bounded view state locally and in the URL, and render table,
+bar, or line results. The loopback server keeps legacy populations disabled and
+enforces query-length, subprocess-time, and response-buffer limits.
+
 ### Shared remote dashboard
 
 Add a statically exported `/research` route to

@@ -158,23 +158,6 @@ export function ResearchAnalyzer({ adapter }: { adapter: ResearchDataAdapter }) 
             Screen validated run summaries, group by catalog fields, aggregate compatible metrics, and inspect every chart mark in the result table.
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button
-            appearance="secondary"
-            onClick={saveState}
-            title="Save the current controls to this URL and this browser without rerunning the query."
-          >
-            Save view
-          </Button>
-          <Button
-            appearance="primary"
-            disabled={loading || !catalog.length}
-            onClick={execute}
-            title="Execute the current controls against the selected research data source."
-          >
-            {loading ? "Running…" : "Run analysis"}
-          </Button>
-        </div>
       </div>
 
       <div className="mt-4 grid items-start gap-4 xl:grid-cols-3">
@@ -268,14 +251,14 @@ export function ResearchAnalyzer({ adapter }: { adapter: ResearchDataAdapter }) 
           </div>
         </fieldset>
 
-        <FieldMultiSelect
+        <FieldChecklist
           title="Screening columns"
           help={`Choose the fields shown for each matching run when no grouping or measures are active. Up to ${analysisLimits.maxScreeningColumns} columns.`}
           fields={catalog.filter((field) => field.screenable)}
           selected={query.screeningColumns}
           onChange={(screeningColumns) => update({ ...query, screeningColumns })}
         />
-        <FieldMultiSelect
+        <FieldChecklist
           title="Grouping dimensions"
           help={`Create one result row for each unique combination of selected fields. Estimated cardinality must stay within ${analysisLimits.maxGroups} groups.`}
           fields={catalog.filter((field) => field.groupable)}
@@ -324,7 +307,7 @@ export function ResearchAnalyzer({ adapter }: { adapter: ResearchDataAdapter }) 
           <LabeledSelect
             label="Chart"
             value={query.chart.kind}
-            options={["auto", "table", "bar"]}
+            options={["auto", "table", "bar", "line"]}
             onChange={(kind) => update({ ...query, chart: { ...query.chart, kind: kind as AnalysisQuery["chart"]["kind"] } })}
           />
           <LabeledSelect
@@ -342,6 +325,27 @@ export function ResearchAnalyzer({ adapter }: { adapter: ResearchDataAdapter }) 
         </div>
       </fieldset>
 
+      <div className="mt-4 flex flex-col gap-2 border-t border-[var(--border)] pt-4 sm:flex-row sm:items-center sm:justify-end">
+        <span className="mr-auto text-xs text-[var(--muted)]">
+          Run applies the controls. Save stores them in the URL and this browser.
+        </span>
+        <Button
+          appearance="secondary"
+          onClick={saveState}
+          title="Save the current controls to this URL and this browser without rerunning the query."
+        >
+          Save view
+        </Button>
+        <Button
+          appearance="primary"
+          disabled={loading || !catalog.length}
+          onClick={execute}
+          title="Execute the current controls against the selected research data source."
+        >
+          {loading ? "Running…" : "Run analysis"}
+        </Button>
+      </div>
+
       {error && <div role="alert" className="mt-4 rounded-md border border-[var(--loss)] p-3 text-sm text-[var(--loss)]">{error}</div>}
       {cost && <CostSummary cost={cost} />}
       {result && (
@@ -354,7 +358,7 @@ export function ResearchAnalyzer({ adapter }: { adapter: ResearchDataAdapter }) 
   );
 }
 
-function FieldMultiSelect({ title, help, fields, selected, onChange }: {
+function FieldChecklist({ title, help, fields, selected, onChange }: {
   title: string;
   help: string;
   fields: AnalysisField[];
@@ -364,19 +368,20 @@ function FieldMultiSelect({ title, help, fields, selected, onChange }: {
   return (
     <fieldset className="rounded-md border border-[var(--border)] p-3">
       <legend className="px-1 text-sm font-bold">{title}</legend>
-      <select
-        multiple
-        className="control h-36"
-        value={selected}
-        onChange={(event) => onChange([...event.target.selectedOptions].map((option) => option.value))}
-      >
+      <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-2">
         {fields.map((field) => (
-          <option key={field.field} value={field.field}>
-            {field.field} ({field.cardinality})
-          </option>
+          <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs hover:bg-[var(--surface)]" key={field.field}>
+            <input
+              type="checkbox"
+              checked={selected.includes(field.field)}
+              onChange={(event) => onChange(toggleValue(selected, field.field, event.target.checked))}
+            />
+            <span className="min-w-0 flex-1 truncate">{field.field}</span>
+            <span className="text-[var(--muted)]">{field.cardinality}</span>
+          </label>
         ))}
-      </select>
-      <p className="mt-2 text-xs text-[var(--muted)]">{help} Ctrl/Cmd-click to select multiple.</p>
+      </div>
+      <p className="mt-2 text-xs text-[var(--muted)]">{help}</p>
     </fieldset>
   );
 }
@@ -399,7 +404,7 @@ function AnalysisChart({ query, result }: { query: AnalysisQuery; result: Analys
     ? query.groupBy.length && query.measures.length ? "bar" : "table"
     : query.chart.kind;
   if (kind === "table" || !result.rows.length) return null;
-  if (kind !== "bar") {
+  if (kind !== "bar" && kind !== "line") {
     return (
       <p className="mt-4 rounded-md border border-[var(--border)] p-3 text-sm text-[var(--muted)]">
         The {kind.replaceAll("_", " ")} encoding is preserved in the analysis contract, but this build does not render it without a reviewed chart implementation. The inspectable table remains authoritative.
@@ -414,6 +419,9 @@ function AnalysisChart({ query, result }: { query: AnalysisQuery; result: Analys
   const marks = result.rows.slice(0, result.metadata.chartMarks);
   const values = marks.map((row) => typeof row[y] === "number" ? row[y] : 0);
   const max = Math.max(...values.map((value) => Math.abs(value)), 1);
+  if (kind === "line") {
+    return <LineChart marks={marks} values={values} x={x} y={y} result={result} />;
+  }
   return (
     <div className="mt-4 rounded-md border border-[var(--border)] p-4" aria-label={`${kind} chart`}>
       <div className="flex items-center justify-between text-sm">
@@ -436,6 +444,67 @@ function AnalysisChart({ query, result }: { query: AnalysisQuery; result: Analys
           );
         })}
       </div>
+      {result.metadata.chartMarksTruncated && <p className="mt-2 text-xs text-[var(--loss)]">Chart marks truncated at {result.metadata.chartMarks}.</p>}
+    </div>
+  );
+}
+
+function LineChart({
+  marks,
+  values,
+  x,
+  y,
+  result,
+}: {
+  marks: Array<Record<string, import("@/data/researchAnalysis").AnalysisScalar>>;
+  values: number[];
+  x: string;
+  y: string;
+  result: AnalysisResult;
+}) {
+  const width = 720;
+  const height = 240;
+  const padding = { top: 20, right: 20, bottom: 48, left: 54 };
+  const minimum = Math.min(...values, 0);
+  const maximum = Math.max(...values, 0);
+  const span = maximum - minimum || 1;
+  const xAt = (index: number) => padding.left
+    + (marks.length <= 1 ? 0 : index / (marks.length - 1) * (width - padding.left - padding.right));
+  const yAt = (value: number) => padding.top
+    + (maximum - value) / span * (height - padding.top - padding.bottom);
+  const points = values.map((value, index) => `${xAt(index)},${yAt(value)}`).join(" ");
+  const labelStep = Math.max(1, Math.ceil(marks.length / 8));
+  return (
+    <div className="mt-4 rounded-md border border-[var(--border)] p-4" aria-label="line chart">
+      <div className="flex items-center justify-between text-sm">
+        <strong>line</strong>
+        <span className="text-xs text-[var(--muted)]">{marks.length} marks · {x} → {y}</span>
+      </div>
+      <svg className="mt-3 h-auto w-full" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${y} by ${x}`}>
+        <line x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} stroke="var(--border)" />
+        <line x1={padding.left} x2={width - padding.right} y1={yAt(0)} y2={yAt(0)} stroke="var(--border)" />
+        <polyline fill="none" stroke="var(--accent-strong)" strokeWidth="3" points={points} />
+        {marks.map((row, index) => (
+          <g key={`${String(row[x])}:${index}`}>
+            <circle cx={xAt(index)} cy={yAt(values[index])} r="4" fill="var(--accent-strong)">
+              <title>{`${String(row[x])}: ${formatCell(values[index])}`}</title>
+            </circle>
+            {index % labelStep === 0 && (
+              <text
+                x={xAt(index)}
+                y={height - padding.bottom + 18}
+                fill="var(--muted)"
+                fontSize="10"
+                textAnchor="middle"
+              >
+                {String(row[x] ?? "--").slice(0, 14)}
+              </text>
+            )}
+          </g>
+        ))}
+        <text x="8" y={padding.top + 4} fill="var(--muted)" fontSize="10">{formatCell(maximum)}</text>
+        <text x="8" y={height - padding.bottom} fill="var(--muted)" fontSize="10">{formatCell(minimum)}</text>
+      </svg>
       {result.metadata.chartMarksTruncated && <p className="mt-2 text-xs text-[var(--loss)]">Chart marks truncated at {result.metadata.chartMarks}.</p>}
     </div>
   );

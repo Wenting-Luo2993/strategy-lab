@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
@@ -13,6 +14,7 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4178;
 const MAX_PAGE_SIZE = 100;
 const MAX_SEARCH_LENGTH = 100;
+const MAX_ANALYSIS_QUERY_LENGTH = 16_384;
 const MAX_JSON_DEPTH = 12;
 const MAX_JSON_ITEMS = 500;
 const MAX_JSON_CHARS = 1_000_000;
@@ -583,6 +585,50 @@ function localArtifactAvailability(evidenceRow) {
   };
 }
 
+function analysisRequest(dbPath, repositoryRoot, action, searchParams) {
+  let query = {};
+  if (action !== "catalog") {
+    const raw = searchParams.get("query");
+    if (!raw || raw.length > MAX_ANALYSIS_QUERY_LENGTH) {
+      throw new HttpError(400, "Analysis query is missing or too large.");
+    }
+    try {
+      query = JSON.parse(raw);
+    } catch {
+      throw new HttpError(400, "Analysis query must be valid JSON.");
+    }
+  }
+  const python = process.env.PYTHON || (platform() === "win32" ? "python" : "python3");
+  const bridge = join(HERE, "analysis_bridge.py");
+  const result = spawnSync(
+    python,
+    [bridge, "--db", dbPath, "--action", action],
+    {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      input: JSON.stringify(query),
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: 15_000,
+      windowsHide: true,
+    },
+  );
+  if (result.error) {
+    throw new HttpError(500, "Local analysis process could not start.");
+  }
+  if (result.status !== 0) {
+    const message = String(result.stderr || "").trim();
+    if (result.status === 2) {
+      throw new HttpError(400, message || "Local analysis query is invalid.");
+    }
+    throw new HttpError(500, "Local analysis failed.");
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    throw new HttpError(500, "Local analysis returned an invalid response.");
+  }
+}
+
 function listRegistry(database, searchParams) {
   const { page, pageSize, offset } = parsePage(searchParams);
   const type = parseOptional(searchParams, "type");
@@ -595,6 +641,7 @@ function listRegistry(database, searchParams) {
     clauses.push("rr.record_type = ?");
     params.push(type);
   }
+
   if (status) {
     clauses.push("rr.status = ?");
     params.push(status);
@@ -1034,13 +1081,22 @@ function displayHost(host) {
   return host.includes(":") ? `[${host}]` : host;
 }
 
-function routeApi(database, pathname, searchParams, repositoryRoot, artifactStagingRoot) {
+function routeApi(database, pathname, searchParams, repositoryRoot, artifactStagingRoot, dbPath) {
   if (pathname === "/api/meta") return null;
   if (pathname === "/api/overview") return getOverview(database);
   if (pathname === "/api/runs") return listRuns(database, searchParams);
   if (pathname === "/api/registry") return listRegistry(database, searchParams);
   if (pathname === "/api/publications") return listPublications(database, searchParams);
   if (pathname === "/api/artifacts") return listArtifactOutbox(database, searchParams);
+  if (pathname === "/api/analysis/catalog") {
+    return analysisRequest(dbPath, repositoryRoot, "catalog", searchParams);
+  }
+  if (pathname === "/api/analysis/estimate") {
+    return analysisRequest(dbPath, repositoryRoot, "estimate", searchParams);
+  }
+  if (pathname === "/api/analysis/query") {
+    return analysisRequest(dbPath, repositoryRoot, "query", searchParams);
+  }
   const runMatch = pathname.match(/^\/api\/runs\/([^/]+)$/);
   if (runMatch) return getRun(database, decodeURIComponent(runMatch[1]));
   const registryMatch = pathname.match(/^\/api\/registry\/([^/]+)\/([^/]+)$/);
@@ -1161,6 +1217,7 @@ export function createViewerServer({
               parsed.searchParams,
               repositoryRoot,
               artifactStagingRoot,
+              safeDbPath,
             ),
           );
         if (request.method === "HEAD") {

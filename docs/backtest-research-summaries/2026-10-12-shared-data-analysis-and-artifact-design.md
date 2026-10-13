@@ -170,6 +170,14 @@ The adapter also returns a field catalog describing data type, unit,
 cardinality, filter operators, aggregation support, and trust restrictions.
 Unknown fields remain queryable after publication without a dashboard release.
 
+Both review surfaces implement this contract. The shared dashboard uses its
+fixture or Supabase adapter; the loopback SQLite viewer delegates catalog,
+estimate, and query operations to the canonical `SqliteAnalysisAdapter` through
+a bounded JSON subprocess bridge. Both surfaces use persistent checkbox lists
+for screening and grouping, place Save view and Run analysis after chart
+selection, and support table, bar, and line results. Legacy/pre-P2b population
+selection is not exposed and saved state cannot reactivate it.
+
 ### Query model
 
 ```ts
