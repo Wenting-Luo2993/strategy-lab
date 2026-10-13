@@ -72,6 +72,7 @@
       "exit_slippage_cost": 1425.369999999,
       "exit_slippage_events": 251.0,
       "gap_through_exits": 1.0,
+      "max_funded_entry_leverage": 0.999932808,
       "max_gross_exposure_ratio": 1.015123647,
       "min_cash": 10.162500003,
       "orders_capped_by_buying_power": 219.0,
