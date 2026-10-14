@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -741,6 +741,56 @@ BEGIN
 END;
 """
 
+# P15b. Local-only row-level retention for the ``diagnostic`` and ``full``
+# profiles. ``RetentionProfile`` has promised these since P0, but nothing could
+# honour the promise because there was nowhere to put the rows: ``run_evidence``
+# keeps ``equity_points`` as a count, not a series. Without them the research
+# store can state that a run produced 214 trades and prove the ledger digest,
+# yet never show a single trade, which is what left the dashboards unable to
+# answer "how did this run actually behave".
+#
+# These tables are local-only by construction, not by convention. The
+# publication allowlist in ``publishing.py`` recursively refuses trades, fills,
+# ledgers, equity series, and bars, so no payload builder can reach them.
+#
+# ``sequence`` is explicit and unique per run because both digests are
+# order-sensitive: ``trade_ledger_digest`` hashes rows in execution order, so a
+# ledger that round-trips through storage in a different order is a different
+# ledger. Relying on rowid or on an unordered SELECT would let a reordering
+# defect survive the checksum that exists to catch it.
+_MIGRATION_9 = """
+CREATE TABLE run_trades (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       TEXT NOT NULL REFERENCES runs(run_id),
+    sequence     INTEGER NOT NULL,
+    symbol       TEXT NOT NULL,
+    side         TEXT NOT NULL,
+    quantity     REAL NOT NULL,
+    entry_price  REAL NOT NULL,
+    exit_price   REAL,
+    entry_time   TEXT NOT NULL,
+    exit_time    TEXT,
+    pnl          REAL,
+    commission   REAL,
+    initial_risk REAL,
+    exit_reason  TEXT,
+    recorded_at  TEXT NOT NULL,
+    UNIQUE (run_id, sequence)
+);
+CREATE INDEX idx_run_trades_run ON run_trades(run_id, sequence);
+
+CREATE TABLE run_equity_points (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      TEXT NOT NULL REFERENCES runs(run_id),
+    sequence    INTEGER NOT NULL,
+    observed_at TEXT NOT NULL,
+    equity      REAL NOT NULL,
+    recorded_at TEXT NOT NULL,
+    UNIQUE (run_id, sequence)
+);
+CREATE INDEX idx_run_equity_points_run ON run_equity_points(run_id, sequence);
+"""
+
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
@@ -751,6 +801,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (6, _MIGRATION_6),
     (7, _MIGRATION_7),
     (8, _MIGRATION_8),
+    (9, _MIGRATION_9),
 ]
 
 

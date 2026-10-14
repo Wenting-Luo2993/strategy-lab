@@ -24,10 +24,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from vibe.research_pipeline.contracts import RunEvidence, ValidationFinding
+from vibe.research_pipeline.contracts import RetentionProfile
 from vibe.research_pipeline.contracts import Severity, ValidationCategory
+from vibe.research_pipeline.evidence import equity_curve_digest, trade_ledger_digest
 from vibe.research_pipeline.holdout import load_lock, read_access_log
 from vibe.research_pipeline.hashing import canonical_json, sha256_hex
 from vibe.research_pipeline.identity import RunFingerprint
@@ -107,6 +109,30 @@ def _to_record(row: sqlite3.Row) -> SqliteRunRecord:
         lease_expires_at=row["lease_expires_at"],
         lineage_id=row["lineage_id"],
     )
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    """Coerce to float, preserving None rather than turning it into 0.0.
+
+    An open trade has no ``exit_price``, and a run with no risk model has no
+    ``initial_risk``. Collapsing those to zero would make "unknown" and
+    "genuinely zero" indistinguishable in every downstream chart.
+    """
+    return None if value is None else float(value)
+
+
+def _opt_str(value: Any) -> Optional[str]:
+    return None if value is None else str(value)
+
+
+def _iso_or_str(value: Any) -> str:
+    """Render a timestamp as ISO-8601 text, falling back to ``str``."""
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
+
+
+def _opt_iso(value: Any) -> Optional[str]:
+    return None if value is None else _iso_or_str(value)
 
 
 class SqliteResearchStore:
@@ -557,6 +583,194 @@ class SqliteResearchStore:
                     now,
                 ),
             )
+
+    # -- local-only row-level retention (P15b) ---------------------------
+    #
+    # These two methods are the only writers for ``run_trades`` and
+    # ``run_equity_points``. Both refuse to store anything the run did not
+    # declare it would keep, and both verify the rows against the digest
+    # already recorded in ``run_evidence``.
+    #
+    # The digest check is the point. Storing a ledger that does not reproduce
+    # ``trade_ledger_sha256`` would be worse than storing nothing: the
+    # dashboards would show rows that disagree with the checksum the pipeline
+    # uses to prove reproducibility, and the disagreement would be invisible
+    # because the summary row would still look correct.
+
+    def _retention_context(self, run_id: str) -> tuple[RetentionProfile, str, str]:
+        """Return the declared profile and both digests for ``run_id``.
+
+        Raises:
+            StoreError: If no evidence row exists. ``record_evidence`` is
+                required under *every* profile, so its absence means the caller
+                is writing detail before the summary it must agree with.
+        """
+        row = self._conn.execute(
+            """
+            SELECT retention_profile, trade_ledger_sha256, equity_curve_sha256
+            FROM run_evidence WHERE run_id = ? ORDER BY id DESC LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise StoreError(
+                f"Run {run_id} has no evidence row; record_evidence must run "
+                "before row-level detail, which is verified against it."
+            )
+        return (
+            RetentionProfile(row["retention_profile"]),
+            row["trade_ledger_sha256"],
+            row["equity_curve_sha256"],
+        )
+
+    def record_trades(self, run_id: str, trades: Sequence[Any]) -> None:
+        """Persist the local trade ledger for a ``diagnostic``/``full`` run.
+
+        Args:
+            run_id: Target run. Must be non-terminal and carry an evidence row.
+            trades: Completed trades **in execution order**. Order is part of
+                the identity of the ledger, so it is preserved verbatim and
+                stored in an explicit ``sequence`` column.
+
+        Raises:
+            StoreError: If the run declared ``summary`` retention, or if the
+                supplied trades do not reproduce the recorded ledger digest.
+        """
+        self._assert_not_terminal(run_id)
+        profile, ledger_digest, _ = self._retention_context(run_id)
+        if profile is RetentionProfile.SUMMARY:
+            raise StoreError(
+                f"Run {run_id} declared retention profile 'summary'; it keeps "
+                "parameters and metrics only. Re-run under 'diagnostic' or "
+                "'full' to retain the trade ledger."
+            )
+
+        actual = trade_ledger_digest(trades)
+        if actual != ledger_digest:
+            raise StoreError(
+                f"Trade ledger for run {run_id} does not match its recorded "
+                f"evidence: expected {ledger_digest}, computed {actual}. "
+                "Storing it would contradict the checksum used to prove the "
+                "run is reproducible."
+            )
+
+        now = schema.utc_now_iso()
+        rows = [
+            (
+                run_id,
+                index,
+                str(getattr(trade, "symbol", "")),
+                str(getattr(trade, "side", "")),
+                float(getattr(trade, "quantity", 0.0) or 0.0),
+                float(getattr(trade, "entry_price", 0.0) or 0.0),
+                _opt_float(getattr(trade, "exit_price", None)),
+                _iso_or_str(getattr(trade, "entry_time", None)),
+                _opt_iso(getattr(trade, "exit_time", None)),
+                _opt_float(getattr(trade, "pnl", None)),
+                _opt_float(getattr(trade, "commission", None)),
+                _opt_float(getattr(trade, "initial_risk", None)),
+                _opt_str(getattr(trade, "exit_reason", None)),
+                now,
+            )
+            for index, trade in enumerate(trades)
+        ]
+        with self._conn:
+            self._conn.execute("DELETE FROM run_trades WHERE run_id = ?", (run_id,))
+            self._conn.executemany(
+                """
+                INSERT INTO run_trades (
+                    run_id, sequence, symbol, side, quantity, entry_price,
+                    exit_price, entry_time, exit_time, pnl, commission,
+                    initial_risk, exit_reason, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def record_equity_curve(self, run_id: str, points: Any) -> None:
+        """Persist the local equity curve for a ``full`` run.
+
+        Args:
+            run_id: Target run. Must be non-terminal and carry an evidence row.
+            points: A pandas Series indexed by timestamp, or an iterable of
+                ``(timestamp, equity)`` pairs. Both shapes are accepted because
+                the engine carries the curve in both at different stages.
+
+        Raises:
+            StoreError: If the run did not declare ``full`` retention, or if
+                the curve does not reproduce the recorded digest.
+        """
+        self._assert_not_terminal(run_id)
+        profile, _, curve_digest = self._retention_context(run_id)
+        if profile is not RetentionProfile.FULL:
+            raise StoreError(
+                f"Run {run_id} declared retention profile {profile.value!r}; "
+                "the equity curve is retained only under 'full'."
+            )
+
+        if hasattr(points, "items") and hasattr(points, "index"):
+            pairs = list(points.items())
+        else:
+            pairs = [tuple(pair) for pair in points]
+
+        actual = equity_curve_digest(pairs)
+        if actual != curve_digest:
+            raise StoreError(
+                f"Equity curve for run {run_id} does not match its recorded "
+                f"evidence: expected {curve_digest}, computed {actual}."
+            )
+
+        now = schema.utc_now_iso()
+        rows = [
+            (run_id, index, _iso_or_str(timestamp), float(value), now)
+            for index, (timestamp, value) in enumerate(pairs)
+        ]
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM run_equity_points WHERE run_id = ?", (run_id,)
+            )
+            self._conn.executemany(
+                """
+                INSERT INTO run_equity_points
+                    (run_id, sequence, observed_at, equity, recorded_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def get_trades(self, run_id: str) -> list[dict[str, Any]]:
+        """Return the stored trade ledger in execution order.
+
+        An empty list means either that the run kept no ledger or that it took
+        no trades. Callers that must tell those apart should read
+        ``retention_profile`` and ``trade_count`` from the evidence row, which
+        are recorded under every profile.
+        """
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                """
+                SELECT sequence, symbol, side, quantity, entry_price,
+                       exit_price, entry_time, exit_time, pnl, commission,
+                       initial_risk, exit_reason
+                FROM run_trades WHERE run_id = ? ORDER BY sequence
+                """,
+                (run_id,),
+            ).fetchall()
+        ]
+
+    def get_equity_curve(self, run_id: str) -> list[dict[str, Any]]:
+        """Return the stored equity curve in chronological order."""
+        return [
+            dict(row)
+            for row in self._conn.execute(
+                """
+                SELECT sequence, observed_at, equity
+                FROM run_equity_points WHERE run_id = ? ORDER BY sequence
+                """,
+                (run_id,),
+            ).fetchall()
+        ]
 
     def record_findings(
         self, run_id: str, findings: Iterable[ValidationFinding]

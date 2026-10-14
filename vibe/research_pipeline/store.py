@@ -15,7 +15,7 @@ Two invariants are part of the contract, not the implementation:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Iterable, Optional, Protocol, runtime_checkable
+from typing import Any, Iterable, Optional, Protocol, Sequence, runtime_checkable
 
 from vibe.research_pipeline.contracts import RunEvidence, ValidationFinding
 from vibe.research_pipeline.identity import RunFingerprint
@@ -125,6 +125,22 @@ class ResearchStore(Protocol):
         """Attach the tamper-evident evidence record.
 
         Required under every retention profile, including ``summary``.
+        """
+
+    def record_trades(self, run_id: str, trades: Sequence[Any]) -> None:
+        """Persist the local trade ledger, in execution order.
+
+        Only meaningful under ``diagnostic`` or ``full``. Implementations must
+        refuse a ledger that does not reproduce the ``trade_ledger_sha256``
+        already recorded in the run's evidence, and must never expose these
+        rows to a publication payload.
+        """
+
+    def record_equity_curve(self, run_id: str, points: Any) -> None:
+        """Persist the local equity curve, in chronological order.
+
+        Only meaningful under ``full``, and subject to the same digest
+        agreement and local-only constraints as :meth:`record_trades`.
         """
 
     def record_findings(
