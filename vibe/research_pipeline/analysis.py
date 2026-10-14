@@ -56,6 +56,20 @@ TERMINAL_ANALYSIS_STATES = {
     "archived",
 }
 
+# A recorded backtest comes to rest in `validating`, not in a terminal state:
+# promoting it to `completed` requires a real leakage report and a bar-measured
+# integrity summary, which recording alone cannot produce. Reading only
+# terminal states therefore made the workspace blind to every run a study
+# produces -- an empty field catalog and a dead UI no matter how many runs the
+# store held.
+#
+# These rows are admitted to the *catalog* so the workspace has something to
+# describe, but `_project_row` still classifies them as `validation_attention`
+# rather than `current_validated`. The default population is unchanged, so an
+# unvalidated number can never be mistaken for validated evidence; it appears
+# only when the reader explicitly asks for runs needing attention.
+ANALYSABLE_RUN_STATES = TERMINAL_ANALYSIS_STATES | {"validating"}
+
 
 class AnalysisQueryError(ValueError):
     """The query is malformed or references unsupported fields."""
@@ -125,7 +139,7 @@ class SqliteAnalysisAdapter:
 
     def rows(self) -> list[AnalysisRow]:
         """Project terminal run summaries into the namespaced analysis shape."""
-        placeholders = ",".join("?" for _ in TERMINAL_ANALYSIS_STATES)
+        placeholders = ",".join("?" for _ in ANALYSABLE_RUN_STATES)
         run_rows = self._conn.execute(
             f"""
             SELECT r.*, vr.profile_name, vr.scope, vr.target_state,
@@ -136,7 +150,7 @@ class SqliteAnalysisAdapter:
             WHERE r.state IN ({placeholders})
             ORDER BY r.display_seq
             """,
-            tuple(sorted(TERMINAL_ANALYSIS_STATES)),
+            tuple(sorted(ANALYSABLE_RUN_STATES)),
         ).fetchall()
         if not run_rows:
             return []

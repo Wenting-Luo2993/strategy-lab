@@ -37,9 +37,25 @@
               <p>Deterministic newest-first review with trust and publication states.</p>
             </div>
             <form id="run-filters" class="filters">
-              <label>Search <input name="search" maxlength="100" placeholder="Run ID or alias"></label>
-              <label>State <input name="state" maxlength="100" placeholder="completed"></label>
+              <label>Search <input name="search" maxlength="100" placeholder="alias, id, or note"></label>
+              <label>State <input name="state" maxlength="100" placeholder="validating"></label>
               <label>Strategy <input name="strategy" maxlength="100" placeholder="orb"></label>
+              <label>Sort
+                <select name="sort">
+                  <option value="updated">Newest</option>
+                  <option value="alias">Run number</option>
+                  <option value="return">Net return</option>
+                  <option value="expectancy">Expectancy</option>
+                  <option value="drawdown">Drawdown</option>
+                  <option value="trades">Trades</option>
+                </select>
+              </label>
+              <label>Order
+                <select name="direction">
+                  <option value="desc">High to low</option>
+                  <option value="asc">Low to high</option>
+                </select>
+              </label>
               <button type="submit">Apply</button>
             </form>
           </div>

@@ -360,10 +360,20 @@ def main():
         print(f"Error parsing dates: {e}", file=sys.stderr)
         sys.exit(1)
     
-    # Validate data directory
-    data_dir = Path("vibe/data/parquet")
-    if not data_dir.exists():
-        print(f"ERROR: Data directory not found: {data_dir}", file=sys.stderr)
+    # Resolve the market data directory.
+    #
+    # A relative path only works when the script is run from the main
+    # checkout. Worktrees have no copy of the parquet data, so the shared
+    # resolver is what makes this usable from anywhere.
+    from vibe.backtester.data.paths import (
+        MarketDataNotFoundError,
+        resolve_market_data_dir,
+    )
+
+    try:
+        data_dir = resolve_market_data_dir()
+    except MarketDataNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         print("Run: python scripts/convert_databento.py", file=sys.stderr)
         sys.exit(1)
     

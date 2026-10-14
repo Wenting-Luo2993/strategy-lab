@@ -104,10 +104,17 @@ async function loadPublications(showBusy = true) {
 function renderOverview(data) {
   const totalRuns = sumValues(data.runs);
   const totalRegistry = sumValues(data.registry);
+  // `validating` is where the recorder deliberately leaves a finished run:
+  // promoting it to `completed` requires a real leakage report and a
+  // bar-measured integrity summary. Without its own card these runs vanish
+  // from the summary entirely, so a store holding 40 of them reads as
+  // "0 completed, 0 needing attention" -- as though nothing had been run.
   elements.overview.replaceChildren(
     metricCard("Runs", totalRuns),
+    metricCard("Awaiting validation", data.runs.validating || 0),
     metricCard("Completed", data.runs.completed || 0),
     metricCard("Validation attention", (data.runs.review_required || 0) + (data.runs.validation_failed || 0), true),
+    metricCard("Execution failed", data.runs.execution_failed || 0, true),
     metricCard("Registry records", totalRegistry),
     metricCard("Pending / failed", (data.publications.pending || 0) + (data.publications.failed || 0), true),
     metricCard("Dead letters", data.publications.dead_letter || 0, true),
@@ -126,14 +133,37 @@ function renderRuns(result) {
   } else {
     const rows = result.items.map((run) => `
       <tr>
-        <td><button class="link" data-run="${escapeAttribute(run.runId)}">${escapeHtml(run.displayAlias)}</button><small>${escapeHtml(run.runId)}</small></td>
-        <td>${escapeHtml(run.strategyId)}<small>${escapeHtml(run.state)}</small></td>
-        <td>${badges(run.badges)}</td>
-        <td>${badge(run.publicationState, publicationTone(run.publicationState))}</td>
+        <td>
+          <button class="link" data-run="${escapeAttribute(run.runId)}">${escapeHtml(run.displayAlias)}</button>
+          <small>${escapeHtml(run.notes || run.strategyId)}</small>
+          <small>${escapeHtml(run.state)}</small>
+        </td>
+        <td>
+          ${escapeHtml(run.symbol || "—")}
+          <small>${escapeHtml(formatSessionRange(run))}</small>
+        </td>
+        <td class="${signClass(run.netReturnPct)}">
+          ${escapeHtml(run.netReturnPct === null || run.netReturnPct === undefined
+            ? "—"
+            : `${run.netReturnPct >= 0 ? "+" : ""}${run.netReturnPct.toFixed(2)}%`)}
+          <small>${escapeHtml(run.netPnl === null || run.netPnl === undefined ? "—" : formatMoney(run.netPnl))}</small>
+        </td>
+        <td class="${signClass(run.metrics?.expectancy_r)}">
+          ${escapeHtml(formatR(run.metrics?.expectancy_r))}
+          <small>${escapeHtml(formatRate(run.metrics?.win_rate))} win</small>
+        </td>
+        <td>
+          ${escapeHtml(formatDrawdown(run.metrics?.max_drawdown))}
+          <small>${escapeHtml(`${run.tradeCount ?? "—"} trades`)}</small>
+        </td>
+        <td>${badges(exceptionBadges(run))}</td>
         <td>${formatDate(run.updatedAt)}</td>
       </tr>
     `).join("");
-    elements.runs.innerHTML = table(["Identity", "Strategy / state", "Trust", "Publication", "Updated"], rows);
+    elements.runs.innerHTML = table(
+      ["Run", "Scope", "Net return", "Expectancy", "Risk", "Attention", "Updated"],
+      rows,
+    );
     elements.runs.querySelectorAll("[data-run]").forEach((button) => {
       button.addEventListener("click", () => showRun(button.dataset.run));
     });
@@ -637,6 +667,62 @@ function formatMoney(value) {
 function formatPercent(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
   return `${(Number(value) * 100).toFixed(2)}%`;
+}
+
+// -- run list formatting -------------------------------------------------
+//
+// A study fills the list with dozens of runs that share a strategy, a state
+// and a badge set. These helpers surface the handful of values that actually
+// differ between them, so a run can be recognised without opening it.
+
+function formatSessionRange(run) {
+  if (!run.firstSession && !run.lastSession) return "—";
+  if (run.firstSession === run.lastSession) return String(run.firstSession);
+  return `${run.firstSession ?? "?"} → ${run.lastSession ?? "?"}`;
+}
+
+function formatR(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  const number = Number(value);
+  return `${number >= 0 ? "+" : ""}${number.toFixed(3)}R`;
+}
+
+// Rates are recorded as fractions, but a stored 27.6 would mean 27.6% not
+// 2760%. Treat anything above 1 as already-scaled rather than silently
+// rendering an absurd number.
+function formatRate(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  const number = Number(value);
+  return `${(number > 1 ? number : number * 100).toFixed(1)}%`;
+}
+
+// Drawdown is recorded as a negative fraction. It is always a loss, so render
+// it with an explicit minus and never let a sign convention make a bad run
+// look good.
+function formatDrawdown(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  const magnitude = Math.abs(Number(value));
+  return `-${(magnitude > 1 ? magnitude : magnitude * 100).toFixed(2)}%`;
+}
+
+function signClass(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "";
+  return Number(value) < 0 ? "negative" : "positive";
+}
+
+// Show only what needs attention. A row that repeats the same four reassuring
+// badges on every run trains the eye to skip the column entirely, which is
+// precisely when a real warning gets missed.
+function exceptionBadges(run) {
+  const flagged = (run.badges || []).filter(
+    // Retention is a local storage choice, not a defect. Flagging it on every
+    // full-retention row would bury the badges that do mean something.
+    (item) => item.tone !== "good" && !/ retention$/.test(item.label),
+  );
+  if (run.publicationState && run.publicationState !== "local") {
+    flagged.push({ label: run.publicationState, tone: publicationTone(run.publicationState) });
+  }
+  return flagged.length ? flagged : [{ label: "clean", tone: "good" }];
 }
 
 // Market timestamps are stored with the exchange's UTC offset. Rendering them

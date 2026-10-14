@@ -131,6 +131,58 @@ def _query(**updates):
     return query
 
 
+def _recorded_run(store: SqliteResearchStore, index: int) -> str:
+    """A run as the backtest recorder leaves it: metrics and evidence, no verdict."""
+    run_id = store.register_run(
+        fingerprint=_fingerprint(index),
+        methodology_version="research-store-v1",
+        lineage_id=f"family-{index % 2}",
+    )
+    token = store.start_run(run_id, owner="analysis-test", lease_seconds=60)
+    store.record_metrics(
+        run_id,
+        {"expectancy_r": index / 10, "net_pnl": index * 100},
+        calculation_version=2,
+    )
+    store.record_evidence(run_id, _evidence())
+    store.transition(run_id, target=RunState.VALIDATING, lease_token=token)
+    return run_id
+
+
+def test_runs_awaiting_validation_are_analysable_but_never_pass_as_validated(
+    tmp_path: Path,
+):
+    path = tmp_path / "research.sqlite3"
+    store = SqliteResearchStore(path)
+    _recorded_run(store, 7)
+    store.close()
+
+    adapter = SqliteAnalysisAdapter(path)
+    try:
+        # The catalog is derived from rows, so a store holding only recorded
+        # runs must still describe its fields -- otherwise the workspace is
+        # dead no matter how much data was produced.
+        catalog = {field["field"] for field in adapter.field_catalog()}
+        assert "metric.expectancy_r" in catalog
+
+        default = adapter.query(_query())
+        assert default["rows"] == []
+
+        attention = adapter.query(
+            _query(
+                population={
+                    "includeLegacy": False,
+                    "trustStates": ["validation_attention"],
+                }
+            )
+        )
+        assert [row["identity.display_alias"] for row in attention["rows"]] == [
+            "RUN-000001"
+        ]
+    finally:
+        adapter.close()
+
+
 def test_field_catalog_and_screening_support_current_run_shape(analysis_db: Path):
     adapter = SqliteAnalysisAdapter(analysis_db)
     catalog = {field["field"]: field for field in adapter.field_catalog()}

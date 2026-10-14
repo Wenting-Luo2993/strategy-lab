@@ -83,12 +83,34 @@ const SYNC_MARKERS = [
 ];
 const SECRET_KEY = /(authorization|api[_-]?key|secret|password|passwd|token|credential|service[_-]?role|webhook)/i;
 const SECRET_VALUE = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b|(?:bearer\s+)[A-Za-z0-9._~+/-]{3,}|(?:authorization|api[_-]?key|secret|password|token|credential|service[_-]?role|webhook)\s*[:=]\s*\S+/i;
+/**
+ * Metrics shown directly in the run list.
+ *
+ * A study produces dozens of runs that share a strategy, a state and a set of
+ * trust badges, so those columns cannot tell them apart. These four are the
+ * smallest set that answers "which run is this, and is it worth opening?".
+ * The keys are hardcoded constants and are interpolated into SQL; never build
+ * this list from user input.
+ */
+const HEADLINE_METRICS = Object.freeze([
+  "n_trades",
+  "expectancy_r",
+  "win_rate",
+  "max_drawdown",
+]);
+
 const RUN_SORTS = Object.freeze({
   updated: "r.updated_at",
   created: "r.created_at",
   alias: "r.display_seq",
   strategy: "r.strategy_id",
   state: "r.state",
+  return: "CAST(json_extract(e.payload_json, '$.net_pnl') AS REAL)",
+  expectancy: `(SELECT m.metric_value FROM run_metrics m
+     WHERE m.run_id = r.run_id AND m.metric_key = 'expectancy_r' ORDER BY m.id DESC LIMIT 1)`,
+  drawdown: `(SELECT m.metric_value FROM run_metrics m
+     WHERE m.run_id = r.run_id AND m.metric_key = 'max_drawdown' ORDER BY m.id DESC LIMIT 1)`,
+  trades: "e.trade_count",
 });
 const REGISTRY_SORTS = Object.freeze({
   recorded: "rr.imported_at",
@@ -419,18 +441,30 @@ function listRuns(database, searchParams) {
     params.push(strategy);
   }
   if (search) {
-    clauses.push("(r.run_id LIKE ? ESCAPE '\\' OR r.display_alias LIKE ? ESCAPE '\\' OR r.fingerprint LIKE ? ESCAPE '\\')");
+    clauses.push(
+      "(r.run_id LIKE ? ESCAPE '\\' OR r.display_alias LIKE ? ESCAPE '\\' "
+        + "OR r.fingerprint LIKE ? ESCAPE '\\' OR r.notes LIKE ? ESCAPE '\\')",
+    );
     const pattern = `%${escapeLike(search)}%`;
-    params.push(pattern, pattern, pattern);
+    params.push(pattern, pattern, pattern, pattern);
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const total = database.prepare(`SELECT COUNT(*) AS count FROM runs r ${where}`).get(...params).count;
   const rows = database.prepare(`
     SELECT r.run_id, r.display_alias, r.strategy_id, r.methodology_version,
-           r.state, r.code_commit, r.code_dirty, r.created_at, r.updated_at,
+           r.state, r.notes, r.code_commit, r.code_dirty, r.created_at, r.updated_at,
            r.lineage_id, r.identity_json, r.origin_device_id,
            e.trade_count, e.equity_points, e.retention_profile,
+           json_extract(e.payload_json, '$.first_session') AS first_session,
+           json_extract(e.payload_json, '$.last_session') AS last_session,
+           json_extract(e.payload_json, '$.net_pnl') AS net_pnl,
+           json_extract(e.payload_json, '$.starting_equity') AS starting_equity,
            vr.leakage_passed,
+           ${HEADLINE_METRICS.map(
+             (key) => `(SELECT m.metric_value FROM run_metrics m
+              WHERE m.run_id = r.run_id AND m.metric_key = '${key}'
+              ORDER BY m.id DESC LIMIT 1) AS metric_${key}`,
+           ).join(",\n           ")},
            (SELECT COUNT(*) FROM run_findings rf
             WHERE rf.run_id = r.run_id AND rf.severity = 'blocking') AS blocking_findings,
            (SELECT COUNT(*) FROM run_findings rf
@@ -453,12 +487,19 @@ function listRuns(database, searchParams) {
       blocking: Number(row.blocking_findings || 0),
       review: Number(row.review_findings || 0),
     };
+    const metrics = {};
+    for (const key of HEADLINE_METRICS) {
+      metrics[key] = numberOrNull(row[`metric_${key}`]);
+    }
+    const startingEquity = numberOrNull(row.starting_equity);
+    const netPnl = numberOrNull(row.net_pnl);
     return {
       runId: row.run_id,
       displayAlias: row.display_alias,
       strategyId: row.strategy_id,
       methodologyVersion: row.methodology_version,
       state: row.state,
+      notes: row.notes || null,
       codeCommit: row.code_commit,
       codeDirty: Boolean(row.code_dirty),
       createdAt: row.created_at,
@@ -469,6 +510,15 @@ function listRuns(database, searchParams) {
       retentionProfile: row.retention_profile,
       tradeCount: row.trade_count == null ? null : Number(row.trade_count),
       equityPointCount: row.equity_points == null ? null : Number(row.equity_points),
+      symbol: identity?.parameters?.symbol ?? null,
+      parameters: identity?.parameters ?? {},
+      firstSession: row.first_session || null,
+      lastSession: row.last_session || null,
+      startingEquity,
+      netPnl,
+      netReturnPct:
+        startingEquity && netPnl != null ? (netPnl / startingEquity) * 100 : null,
+      metrics,
       publicationState: publicationState(row.publication_status),
       publicationAttempts: Number(row.attempts || 0),
       publicationError: row.last_error ? redactSecrets(row.last_error) : null,

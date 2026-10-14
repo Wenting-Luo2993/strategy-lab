@@ -210,7 +210,7 @@ export class ResearchAnalysisWorkspace extends (globalThis.HTMLElement ?? class 
         `, "chart-controls")}
         ${this.#error ? `<div class="error" role="alert">${escapeHtml(this.#error)}</div>` : ""}
         ${this.#cost ? costView(this.#cost) : ""}
-        ${this.#result ? chartView(this.#query, this.#result) + tableView(this.#result) : ""}
+        ${this.#result ? chartView(this.#query, this.#result) + tableView(this.#result, this.#query) : ""}
       </section>`;
     this.#bind();
   }
@@ -383,9 +383,19 @@ function lineChart(marks, values, x, y) {
   const step = Math.max(1, Math.ceil(marks.length / 8));
   return `<div class="chart"><strong>line · ${escapeHtml(x)} → ${escapeHtml(y)}</strong><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeAttribute(`${y} by ${x}`)}"><line x1="${left}" x2="${left}" y1="${top}" y2="${height - bottom}" stroke="var(--border,#334155)"/><line x1="${left}" x2="${width - right}" y1="${yAt(0)}" y2="${yAt(0)}" stroke="var(--border,#334155)"/><polyline fill="none" stroke="var(--accent-strong,var(--accent,#60a5fa))" stroke-width="3" points="${points}"/>${marks.map((row, index) => `<circle cx="${xAt(index)}" cy="${yAt(values[index])}" r="4" fill="var(--accent-strong,var(--accent,#60a5fa))"><title>${escapeHtml(`${row[x]}: ${values[index]}`)}</title></circle>${index % step === 0 ? `<text x="${xAt(index)}" y="${height - bottom + 18}" fill="var(--muted,#94a3b8)" font-size="10" text-anchor="middle">${escapeHtml(String(row[x] ?? "--").slice(0, 14))}</text>` : ""}`).join("")}</svg></div>`;
 }
-function tableView(result) {
+function tableView(result, query) {
   const columns = result.rows[0] ? Object.keys(result.rows[0]) : [];
-  return `<div class="result-head"><h3>Inspectable result table</h3><span class="help">${result.metadata.returnedRows} of ${result.metadata.totalResultRows} rows</span></div>${result.metadata.truncated ? `<div class="error">Result truncated by row or byte policy. Narrow filters or aggregate before drawing conclusions.</div>` : ""}<div class="table-wrap">${columns.length ? `<table><thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead><tbody>${result.rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(formatValue(row[column]))}</td>`).join("")}</tr>`).join("")}</tbody></table>` : `<p class="help">No analysis rows match the current controls.</p>`}</div>`;
+  return `<div class="result-head"><h3>Inspectable result table</h3><span class="help">${result.metadata.returnedRows} of ${result.metadata.totalResultRows} rows</span></div>${result.metadata.truncated ? `<div class="error">Result truncated by row or byte policy. Narrow filters or aggregate before drawing conclusions.</div>` : ""}<div class="table-wrap">${columns.length ? `<table><thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead><tbody>${result.rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(formatValue(row[column]))}</td>`).join("")}</tr>`).join("")}</tbody></table>` : emptyResultView(query)}</div>`;
+}
+// A freshly recorded store holds only runs awaiting validation, so the
+// validated-only default legitimately returns nothing. Saying just "no rows
+// match" reads as "the tool is broken"; name the population that excluded them
+// instead. The default itself stays validated-only -- widening it silently
+// would let an unvalidated number be read as validated evidence.
+function emptyResultView(query) {
+  const validatedOnly = query?.population?.trustStates?.length === 1
+    && query.population.trustStates[0] === "current_validated";
+  return `<p class="help">No analysis rows match the current controls.${validatedOnly ? ` This population includes only runs that passed validation. Recorded backtests rest in <code>validating</code> until a leakage report and integrity summary promote them, so tick <strong>Validation attention</strong> above to screen them.` : ""}</p>`;
 }
 function parseValue(raw, field, operator) {
   if (operator === "exists") return raw !== "false";
