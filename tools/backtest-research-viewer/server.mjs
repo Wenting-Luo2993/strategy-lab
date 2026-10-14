@@ -9,7 +9,14 @@ import { homedir, platform } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
-const SUPPORTED_SCHEMA_VERSION = 8;
+// Minimum, not exact. Pinning the viewer to one version meant every additive
+// migration broke it outright: schema v9 added retained trade/equity tables and
+// the viewer stopped opening the database at all rather than degrading. The
+// real guard is assertSchemaContract, which verifies the specific tables and
+// columns actually read, so a newer schema that only adds tables is safe while
+// one that renames or drops something still fails loudly.
+const MINIMUM_SCHEMA_VERSION = 9;
+const MAX_DETAIL_ROWS = 5_000;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4178;
 const MAX_PAGE_SIZE = 100;
@@ -223,13 +230,11 @@ export function inspectDatabase(dbPath) {
     const versions = database.prepare(
       "SELECT version FROM schema_migrations ORDER BY version",
     ).all().map((row) => Number(row.version));
-    const expectedVersions = Array.from(
-      { length: SUPPORTED_SCHEMA_VERSION },
-      (_, index) => index + 1,
-    );
-    if (JSON.stringify(versions) !== JSON.stringify(expectedVersions)) {
+    const contiguous = versions.every((version, index) => version === index + 1);
+    if (!contiguous || versions.length < MINIMUM_SCHEMA_VERSION) {
       throw new Error(
-        `Viewer requires contiguous research schema migrations 1-${SUPPORTED_SCHEMA_VERSION}.`,
+        `Viewer requires contiguous research schema migrations 1-${MINIMUM_SCHEMA_VERSION} `
+        + `or newer; found [${versions.join(", ")}].`,
       );
     }
     assertSchemaContract(database);
@@ -239,7 +244,7 @@ export function inspectDatabase(dbPath) {
     }
     const queryOnly = Number(Object.values(database.prepare("PRAGMA query_only").get())[0]);
     if (queryOnly !== 1) throw new Error("SQLite query_only enforcement is unavailable.");
-    return { version: SUPPORTED_SCHEMA_VERSION, integrity: "ok", queryOnly: true };
+    return { version: versions.length, integrity: "ok", queryOnly: true };
   });
 }
 
@@ -261,12 +266,17 @@ function assertSchemaContract(database) {
       "artifact_id", "owning_publication_key", "object_key", "staging_path",
       "manifest_sha256", "content_sha256", "preview_policy", "status", "claim_token",
     ],
+    run_trades: [
+      "run_id", "sequence", "symbol", "side", "entry_time", "exit_time",
+      "entry_price", "exit_price", "quantity", "pnl", "exit_reason",
+    ],
+    run_equity_points: ["run_id", "sequence", "observed_at", "equity"],
   };
   for (const [table, columns] of Object.entries(required)) {
     const present = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
     const missing = columns.filter((column) => !present.has(column));
     if (missing.length) {
-      throw new Error(`Research schema v8 contract is missing ${table}.${missing.join(`, ${table}.`)}.`);
+      throw new Error(`Research schema v${MINIMUM_SCHEMA_VERSION} contract is missing ${table}.${missing.join(`, ${table}.`)}.`);
     }
   }
 }
@@ -567,8 +577,135 @@ function getRun(database, runId) {
       reconciliation: reconciliationState(outbox, acknowledgements),
     } : { state: "local", acknowledgement: null, reconciliation: "not_enqueued" },
     badges: trustBadges(run, identity, evidence, validationRow, findingCounts),
-    localArtifacts: localArtifactAvailability(evidenceRow),
+    localArtifacts: localArtifactAvailability(database, runId, evidenceRow),
   };
+}
+
+function getRunTrades(database, runId) {
+  validateIdentity(runId, "run id");
+  const run = database.prepare("SELECT run_id FROM runs WHERE run_id = ?").get(runId);
+  if (!run) throw new HttpError(404, "Run not found.");
+
+  const total = Number(Object.values(
+    database.prepare("SELECT COUNT(*) FROM run_trades WHERE run_id = ?").get(runId),
+  )[0]);
+  const rows = database.prepare(`
+    SELECT sequence, symbol, side, entry_time, exit_time, entry_price,
+           exit_price, quantity, pnl, exit_reason
+    FROM run_trades WHERE run_id = ? ORDER BY sequence LIMIT ?
+  `).all(runId, MAX_DETAIL_ROWS);
+
+  return {
+    runId,
+    total,
+    truncated: total > rows.length,
+    returned: rows.length,
+    trades: rows.map((row) => ({
+      sequence: Number(row.sequence),
+      symbol: row.symbol,
+      side: row.side,
+      entryTime: row.entry_time,
+      exitTime: row.exit_time,
+      entryPrice: numberOrNull(row.entry_price),
+      exitPrice: numberOrNull(row.exit_price),
+      quantity: numberOrNull(row.quantity),
+      pnl: numberOrNull(row.pnl),
+      exitReason: row.exit_reason,
+    })),
+  };
+}
+
+/**
+ * Return the equity curve with drawdown derived server-side.
+ *
+ * Drawdown is computed here rather than in the browser because it is the one
+ * series a reader is most likely to misread: it must be measured against the
+ * running peak, and recomputing it per-render against whatever subset the UI
+ * happens to be showing would silently rebase the peak and understate every
+ * drawdown after a truncation.
+ */
+function getRunEquity(database, runId) {
+  validateIdentity(runId, "run id");
+  const run = database.prepare("SELECT run_id FROM runs WHERE run_id = ?").get(runId);
+  if (!run) throw new HttpError(404, "Run not found.");
+
+  const total = Number(Object.values(
+    database.prepare("SELECT COUNT(*) FROM run_equity_points WHERE run_id = ?").get(runId),
+  )[0]);
+
+  // Downsample the *returned* series by stride rather than by LIMIT: truncating
+  // a long curve would show only its opening months and make an unfinished run
+  // look complete, whereas a stride preserves the whole span and final value.
+  const stride = total > MAX_DETAIL_ROWS ? Math.ceil(total / MAX_DETAIL_ROWS) : 1;
+
+  // The running peak and the max drawdown are derived from *every* point, not
+  // from the downsampled subset. Deriving them from the subset would let a
+  // trough that falls between two strides vanish, understating the worst
+  // drawdown -- the single number most likely to be read as a risk bound.
+  const rows = database.prepare(`
+    SELECT sequence, observed_at, equity
+    FROM run_equity_points WHERE run_id = ? ORDER BY sequence
+  `).all(runId);
+
+  let peak = null;
+  let maxDrawdown = 0;
+  let maxDrawdownAt = null;
+  const points = [];
+  const lastSequence = rows.length ? Number(rows[rows.length - 1].sequence) : -1;
+
+  // The intraday curve marks open positions to market, so its running peak is an
+  // intraday high-water mark. That answers "how much heat did this take?" but it
+  // is not the closed-equity drawdown most risk limits are written against, and
+  // the two differ a lot for a strategy that is flat overnight. Track the last
+  // observation of each session alongside it so both are reported, each labelled.
+  const sessionCloses = new Map();
+
+  for (const row of rows) {
+    const equity = Number(row.equity);
+    const sequence = Number(row.sequence);
+    peak = peak === null ? equity : Math.max(peak, equity);
+    const drawdown = peak > 0 ? (equity - peak) / peak : 0;
+    if (drawdown < maxDrawdown) {
+      maxDrawdown = drawdown;
+      maxDrawdownAt = row.observed_at;
+    }
+    sessionCloses.set(String(row.observed_at).slice(0, 10), { equity, observedAt: row.observed_at });
+    if (sequence % stride === 0 || sequence === lastSequence) {
+      points.push({ sequence, observedAt: row.observed_at, equity, drawdown });
+    }
+  }
+
+  let sessionPeak = null;
+  let maxSessionDrawdown = 0;
+  let maxSessionDrawdownAt = null;
+  for (const close of sessionCloses.values()) {
+    sessionPeak = sessionPeak === null ? close.equity : Math.max(sessionPeak, close.equity);
+    const drawdown = sessionPeak > 0 ? (close.equity - sessionPeak) / sessionPeak : 0;
+    if (drawdown < maxSessionDrawdown) {
+      maxSessionDrawdown = drawdown;
+      maxSessionDrawdownAt = close.observedAt;
+    }
+  }
+
+  return {
+    runId,
+    total,
+    returned: points.length,
+    stride,
+    downsampled: stride > 1,
+    maxDrawdown,
+    maxDrawdownAt,
+    sessionCount: sessionCloses.size,
+    maxSessionDrawdown,
+    maxSessionDrawdownAt,
+    startingEquity: rows.length ? Number(rows[0].equity) : null,
+    endingEquity: rows.length ? Number(rows[rows.length - 1].equity) : null,
+    points,
+  };
+}
+
+function numberOrNull(value) {
+  return value === null || value === undefined ? null : Number(value);
 }
 
 function reconciliationState(outbox, acknowledgement) {
@@ -580,21 +717,42 @@ function reconciliationState(outbox, acknowledgement) {
   return "reconciled";
 }
 
-function localArtifactAvailability(evidenceRow) {
+function localArtifactAvailability(database, runId, evidenceRow) {
   const profile = evidenceRow?.retention_profile || null;
+  const tradeRows = Number(
+    Object.values(
+      database.prepare("SELECT COUNT(*) FROM run_trades WHERE run_id = ?").get(runId),
+    )[0],
+  );
+  const equityRows = Number(
+    Object.values(
+      database.prepare("SELECT COUNT(*) FROM run_equity_points WHERE run_id = ?").get(runId),
+    )[0],
+  );
+
+  // Availability is measured, not inferred from the profile. A run can declare
+  // `full` retention and still have no rows if it was recorded before schema
+  // v9 or if recording was interrupted, and reporting detail as present when
+  // the tables are empty would send the UI looking for rows that do not exist.
   return {
     retentionProfile: profile,
     trades: {
-      available: false,
-      reason: profile === "summary"
-        ? "Summary retention stores only aggregate trade counts and checksums."
-        : "Schema v7 defines no normalized retained trade-row table or bounded detail contract.",
+      available: tradeRows > 0,
+      rowCount: tradeRows,
+      reason: tradeRows > 0
+        ? null
+        : profile === "summary"
+          ? "Summary retention stores only aggregate trade counts and checksums."
+          : "This run has no retained trade rows; it predates schema v9 or did not finish recording.",
     },
     equity: {
-      available: false,
-      reason: profile !== "full"
-        ? "Equity points require the full retention profile."
-        : "Schema v7 defines no normalized retained equity-point table or bounded detail contract.",
+      available: equityRows > 0,
+      rowCount: equityRows,
+      reason: equityRows > 0
+        ? null
+        : profile !== "full"
+          ? "Equity points require the full retention profile."
+          : "This run has no retained equity points; it predates schema v9 or did not finish recording.",
     },
   };
 }
@@ -1113,6 +1271,10 @@ function routeApi(database, pathname, searchParams, repositoryRoot, artifactStag
   }
   const runMatch = pathname.match(/^\/api\/runs\/([^/]+)$/);
   if (runMatch) return getRun(database, decodeURIComponent(runMatch[1]));
+  const tradesMatch = pathname.match(/^\/api\/runs\/([^/]+)\/trades$/);
+  if (tradesMatch) return getRunTrades(database, decodeURIComponent(tradesMatch[1]));
+  const equityMatch = pathname.match(/^\/api\/runs\/([^/]+)\/equity$/);
+  if (equityMatch) return getRunEquity(database, decodeURIComponent(equityMatch[1]));
   const registryMatch = pathname.match(/^\/api\/registry\/([^/]+)\/([^/]+)$/);
   if (registryMatch) {
     return getRegistryRecord(
@@ -1173,6 +1335,9 @@ function sendJson(response, status, body) {
 function sendError(response, error) {
   const status = error instanceof HttpError ? error.status : 500;
   const message = status >= 500 ? "Local viewer request failed." : error.message;
+  // The client message stays generic so internals never reach the response, but
+  // an unexplained 500 is undiagnosable without the cause recorded somewhere.
+  if (status >= 500) console.error("[viewer] request failed:", error);
   sendJson(response, status, { error: message });
 }
 

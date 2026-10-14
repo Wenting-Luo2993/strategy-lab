@@ -31,7 +31,7 @@ function createFixture() {
     INSERT INTO schema_migrations VALUES
       (1, '2026-01-01'), (2, '2026-01-01'), (3, '2026-01-01'),
       (4, '2026-01-01'), (5, '2026-01-01'), (6, '2026-01-01'),
-      (7, '2026-01-01'), (8, '2026-01-01');
+      (7, '2026-01-01'), (8, '2026-01-01'), (9, '2026-01-01');
     CREATE TABLE runs (
       run_id TEXT PRIMARY KEY,
       display_seq INTEGER NOT NULL UNIQUE,
@@ -71,6 +71,33 @@ function createFixture() {
       retention_profile TEXT NOT NULL,
       payload_json TEXT NOT NULL,
       recorded_at TEXT NOT NULL
+    );
+    CREATE TABLE run_trades (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      symbol TEXT NOT NULL,
+      side TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      entry_price REAL NOT NULL,
+      exit_price REAL,
+      entry_time TEXT NOT NULL,
+      exit_time TEXT,
+      pnl REAL,
+      commission REAL,
+      initial_risk REAL,
+      exit_reason TEXT,
+      recorded_at TEXT NOT NULL,
+      UNIQUE (run_id, sequence)
+    );
+    CREATE TABLE run_equity_points (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL,
+      sequence INTEGER NOT NULL,
+      observed_at TEXT NOT NULL,
+      equity REAL NOT NULL,
+      recorded_at TEXT NOT NULL,
+      UNIQUE (run_id, sequence)
     );
     CREATE TABLE run_findings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -263,7 +290,7 @@ function createFixture() {
       "a".repeat(64),
       "b".repeat(64),
       index * 20,
-      index === 4 ? "diagnostic" : "summary",
+      index === 4 ? "full" : "summary",
       JSON.stringify({
         trade_count: index * 10,
         trade_ledger_sha256: "a".repeat(64),
@@ -278,7 +305,7 @@ function createFixture() {
         net_pnl: 100,
         max_observed_leverage: 1.2,
         min_cash: 50000,
-        retention_profile: index === 4 ? "diagnostic" : "summary",
+        retention_profile: index === 4 ? "full" : "summary",
       }),
       timestamp,
     );
@@ -330,6 +357,30 @@ function createFixture() {
         INSERT INTO publication_dead_letters
         VALUES (?, ?, ?, 3, 'permanent', ?, 0)
       `).run(`event-${index}`, `run:${runId}`, payloadSha, timestamp);
+    }
+    if (index === 4) {
+      // Run 4 carries full retention, so the viewer must report its rows as
+      // available. Equity dips at sequence 1 and recovers, giving the drawdown
+      // scan something real to find.
+      const insertTrade = database.prepare(`
+        INSERT INTO run_trades (
+          run_id, sequence, symbol, side, quantity, entry_price, exit_price,
+          entry_time, exit_time, pnl, commission, initial_risk, exit_reason, recorded_at
+        ) VALUES (?, ?, 'SPY', 'long', 10, 100, ?, ?, ?, ?, 1.5, 50, 'target', ?)
+      `);
+      for (let seq = 0; seq < 3; seq += 1) {
+        insertTrade.run(
+          runId, seq, 100 + seq, timestamp, timestamp, seq * 25, timestamp,
+        );
+      }
+      const insertPoint = database.prepare(`
+        INSERT INTO run_equity_points (run_id, sequence, observed_at, equity, recorded_at)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      const equitySeries = [100000, 95000, 101000, 102000];
+      equitySeries.forEach((equity, seq) => {
+        insertPoint.run(runId, seq, `2026-01-0${seq + 1}T00:00:00+00:00`, equity, timestamp);
+      });
     }
   }
   const registryPayload = JSON.stringify({
@@ -542,7 +593,7 @@ test("serves endpoint shapes, deterministic pagination, and refreshed rows", asy
   try {
     const meta = await rawRequest(fixture.origin, "/api/meta");
     assert.equal(meta.status, 200);
-    assert.equal(meta.json.schemaVersion, 8);
+    assert.equal(meta.json.schemaVersion, 9);
     assert.equal(meta.json.database.mode, "read-only");
     assert.equal(meta.json.database.queryOnly, true);
     assert.equal(meta.json.database.immutableUri, false);
@@ -652,6 +703,158 @@ test("returns bounded run detail without secrets and labels unavailable retained
     assert.equal(response.json.localArtifacts.trades.available, false);
     assert.match(response.json.localArtifacts.trades.reason, /Summary retention/);
     assert.equal(JSON.stringify(response.json).includes("top-secret"), false);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("reports retained rows as available only when the rows are actually present", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    // Run 4 declares full retention AND has rows: available.
+    const full = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-000000000004");
+    assert.equal(full.status, 200);
+    assert.equal(full.json.localArtifacts.trades.available, true);
+    assert.equal(full.json.localArtifacts.trades.rowCount, 3);
+    assert.equal(full.json.localArtifacts.trades.reason, null);
+    assert.equal(full.json.localArtifacts.equity.available, true);
+    assert.equal(full.json.localArtifacts.equity.rowCount, 4);
+
+    // Availability must be measured, not inferred from the profile: deleting the
+    // rows while the profile still says "full" has to flip availability to false.
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.prepare("DELETE FROM run_trades WHERE run_id = ?")
+      .run("00000000-0000-7000-8000-000000000004");
+    writer.close();
+    const emptied = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-000000000004");
+    assert.equal(emptied.json.localArtifacts.trades.available, false);
+    assert.equal(emptied.json.localArtifacts.trades.rowCount, 0);
+    assert.match(emptied.json.localArtifacts.trades.reason, /no retained trade rows/i);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("serves retained trade rows and 404s for an unknown run", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const response = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-000000000004/trades");
+    assert.equal(response.status, 200);
+    assert.equal(response.json.total, 3);
+    assert.equal(response.json.returned, 3);
+    assert.equal(response.json.truncated, false);
+    assert.equal(response.json.trades[0].symbol, "SPY");
+    assert.equal(response.json.trades[0].sequence, 0);
+    assert.equal(response.json.trades[2].pnl, 50);
+
+    const missing = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-00000000009f/trades");
+    assert.equal(missing.status, 404);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("serves the equity curve with drawdown derived from the full series", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const response = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-000000000004/equity");
+    assert.equal(response.status, 200);
+    assert.equal(response.json.total, 4);
+    assert.equal(response.json.stride, 1);
+    assert.equal(response.json.downsampled, false);
+    assert.equal(response.json.startingEquity, 100000);
+    assert.equal(response.json.endingEquity, 102000);
+    // Peak 100000 -> trough 95000 is a 5% drawdown.
+    assert.ok(Math.abs(response.json.maxDrawdown + 0.05) < 1e-9);
+    assert.equal(response.json.maxDrawdownAt, "2026-01-02T00:00:00+00:00");
+
+    const missing = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-00000000009f/equity");
+    assert.equal(missing.status, 404);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("keeps a trough that falls between strides out of the returned points but inside the drawdown", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const runId = "00000000-0000-7000-8000-000000000004";
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.prepare("DELETE FROM run_equity_points WHERE run_id = ?").run(runId);
+    const insert = writer.prepare(`
+      INSERT INTO run_equity_points (run_id, sequence, observed_at, equity, recorded_at)
+      VALUES (?, ?, ?, ?, '2026-01-01')
+    `);
+    writer.exec("BEGIN");
+    // 10_001 points forces stride 3 against MAX_DETAIL_ROWS = 5_000. The curve
+    // is flat except for one deep trough at sequence 5_000, which is not
+    // divisible by 3 and so can never appear in the returned points.
+    const troughSequence = 5_000;
+    const totalPoints = 10_001;
+    for (let seq = 0; seq < totalPoints; seq += 1) {
+      insert.run(runId, seq, `2026-01-01T00:00:00+00:00`, seq === troughSequence ? 80_000 : 100_000);
+    }
+    writer.exec("COMMIT");
+    writer.close();
+
+    const response = await rawRequest(fixture.origin, `/api/runs/${runId}/equity`);
+    assert.equal(response.status, 200);
+    assert.equal(response.json.total, totalPoints);
+    assert.equal(response.json.stride, 3);
+    assert.equal(response.json.downsampled, true);
+
+    // The trough is genuinely absent from the returned series...
+    const returnedTrough = response.json.points.find((point) => point.sequence === troughSequence);
+    assert.equal(returnedTrough, undefined);
+    const subsetDrawdown = response.json.points.reduce((worst, point) => {
+      return Math.min(worst, (point.equity - 100_000) / 100_000);
+    }, 0);
+    assert.equal(subsetDrawdown, 0);
+
+    // ...yet the reported drawdown still finds it. This is the assertion that
+    // fails if the drawdown is ever derived from the downsampled subset.
+    assert.ok(Math.abs(response.json.maxDrawdown + 0.2) < 1e-9);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("separates intraday drawdown from drawdown measured on session closes", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const runId = "00000000-0000-7000-8000-000000000004";
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.prepare("DELETE FROM run_equity_points WHERE run_id = ?").run(runId);
+    const insert = writer.prepare(`
+      INSERT INTO run_equity_points (run_id, sequence, observed_at, equity, recorded_at)
+      VALUES (?, ?, ?, ?, '2026-01-01')
+    `);
+    // Three sessions, each dipping hard intraday but closing at a new high. The
+    // intraday drawdown is real heat; the closed-equity drawdown is zero.
+    const sessions = [
+      ["2026-01-05", [100_000, 90_000, 101_000]],
+      ["2026-01-06", [101_000, 91_000, 102_000]],
+      ["2026-01-07", [102_000, 92_000, 103_000]],
+    ];
+    let sequence = 0;
+    for (const [date, series] of sessions) {
+      series.forEach((equity, index) => {
+        insert.run(runId, sequence, `${date}T1${index}:00:00-05:00`, equity);
+        sequence += 1;
+      });
+    }
+    writer.close();
+
+    const response = await rawRequest(fixture.origin, `/api/runs/${runId}/equity`);
+    assert.equal(response.status, 200);
+    assert.equal(response.json.sessionCount, 3);
+    // Deepest intraday trough is the first session: 100_000 -> 90_000. Later
+    // troughs are deeper in dollars but shallower against their higher peaks.
+    assert.ok(Math.abs(response.json.maxDrawdown + 0.1) < 1e-9);
+    assert.equal(response.json.maxDrawdownAt, "2026-01-05T11:00:00-05:00");
+    // Every session closes higher than the last, so closed equity never retreats.
+    assert.equal(response.json.maxSessionDrawdown, 0);
+    assert.equal(response.json.maxSessionDrawdownAt, null);
   } finally {
     await fixture.cleanupAll();
   }

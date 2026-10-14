@@ -253,9 +253,36 @@ async function showRun(runId) {
         "Published": formatDate(detail.publication.publishedAt),
       })}
       ${localArtifactSection(detail.localArtifacts)}
+      <div id="run-detail-rows"></div>
     `;
+    await renderRetainedRows(runId, detail.localArtifacts);
   } catch (error) {
     elements["detail-content"].innerHTML = errorState(error);
+  }
+}
+
+// Fetched after the summary is painted: the curve can be thousands of points,
+// and a slow or failed detail fetch must not blank the run summary.
+async function renderRetainedRows(runId, localArtifacts) {
+  const host = document.getElementById("run-detail-rows");
+  if (!host) return;
+  const wantsEquity = Boolean(localArtifacts?.equity?.available);
+  const wantsTrades = Boolean(localArtifacts?.trades?.available);
+  if (!wantsEquity && !wantsTrades) return;
+
+  host.innerHTML = `<p class="empty">Loading retained rows…</p>`;
+  try {
+    const encoded = encodeURIComponent(runId);
+    const [equity, trades] = await Promise.all([
+      wantsEquity ? api(`/api/runs/${encoded}/equity`) : Promise.resolve(null),
+      wantsTrades ? api(`/api/runs/${encoded}/trades`) : Promise.resolve(null),
+    ]);
+    host.innerHTML = `
+      ${wantsEquity ? equitySection(equity) : ""}
+      ${wantsTrades ? tradeDistributionSection(trades) : ""}
+    `;
+  } catch (error) {
+    host.innerHTML = errorState(error);
   }
 }
 
@@ -452,26 +479,194 @@ function renderMarkdownPreview(content) {
 
 function localArtifactSection(localArtifacts) {
   if (!localArtifacts) return "";
+  const describe = (entry, label) => {
+    if (entry?.available) {
+      return `<p><strong>${label}:</strong> ${Number(entry.rowCount).toLocaleString()} rows retained locally.</p>`;
+    }
+    return `<p><strong>${label}:</strong> ${escapeHtml(entry?.reason || "Unavailable.")}</p>`;
+  };
   return `
     <section class="detail-section">
       <h3>Local diagnostic/full artifacts</h3>
       <div class="artifact-boundary">
-        <p><strong>Trades:</strong> ${escapeHtml(localArtifacts.trades.reason)}</p>
-        <p><strong>Equity:</strong> ${escapeHtml(localArtifacts.equity.reason)}</p>
-        <p>The current schema v8 stores durable counts, checksums, and the private artifact publication outbox. This viewer does not read arbitrary files or imply that omitted rows exist.</p>
+        ${describe(localArtifacts.trades, "Trades")}
+        ${describe(localArtifacts.equity, "Equity")}
+        <p>Schema v9 retains trade and equity rows for runs recorded with full or
+        diagnostic retention. Availability reflects rows actually present, not the
+        declared retention profile. This viewer does not read arbitrary files or
+        imply that omitted rows exist.</p>
       </div>
     </section>
   `;
 }
 
-function detailGrid(title, values) {
+// Inline SVG keeps the viewer dependency-light: no chart library, no network
+// fetch for assets, and nothing to keep in sync with a package manifest.
+function polylinePath(values, width, height, minimum, maximum) {
+  if (!values.length) return "";
+  const span = maximum - minimum;
+  const step = values.length > 1 ? width / (values.length - 1) : 0;
+  return values
+    .map((value, index) => {
+      const x = (index * step).toFixed(2);
+      const y = (span > 0 ? height - ((value - minimum) / span) * height : height / 2).toFixed(2);
+      return `${x},${y}`;
+    })
+    .join(" ");
+}
+
+function equitySection(equity) {
+  if (!equity || !equity.points?.length) {
+    return `<section class="detail-section"><h3>Equity curve</h3><p class="empty">No retained equity points.</p></section>`;
+  }
+  const values = equity.points.map((point) => point.equity);
+  const drawdowns = equity.points.map((point) => point.drawdown);
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const totalReturn = equity.startingEquity > 0
+    ? (equity.endingEquity - equity.startingEquity) / equity.startingEquity
+    : null;
+  const sampling = equity.downsampled
+    ? `Showing ${equity.returned.toLocaleString()} of ${equity.total.toLocaleString()} points (every ${equity.stride}). Drawdown is computed across all ${equity.total.toLocaleString()} points.`
+    : `Showing all ${equity.total.toLocaleString()} points.`;
+  return `
+    <section class="detail-section">
+      <h3>Equity curve</h3>
+      ${statGrid({
+        "Starting equity": formatMoney(equity.startingEquity),
+        "Ending equity": formatMoney(equity.endingEquity),
+        "Total return": totalReturn === null ? "—" : formatPercent(totalReturn),
+        "Sessions": equity.sessionCount?.toLocaleString(),
+        "Max drawdown (daily close)": formatPercent(equity.maxSessionDrawdown),
+        "Worst close at": formatMarketTime(equity.maxSessionDrawdownAt),
+        "Max drawdown (intraday)": formatPercent(equity.maxDrawdown),
+        "Intraday trough at": formatMarketTime(equity.maxDrawdownAt),
+      })}
+      <svg class="chart" viewBox="0 0 720 200" preserveAspectRatio="none" role="img" aria-label="Equity curve">
+        <polyline fill="none" stroke="#4c8dff" stroke-width="1.5"
+          points="${polylinePath(values, 720, 200, minimum, maximum)}" />
+      </svg>
+      <h4>Drawdown (intraday, mark-to-market)</h4>
+      <svg class="chart" viewBox="0 0 720 120" preserveAspectRatio="none" role="img" aria-label="Drawdown">
+        <polyline fill="none" stroke="#e06c75" stroke-width="1.5"
+          points="${polylinePath(drawdowns, 720, 120, Math.min(...drawdowns), 0)}" />
+      </svg>
+      <small>${escapeHtml(sampling)}</small>
+    </section>
+  `;
+}
+
+function tradeDistributionSection(payload) {
+  const trades = payload?.trades || [];
+  if (!trades.length) {
+    return `<section class="detail-section"><h3>Trades</h3><p class="empty">No retained trade rows.</p></section>`;
+  }
+  const pnls = trades.map((trade) => Number(trade.pnl ?? 0));
+  const wins = pnls.filter((pnl) => pnl > 0);
+  const losses = pnls.filter((pnl) => pnl < 0);
+  const grossWin = wins.reduce((sum, pnl) => sum + pnl, 0);
+  const grossLoss = Math.abs(losses.reduce((sum, pnl) => sum + pnl, 0));
+
+  // Fixed bucket count over the observed range; a trade exactly at the maximum
+  // belongs in the last bucket rather than one past the end.
+  const bucketCount = 20;
+  const minimum = Math.min(...pnls);
+  const maximum = Math.max(...pnls);
+  const width = (maximum - minimum) || 1;
+  const buckets = new Array(bucketCount).fill(0);
+  for (const pnl of pnls) {
+    const index = Math.min(bucketCount - 1, Math.floor(((pnl - minimum) / width) * bucketCount));
+    buckets[index] += 1;
+  }
+  const tallest = Math.max(...buckets, 1);
+  const barWidth = 720 / bucketCount;
+  const bars = buckets.map((count, index) => {
+    const height = (count / tallest) * 140;
+    const bucketFloor = minimum + (index / bucketCount) * width;
+    const colour = bucketFloor < 0 ? "#e06c75" : "#56b16a";
+    return `<rect x="${(index * barWidth).toFixed(2)}" y="${(140 - height).toFixed(2)}" width="${(barWidth - 1).toFixed(2)}" height="${height.toFixed(2)}" fill="${colour}" />`;
+  }).join("");
+
+  const rows = trades.slice(0, 200).map((trade) => `
+    <tr>
+      <td>${escapeHtml(trade.sequence)}</td>
+      <td>${escapeHtml(trade.symbol)}</td>
+      <td>${escapeHtml(trade.side)}</td>
+      <td>${escapeHtml(formatValue(trade.quantity))}</td>
+      <td>${escapeHtml(formatValue(trade.entryPrice))}</td>
+      <td>${escapeHtml(formatValue(trade.exitPrice))}</td>
+      <td class="${Number(trade.pnl) < 0 ? "negative" : "positive"}">${escapeHtml(formatMoney(trade.pnl))}</td>
+      <td>${escapeHtml(trade.exitReason || "—")}</td>
+      <td>${escapeHtml(formatMarketTime(trade.entryTime))}</td>
+    </tr>
+  `).join("");
+
+  return `
+    <section class="detail-section">
+      <h3>Trades</h3>
+      ${statGrid({
+        "Trades": payload.total.toLocaleString(),
+        "Win rate": formatPercent(wins.length / pnls.length),
+        "Wins / losses": `${wins.length} / ${losses.length}`,
+        "Average win": wins.length ? formatMoney(grossWin / wins.length) : "—",
+        "Average loss": losses.length ? formatMoney(-grossLoss / losses.length) : "—",
+        "Profit factor": grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : "—",
+        "Net P&L": formatMoney(pnls.reduce((sum, pnl) => sum + pnl, 0)),
+      })}
+      <h4>P&amp;L distribution</h4>
+      <svg class="chart" viewBox="0 0 720 140" preserveAspectRatio="none" role="img" aria-label="Trade P&amp;L distribution">${bars}</svg>
+      <small>${escapeHtml(`${formatMoney(minimum)} to ${formatMoney(maximum)} across ${bucketCount} buckets.`)}</small>
+      ${table(
+        ["#", "Symbol", "Side", "Qty", "Entry", "Exit", "P&L", "Reason", "Entered"],
+        rows,
+      )}
+      <small>${escapeHtml(
+        payload.truncated || trades.length > 200
+          ? `Showing ${Math.min(200, trades.length)} of ${payload.total.toLocaleString()} trades.`
+          : `Showing all ${payload.total.toLocaleString()} trades.`,
+      )}</small>
+    </section>
+  `;
+}
+
+function formatMoney(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  return Number(value).toLocaleString(undefined, { style: "currency", currency: "USD" });
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
+  return `${(Number(value) * 100).toFixed(2)}%`;
+}
+
+// Market timestamps are stored with the exchange's UTC offset. Rendering them
+// through toLocaleString() would convert them to the viewing device's timezone,
+// so a 09:35 ET entry reads as 06:35 on a Pacific machine -- unrecognisable in a
+// tool where the opening range is defined in exchange time. Display the wall
+// clock exactly as recorded instead, and never construct a Date.
+function formatMarketTime(value) {
+  if (!value) return "—";
+  const match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(String(value));
+  if (!match) return String(value);
+  const [, date, time, offset] = match;
+  const label = !offset ? "" : offset === "Z" ? " UTC" : ` ${offset}`;
+  return `${date} ${time}${label}`;
+}
+
+function statGrid(values) {
   const items = Object.entries(values).filter(([, value]) => value !== undefined && value !== null && value !== "");
+  return `
+    <dl class="detail-grid">
+      ${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(formatValue(value))}</dd></div>`).join("")}
+    </dl>
+  `;
+}
+
+function detailGrid(title, values) {
   return `
     <section class="detail-section">
       <h3>${escapeHtml(title)}</h3>
-      <dl class="detail-grid">
-        ${items.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(formatValue(value))}</dd></div>`).join("")}
-      </dl>
+      ${statGrid(values)}
     </section>
   `;
 }

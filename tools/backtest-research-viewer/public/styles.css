@@ -116,6 +116,18 @@ dialog::backdrop { background: rgba(0, 0, 0, .68); }
 dt { color: var(--muted); font-size: .72rem; font-weight: 800; text-transform: uppercase; }
 dd { margin: .3rem 0 0; white-space: pre-wrap; }
 .detail-card span, .detail-card small, .finding small { display: block; color: var(--muted); }
+.chart {
+  display: block;
+  width: 100%;
+  height: 180px;
+  margin: .6rem 0 .2rem;
+  border: 1px solid var(--border);
+  border-radius: .55rem;
+  background: var(--surface-2);
+}
+.detail-section h4 { margin: 1rem 0 0; font-size: .78rem; text-transform: uppercase; color: var(--muted); }
+td.positive { color: #56b16a; }
+td.negative { color: #e06c75; }
 .detail-card strong { display: block; font-size: 1.25rem; }
 .detail-table table { min-width: 0; }
 .detail-table th { width: 45%; }

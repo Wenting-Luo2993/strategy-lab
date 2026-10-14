@@ -1551,7 +1551,7 @@ this section is to make gaps visible rather than to show progress.
 | State | Increments |
 | --- | --- |
 | Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P8, P9, P10, P10b, P11, P12, P13 |
-| Partial | P14, P15 (P15a/P15b done; P15c/P15d not started) |
+| Partial | P14, P15 (P15a/P15b/P15d-local done; P15c/P15d-remote/P15e not started) |
 
 All nine increments required by the "minimum bar before trusting a result"
 (P0-P6, P9, P10) are complete. P6 prevents a run from reaching
@@ -1587,7 +1587,7 @@ make the parent inconclusive instead of stitching survivors.
 | P13 | `/research` route | **Complete** (2026-10) | P13 implementation commit, `8179428` | The existing static-export dashboard now includes a shared `/research` route with top-level Live Trading/Backtest Research navigation. A strict read-only contract has fixture/local and anonymous Supabase implementations. The versioned decoder preserves methodology, execution-realism identity, validation findings, evidence counts/checksums, lineage, publication/reconciliation identity, and legacy/pre-P2b/survivorship badges while refusing prohibited event-level payloads. The explorer provides remote pagination, filtering, sorting, overview/list/detail states, shareable detail query URLs, responsive trust badges, and explicit artifact boundaries. The flexible analyzer adds a field catalog, typed composable filters, arbitrary grouping dimensions, aggregate measures, chart encodings, bounded URL state, explicit cost/cardinality/truncation feedback, normalized SQLite execution, and a bounded Supabase RPC. Build-time credential validation rejects service-role variable names and service-role JWT values. |
 | P14 | YAML retirement | **Partial** (2026-10) | `f5f4a37` | All 98 legacy records were archived externally with per-file SHA-256 inventory; 73 experiment YAML files and 16 artifact descriptors were removed from the active tree after parity verification. The owner-device SQLite store was subsequently backed up and purged of all 98 imported registry records, their relationships/metrics, and all 98 pending `legacy_yaml` publication events. Four hypotheses and five narrative notes remain only as source-controlled, non-authoritative learning records. Final activation remains gated on validating the deployed P13/P12 read and reconciliation surfaces, private dataset/artifact storage, signed previews, and the compatibility release against the intended Supabase project. |
 
-| P15 | Result visibility | **Partial** (2026-10) | `1aee73c`, P15a commit | P15a and P15b are complete; P15c and P15d are not started. `vibe/research_pipeline/recording.py` is the producer that was missing: `scripts/run_backtest.py` now registers a run, executes inside the lifecycle so a crash records `EXECUTION_FAILED`, and persists metrics, evidence, and -- under `diagnostic`/`full` -- the trade ledger and equity curve. Recording comes to rest in `VALIDATING` and never finalizes, because a terminal state requires a real `LeakageReport` and bar-measured `DataIntegritySummary`. Schema v9 adds `run_trades`/`run_equity_points`, both written only after the rows reproduce the digest already in the run's evidence, and `verify_retained_detail` re-derives both digests from storage so post-write drift is detectable. `/research` still renders fixtures. See "The result-visibility gap" below. |
+| P15 | Result visibility | **Partial** (2026-10) | `1aee73c`, P15a commit, P15d commit | P15a, P15b, and the local half of P15d are complete; P15c and the `/research` half of P15d are not started. `vibe/research_pipeline/recording.py` is the producer that was missing: `scripts/run_backtest.py` now registers a run, executes inside the lifecycle so a crash records `EXECUTION_FAILED`, and persists metrics, evidence, and -- under `diagnostic`/`full` -- the trade ledger and equity curve. Recording comes to rest in `VALIDATING` and never finalizes, because a terminal state requires a real `LeakageReport` and bar-measured `DataIntegritySummary`. Schema v9 adds `run_trades`/`run_equity_points`, both written only after the rows reproduce the digest already in the run's evidence, and `verify_retained_detail` re-derives both digests from storage so post-write drift is detectable. The P8 viewer reads schema v9 (previously it pinned migrations to exactly 1-8 and could not open a v9 store at all), measures row availability instead of inferring it from the retention profile, and renders equity, drawdown, and trade-distribution views. `/research` still renders fixtures. See "The result-visibility gap" below. |
 
 The integrated P6/P7/P9 tree passes 610 research-pipeline unit tests and both
 ORB golden integration tests. As of 2026-10-14 the full local suite
@@ -1972,8 +1972,54 @@ presentation:
   local retention cannot leak into a publication payload.
 - **P15c — local data path.** Give `/research` a local adapter so it can read
   the real store instead of fixtures.
-- **P15d — evaluation views.** Equity curve, drawdown, trade distribution, and
-  run-to-run comparison, across both the P8 viewer and `/research`.
+- **P15d — evaluation views.** *(Local viewer done; `/research` pending.)* The
+  P8 viewer now serves `/api/runs/:id/trades` and `/api/runs/:id/equity`, and
+  renders an equity curve, a drawdown curve, a trade P&L distribution, and
+  summary statistics (win rate, profit factor, average win/loss) from retained
+  rows. Three decisions are load-bearing and are covered by tests:
+  - *Drawdown is computed across every point, never the downsampled subset.*
+    The returned series is strided to bound payload size, so a trough between
+    two strides would otherwise vanish and understate the number most likely to
+    be read as a risk bound. On the first real ORB run this was not theoretical:
+    the subset gave -10.21% against a true -11.14%.
+  - *Intraday and closed-equity drawdown are reported separately.* The curve
+    marks open positions to market, so its running peak is an intraday
+    high-water mark. For a strategy that is flat overnight these differ
+    materially -- -11.14% intraday against -8.80% on session closes for the same
+    run -- and reporting only the first would misstate the risk the strategy
+    actually carried into a close.
+  - *Market timestamps render in their recorded exchange offset.* Formatting
+    them through the device locale showed a 09:35 ET entry as 06:35 on a Pacific
+    machine, which is unrecognisable against an opening range defined in
+    exchange time.
+
+  Run-to-run comparison remains open, as does the `/research` half.
+- **P15e — cross-device row-level detail.** The local store lives outside the
+  repository at `%LOCALAPPDATA%\strategy-lab\research.sqlite3` and nothing
+  synchronizes it, so a curve computed on one device is invisible from every
+  other one. Row-level detail is withheld from the remote read model because
+  `/research` is anonymous-readable and decision #2 of the shared-data design
+  forbids exposing bars to the anonymous role -- a *licensing* constraint on
+  Databento redistribution. A strategy's own trades and equity curve are
+  derived outputs, not licensed market data, so the obstacle is the absence of
+  a private channel rather than the nature of the data.
+
+  **Do not relax the publication allowlist to solve this.** It is a single
+  recursive guard covering trades, fills, ledgers, equity series *and* raw
+  bars; widening it to admit a curve also admits the bars it exists to stop.
+  Instead reuse the private, authenticated transport this repository has
+  already specified for exactly this shape of problem: the `research-artifacts`
+  bucket with row-level policy denying anonymous access.
+
+  Publish **one compressed object per run** carrying the trade ledger and
+  equity curve. Relational rows are the wrong shape -- a single six-month run
+  is already 9,594 equity points, so a 200-run sweep approaches two million.
+  Integrity comes for free: `trade_ledger_sha256` and `equity_curve_sha256`
+  are already published in the anonymous run summary, so a second device
+  verifies a downloaded object against the digests exactly as
+  `verify_retained_detail` does locally, and a silently corrupted or truncated
+  download cannot masquerade as the run. Gated on the artifact transport that
+  the shared-data design still marks pending.
 
 **Regenerating pre-P2b sweep results is moot.** The concern was that results
 produced before `1247a91` came out of `legacy()` execution realism and should
