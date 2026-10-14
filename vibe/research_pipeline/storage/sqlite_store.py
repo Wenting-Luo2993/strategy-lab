@@ -54,6 +54,7 @@ from vibe.research_pipeline.storage.legacy_importer import upsert_registry_paylo
 from vibe.research_pipeline.store import (
     ImmutableRecordError,
     LeaseError,
+    StoredTrade,
     StoreError,
     ValidationRequiredError,
 )
@@ -133,6 +134,25 @@ def _iso_or_str(value: Any) -> str:
 
 def _opt_iso(value: Any) -> Optional[str]:
     return None if value is None else _iso_or_str(value)
+
+
+def _parse_iso(value: Any) -> Any:
+    """Restore a stored timestamp to a ``datetime``.
+
+    Returned as a real datetime rather than the stored text because the
+    canonical encoder normalizes datetimes to UTC before hashing but treats a
+    string as an opaque literal. A curve read back as ISO text therefore
+    digests to a different value than the one recorded, and every integrity
+    check against it would fail for a reason that has nothing to do with the
+    data. Unparseable text is passed through unchanged so a malformed row
+    surfaces as a checksum mismatch rather than an exception during a read.
+    """
+    if value is None or isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return value
 
 
 class SqliteResearchStore:
@@ -738,8 +758,16 @@ class SqliteResearchStore:
                 rows,
             )
 
-    def get_trades(self, run_id: str) -> list[dict[str, Any]]:
+    def get_trades(self, run_id: str) -> list["StoredTrade"]:
         """Return the stored trade ledger in execution order.
+
+        Rows are returned as :class:`StoredTrade` rather than plain dicts for a
+        specific reason: ``trade_ledger_digest`` reads its fields by attribute
+        and canonicalizes datetimes to UTC. A dict of ISO strings hashes to a
+        completely different value, so a caller could not check retrieved rows
+        against the evidence digest at all. Returning a shape that reproduces
+        the digest is what makes :meth:`verify_retained_detail` possible, and
+        with it any downstream claim that a chart shows the run's real trades.
 
         An empty list means either that the run kept no ledger or that it took
         no trades. Callers that must tell those apart should read
@@ -747,7 +775,20 @@ class SqliteResearchStore:
         are recorded under every profile.
         """
         return [
-            dict(row)
+            StoredTrade(
+                sequence=int(row["sequence"]),
+                symbol=row["symbol"],
+                side=row["side"],
+                quantity=row["quantity"],
+                entry_price=row["entry_price"],
+                exit_price=row["exit_price"],
+                entry_time=_parse_iso(row["entry_time"]),
+                exit_time=_parse_iso(row["exit_time"]),
+                pnl=row["pnl"],
+                commission=row["commission"],
+                initial_risk=row["initial_risk"],
+                exit_reason=row["exit_reason"],
+            )
             for row in self._conn.execute(
                 """
                 SELECT sequence, symbol, side, quantity, entry_price,
@@ -759,18 +800,58 @@ class SqliteResearchStore:
             ).fetchall()
         ]
 
-    def get_equity_curve(self, run_id: str) -> list[dict[str, Any]]:
-        """Return the stored equity curve in chronological order."""
+    def get_equity_curve(self, run_id: str) -> list[tuple[Any, float]]:
+        """Return the stored equity curve as chronological ``(time, value)``.
+
+        Pairs rather than dicts, and real datetimes rather than ISO text, for
+        the same reason as :meth:`get_trades`: this is the exact shape
+        ``equity_curve_digest`` consumes, so the retrieved curve can be checked
+        against the evidence it claims to come from.
+        """
         return [
-            dict(row)
+            (_parse_iso(row["observed_at"]), float(row["equity"]))
             for row in self._conn.execute(
                 """
-                SELECT sequence, observed_at, equity
+                SELECT observed_at, equity
                 FROM run_equity_points WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),
             ).fetchall()
         ]
+
+    def verify_retained_detail(self, run_id: str) -> None:
+        """Re-check stored rows against the run's evidence checksums.
+
+        The writers verify on the way in, but that only proves the rows were
+        correct when written. This proves they still are, which is the claim a
+        dashboard implicitly makes every time it renders them. Silent drift --
+        a partial delete, a botched migration, a hand-edited row -- would
+        otherwise be invisible, because the summary row would continue to show
+        the original, correct-looking totals.
+
+        Raises:
+            StoreError: If retained rows do not reproduce the recorded digest.
+        """
+        profile, ledger_digest, curve_digest = self._retention_context(run_id)
+
+        if profile in (RetentionProfile.DIAGNOSTIC, RetentionProfile.FULL):
+            actual = trade_ledger_digest(self.get_trades(run_id))
+            if actual != ledger_digest:
+                raise StoreError(
+                    f"Stored trade ledger for run {run_id} no longer matches "
+                    f"its evidence: expected {ledger_digest}, computed "
+                    f"{actual}. The retained rows have drifted from the run "
+                    "they claim to describe."
+                )
+
+        if profile is RetentionProfile.FULL:
+            actual = equity_curve_digest(self.get_equity_curve(run_id))
+            if actual != curve_digest:
+                raise StoreError(
+                    f"Stored equity curve for run {run_id} no longer matches "
+                    f"its evidence: expected {curve_digest}, computed "
+                    f"{actual}."
+                )
 
     def record_findings(
         self, run_id: str, findings: Iterable[ValidationFinding]

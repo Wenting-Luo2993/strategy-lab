@@ -33,6 +33,7 @@ __all__ = [
     "ValidationProfile",
     "ValidationReport",
     "ValidationScope",
+    "metric_values",
 ]
 
 
@@ -190,7 +191,7 @@ def _finding(
     )
 
 
-def _metric_values(result: BacktestResult) -> dict[str, float]:
+def metric_values(result: BacktestResult) -> dict[str, float]:
     overall = result.overall
     equity = result.equity
     values = {
@@ -307,7 +308,7 @@ class MetricValidator:
     def _check_mathematics(
         self, value: ValidationInput, findings: list[ValidationFinding]
     ) -> None:
-        for key, observed in _metric_values(value.result).items():
+        for key, observed in metric_values(value.result).items():
             if not math.isfinite(observed):
                 findings.append(
                     _finding(
@@ -723,7 +724,7 @@ class MetricValidator:
     def _check_acceptance(
         self, value: ValidationInput, findings: list[ValidationFinding]
     ) -> None:
-        metrics: Mapping[str, float] = _metric_values(value.result)
+        metrics: Mapping[str, float] = metric_values(value.result)
         for index, rule in enumerate(self.profile.acceptance_rules, start=1):
             observed = metrics.get(rule.metric_key)
             if observed is None:

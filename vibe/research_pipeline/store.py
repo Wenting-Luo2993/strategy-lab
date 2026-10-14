@@ -14,6 +14,7 @@ Two invariants are part of the contract, not the implementation:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Optional, Protocol, Sequence, runtime_checkable
 
@@ -25,11 +26,42 @@ from vibe.research_pipeline.validation import ValidationReport
 __all__ = [
     "ResearchStore",
     "RunRecord",
+    "StoredTrade",
     "StoreError",
     "ImmutableRecordError",
     "LeaseError",
     "ValidationRequiredError",
 ]
+
+
+@dataclass(frozen=True)
+class StoredTrade:
+    """One retained trade, in the shape the ledger digest expects.
+
+    Field names and types mirror the subset of ``Trade`` listed in
+    ``TRADE_DIGEST_FIELDS``, so a list of these recomputes the exact digest
+    recorded in the run's evidence. That is the whole point of the type: a
+    reader can prove the rows it is about to display belong to the run it
+    claims they came from.
+
+    ``sequence`` carries the stored execution order explicitly. It is excluded
+    from the digest -- as is ``trade_id`` -- because the digest derives order
+    from list position; including a position field would make the checksum
+    agree with itself rather than with the ledger.
+    """
+
+    sequence: int
+    symbol: str
+    side: str
+    quantity: float
+    entry_price: float
+    exit_price: Optional[float]
+    entry_time: Any
+    exit_time: Any
+    pnl: Optional[float]
+    commission: Optional[float]
+    initial_risk: Optional[float]
+    exit_reason: Optional[str]
 
 
 class StoreError(RuntimeError):
@@ -141,6 +173,34 @@ class ResearchStore(Protocol):
 
         Only meaningful under ``full``, and subject to the same digest
         agreement and local-only constraints as :meth:`record_trades`.
+        """
+
+    def get_trades(self, run_id: str) -> Sequence[StoredTrade]:
+        """Return the retained ledger in execution order.
+
+        The return shape is part of the contract, not an implementation
+        detail: ``trade_ledger_digest`` reads fields by attribute and
+        canonicalizes datetimes to UTC, so rows must be returned as objects
+        carrying real ``datetime`` values. Returning equivalent-looking dicts
+        of ISO strings compares equal field by field while failing to
+        reproduce the digest, which would make the ledger unverifiable.
+        """
+
+    def get_equity_curve(self, run_id: str) -> Sequence[tuple[datetime, float]]:
+        """Return the retained curve chronologically, as ``(timestamp, equity)``.
+
+        Two-tuples of real datetimes for the same reason as
+        :meth:`get_trades` -- this is the shape ``equity_curve_digest``
+        accepts.
+        """
+
+    def verify_retained_detail(self, run_id: str) -> None:
+        """Re-derive both digests from storage and compare to the evidence.
+
+        The writers only prove the rows were correct when written. Anything
+        reading them later implicitly claims they still are, and drift would
+        otherwise be invisible because the summary row keeps showing
+        correct-looking totals. Raises ``StoreError`` on disagreement.
         """
 
     def record_findings(

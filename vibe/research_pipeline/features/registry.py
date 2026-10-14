@@ -62,6 +62,18 @@ from vibe.research_pipeline.hashing import hash_object
 # to the remaining 77 bars of that session.
 _SESSION_BARS_5M = 78
 
+# Identifies the feature *contract* a run was computed under, and is carried in
+# every RunFingerprint. Bump it whenever a declaration is added, removed, or has
+# its kind or lookback changed -- that is, whenever a feature could mean
+# something different than it did before. Old fingerprints then compare unequal
+# by construction, which is correct: results produced under a different feature
+# contract are not comparable to results produced under this one.
+#
+# This is deliberately coarser than registry_hash(). The hash detects any edit
+# at all, including a reworded description; this version records the deliberate
+# judgement that meaning changed.
+FEATURE_SET_VERSION = 1
+
 
 class FeatureNotDeclaredError(KeyError):
     """Raised when a column reaches a decision path without a declaration.

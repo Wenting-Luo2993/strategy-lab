@@ -1551,8 +1551,7 @@ this section is to make gaps visible rather than to show progress.
 | State | Increments |
 | --- | --- |
 | Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P8, P9, P10, P10b, P11, P12, P13 |
-| Partial | P14 |
-| Not started | P15 |
+| Partial | P14, P15 (P15a/P15b done; P15c/P15d not started) |
 
 All nine increments required by the "minimum bar before trusting a result"
 (P0-P6, P9, P10) are complete. P6 prevents a run from reaching
@@ -1588,12 +1587,12 @@ make the parent inconclusive instead of stitching survivors.
 | P13 | `/research` route | **Complete** (2026-10) | P13 implementation commit, `8179428` | The existing static-export dashboard now includes a shared `/research` route with top-level Live Trading/Backtest Research navigation. A strict read-only contract has fixture/local and anonymous Supabase implementations. The versioned decoder preserves methodology, execution-realism identity, validation findings, evidence counts/checksums, lineage, publication/reconciliation identity, and legacy/pre-P2b/survivorship badges while refusing prohibited event-level payloads. The explorer provides remote pagination, filtering, sorting, overview/list/detail states, shareable detail query URLs, responsive trust badges, and explicit artifact boundaries. The flexible analyzer adds a field catalog, typed composable filters, arbitrary grouping dimensions, aggregate measures, chart encodings, bounded URL state, explicit cost/cardinality/truncation feedback, normalized SQLite execution, and a bounded Supabase RPC. Build-time credential validation rejects service-role variable names and service-role JWT values. |
 | P14 | YAML retirement | **Partial** (2026-10) | `f5f4a37` | All 98 legacy records were archived externally with per-file SHA-256 inventory; 73 experiment YAML files and 16 artifact descriptors were removed from the active tree after parity verification. The owner-device SQLite store was subsequently backed up and purged of all 98 imported registry records, their relationships/metrics, and all 98 pending `legacy_yaml` publication events. Four hypotheses and five narrative notes remain only as source-controlled, non-authoritative learning records. Final activation remains gated on validating the deployed P13/P12 read and reconciliation surfaces, private dataset/artifact storage, signed previews, and the compatibility release against the intended Supabase project. |
 
-| P15 | Result visibility | **Not started** | — | Nothing currently writes a backtest run into the research store, the store has no row-level retention, and `/research` renders fixtures. See "The result-visibility gap" below. |
+| P15 | Result visibility | **Partial** (2026-10) | `1aee73c`, P15a commit | P15a and P15b are complete; P15c and P15d are not started. `vibe/research_pipeline/recording.py` is the producer that was missing: `scripts/run_backtest.py` now registers a run, executes inside the lifecycle so a crash records `EXECUTION_FAILED`, and persists metrics, evidence, and -- under `diagnostic`/`full` -- the trade ledger and equity curve. Recording comes to rest in `VALIDATING` and never finalizes, because a terminal state requires a real `LeakageReport` and bar-measured `DataIntegritySummary`. Schema v9 adds `run_trades`/`run_equity_points`, both written only after the rows reproduce the digest already in the run's evidence, and `verify_retained_detail` re-derives both digests from storage so post-write drift is detectable. `/research` still renders fixtures. See "The result-visibility gap" below. |
 
 The integrated P6/P7/P9 tree passes 610 research-pipeline unit tests and both
-ORB golden integration tests. As of 2026-10-13 the full local suite
+ORB golden integration tests. As of 2026-10-14 the full local suite
 (`vibe/tests/backtester`, `vibe/tests/backtester_integration`,
-`tests/unit/research_pipeline`, `vibe/tests/research_journal`) passes 1238
+`tests/unit/research_pipeline`, `vibe/tests/research_journal`) passes 1272
 tests, the P8 viewer passes 13, and both ORB goldens pass after the
 `max_funded_entry_leverage` re-freeze (`c603afe`).
 
@@ -1944,14 +1943,33 @@ disconnected. No amount of UI work makes them informative while layers 1 and 2
 are missing. P15 therefore sequences producer and retention before
 presentation:
 
-- **P15a — producer.** Record completed runs into the store from
-  `run_backtest.py` and the sweep/walk-forward/robustness runners, creating the
-  database on first use.
-- **P15b — local retention.** Back `DIAGNOSTIC`/`FULL` with bounded local
-  `trades` and `equity_points` tables. Remote safety already holds
-  independently: the publication allowlist in `publishing.py:69` recursively
-  refuses trades, fills, ledgers, equity series, and raw bars, so local
-  retention cannot leak into a publication payload.
+- **P15a — producer.** *(Done for `run_backtest.py`; runners still pending.)*
+  `vibe/research_pipeline/recording.py` registers a run, executes the backtest
+  *inside* the lifecycle so a crash records `EXECUTION_FAILED` rather than
+  nothing, then persists metrics and evidence. It stops at `VALIDATING`: a
+  terminal state is legitimate only via `finalize_validation`, which needs a
+  real `LeakageReport` and a bar-measured `DataIntegritySummary`, and a
+  synthesized "passing" report would mark unvalidated runs `COMPLETED`.
+  `starting_equity` is passed in rather than read off the equity curve, so the
+  `ending - starting == net_pnl` assertion in `RunEvidence` can actually fail.
+  The database is created on first use; a real QQQ run produced 1 run, 39
+  metrics, 123 trades, and 9,594 equity points. The sweep, walk-forward, and
+  robustness runners are **not yet wired**.
+- **P15b — local retention.** *(Done.)* Schema v9 adds `run_trades` and
+  `run_equity_points`, both with an explicit `sequence` column because the
+  digests are order-sensitive, and both refused unless the rows reproduce the
+  checksum already in the run's evidence. The retention profile is read from
+  that evidence rather than taken as a parameter, so a caller cannot ask for
+  more retention than the run declared. `verify_retained_detail` re-derives
+  both digests from storage, because the writers only prove the rows were
+  correct *when written* while every reader implicitly claims they still are.
+  `get_trades` returns `StoredTrade` objects and `get_equity_curve` returns
+  `(datetime, float)` tuples: the canonical encoder reads fields by attribute
+  and normalizes datetimes to UTC, so returning dicts of ISO strings compares
+  equal field-by-field yet fails to reproduce the digest. Remote safety already
+  holds independently: the publication allowlist in `publishing.py:69`
+  recursively refuses trades, fills, ledgers, equity series, and raw bars, so
+  local retention cannot leak into a publication payload.
 - **P15c — local data path.** Give `/research` a local adapter so it can read
   the real store instead of fixtures.
 - **P15d — evaluation views.** Equity curve, drawdown, trade distribution, and

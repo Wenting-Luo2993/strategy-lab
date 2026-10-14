@@ -151,11 +151,11 @@ def test_diagnostic_run_round_trips_its_ledger(store: SqliteResearchStore):
     stored = store.get_trades(run_id)
 
     assert len(stored) == len(trades)
-    assert [row["symbol"] for row in stored] == [t.symbol for t in trades]
-    assert [row["side"] for row in stored] == [t.side for t in trades]
-    assert [row["entry_price"] for row in stored] == [t.entry_price for t in trades]
-    assert [row["pnl"] for row in stored] == [t.pnl for t in trades]
-    assert [row["exit_reason"] for row in stored] == [t.exit_reason for t in trades]
+    assert [row.symbol for row in stored] == [t.symbol for t in trades]
+    assert [row.side for row in stored] == [t.side for t in trades]
+    assert [row.entry_price for row in stored] == [t.entry_price for t in trades]
+    assert [row.pnl for row in stored] == [t.pnl for t in trades]
+    assert [row.exit_reason for row in stored] == [t.exit_reason for t in trades]
 
 
 def test_stored_order_is_execution_order(store: SqliteResearchStore):
@@ -172,10 +172,8 @@ def test_stored_order_is_execution_order(store: SqliteResearchStore):
     store.record_trades(run_id, trades)
     stored = store.get_trades(run_id)
 
-    assert [row["sequence"] for row in stored] == list(range(len(trades)))
-    assert [row["entry_time"] for row in stored] == [
-        t.entry_time.isoformat() for t in trades
-    ]
+    assert [row.sequence for row in stored] == list(range(len(trades)))
+    assert [row.entry_time for row in stored] == [t.entry_time for t in trades]
 
 
 def test_open_trade_keeps_null_exit_rather_than_zero(store: SqliteResearchStore):
@@ -191,9 +189,9 @@ def test_open_trade_keeps_null_exit_rather_than_zero(store: SqliteResearchStore)
     store.record_trades(run_id, trades)
     (row,) = store.get_trades(run_id)
 
-    assert row["exit_price"] is None
-    assert row["exit_time"] is None
-    assert row["pnl"] is None
+    assert row.exit_price is None
+    assert row.exit_time is None
+    assert row.pnl is None
 
 
 # -- retention profile is enforced, not advisory -------------------------
@@ -241,10 +239,7 @@ def test_full_run_round_trips_its_equity_curve(store: SqliteResearchStore):
     store.record_equity_curve(run_id, curve)
     stored = store.get_equity_curve(run_id)
 
-    assert [row["equity"] for row in stored] == [value for _, value in curve]
-    assert [row["observed_at"] for row in stored] == [
-        timestamp.isoformat() for timestamp, _ in curve
-    ]
+    assert stored == curve
 
 
 # -- rows must agree with the checksum that proves reproducibility -------
@@ -361,3 +356,91 @@ def test_rewriting_detail_replaces_rather_than_duplicates(
     store.record_trades(run_id, trades)
 
     assert len(store.get_trades(run_id)) == len(trades)
+
+# -- retrieved rows must be verifiable against the evidence --------------
+
+
+def test_retrieved_ledger_reproduces_its_digest(store: SqliteResearchStore):
+    """A reader must be able to prove retrieved rows are the run's rows.
+
+    This is stronger than checking field equality, and it is the check that
+    matters: ``get_trades`` originally returned dicts of ISO strings, every
+    field of which compared equal to the original, while the digest computed
+    over them did not match the evidence at all. The canonical encoder reads
+    fields by attribute and normalizes datetimes to UTC, so the returned shape
+    -- not just its contents -- is part of the contract.
+    """
+    trades = _trades()
+    run_id = _prepare(
+        store, profile=RetentionProfile.DIAGNOSTIC, trades=trades, curve=_curve()
+    )
+    store.record_trades(run_id, trades)
+
+    assert trade_ledger_digest(store.get_trades(run_id)) == trade_ledger_digest(trades)
+
+
+def test_retrieved_curve_reproduces_its_digest(store: SqliteResearchStore):
+    """Same contract for the equity curve: retrievable means verifiable."""
+    trades = _trades()
+    curve = _curve()
+    run_id = _prepare(store, profile=RetentionProfile.FULL, trades=trades, curve=curve)
+    store.record_equity_curve(run_id, curve)
+
+    assert equity_curve_digest(store.get_equity_curve(run_id)) == equity_curve_digest(
+        curve
+    )
+
+
+def test_verify_retained_detail_accepts_untampered_rows(
+    store: SqliteResearchStore,
+):
+    trades = _trades()
+    curve = _curve()
+    run_id = _prepare(store, profile=RetentionProfile.FULL, trades=trades, curve=curve)
+    store.record_trades(run_id, trades)
+    store.record_equity_curve(run_id, curve)
+
+    store.verify_retained_detail(run_id)
+
+
+def test_verify_retained_detail_catches_a_tampered_row(
+    store: SqliteResearchStore,
+):
+    """Drift after the write must be detectable, not just drift during it.
+
+    The writers check on the way in, which only proves the rows were right when
+    written. A hand-edited row, a partial delete, or a bad migration would
+    otherwise leave the summary totals looking perfectly correct while the
+    detail beneath them silently disagreed.
+    """
+    trades = _trades()
+    curve = _curve()
+    run_id = _prepare(store, profile=RetentionProfile.FULL, trades=trades, curve=curve)
+    store.record_trades(run_id, trades)
+    store.record_equity_curve(run_id, curve)
+
+    store._conn.execute(
+        "UPDATE run_trades SET pnl = pnl + 1.0 WHERE run_id = ? AND sequence = 0",
+        (run_id,),
+    )
+    store._conn.commit()
+
+    with pytest.raises(StoreError, match="no longer matches"):
+        store.verify_retained_detail(run_id)
+
+
+def test_verify_retained_detail_catches_a_deleted_row(store: SqliteResearchStore):
+    """A missing trade must not read as a shorter but still-valid ledger."""
+    trades = _trades()
+    curve = _curve()
+    run_id = _prepare(store, profile=RetentionProfile.FULL, trades=trades, curve=curve)
+    store.record_trades(run_id, trades)
+    store.record_equity_curve(run_id, curve)
+
+    store._conn.execute(
+        "DELETE FROM run_trades WHERE run_id = ? AND sequence = 1", (run_id,)
+    )
+    store._conn.commit()
+
+    with pytest.raises(StoreError, match="no longer matches"):
+        store.verify_retained_detail(run_id)

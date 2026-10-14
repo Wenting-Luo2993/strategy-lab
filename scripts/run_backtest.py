@@ -26,10 +26,89 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from vibe.backtester.core.engine import BacktestEngine
+from vibe.backtester.data.paths import (
+    MarketDataNotFoundError,
+    resolve_market_data_dir,
+)
 from vibe.backtester.reporting.report import ReportGenerator
 from vibe.common.ruleset.loader import RuleSetLoader
 
 ET = ZoneInfo("America/New_York")
+
+RETENTION_CHOICES = ("summary", "diagnostic", "full")
+
+
+def _dataset_snapshot_id(data_dir: Path, symbol: str) -> str:
+    """Identify the bar data this run consumed.
+
+    A curated dataset manifest is preferred, because it names a dataset the
+    pipeline can verify. When none exists -- the common case for a local
+    parquet drop -- fall back to the file's content hash. The ``sha256:``
+    prefix keeps the two distinguishable: a content hash proves the bytes were
+    identical but carries none of a manifest's provenance, and conflating them
+    would overstate what is known about the data.
+    """
+    from vibe.research_pipeline.datasets import read_manifest
+    from vibe.research_pipeline.hashing import hash_file
+
+    parquet = data_dir / f"{symbol}.parquet"
+    manifest_path = data_dir / f"{symbol}.manifest.json"
+    if manifest_path.is_file():
+        try:
+            return read_manifest(manifest_path).dataset_id
+        except Exception:
+            pass
+    return f"sha256:{hash_file(parquet)}"
+
+
+def _record_run(result, *, args, ruleset_path: Path, data_dir: Path,
+                retention_name: str) -> None:
+    """Persist the finished run so it is visible to the research dashboards."""
+    from vibe.backtester.core.execution_realism import EXECUTION_MODEL_VERSION
+    from vibe.research_pipeline.contracts import RetentionProfile
+    from vibe.research_pipeline.paths import research_db_path
+    from vibe.research_pipeline.recording import RunRecorder, build_run_fingerprint
+    from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
+
+    retention = RetentionProfile(retention_name)
+    first = datetime.strptime(result.overall.first_date[:10], "%Y-%m-%d").date()
+    last = datetime.strptime(result.overall.last_date[:10], "%Y-%m-%d").date()
+
+    fingerprint = build_run_fingerprint(
+        strategy_id=args.ruleset,
+        ruleset_path=ruleset_path,
+        parameters={
+            "symbol": args.symbol,
+            "start": args.start,
+            "end": args.end,
+            "initial_capital": args.capital,
+            "slippage_ticks": args.slippage_ticks,
+        },
+        symbol=args.symbol,
+        first_session=first,
+        last_session=last,
+        session_count=int(result.equity.n_sessions),
+        data_snapshot_id=_dataset_snapshot_id(data_dir, args.symbol),
+        execution_model_version=EXECUTION_MODEL_VERSION,
+        metric_calculation_version=int(result.overall.calculation_version),
+        repo_root=Path(__file__).resolve().parent.parent,
+    )
+
+    db_path = research_db_path(create_parents=True)
+    store = SqliteResearchStore(db_path)
+    # The simulation has already finished, so the recorder's crash handling has
+    # nothing left to protect. The lifecycle is still walked in full so the run
+    # is indistinguishable from one recorded around a live execution.
+    with RunRecorder(
+        store,
+        fingerprint=fingerprint,
+        methodology_version="run_backtest/v1",
+        retention=retention,
+    ) as recorder:
+        run_id = recorder.record(result, starting_equity=args.capital)
+
+    print(f"Recorded: {run_id}  ({retention.value} retention)")
+    print(f"Store  : {db_path}")
 
 
 def _write_trades_csv(trades, path: Path) -> None:
@@ -73,6 +152,16 @@ def main() -> None:
     parser.add_argument("--slippage-ticks", default=5, type=int, help="Slippage in ticks")
     parser.add_argument("--output",     default="reports/backtest.html", help="Output HTML path")
     parser.add_argument("--trades-csv", default=None, help="Optional path to dump trade list as CSV")
+    parser.add_argument(
+        "--retention", default="full", choices=RETENTION_CHOICES,
+        help="How much of the run to keep locally. 'summary' keeps metrics and "
+             "checksums only; 'diagnostic' adds the trade ledger; 'full' adds "
+             "the equity curve. Never leaves this machine.",
+    )
+    parser.add_argument(
+        "--no-record", action="store_true",
+        help="Skip writing the run to the local research store.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
     
@@ -84,12 +173,19 @@ def main() -> None:
         force=True,
     )
 
-    data_dir = Path(os.environ.get("BACKTEST__DATA_DIR", "vibe/data/parquet"))
-    if not data_dir.exists():
-        print(f"ERROR: data dir not found: {data_dir}", file=sys.stderr)
+    # Resolve through the shared helper rather than a literal relative path.
+    # Market data is gitignored, so a worktree does not have its own copy; the
+    # resolver finds the checkout that does, which is how the golden tests
+    # already locate it. The hardcoded "vibe/data/parquet" only ever worked
+    # from the primary checkout's root.
+    try:
+        data_dir = resolve_market_data_dir()
+    except MarketDataNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         print("Run: python scripts/convert_databento.py", file=sys.stderr)
         sys.exit(1)
 
+    ruleset_path = RuleSetLoader.RULESETS_DIR / f"{args.ruleset}.yaml"
     ruleset = RuleSetLoader.from_name(args.ruleset)
     engine  = BacktestEngine(ruleset=ruleset, data_dir=data_dir,
                               initial_capital=args.capital,
@@ -115,6 +211,15 @@ def main() -> None:
         trades_path.parent.mkdir(parents=True, exist_ok=True)
         _write_trades_csv(result.trades, trades_path)
         print(f"Trades : {trades_path}")
+
+    if not args.no_record:
+        _record_run(
+            result,
+            args=args,
+            ruleset_path=ruleset_path,
+            data_dir=data_dir,
+            retention_name=args.retention,
+        )
 
 
 if __name__ == "__main__":
