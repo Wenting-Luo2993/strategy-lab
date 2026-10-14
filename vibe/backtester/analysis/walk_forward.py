@@ -118,12 +118,14 @@ class WalkForwardEngine:
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 5,
         execution_realism: ExecutionRealismConfig | None = None,
+        run_sink: Any = None,
     ):
         self.ruleset = ruleset
         self.data_dir = resolve_market_data_dir(data_dir)
         self.initial_capital = initial_capital
         self.slippage_ticks = slippage_ticks
         self.execution_realism = execution_realism or ExecutionRealismConfig.realistic()
+        self.run_sink = run_sink
     
     def analyze(
         self,
@@ -197,6 +199,11 @@ class WalkForwardEngine:
             logger.info(f"    Train exp: {period.train_expectancy:.3f}R, "
                        f"Test exp: {period.test_expectancy:.3f}R, "
                        f"Degradation: {period.degradation:.1%}")
+
+            self._record_fold(period, symbol=symbol, fold=i, total=len(periods))
+
+        if self.run_sink is not None:
+            logger.info(f"  Research store: {self.run_sink.summary()}")
         
         # Calculate aggregate metrics
         train_expectancies = [p.train_expectancy for p in periods]
@@ -272,6 +279,48 @@ class WalkForwardEngine:
         
         return periods
     
+    def _record_fold(
+        self,
+        period: WalkForwardPeriod,
+        *,
+        symbol: str,
+        fold: int,
+        total: int,
+    ) -> None:
+        """Record both halves of one fold as separate research runs.
+
+        The two halves are recorded under different segment roles. This is the
+        whole point: a training fold is in-sample by construction, and a store
+        that labelled it ``test`` would let an in-sample number be read as
+        out-of-sample evidence -- the exact confusion walk-forward analysis
+        exists to prevent. The roles also keep the two fingerprints distinct
+        even in the degenerate case where a train and test window coincide.
+        """
+        if self.run_sink is None:
+            return
+
+        from vibe.research_pipeline.contracts import SegmentRole
+
+        halves = (
+            (SegmentRole.TRAIN, period.train_result, "train"),
+            (SegmentRole.TEST, period.test_result, "test"),
+        )
+        for role, result, label in halves:
+            if result is None:
+                continue
+            self.run_sink.record(
+                result,
+                ruleset=self.ruleset,
+                parameters={
+                    "symbol": symbol,
+                    "initial_capital": self.initial_capital,
+                    "slippage_ticks": self.slippage_ticks,
+                    "walk_forward_half": label,
+                },
+                segment_role=role,
+                notes=f"Walk-forward fold {fold}/{total} ({label})",
+            )
+
     def _subset_features(
         self,
         features: Optional[pd.DataFrame],

@@ -248,6 +248,22 @@ def main():
     )
     
     parser.add_argument(
+        "--record-runs",
+        action="store_true",
+        help="Record every backtest into the local research store so the "
+             "study is visible in the research viewer and dashboards",
+    )
+
+    parser.add_argument(
+        "--retention",
+        default="full",
+        choices=["summary", "diagnostic", "full"],
+        help="How much of each recorded run to keep locally: 'summary' is "
+             "metrics and checksums, 'diagnostic' adds the trade ledger, "
+             "'full' adds the equity curve. Never leaves this machine.",
+    )
+
+    parser.add_argument(
         "--surface",
         action="store_true",
         help="Run surface analysis (parameter heatmaps)",
@@ -408,6 +424,8 @@ def main():
             journal_tags=[t.strip() for t in args.journal_tags.split(",") if t.strip()],
             experiment_tags=["optimization", "parameter-sweep", args.strategy],
             strategy_name=f"{args.strategy.upper()}Strategy",
+            record_runs=args.record_runs,
+            retention=args.retention,
         )
         
         # Print summary

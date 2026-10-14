@@ -148,6 +148,31 @@ class OptimizationPipeline:
         self.execution_realism = (
             execution_realism or ExecutionRealismConfig.realistic()
         )
+
+    def _build_run_sink(
+        self, *, symbol: str, strategy_id: str, retention: str
+    ) -> Any:
+        """Create the research-store sink shared by every stage of a study.
+
+        One sink is shared deliberately. The sweep, the robustness pass, and
+        the walk-forward are three views of the same question about the same
+        strategy over the same data, and a shared sink reads git state once
+        and reports a single reconciled count across all of them. It also
+        makes duplicate detection work *across* stages: the robustness
+        baseline is usually identical to the winning sweep point, and
+        recording it twice would double-count it in any cross-run aggregate.
+        """
+        from vibe.backtester.analysis.research_sink import open_run_sink
+
+        return open_run_sink(
+            data_dir=self.data_dir,
+            symbol=symbol,
+            strategy_id=strategy_id,
+            starting_equity=self.initial_capital,
+            methodology_version="optimization_pipeline/v1",
+            retention=retention,
+            owner="optimization_pipeline",
+        )
     
     def optimize(
         self,
@@ -169,6 +194,8 @@ class OptimizationPipeline:
         journal_tags: Optional[List[str]] = None,
         experiment_tags: Optional[List[str]] = None,
         strategy_name: str = "ORBStrategy",
+        record_runs: bool = False,
+        retention: str = "full",
     ) -> OptimizationResult:
         """
         Run complete optimization pipeline.
@@ -184,6 +211,12 @@ class OptimizationPipeline:
             run_walk_forward: Run walk-forward analysis on best candidate
             run_surface: Run surface analysis for 2D parameter pairs
             output_dir: Optional directory for reports/plots
+            record_runs: Record every backtest this pipeline executes into the
+                local research store, so the study is visible to the research
+                dashboards as a population of runs rather than only as a CSV.
+            retention: How much of each recorded run to keep locally --
+                "summary", "diagnostic" (adds the trade ledger), or "full"
+                (adds the equity curve). Ignored unless ``record_runs``.
         
         Returns:
             OptimizationResult with comprehensive analysis
@@ -195,6 +228,14 @@ class OptimizationPipeline:
         logger.info(f"Period: {start_date.date()} to {end_date.date()}")
         logger.info(f"Parameters: {[p.name for p in parameters]}")
         logger.info(f"Sweep mode: {sweep_mode}")
+
+        run_sink = None
+        if record_runs:
+            run_sink = self._build_run_sink(
+                symbol=symbol,
+                strategy_id=self.base_ruleset_path.stem,
+                retention=retention,
+            )
         
         # Step 1: Parameter sweep with pre-computed features
         logger.info("\n[1/4] Running parameter sweep...")
@@ -207,6 +248,7 @@ class OptimizationPipeline:
             slippage_ticks=self.slippage_ticks,
             sweep_mode=sweep_mode,
             execution_realism=self.execution_realism,
+            run_sink=run_sink,
         )
         
         sweep_results = sweep.run(
@@ -272,6 +314,12 @@ class OptimizationPipeline:
                 data_dir=self.data_dir,
                 initial_capital=self.initial_capital,
                 baseline_slippage_ticks=self.slippage_ticks,
+                # Previously omitted, so a pipeline constructed with
+                # legacy() silently measured robustness under realistic()
+                # fills -- the dispersion of a different execution model than
+                # the sweep it is supposed to be stress-testing.
+                execution_realism=self.execution_realism,
+                run_sink=run_sink,
             )
             
             robustness_analysis = analyzer.analyze(
@@ -298,6 +346,8 @@ class OptimizationPipeline:
                 data_dir=self.data_dir,
                 initial_capital=self.initial_capital,
                 slippage_ticks=self.slippage_ticks,
+                execution_realism=self.execution_realism,
+                run_sink=run_sink,
             )
             
             walk_forward_analysis = wf_engine.analyze(

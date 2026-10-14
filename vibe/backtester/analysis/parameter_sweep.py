@@ -148,6 +148,7 @@ class ParameterSweep:
         slippage_ticks: int = 5,
         sweep_mode: str = "one_at_a_time",
         execution_realism: ExecutionRealismConfig | None = None,
+        run_sink: Any = None,
     ):
         """
         Initialize parameter sweep.
@@ -166,6 +167,11 @@ class ParameterSweep:
                 deliberately not the default, because a sweep that silently
                 fills at the stop trigger with no commission overstates
                 expectancy enough to change which parameters look best.
+            run_sink: Optional ``BacktestRunSink``. When supplied, every point
+                in the sweep is recorded into the research store under its own
+                fingerprint, which is what makes a sweep visible to the
+                dashboards as a population rather than as a single CSV. Left
+                ``None``, nothing is recorded and behaviour is unchanged.
         """
         self.base_ruleset_path = Path(base_ruleset_path)
         self.data_dir = resolve_market_data_dir(data_dir)
@@ -174,6 +180,7 @@ class ParameterSweep:
         self.slippage_ticks = slippage_ticks
         self.sweep_mode = sweep_mode
         self.execution_realism = execution_realism or ExecutionRealismConfig.realistic()
+        self.run_sink = run_sink
         
         if sweep_mode not in ("one_at_a_time", "grid"):
             raise ValueError(f"Invalid sweep_mode: {sweep_mode}. Must be 'one_at_a_time' or 'grid'")
@@ -449,6 +456,14 @@ class ParameterSweep:
                 progress_callback(i, total, params)
             
             try:
+                # Built unconditionally, not just on a cache miss: this is the
+                # *effective* configuration of the point, and the run sink
+                # fingerprints it. A cached result describes a backtest that
+                # really ran, so it belongs in the store too; skipping it would
+                # make the store's contents depend on whether a cache file
+                # happened to exist.
+                ruleset = self._create_modified_ruleset(params)
+
                 # Check cache first
                 result = None
                 if cache_dir:
@@ -460,9 +475,6 @@ class ParameterSweep:
                 
                 # Run backtest if not cached
                 if result is None:
-                    # Create modified ruleset
-                    ruleset = self._create_modified_ruleset(params)
-                    
                     # Run backtest with pre-computed features
                     engine = self._build_engine(ruleset)
                     
@@ -480,6 +492,21 @@ class ParameterSweep:
                 # Store result
                 sweep_result = SweepResult(params=params, result=result)
                 results.append(sweep_result)
+
+                if self.run_sink is not None:
+                    self.run_sink.record(
+                        result,
+                        ruleset=ruleset,
+                        parameters={
+                            **params,
+                            "symbol": symbol,
+                            "start": start_date.date().isoformat(),
+                            "end": end_date.date().isoformat(),
+                            "initial_capital": self.initial_capital,
+                            "slippage_ticks": self.slippage_ticks,
+                        },
+                        notes=f"Parameter sweep ({self.sweep_mode}) point {i}/{total}",
+                    )
                 
                 metrics = result.overall
                 logger.info(f"  → Trades: {metrics.n_trades}, Win%: {metrics.win_rate:.1%}, "
@@ -496,6 +523,8 @@ class ParameterSweep:
         df = df.sort_values("composite_score", ascending=False).reset_index(drop=True)
         
         logger.info(f"Parameter sweep complete: {len(results)}/{total} successful")
+        if self.run_sink is not None:
+            logger.info(f"Research store: {self.run_sink.summary()}")
         if cache_hits > 0:
             logger.info(f"Cache hits: {cache_hits}/{total} ({cache_hits/total:.1%})")
         

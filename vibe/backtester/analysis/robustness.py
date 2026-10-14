@@ -102,12 +102,42 @@ class RobustnessAnalyzer:
         initial_capital: float = 10_000.0,
         baseline_slippage_ticks: int = 5,
         execution_realism: ExecutionRealismConfig | None = None,
+        run_sink: Any = None,
     ):
         self.ruleset = ruleset
         self.data_dir = resolve_market_data_dir(data_dir)
         self.initial_capital = initial_capital
         self.baseline_slippage_ticks = baseline_slippage_ticks
         self.execution_realism = execution_realism or ExecutionRealismConfig.realistic()
+        self.run_sink = run_sink
+
+    def _record(
+        self,
+        result: BacktestResult,
+        *,
+        symbol: str,
+        slippage: int,
+        notes: str,
+    ) -> None:
+        """Record one robustness point.
+
+        Slippage is carried in ``parameters`` because it is the only thing
+        that varies across a noise sweep; without it every point would share a
+        fingerprint and collapse into one stored run, which would hide the
+        dispersion the analysis is measuring.
+        """
+        if self.run_sink is None:
+            return
+        self.run_sink.record(
+            result,
+            ruleset=self.ruleset,
+            parameters={
+                "symbol": symbol,
+                "initial_capital": self.initial_capital,
+                "slippage_ticks": int(slippage),
+            },
+            notes=notes,
+        )
     
     def analyze(
         self,
@@ -154,6 +184,13 @@ class RobustnessAnalyzer:
         
         logger.info(f"  Baseline: {baseline_result.overall.expectancy_r:.3f}R expectancy, "
                    f"{baseline_result.equity.sharpe_ratio:.2f} Sharpe")
+
+        self._record(
+            baseline_result,
+            symbol=symbol,
+            slippage=self.baseline_slippage_ticks,
+            notes="Robustness baseline",
+        )
         
         test_results = []
         
@@ -201,6 +238,8 @@ class RobustnessAnalyzer:
         
         logger.info(f"  ✓ Robustness score: {robustness_score:.2f} "
                    f"(expectancy std: {expectancy_std:.3f}R)")
+        if self.run_sink is not None:
+            logger.info(f"  Research store: {self.run_sink.summary()}")
         
         return RobustnessAnalysis(
             baseline_result=baseline_result,
@@ -251,7 +290,14 @@ class RobustnessAnalyzer:
             )
             
             results.append(test_result)
-            
+
+            self._record(
+                result,
+                symbol=symbol,
+                slippage=int(slippage),
+                notes=f"Robustness noise injection (slippage {int(slippage)} ticks)",
+            )
+
             logger.info(f"    Slippage {slippage} ticks: {result.overall.expectancy_r:.3f}R")
         
         return results

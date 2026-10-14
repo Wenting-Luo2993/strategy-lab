@@ -278,6 +278,20 @@ def main() -> None:
         help="Number of top results to display",
     )
     parser.add_argument(
+        "--record-runs",
+        action="store_true",
+        help="Record every sweep point into the local research store so the "
+             "sweep is visible in the research viewer, not just the CSV",
+    )
+    parser.add_argument(
+        "--retention",
+        default="full",
+        choices=["summary", "diagnostic", "full"],
+        help="How much of each recorded run to keep locally: 'summary' is "
+             "metrics and checksums, 'diagnostic' adds the trade ledger, "
+             "'full' adds the equity curve. Never leaves this machine.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose logging (shows all INFO messages)",
@@ -317,6 +331,20 @@ def main() -> None:
     sweep_mode = "one_at_a_time" if args.mode == "quick" else "grid"
     
     # Create sweep
+    run_sink = None
+    if args.record_runs:
+        from vibe.backtester.analysis.research_sink import open_run_sink
+
+        run_sink = open_run_sink(
+            data_dir=data_dir,
+            symbol=args.symbol,
+            strategy_id=base_ruleset.stem,
+            starting_equity=args.capital,
+            methodology_version=f"sensitivity_runner/{args.mode}/v1",
+            retention=args.retention,
+            owner="sensitivity_runner",
+        )
+
     sweep = ParameterSweep(
         base_ruleset_path=base_ruleset,
         data_dir=data_dir,
@@ -324,6 +352,7 @@ def main() -> None:
         initial_capital=args.capital,
         slippage_ticks=args.slippage_ticks,
         sweep_mode=sweep_mode,
+        run_sink=run_sink,
     )
     
     # Parse dates
@@ -381,6 +410,11 @@ def main() -> None:
     print("=" * 80)
     
     print(f"\nFull results saved to: {output_path}")
+
+    if run_sink is not None:
+        print(f"Research store: {run_sink.summary()}")
+        for failure in run_sink.failures[:5]:
+            print(f"  ! {failure}")
 
 
 if __name__ == "__main__":

@@ -52,15 +52,19 @@ from vibe.research_pipeline.contracts import (
 )
 from vibe.research_pipeline.evidence import equity_curve_digest, trade_ledger_digest
 from vibe.research_pipeline.features.registry import FEATURE_SET_VERSION
+from vibe.research_pipeline.hashing import hash_object
 from vibe.research_pipeline.identity import RunFingerprint
 from vibe.research_pipeline.lifecycle import RunState
 
 __all__ = [
+    "BacktestRunSink",
     "RecordingError",
     "RunRecorder",
+    "SinkOutcome",
     "build_run_evidence",
     "build_run_fingerprint",
     "git_state",
+    "hash_effective_ruleset",
 ]
 
 
@@ -137,9 +141,19 @@ def _single_symbol_universe(symbol: str) -> UniverseSpec:
 
 
 def _contiguous_split(
-    *, first_session: date, last_session: date, session_count: int
+    *,
+    first_session: date,
+    last_session: date,
+    session_count: int,
+    role: SegmentRole = SegmentRole.TEST,
 ) -> SplitManifest:
     """Describe a single uninterrupted evaluation window.
+
+    ``role`` is explicit because a walk-forward fold evaluates the same
+    strategy over a *training* window and a *test* window, and recording the
+    training fold as ``TEST`` would make an in-sample result indistinguishable
+    from an out-of-sample one -- which is the single most consequential thing
+    this pipeline exists to keep straight.
 
     Purge and embargo are derived as zero because the strategies recorded
     through this path are flat at every close: with no position held overnight,
@@ -152,7 +166,7 @@ def _contiguous_split(
         calendar_name="XNYS",
         segments=(
             SessionSegment(
-                role=SegmentRole.TEST,
+                role=role,
                 start_session=first_session,
                 end_session=last_session,
                 session_count=session_count,
@@ -163,6 +177,34 @@ def _contiguous_split(
         embargo_sessions_derived=0,
         embargo_sessions_applied=0,
     )
+
+
+def hash_effective_ruleset(ruleset: Any) -> str:
+    """Content hash of a ruleset object held in memory.
+
+    ``RunFingerprint.hash_ruleset`` hashes a file, which is correct when a run
+    uses a ruleset exactly as committed. A parameter sweep does not: it loads
+    one base file and mutates it in memory for every combination, so hashing
+    the file would stamp every point in the sweep with the same
+    ``ruleset_content_sha256`` while claiming that field describes the
+    configuration that ran. The combinations would still be distinguishable by
+    ``parameters``, but the content hash -- the field whose whole purpose is to
+    pin configuration independently of how it was named -- would be false.
+
+    The *validated* model is hashed rather than the raw YAML mapping, so
+    defaults the loader filled in are covered too; ``mode="json"`` is used
+    because a ruleset carries ``datetime.time`` values, for which the canonical
+    encoder deliberately has no rule.
+    """
+    dump = getattr(ruleset, "model_dump", None)
+    if not callable(dump):
+        raise RecordingError(
+            f"Cannot hash ruleset of type {type(ruleset).__name__!r}: expected "
+            f"a pydantic model exposing model_dump(). Hashing a repr or a raw "
+            f"mapping would make the digest depend on formatting rather than "
+            f"on configuration."
+        )
+    return hash_object(dump(mode="json"))
 
 
 def _as_date(value: Any) -> Optional[date]:
@@ -185,7 +227,6 @@ def _as_date(value: Any) -> Optional[date]:
 def build_run_fingerprint(
     *,
     strategy_id: str,
-    ruleset_path: Path | str,
     parameters: Mapping[str, Any],
     symbol: str,
     first_session: date,
@@ -195,25 +236,51 @@ def build_run_fingerprint(
     execution_model_version: int,
     metric_calculation_version: int,
     repo_root: Path | str,
+    ruleset_path: Path | str | None = None,
+    ruleset_sha256: str | None = None,
+    segment_role: SegmentRole = SegmentRole.TEST,
     code_commit: Optional[str] = None,
     code_dirty: Optional[bool] = None,
     random_seed: Optional[int] = None,
 ) -> RunFingerprint:
-    """Assemble the full identity of a run from its actual inputs."""
+    """Assemble the full identity of a run from its actual inputs.
+
+    Supply exactly one of ``ruleset_path`` (the run used a ruleset file as
+    committed) or ``ruleset_sha256`` (the run used a configuration assembled in
+    memory -- see :func:`hash_effective_ruleset`). Accepting neither would
+    leave the field unpinned; accepting both would let the two disagree, and a
+    content hash that does not describe the content that ran is worse than no
+    content hash at all.
+    """
+    if (ruleset_path is None) == (ruleset_sha256 is None):
+        raise RecordingError(
+            "Pass exactly one of ruleset_path or ruleset_sha256. The "
+            "fingerprint must pin the configuration that actually ran, and "
+            "neither omitting it nor supplying two possibly-conflicting "
+            "sources can do that."
+        )
+
     if code_commit is None or code_dirty is None:
         state = git_state(repo_root)
         code_commit = code_commit if code_commit is not None else state.commit
         code_dirty = code_dirty if code_dirty is not None else state.dirty
 
+    content_sha = (
+        ruleset_sha256
+        if ruleset_sha256 is not None
+        else RunFingerprint.hash_ruleset(ruleset_path)
+    )
+
     return RunFingerprint(
         strategy_id=strategy_id,
-        ruleset_content_sha256=RunFingerprint.hash_ruleset(ruleset_path),
+        ruleset_content_sha256=content_sha,
         parameters=dict(parameters),
         universe_hash=_single_symbol_universe(symbol).universe_hash,
         split_manifest_hash=_contiguous_split(
             first_session=first_session,
             last_session=last_session,
             session_count=session_count,
+            role=segment_role,
         ).manifest_hash,
         data_snapshot_id=data_snapshot_id,
         feature_set_version=FEATURE_SET_VERSION,
@@ -371,3 +438,167 @@ class RunRecorder:
 
         self._recorded = True
         return self.run_id
+
+
+@dataclass(frozen=True)
+class SinkOutcome:
+    """What the sink did with one finished backtest."""
+
+    run_id: str
+    recorded: bool
+    """``False`` when an identical run was already in the store."""
+
+
+class BacktestRunSink:
+    """Record every backtest of a multi-run study into the research store.
+
+    A parameter sweep, a walk-forward, and a robustness pass all look the same
+    from the store's point of view: many backtests that differ only in their
+    configuration or their evaluation window. None of them recorded anything.
+    Only ``scripts/run_backtest.py`` called the producer, and it records
+    exactly one run -- so the store could never hold the *population* that
+    cross-run trend analysis is entirely about.
+
+    Three decisions are worth stating:
+
+    **Git state is read once, at construction.** ``build_run_fingerprint``
+    shells out to ``git`` twice when the commit is not supplied. A 200-point
+    sweep would spawn 400 subprocesses to answer the same question 400 times,
+    and the answer cannot legitimately change mid-study: if the working tree
+    were edited between sweep points, the points would no longer be comparable
+    and the study would be void regardless of what was recorded.
+
+    **A duplicate fingerprint is reported, not raised.** ``register_run`` is
+    idempotent on the fingerprint, so re-recording an identical run returns the
+    existing ``run_id`` -- which is already past ``REGISTERED`` and cannot be
+    started again. This is not an edge case: a one-at-a-time sweep evaluates
+    the base combination explicitly, and robustness slippage values collapse
+    onto each other after integer rounding, so collisions arise from normal
+    use. Treating them as errors would abort real studies; recording them
+    twice is impossible by construction. The sink reports them instead, so a
+    caller can tell "50 points, 47 distinct" from "50 points, 50 distinct".
+
+    **A failure to record never aborts the study.** The backtest has already
+    run and its numbers are already in the caller's hands; losing the whole
+    sweep because one run could not be persisted would trade a large real
+    result for a small bookkeeping one. Failures are counted and surfaced.
+    """
+
+    def __init__(
+        self,
+        store: Any,
+        *,
+        strategy_id: str,
+        symbol: str,
+        data_snapshot_id: str,
+        execution_model_version: int,
+        methodology_version: str,
+        repo_root: Path | str,
+        starting_equity: float,
+        retention: RetentionProfile = RetentionProfile.SUMMARY,
+        owner: str = "research_study",
+    ) -> None:
+        self._store = store
+        self._strategy_id = strategy_id
+        self._symbol = symbol
+        self._data_snapshot_id = data_snapshot_id
+        self._execution_model_version = execution_model_version
+        self._methodology_version = methodology_version
+        self._starting_equity = float(starting_equity)
+        self._retention = retention
+        self._owner = owner
+
+        state = git_state(repo_root)
+        self._code_commit = state.commit
+        self._code_dirty = state.dirty
+
+        self.recorded_run_ids: list[str] = []
+        self.duplicate_run_ids: list[str] = []
+        self.failures: list[str] = []
+
+    @property
+    def code_dirty(self) -> bool:
+        return self._code_dirty
+
+    def record(
+        self,
+        result: Any,
+        *,
+        ruleset: Any,
+        parameters: Mapping[str, Any],
+        segment_role: SegmentRole = SegmentRole.TEST,
+        notes: Optional[str] = None,
+        random_seed: Optional[int] = None,
+        starting_equity: Optional[float] = None,
+    ) -> Optional[SinkOutcome]:
+        """Persist one finished backtest. Returns ``None`` if it could not be.
+
+        ``ruleset`` is the *effective* configuration the run used, not the file
+        it started from, so a swept point pins what actually executed.
+        """
+        try:
+            fingerprint = build_run_fingerprint(
+                strategy_id=self._strategy_id,
+                ruleset_sha256=hash_effective_ruleset(ruleset),
+                parameters=dict(parameters),
+                symbol=self._symbol,
+                first_session=_require_date(result.overall.first_date, "first"),
+                last_session=_require_date(result.overall.last_date, "last"),
+                session_count=int(result.equity.n_sessions),
+                data_snapshot_id=self._data_snapshot_id,
+                execution_model_version=self._execution_model_version,
+                metric_calculation_version=int(result.overall.calculation_version),
+                repo_root=".",  # unused; commit and dirtiness are supplied
+                segment_role=segment_role,
+                code_commit=self._code_commit,
+                code_dirty=self._code_dirty,
+                random_seed=random_seed,
+            )
+
+            existing = self._store.find_by_fingerprint(fingerprint.fingerprint)
+            if existing is not None and existing.state is not RunState.REGISTERED:
+                self.duplicate_run_ids.append(existing.run_id)
+                return SinkOutcome(run_id=existing.run_id, recorded=False)
+
+            with RunRecorder(
+                self._store,
+                fingerprint=fingerprint,
+                methodology_version=self._methodology_version,
+                retention=self._retention,
+                owner=self._owner,
+                notes=notes,
+            ) as recorder:
+                run_id = recorder.record(
+                    result,
+                    starting_equity=(
+                        self._starting_equity
+                        if starting_equity is None
+                        else float(starting_equity)
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001 - see class docstring
+            self.failures.append(f"{type(exc).__name__}: {exc}")
+            return None
+
+        self.recorded_run_ids.append(run_id)
+        return SinkOutcome(run_id=run_id, recorded=True)
+
+    def summary(self) -> str:
+        parts = [
+            f"{len(self.recorded_run_ids)} recorded",
+            f"{len(self.duplicate_run_ids)} already present",
+        ]
+        if self.failures:
+            parts.append(f"{len(self.failures)} failed")
+        return ", ".join(parts)
+
+
+def _require_date(value: Any, which: str) -> date:
+    parsed = _as_date(value)
+    if parsed is None:
+        raise RecordingError(
+            f"Cannot read the {which} session date from {value!r}. A run whose "
+            f"evaluation window is unknown cannot be given an honest split "
+            f"manifest, and guessing one would make unrelated runs collide."
+        )
+    return parsed

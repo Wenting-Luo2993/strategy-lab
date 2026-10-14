@@ -41,24 +41,14 @@ RETENTION_CHOICES = ("summary", "diagnostic", "full")
 def _dataset_snapshot_id(data_dir: Path, symbol: str) -> str:
     """Identify the bar data this run consumed.
 
-    A curated dataset manifest is preferred, because it names a dataset the
-    pipeline can verify. When none exists -- the common case for a local
-    parquet drop -- fall back to the file's content hash. The ``sha256:``
-    prefix keeps the two distinguishable: a content hash proves the bytes were
-    identical but carries none of a manifest's provenance, and conflating them
-    would overstate what is known about the data.
+    Delegates to the shared helper so a single-run backtest and a sweep assign
+    the *same* snapshot id to the same data. Two implementations that drifted
+    apart would make runs over identical bars look like runs over different
+    data, and vice versa.
     """
-    from vibe.research_pipeline.datasets import read_manifest
-    from vibe.research_pipeline.hashing import hash_file
+    from vibe.backtester.analysis.research_sink import dataset_snapshot_id
 
-    parquet = data_dir / f"{symbol}.parquet"
-    manifest_path = data_dir / f"{symbol}.manifest.json"
-    if manifest_path.is_file():
-        try:
-            return read_manifest(manifest_path).dataset_id
-        except Exception:
-            pass
-    return f"sha256:{hash_file(parquet)}"
+    return dataset_snapshot_id(data_dir, symbol)
 
 
 def _record_run(result, *, args, ruleset_path: Path, data_dir: Path,
