@@ -556,11 +556,47 @@ Note that `ValidationProfile` already carries the threshold, and the runner
 already has a `--min-trades` eligibility floor, so the machinery to express a
 sample-aware precondition exists.
 
-**This is left unimplemented deliberately.** Changing the behaviour of a
-plausibility gate is a research-policy decision with real consequences for what
-the pipeline will let through, and it should be made explicitly rather than
-folded into a maintenance pass. The diagnostics needed to make that decision --
-which gate, what value, what sample -- are now in the runner's output.
+### 9.4 Resolved: the gate now measures evidence, not a ratio
+
+This was originally left unimplemented and deferred to the user as a
+research-policy decision. **Running the pipeline reframed it as a defect.**
+
+A recorded nested walk-forward on QQQ sent *every* fold inconclusive on
+`PLAUS-001: win_rate=0.6428... expected '<= 0.55 unless payoff asymmetry
+explains it'` -- nine wins in fourteen trades, which is a thing a coin does
+regularly. No fold ever reached a TEST evaluation, so `WHERE segment_role =
+'test'` returned nothing. A gate that compares a ratio to a threshold with no
+regard for sample size cannot distinguish a suspicious result from noise, it
+blocks the entire pipeline, and it trains people to ignore it. That is not a
+threshold anyone would want to tune; it is a question asked wrongly.
+
+The fix leaves `high_win_rate` exactly where it is and adds a *second*
+condition: the observed wins must also be hard to explain by chance. A
+one-sided binomial tail p-value is computed against the threshold as the null
+rate, and the finding fires only when that p-value falls below a new
+`ValidationProfile.plausibility_alpha` (default `0.05`).
+
+```
+ 9 / 14   -> p = 0.3373   quiet (noise)
+15 / 20   -> p = 0.0553   quiet (just short)
+320 / 500 -> p = 0.000027 fires (same 64% rate, real evidence)
+550 / 1000-> p = 0.5131   quiet (55% is the null)
+```
+
+Note the second and third rows: the win *rate* is effectively unchanged, only
+the weight of evidence behind it moves. That is the behaviour the gate always
+claimed to have. Payoff asymmetry still excuses a high win rate, so the new
+condition tightened the gate's meaning without loosening its threshold.
+
+The tail is summed in log space via `math.lgamma` above a few hundred trades
+and falls back to a normal approximation with continuity correction beyond
+`n = 20_000`. The naive `(1 - p) ** n` form underflows around `n ~ 550` at
+`p = 0.55`, which would have made every long run look *impossible* -- the
+opposite failure, and a much quieter one.
+
+**Still a user call:** whether `plausibility_alpha = 0.05` is the right default
+is a genuine research-policy knob. It is now an explicit, named field with a
+defensible default rather than an implicit consequence of a bare threshold.
 
 
 ## 10. Legacy inventory: what should be deprecated or cleaned up

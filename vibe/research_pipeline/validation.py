@@ -37,6 +37,73 @@ __all__ = [
 ]
 
 
+def _winning_trades(metrics: Any) -> int:
+    """Count wins, preferring the reported count over a reconstructed one.
+
+    ``win_rate`` is a ratio, so recovering a count from it reintroduces the
+    rounding the metrics layer already resolved. The derivation is only a
+    fallback for results that predate the explicit field.
+    """
+    reported = getattr(metrics, "winning_trades", None)
+    if reported is not None:
+        return int(reported)
+    return int(round(float(metrics.win_rate) * int(metrics.n_trades)))
+
+
+def _binomial_tail_pvalue(*, wins: int, n: int, p: float) -> float:
+    """P(X >= wins) for X ~ Binomial(n, p): how easily chance explains this.
+
+    A win rate above a threshold is not by itself suspicious; nine wins in
+    fourteen trades is what a coin does regularly. Asking for the probability
+    instead of the ratio is what lets the same gate stay quiet on a short
+    window and sharp on a long one, without the threshold itself moving.
+
+    Returns 1.0 whenever the question is meaningless (no trades, or a
+    threshold of 0 or 1), so an undefined test can never be read as damning
+    evidence.
+    """
+    n = int(n)
+    wins = int(wins)
+    if n <= 0 or wins <= 0:
+        return 1.0
+    if wins > n:
+        wins = n
+    if p <= 0.0:
+        # Any win is impossible under the null, so it cannot be explained by
+        # chance -- but a degenerate threshold is a configuration error rather
+        # than evidence, so decline to convict.
+        return 1.0
+    if p >= 1.0:
+        return 1.0
+
+    # Exact below the point where summing terms stops being cheap. Computing
+    # in log space keeps (1-p)**n from underflowing to zero, which would make
+    # every long run look impossible and flag all of them.
+    if n <= 20_000:
+        log_p, log_q = math.log(p), math.log1p(-p)
+        log_n_fact = math.lgamma(n + 1)
+        total = 0.0
+        for k in range(wins, n + 1):
+            log_pmf = (
+                log_n_fact
+                - math.lgamma(k + 1)
+                - math.lgamma(n - k + 1)
+                + k * log_p
+                + (n - k) * log_q
+            )
+            total += math.exp(log_pmf)
+        return min(1.0, max(0.0, total))
+
+    # Normal approximation with a continuity correction. Only reached for
+    # samples far larger than any threshold question is sensitive to.
+    mean = n * p
+    sd = math.sqrt(n * p * (1.0 - p))
+    if sd == 0.0:
+        return 1.0
+    z = (wins - 0.5 - mean) / sd
+    return 0.5 * math.erfc(z / math.sqrt(2.0))
+
+
 class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -89,6 +156,12 @@ class ValidationProfile(_Frozen):
     require_all_accounting_checks: bool = True
     require_costs_when_trading: bool = True
     high_win_rate: float = Field(0.55, ge=0.0, le=1.0)
+    # PLAUS-001 asks whether a win rate is implausible, which is a question
+    # about evidence rather than about a number. A run only trips it when the
+    # observed wins would arise from `high_win_rate` by chance less often than
+    # this, so a short window has to be far more lopsided than a long one
+    # before it is called suspicious.
+    plausibility_alpha: float = Field(0.05, gt=0.0, lt=1.0)
     ambiguous_exit_rate: float = Field(0.05, ge=0.0, le=1.0)
     required_leakage_checks: tuple[str, ...] = (
         "truncation_equivalence",
@@ -675,9 +748,15 @@ class MetricValidator:
         self, value: ValidationInput, findings: list[ValidationFinding]
     ) -> None:
         metrics = value.result.overall
+        win_rate_pvalue = _binomial_tail_pvalue(
+            wins=_winning_trades(metrics),
+            n=metrics.n_trades,
+            p=self.profile.high_win_rate,
+        )
         if (
             metrics.win_rate > self.profile.high_win_rate
             and metrics.avg_win_r >= abs(metrics.avg_loss_r)
+            and win_rate_pvalue < self.profile.plausibility_alpha
         ):
             findings.append(
                 _finding(
@@ -687,7 +766,11 @@ class MetricValidator:
                     "High win rate combined with non-inferior average win requires review.",
                     metric_key="win_rate",
                     observed=metrics.win_rate,
-                    expected=f"<= {self.profile.high_win_rate} unless payoff asymmetry explains it",
+                    expected=(
+                        f"<= {self.profile.high_win_rate} unless payoff asymmetry "
+                        f"explains it (observed over {metrics.n_trades} trades, "
+                        f"p={win_rate_pvalue:.4f} < {self.profile.plausibility_alpha})"
+                    ),
                 )
             )
         ambiguous = value.result.execution_diagnostics.get("ambiguous_exit_bars", 0.0)

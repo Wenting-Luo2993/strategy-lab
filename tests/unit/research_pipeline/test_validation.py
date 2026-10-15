@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+import pytest
 
 from vibe.backtester.analysis.metrics import (
     BacktestResult,
@@ -26,10 +27,12 @@ from vibe.research_pipeline.validation import (
     ValidationInput,
     ValidationProfile,
     ValidationScope,
+    _binomial_tail_pvalue,
 )
 
 
 def _result(**metric_overrides) -> BacktestResult:
+    trade_objects = metric_overrides.pop("trade_objects", 2)
     metric_defaults = dict(
         n_trades=2,
         win_rate=0.5,
@@ -77,7 +80,7 @@ def _result(**metric_overrides) -> BacktestResult:
         overall=overall,
         by_year={},
         equity=equity,
-        trades=[object(), object()],
+        trades=[object() for _ in range(trade_objects)],
         regime_breakdown={},
         symbol="QQQ",
         start_date="2026-01-02",
@@ -265,18 +268,144 @@ def test_missing_leakage_evidence_blocks_completion():
     assert {finding.code for finding in report.findings} == {"LEAK-003"}
 
 
-def test_plausibility_only_applies_at_candidate_level():
-    result = _result(win_rate=0.75, avg_win_r=1.2, avg_loss_r=-1.0)
-    result.execution_diagnostics["ambiguous_exit_bars"] = 1.0
+def _sample(wins: int, losses: int, **overrides) -> BacktestResult:
+    """Build a result whose trade-level accounting matches its headline counts.
 
-    sweep_row = _validate(_input(result=result, scope=ValidationScope.SWEEP_ROW))
-    candidate = _validate(_input(result=result, scope=ValidationScope.CANDIDATE))
+    The default fixture describes two trades, so simply raising ``n_trades``
+    leaves the ledger, the r-multiples and the stop tallies contradicting it
+    and trips the cross-check gates instead of the one under test.
+    """
+    n = wins + losses
+    base = dict(
+        n_trades=n,
+        win_rate=wins / n,
+        winning_trades=wins,
+        losing_trades=losses,
+        breakeven_trades=0,
+        stop_wins=wins,
+        stop_losses=losses,
+        r_multiples=[1.2] * wins + [-1.0] * losses,
+        r_sample_size=n,
+        max_losing_streak=1 if losses else 0,
+        trade_objects=n,
+    )
+    base.update(overrides)
+    return _result(**base)
+
+
+def _sample_input(wins: int, losses: int, *, scope, **overrides):
+    """A ValidationInput whose evidence agrees with its metrics."""
+    result = _sample(wins, losses, **overrides)
+    return _input(
+        result=result,
+        evidence=_evidence(trade_count=wins + losses),
+        scope=scope,
+    )
+
+
+def test_plausibility_only_applies_at_candidate_level():
+    # 150 wins in 200 trades is a 75% rate that chance will not produce from
+    # a 55% process, so this is implausible on the evidence rather than
+    # merely above a threshold.
+    sweep_input = _sample_input(
+        150, 50, scope=ValidationScope.SWEEP_ROW, avg_win_r=1.2, avg_loss_r=-1.0
+    )
+    sweep_input.result.execution_diagnostics["ambiguous_exit_bars"] = 100.0
+    candidate_input = _sample_input(
+        150, 50, scope=ValidationScope.CANDIDATE, avg_win_r=1.2, avg_loss_r=-1.0
+    )
+    candidate_input.result.execution_diagnostics["ambiguous_exit_bars"] = 100.0
+
+    sweep_row = _validate(sweep_input)
+    candidate = _validate(candidate_input)
 
     assert sweep_row.target_state is RunState.COMPLETED
     assert candidate.target_state is RunState.REVIEW_REQUIRED
     assert {"PLAUS-001", "PLAUS-002"} <= {
         finding.code for finding in candidate.findings
     }
+
+
+def test_a_lucky_streak_is_not_mistaken_for_an_implausible_edge():
+    """Nine wins in fourteen trades is what a coin does regularly.
+
+    This is the defect that blocked every nested walk-forward from reaching a
+    TEST window: PLAUS-001 compared a ratio to a threshold with no regard for
+    how much evidence stood behind it, so a short validation segment tripped
+    it as a matter of course and the fold went inconclusive. A gate that
+    fires on noise does not protect anyone -- it just teaches people to
+    ignore it.
+    """
+    report = _validate(
+        _sample_input(
+            9, 5, scope=ValidationScope.CANDIDATE, avg_win_r=1.2, avg_loss_r=-1.0
+        )
+    )
+
+    assert "PLAUS-001" not in {finding.code for finding in report.findings}
+
+
+def test_the_same_win_rate_is_implausible_once_enough_trades_back_it():
+    """The threshold does not move; only the weight of evidence does."""
+    small = _sample_input(
+        9, 5, scope=ValidationScope.CANDIDATE, avg_win_r=1.2, avg_loss_r=-1.0
+    )
+    large = _sample_input(
+        320, 180, scope=ValidationScope.CANDIDATE, avg_win_r=1.2, avg_loss_r=-1.0
+    )
+
+    def codes(value):
+        return {finding.code for finding in _validate(value).findings}
+
+    assert round(small.result.overall.win_rate, 2) == round(
+        large.result.overall.win_rate, 2
+    )
+    assert "PLAUS-001" not in codes(small)
+    assert "PLAUS-001" in codes(large), (
+        "320 wins in 500 trades at a 55% null is a one-in-forty-thousand "
+        "result; if the gate stays quiet here it is measuring nothing"
+    )
+
+
+def test_payoff_asymmetry_still_excuses_a_high_win_rate():
+    """Sample size was added as a second condition, not as a replacement."""
+    report = _validate(
+        _sample_input(
+            320, 180, scope=ValidationScope.CANDIDATE, avg_win_r=0.4, avg_loss_r=-1.0
+        )
+    )
+
+    assert "PLAUS-001" not in {finding.code for finding in report.findings}
+
+
+@pytest.mark.parametrize(
+    "wins, n, p",
+    [(0, 0, 0.55), (0, 10, 0.55), (5, 10, 0.0), (5, 10, 1.0)],
+)
+def test_an_undefined_plausibility_test_never_convicts(wins, n, p):
+    """A degenerate configuration is a bug report, not damning evidence."""
+    assert _binomial_tail_pvalue(wins=wins, n=n, p=p) == 1.0
+
+
+def test_more_wins_than_trades_is_clamped_rather_than_crashing():
+    assert _binomial_tail_pvalue(wins=20, n=10, p=0.55) == pytest.approx(
+        _binomial_tail_pvalue(wins=10, n=10, p=0.55)
+    )
+
+
+def test_a_long_run_does_not_underflow_into_looking_impossible():
+    """Computed in log space; (1-p)**n would have been 0.0 long before here.
+
+    Were this to underflow, every sufficiently long run would report a
+    p-value of zero and be flagged as implausible -- the failure would look
+    like a strategy finding rather than a numerical one.
+    """
+    at_the_null = _binomial_tail_pvalue(wins=1100, n=2000, p=0.55)
+
+    assert 0.4 < at_the_null < 0.6, (
+        f"a result sitting exactly on the null should be unremarkable, got "
+        f"{at_the_null}"
+    )
 
 
 def test_acceptance_failure_is_advisory_and_run_still_completes():
