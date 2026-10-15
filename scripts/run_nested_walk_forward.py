@@ -359,6 +359,45 @@ def _report(result, RunState) -> None:
                     f"   ! {evaluation.candidate.parameter_map} -> "
                     f"{report.target_state.value}: {codes}"
                 )
+        # VALIDATION-stage outcomes. Without these a fold that refuses to
+        # select can only say "non-selectable outcomes", which names the
+        # category but not the gate -- leaving the operator unable to tell a
+        # genuine signal from a threshold that needs calibration.
+        for failure in fold.validation_failures:
+            print(
+                f"   ! {failure.candidate_id} failed in {failure.phase}: "
+                f"{failure.message}"
+            )
+        for evaluation in fold.validation_evaluations:
+            report = evaluation.validation_report
+            if report.target_state is RunState.COMPLETED:
+                continue
+            codes = ", ".join(
+                f"{f.code}({f.severity.value})" for f in report.findings
+            ) or "no findings"
+            print(
+                f"   ! VALIDATION {evaluation.candidate.parameter_map} -> "
+                f"{report.target_state.value}: {codes}"
+            )
+            # A bare code cannot be triaged. Whether a plausibility gate is a
+            # real signal or a small-sample artifact depends entirely on the
+            # observed value and the sample it was measured over.
+            for finding in report.findings:
+                print(
+                    f"       {finding.code}: {finding.metric_key}="
+                    f"{finding.observed!r} expected {finding.expected!r}"
+                )
+        if (
+            fold.test_validation is not None
+            and fold.test_validation.target_state is not RunState.COMPLETED
+        ):
+            codes = ", ".join(
+                f"{f.code}({f.severity.value})"
+                for f in fold.test_validation.findings
+            ) or "no findings"
+            print(
+                f"   ! TEST -> {fold.test_validation.target_state.value}: {codes}"
+            )
         if fold.selection is None:
             print(f"   no selection: {fold.reason}")
             continue

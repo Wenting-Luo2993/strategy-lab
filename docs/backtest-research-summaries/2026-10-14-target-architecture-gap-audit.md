@@ -466,3 +466,98 @@ year, and the failure is silent because the position simply persists. The
 backstop is the general answer -- it is a correctness guard keyed to the
 session's own final bar rather than to a configured time, so it holds whatever
 `eod_time` is set to, including when the EOD rule is disabled entirely.
+
+---
+
+## 9. Candidate gates at fold scope: why the nested walk-forward can almost
+never complete
+
+With per-fold optimization working (§7, §8), the nested walk-forward now runs
+end to end and stops at `inconclusive`. That is a gate doing its job rather
+than a crash -- but the reason it fires is worth stating precisely, because as
+currently composed the run is close to unable to succeed.
+
+### 9.1 Making the fold explain itself
+
+The runner printed only the generic reason:
+
+```
+Reason: Validation produced non-selectable candidate outcomes ['review_required']
+-- Fold 4 [inconclusive]
+   no selection: ...
+```
+
+The findings existed on `FoldResult.validation_evaluations` and
+`FoldResult.test_validation`, but the reporter only walked the TRAIN batch, so
+the gate that actually fired was invisible. A code alone is not triageable
+either -- whether a plausibility gate is a real signal or a small-sample
+artifact depends entirely on the observed value and the sample behind it. The
+reporter now prints both:
+
+```
+-- Fold 4 [inconclusive]
+   ! VALIDATION {'tp': 2.0} -> review_required: PLAUS-001(review)
+       PLAUS-001: win_rate=0.65 expected '<= 0.55 unless payoff asymmetry explains it'
+```
+
+### 9.2 The gate is correct; the scope it is applied at is not
+
+PLAUS-001 asks "is this win rate too good to believe, given the payoff
+profile?" That is a sound question of a full run. Fold 4's VALIDATION window is
+**20 sessions**, and the comparable TEST windows in the same run produced 20
+trades each.
+
+Over 20 trades, a *true* 55% strategy produces an observed win rate of 65% or
+better about a quarter of the time:
+
+```
+n=20: P(win_rate >= 0.65 | true 0.55) = 0.252
+n=25: P(win_rate >= 0.65 | true 0.55) = 0.242
+n=30: P(win_rate >= 0.65 | true 0.55) = 0.135
+```
+
+So at fold scope the gate has almost no discriminating power: 0.65 and 0.55 are
+not distinguishable from 20 observations. It is not detecting an implausible
+result, it is detecting a small sample.
+
+### 9.3 Why that composes into a structural problem
+
+A single non-selectable fold makes the whole walk-forward inconclusive -- which
+is the correct rule, since stitching only the folds that happened to pass is
+survivorship selection. But combined with a per-fold false-positive rate near
+25%, the probability that *no* fold trips the gate by chance is:
+
+```
+over  5 folds: 0.2373
+over 14 folds: 0.0178
+```
+
+A 14-fold run completes under 2% of the time **even if the strategy is exactly
+as good as the gate's own null hypothesis**. The pipeline would then be
+reporting "inconclusive" as its normal output, and an operator would quickly
+learn to ignore it -- which is the worst possible end state for a safety gate.
+
+### 9.4 The fix this points to, and what it is not
+
+The tempting fix is to raise `high_win_rate` or drop the gate at fold scope.
+Both are wrong: the first hides genuinely implausible full-run results, and the
+second removes the check exactly where overfitting is most likely.
+
+The principled fix is to make the gate measure what it claims to. PLAUS-001
+currently compares a point estimate against a threshold with no reference to
+sample size, so it cannot distinguish "implausibly high" from "imprecisely
+estimated". It should fire only when the observed rate is *statistically
+distinguishable* from the threshold at the observed `n_trades` -- i.e. when the
+sample can actually support the claim. That is a tightening of the gate's
+meaning, not a loosening of its threshold: a 95%-win-rate fold over 20 trades
+would still fire, while 0.65-over-20 would not.
+
+Note that `ValidationProfile` already carries the threshold, and the runner
+already has a `--min-trades` eligibility floor, so the machinery to express a
+sample-aware precondition exists.
+
+**This is left unimplemented deliberately.** Changing the behaviour of a
+plausibility gate is a research-policy decision with real consequences for what
+the pipeline will let through, and it should be made explicitly rather than
+folded into a maintenance pass. The diagnostics needed to make that decision --
+which gate, what value, what sample -- are now in the runner's output.
