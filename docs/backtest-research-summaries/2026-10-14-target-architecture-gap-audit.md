@@ -652,7 +652,7 @@ Being test-only is not by itself a defect. These split into three groups:
 | `vibe/backtester/core/portfolio_engine.py` | 1008 | **Keep.** Planned shared-capital multi-symbol simulation, awaiting an entry point. |
 | `vibe/backtester/integration/experiment_tracker.py` | 158 | **Remove with 10.2.** Depends on `vibe.research_journal`; superseded by `research_sink`. |
 | `vibe/backtester/integration/sweep_tracker.py` | 284 | **Remove with 10.2.** Same dependency, same supersession. |
-| `vibe/backtester/analysis/regime.py` | 71 | **Remove.** Standalone ADX classifier superseded by the reachable `vibe/backtester/analysis/regime_research/` package (`labeler`, `features`, `filter_evaluator`, `attribution`, `reporting`). |
+| `vibe/backtester/analysis/regime.py` | 71 | **Removed.** Standalone ADX classifier superseded by the reachable `vibe/backtester/analysis/regime_research/` package (`labeler`, `features`, `filter_evaluator`, `attribution`, `reporting`). Deleted with its test; nothing else imported it and it was not re-exported from the package `__init__`. |
 
 The two trackers are also demonstrated by `examples/backtest_experiment_tracking.py`
 and `examples/parameter_sweep_experiment_tracking.py`, which must be removed in
