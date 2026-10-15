@@ -333,10 +333,22 @@ class OptimizationPipeline:
         else:
             logger.info("\n[2/4] Skipping robustness analysis")
         
-        # Step 3: Walk-forward analysis (optional)
+        # Step 3: Fixed-parameter regime comparison (optional)
+        #
+        # Named "walk-forward" historically, but it is not: best_params below
+        # was selected by a sweep over the ENTIRE [start_date, end_date]
+        # range, so every window this engine calls a "test" window was part
+        # of the parameter-selection data. The engine then runs that one fixed
+        # ruleset in both halves of each split without selecting anything.
+        # The resulting score therefore cannot detect overfitting -- it is a
+        # regime-stability reading. Genuine nested walk-forward lives in
+        # scripts/run_nested_walk_forward.py.
         walk_forward_analysis = None
         if run_walk_forward:
-            logger.info("\n[3/4] Running walk-forward analysis...")
+            logger.info(
+                "\n[3/4] Running fixed-parameter regime comparison "
+                "(NOT out-of-sample; see scripts/run_nested_walk_forward.py)..."
+            )
             
             # Load best ruleset
             best_ruleset = sweep._create_modified_ruleset(best_params)
@@ -359,9 +371,12 @@ class OptimizationPipeline:
                 step_months=1,
             )
             
-            logger.info(f"  ✓ Walk-forward score: {walk_forward_analysis.walk_forward_score:.3f}")
+            logger.info(
+                "  ✓ Regime-comparison score: %.3f (in-sample)",
+                walk_forward_analysis.walk_forward_score,
+            )
         else:
-            logger.info("\n[3/4] Skipping walk-forward analysis")
+            logger.info("\n[3/4] Skipping fixed-parameter regime comparison")
         
         # Step 4: Surface analysis (optional, for 2D parameter pairs)
         surface_analysis = None

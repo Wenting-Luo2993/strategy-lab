@@ -1,10 +1,27 @@
 """
-Walk-forward analysis for trading strategies.
+Fixed-parameter regime comparison across rolling date windows.
 
-Evaluates strategy performance on rolling train/test splits to detect overfitting
-and measure out-of-sample degradation.
+.. deprecated::
+   Despite its name, this module does **not** perform walk-forward
+   optimization. :meth:`WalkForwardEngine.analyze` holds ``self.ruleset``
+   fixed and runs both the "train" and "test" window with identical
+   parameters, so nothing is ever selected and the "test" window is not
+   out-of-sample in any meaningful sense. Its caller
+   (``vibe/backtester/optimization/pipeline.py``) compounds this by passing
+   parameters chosen by a sweep over the *entire* date range, which places
+   every test window inside the parameter-selection data.
+
+   What it actually measures is how one fixed parameter set performs across
+   different market regimes. That is a legitimate and useful question -- it is
+   simply not the overfitting question the name implies.
+
+   For genuine nested walk-forward with per-fold optimization, purge/embargo,
+   and a held-out test window, use
+   :class:`vibe.research_pipeline.walk_forward.NestedWalkForwardDriver` via
+   ``scripts/run_nested_walk_forward.py``.
 """
 import logging
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -42,15 +59,25 @@ class WalkForwardPeriod:
     
     @property
     def degradation(self) -> float:
-        """Test performance relative to train (1.0 = no degradation)."""
-        if self.train_expectancy == 0:
+        """Test performance relative to train (1.0 = no degradation).
+
+        Returns 0.0 when training expectancy is too close to zero to divide
+        by. A near-zero denominator produces an enormous ratio that reads as
+        a spectacular result when it actually means the training window
+        barely made anything, so the ratio is withheld rather than reported.
+        """
+        if abs(self.train_expectancy) < 1e-6:
             return 0.0
         return self.test_expectancy / self.train_expectancy
 
 
 @dataclass
 class WalkForwardAnalysis:
-    """Summary of walk-forward test results."""
+    """Summary of a fixed-parameter comparison across rolling windows.
+
+    Not a walk-forward result: no parameter was selected, so the "test"
+    windows are not out-of-sample. See the module docstring.
+    """
     periods: List[WalkForwardPeriod]
     
     # Aggregate metrics
@@ -58,12 +85,23 @@ class WalkForwardAnalysis:
     avg_test_expectancy: float
     avg_degradation: float
     
-    # Walk-forward score (0-1, higher = better OOS performance)
+    # Composite score. Despite the name this does NOT measure out-of-sample
+    # robustness, because the same parameters ran in both windows.
     walk_forward_score: float
     
     def to_dict(self) -> Dict[str, Any]:
-        """Export summary as dictionary."""
+        """Export summary as dictionary.
+
+        Carries ``is_out_of_sample: False`` so that any artifact derived from
+        this object states what it is. Without the marker a consumer reading
+        ``walk_forward_score`` has no way to tell this apart from a genuine
+        nested walk-forward result, which is precisely how the defect
+        survived this long.
+        """
         return {
+            "is_out_of_sample": False,
+            "parameters_selected_per_fold": False,
+            "method": "fixed_parameter_regime_comparison",
             "n_periods": len(self.periods),
             "avg_train_expectancy": self.avg_train_expectancy,
             "avg_test_expectancy": self.avg_test_expectancy,
@@ -138,8 +176,13 @@ class WalkForwardEngine:
         precomputed_features: Optional[pd.DataFrame] = None,
     ) -> WalkForwardAnalysis:
         """
-        Run walk-forward analysis.
-        
+        Run the same fixed ruleset across rolling train/test windows.
+
+        .. deprecated::
+           This does not optimize. ``self.ruleset`` is used unchanged in both
+           windows, so the "test" result is not out-of-sample. Use
+           ``scripts/run_nested_walk_forward.py`` for real walk-forward.
+
         Args:
             symbol: Trading symbol
             start_date: Overall backtest start
@@ -152,7 +195,19 @@ class WalkForwardEngine:
         Returns:
             WalkForwardAnalysis with summary metrics
         """
-        logger.info(f"Running walk-forward analysis on {symbol}...")
+        warnings.warn(
+            "WalkForwardEngine.analyze() does not select parameters: the same "
+            "ruleset runs in both the train and test window, so its results "
+            "are NOT out-of-sample evidence and must not be used to judge "
+            "overfitting. Use NestedWalkForwardDriver "
+            "(scripts/run_nested_walk_forward.py) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        logger.warning(
+            "Fixed-parameter regime comparison on %s -- NOT out-of-sample.",
+            symbol,
+        )
         logger.info(f"  Train: {train_months}mo, Test: {test_months}mo, Step: {step_months}mo")
         
         # Generate periods
@@ -252,7 +307,16 @@ class WalkForwardEngine:
         test_months: int,
         step_months: int,
     ) -> List[WalkForwardPeriod]:
-        """Generate train/test period splits."""
+        """Generate train/test period splits.
+
+        Windows are sized as ``months * 30`` calendar days, which drifts
+        against the real calendar and makes no attempt to count trading
+        sessions, so two folds nominally the same size can contain different
+        numbers of opportunities. The session-based
+        :class:`~vibe.research_pipeline.splits.planner.TemporalSplitPlanner`
+        is the replacement; this is left as-is rather than repaired because
+        the surrounding method is deprecated.
+        """
         periods = []
         current_train_start = start_date
         

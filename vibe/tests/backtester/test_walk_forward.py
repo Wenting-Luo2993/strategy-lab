@@ -328,3 +328,94 @@ def test_walk_forward_degradation_calculation():
     )
     
     assert abs(period_20_deg.degradation - 0.80) < 0.01  # 0.20 / 0.25 = 0.80
+
+# --------------------------------------------------------------------------
+# Deprecation contract
+#
+# The tests above verify that the train and test *dates* do not overlap, and
+# they pass. That is precisely why the real defect survived: date separation
+# is necessary but nowhere near sufficient. No parameter is ever selected
+# per fold, and the caller supplies parameters chosen over the whole range,
+# so the "test" window is inside the selection data no matter how cleanly
+# the dates are split. The tests below guard the labelling that makes this
+# visible, so the engine cannot quietly go back to presenting itself as
+# out-of-sample evidence.
+# --------------------------------------------------------------------------
+
+
+def test_analyze_warns_that_results_are_not_out_of_sample():
+    """The engine must say so at the moment it is used."""
+    import warnings
+    from datetime import datetime
+    from unittest.mock import patch
+
+    from vibe.backtester.analysis.walk_forward import (
+        WalkForwardAnalysis,
+        WalkForwardEngine,
+    )
+
+    engine = WalkForwardEngine.__new__(WalkForwardEngine)
+    with patch.object(WalkForwardEngine, "_generate_periods", return_value=[]):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            try:
+                engine.analyze(
+                    symbol="QQQ",
+                    start_date=datetime(2022, 1, 1),
+                    end_date=datetime(2022, 6, 30),
+                )
+            except Exception:
+                # The warning is emitted before any work, which is the point:
+                # it must not depend on the run succeeding.
+                pass
+
+    messages = [str(w.message) for w in caught if w.category is DeprecationWarning]
+    assert messages, "analyze() must emit a DeprecationWarning"
+    assert any("not out-of-sample" in m.lower() for m in messages)
+
+
+def test_exported_summary_declares_it_is_not_out_of_sample():
+    """Artifacts must carry the caveat, not just the source file.
+
+    A consumer reading walk_forward_score from a JSON artifact has no access
+    to the docstring. Without this marker there is nothing distinguishing
+    this from a genuine nested walk-forward result.
+    """
+    from vibe.backtester.analysis.walk_forward import WalkForwardAnalysis
+
+    summary = WalkForwardAnalysis(
+        periods=[],
+        avg_train_expectancy=0.1,
+        avg_test_expectancy=0.05,
+        avg_degradation=0.5,
+        walk_forward_score=0.7,
+    ).to_dict()
+
+    assert summary["is_out_of_sample"] is False
+    assert summary["parameters_selected_per_fold"] is False
+
+
+def test_degradation_withholds_the_ratio_near_zero_training_expectancy():
+    """A tiny denominator must not read as a spectacular result."""
+    from datetime import datetime
+
+    from vibe.backtester.analysis.walk_forward import WalkForwardPeriod
+
+    class _Overall:
+        def __init__(self, value):
+            self.expectancy_r = value
+
+    class _Result:
+        def __init__(self, value):
+            self.overall = _Overall(value)
+
+    period = WalkForwardPeriod(
+        train_start=datetime(2022, 1, 1),
+        train_end=datetime(2022, 6, 30),
+        test_start=datetime(2022, 7, 1),
+        test_end=datetime(2022, 7, 31),
+        train_result=_Result(1e-9),
+        test_result=_Result(0.5),
+    )
+
+    assert period.degradation == 0.0

@@ -1,0 +1,484 @@
+#!/usr/bin/env python
+"""Run a nested walk-forward: optimize on train, select on validation, test once.
+
+This script exists because the capability it exposes had no caller. Every
+component of plan section 3 was implemented and unit-tested --
+``TemporalSplitPlanner``, ``Optimizer``, ``Selector``, ``RulesetSegmentExecutor``,
+``MetricValidator``, ``NestedWalkForwardDriver`` -- but nothing composed them,
+so the only runnable walk-forward was
+``vibe/backtester/analysis/walk_forward.py``, which does not optimize anything
+and labels its halves "train" and "test" anyway.
+
+What this does differently, per fold:
+
+1. Optimize **only** on that fold's TRAIN sessions.
+2. Select on a dedicated VALIDATION window, using a plateau medoid rather than
+   a bare argmax, and record the margin over the runner-up.
+3. Freeze the selected candidate.
+4. Evaluate it exactly once on the next unseen TEST window.
+5. Advance by exchange sessions and repeat.
+
+Purge and embargo gaps separate the three roles, and the driver audits that no
+session appears in more than one role before any of it runs.
+
+If any fold fails to complete, the whole result is INCONCLUSIVE and nothing is
+stitched. Reporting the folds that happened to succeed would be survivorship
+selection, which is the exact bias a walk-forward exists to measure.
+
+Example
+-------
+    python scripts/run_nested_walk_forward.py \\
+        --symbol QQQ \\
+        --dev-start 2021-01-04 --dev-end 2023-12-29 \\
+        --oos-start 2024-01-02 --oos-end 2024-12-31 \\
+        --axis orb_minutes=strategy.orb_duration_minutes:5,15,30
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any, Sequence
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+logger = logging.getLogger("nested_walk_forward")
+
+DEFAULT_RULESET = Path("vibe/rulesets/orb_production.yaml")
+
+
+def _parse_axis(raw: str) -> tuple[str, str, tuple[Any, ...]]:
+    """Parse ``name=dotted.path:v1,v2,v3`` into an axis definition.
+
+    The dotted path is required rather than inferred: ``RulesetSegmentExecutor``
+    refuses a path that does not already exist in the base ruleset, which is
+    what turns a typo into an error instead of a silently ignored parameter.
+    """
+    if "=" not in raw or ":" not in raw.split("=", 1)[1]:
+        raise argparse.ArgumentTypeError(
+            f"--axis must look like name=dotted.path:v1,v2,v3 (got {raw!r})"
+        )
+    name, remainder = raw.split("=", 1)
+    path, values_raw = remainder.rsplit(":", 1)
+    values = tuple(_coerce(v.strip()) for v in values_raw.split(",") if v.strip())
+    if not values:
+        raise argparse.ArgumentTypeError(f"Axis {name!r} has no values")
+    return name.strip(), path.strip(), values
+
+
+def _coerce(token: str) -> Any:
+    low = token.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    for cast in (int, float):
+        try:
+            return cast(token)
+        except ValueError:
+            continue
+    return token
+
+
+def _as_date(raw: str) -> date:
+    return datetime.strptime(raw, "%Y-%m-%d").date()
+
+
+def build_leakage_report(symbol: str, data_dir: Path, spec) -> Any:
+    """Run the run-wide leakage suite against the research precompute path.
+
+    Once per run, not per candidate: leakage is a property of the feature
+    code, and no parameter value can make a causal feature peek. Pointing the
+    suite at the engine instead of the research precompute step would produce
+    a green report that means nothing, because the engine is downstream of the
+    contamination.
+    """
+    import asyncio
+    from zoneinfo import ZoneInfo
+
+    from vibe.backtester.core.engine import _resample
+    from vibe.backtester.analysis.regime_research.features import FeatureEngine
+    from vibe.backtester.data.parquet_loader import ParquetLoader
+    from vibe.research_pipeline.features.leakage import run_leakage_suite
+    from vibe.research_pipeline.features.registry import SWEEP_PRECOMPUTED_FEATURES
+
+    # Exchange-local rather than UTC: a session is identified by its
+    # exchange-local calendar date, so converting would shift the boundary.
+    tz = ZoneInfo("America/New_York")
+    loader = ParquetLoader(data_dir, [symbol])
+    bars_1m = asyncio.run(
+        loader.get_bars(
+            symbol,
+            start_time=datetime.combine(spec.dev_start, datetime.min.time(), tzinfo=tz),
+            end_time=datetime.combine(spec.dev_end, datetime.max.time(), tzinfo=tz),
+        )
+    )
+    bars = _resample(bars_1m, "5min")
+
+    engine = FeatureEngine()
+
+    def compute(frame):
+        return engine.compute(frame, features=list(SWEEP_PRECOMPUTED_FEATURES))
+
+    report = run_leakage_suite(
+        bars,
+        compute,
+        cut=max(1, len(bars) // 2),
+        features=list(SWEEP_PRECOMPUTED_FEATURES),
+    )
+    return report, bars
+
+
+def build_orb_boundary_report(bars, ruleset_config: dict) -> Any:
+    """Check the opening range never contains the bar that breaks it.
+
+    Driven off the ruleset's own window definition and the real bar grid, so
+    it fails if the configured ORB duration does not align with the bar
+    interval -- the case where the breakout bar is still inside the range it
+    is tested against and the signal measures itself.
+    """
+    import pandas as pd
+
+    from vibe.research_pipeline.features.leakage import (
+        LeakageFinding,
+        LeakageReport,
+        check_orb_boundary,
+    )
+
+    strategy = ruleset_config.get("strategy", {})
+    start_clock = str(strategy.get("orb_start_time", "09:30"))
+    duration = int(strategy.get("orb_duration_minutes", 5))
+
+    stamps = bars.index
+    sessions = pd.Series(stamps).dt.date
+    findings: list[LeakageFinding] = []
+
+    # One representative session is enough: the window geometry is identical
+    # every day, so a second session re-tests the same arithmetic.
+    for session in list(dict.fromkeys(sessions))[:1]:
+        day = bars.loc[sessions.to_numpy() == session]
+        if day.empty:
+            continue
+        hour, minute = (int(part) for part in start_clock.split(":")[:2])
+        session_open = pd.Timestamp(
+            datetime.combine(session, datetime.min.time()), tz=stamps.tz
+        ).replace(hour=hour, minute=minute)
+        or_end = session_open + pd.Timedelta(minutes=duration)
+
+        window = day.loc[(day.index >= session_open) & (day.index < or_end)]
+        after = day.loc[day.index >= or_end]
+        if window.empty or after.empty:
+            findings.append(
+                LeakageFinding(
+                    "orb_boundary",
+                    "window",
+                    False,
+                    f"Session {session} has no bars in the opening range "
+                    f"{session_open}..{or_end}; the boundary cannot be checked.",
+                )
+            )
+            continue
+
+        return check_orb_boundary(
+            day,
+            float(window["high"].max()),
+            float(window["low"].min()),
+            session_open=session_open,
+            or_end=or_end,
+            breakout_time=after.index[0],
+        )
+
+    return LeakageReport(tuple(findings))
+
+
+def build_fold_leakage(plan, calendar_name: str) -> dict:
+    """Per-fold split-contamination evidence, keyed by segment.
+
+    Computed from the plan rather than asserted, so a planner regression that
+    let a test session into the training window would surface here as a named
+    session rather than as a quietly better out-of-sample number.
+    """
+    from vibe.research_pipeline.contracts import SegmentRole
+    from vibe.research_pipeline.evaluation import SegmentValidator
+    from vibe.research_pipeline.features.leakage import check_split_contamination
+    from vibe.research_pipeline.splits.calendar import SessionCalendar
+
+    calendar = SessionCalendar(calendar_name)
+    by_segment: dict = {}
+    for manifest in plan.folds:
+        roles = {segment.role: segment for segment in manifest.segments}
+        graded = [
+            roles[role]
+            for role in (SegmentRole.TRAIN, SegmentRole.VALIDATION, SegmentRole.TEST)
+            if role in roles
+        ]
+        sessions = {
+            segment.role: calendar.sessions_between(
+                segment.start_session, segment.end_session
+            )
+            for segment in graded
+        }
+        report = check_split_contamination(
+            train_sessions=sessions.get(SegmentRole.TRAIN, ()),
+            test_sessions=sessions.get(SegmentRole.TEST, ()),
+            selection_sessions=sessions.get(SegmentRole.VALIDATION),
+        )
+        for segment in graded:
+            by_segment[SegmentValidator.segment_key(segment)] = report
+    return by_segment
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Nested walk-forward with per-fold optimization",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--symbol", default="QQQ")
+    parser.add_argument("--ruleset", type=Path, default=DEFAULT_RULESET)
+    parser.add_argument("--dev-start", type=_as_date, required=True)
+    parser.add_argument("--dev-end", type=_as_date, required=True)
+    parser.add_argument("--oos-start", type=_as_date, required=True)
+    parser.add_argument("--oos-end", type=_as_date, required=True)
+    parser.add_argument("--train-sessions", type=int, default=120)
+    parser.add_argument("--validation-sessions", type=int, default=40)
+    parser.add_argument("--test-sessions", type=int, default=40)
+    parser.add_argument(
+        "--step-sessions",
+        type=int,
+        default=None,
+        help="Defaults to --test-sessions so TEST windows tile without overlap.",
+    )
+    parser.add_argument("--warmup-sessions", type=int, default=50)
+    parser.add_argument("--capital", type=float, default=100_000.0)
+    parser.add_argument("--min-trades", type=int, default=10)
+    parser.add_argument(
+        "--axis",
+        action="append",
+        default=[],
+        metavar="NAME=PATH:V1,V2",
+        help="Parameter axis to optimize, repeatable.",
+    )
+    parser.add_argument(
+        "--skip-leakage",
+        action="store_true",
+        help=(
+            "Skip the leakage suite. No fold can then reach COMPLETED, "
+            "because absent required evidence is blocking rather than a "
+            "pass. Plumbing diagnostics only."
+        ),
+    )
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+    )
+
+    from vibe.backtester.data.paths import (
+        MarketDataNotFoundError,
+        resolve_market_data_dir,
+    )
+    from vibe.research_pipeline.evaluation import SegmentValidator
+    from vibe.research_pipeline.features.leakage import LeakageReport
+    from vibe.research_pipeline.lifecycle import RunState
+    from vibe.research_pipeline.optimization import (
+        Optimizer,
+        ParameterAxis,
+        RulesetSegmentExecutor,
+        Selector,
+        generate_grid,
+    )
+    from vibe.research_pipeline.splits.planner import (
+        SplitPlanError,
+        SplitSpec,
+        TemporalSplitPlanner,
+    )
+    from vibe.research_pipeline.validation import ValidationProfile
+    from vibe.research_pipeline.walk_forward import NestedWalkForwardDriver
+
+    if not args.axis:
+        parser.error(
+            "At least one --axis is required. A walk-forward with nothing to "
+            "optimize is the defect this script exists to replace."
+        )
+
+    try:
+        data_dir = resolve_market_data_dir()
+    except MarketDataNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        print("Run: python scripts/convert_databento.py", file=sys.stderr)
+        return 1
+
+    parsed = [_parse_axis(raw) for raw in args.axis]
+    parameter_paths = {name: path for name, path, _ in parsed}
+    candidates = generate_grid(
+        tuple(ParameterAxis(name, values) for name, _, values in parsed)
+    )
+
+    spec = SplitSpec(
+        dev_start=args.dev_start,
+        dev_end=args.dev_end,
+        final_oos_start=args.oos_start,
+        final_oos_end=args.oos_end,
+        train_sessions=args.train_sessions,
+        validation_sessions=args.validation_sessions,
+        test_sessions=args.test_sessions,
+        step_sessions=args.step_sessions or args.test_sessions,
+        indicator_lookback_sessions=args.warmup_sessions,
+    )
+
+    try:
+        plan = TemporalSplitPlanner().plan(spec)
+    except SplitPlanError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    logger.info(
+        "Plan %s: %d fold(s), %d candidate(s), %d engine runs",
+        plan.plan_hash[:12],
+        len(plan.folds),
+        len(candidates),
+        len(plan.folds) * (2 * len(candidates) + 1),
+    )
+
+    bars = None
+    fold_leakage = build_fold_leakage(plan, spec.calendar_name)
+    if args.skip_leakage:
+        leakage_report = LeakageReport(())
+        logger.warning(
+            "Leakage suite skipped. The profile's required checks will be "
+            "absent, which is BLOCKING, so no fold can reach COMPLETED. Use "
+            "this only to exercise plumbing."
+        )
+    else:
+        leakage_report, bars = build_leakage_report(args.symbol, data_dir, spec)
+        import yaml
+
+        with Path(args.ruleset).open("r", encoding="utf-8") as handle:
+            ruleset_config = yaml.safe_load(handle)
+        orb_report = build_orb_boundary_report(bars, ruleset_config)
+        leakage_report = LeakageReport(
+            leakage_report.findings + orb_report.findings
+        )
+        logger.info(
+            "Leakage suite: %d finding(s), passed=%s",
+            len(leakage_report.findings),
+            leakage_report.passed,
+        )
+        for failure in leakage_report.failures:
+            logger.error("LEAKAGE %s", failure)
+
+    executor = RulesetSegmentExecutor.from_yaml(
+        args.ruleset,
+        parameter_paths,
+        data_dir=data_dir,
+        warmup_sessions=args.warmup_sessions,
+        engine_kwargs={"initial_capital": args.capital},
+    )
+    validator = SegmentValidator(
+        ValidationProfile(
+            name="nested_walk_forward",
+            min_trades=args.min_trades,
+            min_sessions=1,
+        ),
+        leakage_report,
+        starting_equity=args.capital,
+        bars_by_symbol={args.symbol: bars} if bars is not None else None,
+        leakage_by_segment=fold_leakage,
+    )
+
+    def score(backtest_result: Any) -> float:
+        # The scorer receives the inner BacktestResult, while the validator
+        # receives the enclosing SegmentResult. Confusing the two fails loudly
+        # as an AttributeError rather than silently scoring the wrong object.
+        return float(backtest_result.overall.expectancy_r)
+
+    driver = NestedWalkForwardDriver(
+        Optimizer(executor, validator, score),
+        Selector(executor, validator, score),
+        executor,
+        validator,
+    )
+
+    result = driver.run(plan, candidates)
+    _report(result, RunState)
+    return 0 if result.state is RunState.COMPLETED else 2
+
+
+def _report(result, RunState) -> None:
+    print("\n" + "=" * 72)
+    print(f"Nested walk-forward {result.plan_hash[:12]}  ->  {result.state.value}")
+    print("=" * 72)
+    print(f"Folds completed: {result.n_folds_completed}/{result.n_folds_expected}")
+    if result.reason:
+        print(f"Reason: {result.reason}")
+
+    for fold in result.folds:
+        print(f"\n-- Fold {fold.fold_index} [{fold.state.value}]")
+        if fold.optimization is not None:
+            batch = fold.optimization
+            print(
+                f"   TRAIN grid        : {batch.n_candidates_evaluated}"
+                f"/{batch.n_candidates_expected} evaluated, "
+                f"{batch.n_candidates_eligible} eligible"
+            )
+            # A grid with holes is the failure mode plan section 10 singles
+            # out, so name every hole rather than reporting only the count.
+            for failure in batch.failures:
+                print(
+                    f"   ! {failure.candidate_id} failed in {failure.phase}: "
+                    f"{failure.message}"
+                )
+            for evaluation in batch.evaluations:
+                report = evaluation.validation_report
+                if report.target_state is RunState.COMPLETED:
+                    continue
+                codes = ", ".join(
+                    f"{f.code}({f.severity.value})" for f in report.findings
+                ) or "no findings"
+                print(
+                    f"   ! {evaluation.candidate.parameter_map} -> "
+                    f"{report.target_state.value}: {codes}"
+                )
+        if fold.selection is None:
+            print(f"   no selection: {fold.reason}")
+            continue
+        selection = fold.selection
+        print(f"   parameters        : {selection.selected.candidate.parameter_map}")
+        print(
+            f"   candidates        : {selection.n_candidates_evaluated} evaluated, "
+            f"{selection.n_candidates_eligible} eligible"
+        )
+        print(f"   validation score  : {selection.winner_score:.4f}")
+        print(f"   selection margin  : {selection.selection_margin}")
+        print(f"   plateau size      : {len(selection.neighborhood_candidate_ids)}")
+        if fold.test_result is not None:
+            overall = fold.test_result.result.overall
+            print(
+                f"   TEST (unseen)     : {overall.n_trades} trades, "
+                f"expectancy {overall.expectancy_r:.4f}R, "
+                f"pnl ${overall.total_pnl:,.2f}"
+            )
+
+    if result.stitched_oos is None:
+        print(
+            "\nNo stitched out-of-sample result. Folds are only stitched when "
+            "every one of them completes; reporting the survivors would be "
+            "survivorship selection."
+        )
+        return
+
+    stitched = result.stitched_oos
+    print("\n" + "-" * 72)
+    print("Stitched out-of-sample (non-overlapping TEST windows only)")
+    print("-" * 72)
+    print(f"  folds      : {stitched.n_folds}")
+    print(f"  trades     : {stitched.n_trades}")
+    print(f"  expectancy : {stitched.expectancy_r:.4f}R")
+    print(f"  window     : {stitched.first_session} .. {stitched.last_session}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

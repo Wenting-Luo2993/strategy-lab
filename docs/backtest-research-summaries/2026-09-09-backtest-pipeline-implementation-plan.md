@@ -1535,26 +1535,51 @@ above. The following recommendations were **not** adopted, with reasons.
 
 ## 18. Execution Status
 
-**Last updated:** October 12, 2026
+**Last updated:** October 14, 2026
 **Branch:** `wenting-luo2993-portfolio-simulation-p10b`
 
 This section tracks implementation against §13. It is the authoritative view of
 what exists; the increment table in §13 describes intent, not state.
 
 Status values are deliberately strict. **Complete** means the increment's full
-declared scope is implemented and tested. An increment missing any part of its
-scope is **Partial**, however substantial the delivered portion — the point of
-this section is to make gaps visible rather than to show progress.
+declared scope is implemented, tested, **and reachable from something a person
+runs**. An increment missing any part of its scope is **Partial**, however
+substantial the delivered portion — the point of this section is to make gaps
+visible rather than to show progress.
+
+> **Reachability was added to the bar on October 14, 2026**, after an audit of
+> §3 found that `MetricValidator`, `run_leakage_suite`, `TemporalSplitPlanner`,
+> `RulesetSegmentExecutor`, `NestedWalkForwardDriver`, and `finalize_validation`
+> each had **zero production callers**. Every one was implemented, correct, and
+> unit-tested; none had ever run outside its own tests. Three visible symptoms
+> shared that single root cause: walk-forward numbers came from the defective
+> legacy engine, all 40 recorded runs sat at `validating` forever, and nothing
+> had ever reached the publish outbox. The previous wording of this section
+> called those increments Complete, which was true of the code and false of the
+> system. See `2026-10-14-target-architecture-gap-audit.md`.
 
 ### Status at a glance
 
 | State | Increments |
 | --- | --- |
-| Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P6, P7, P8, P9, P10, P10b, P11, P12, P13 |
-| Partial | P14, P15 (P15a/P15b/P15d-local done; P15c/P15d-remote/P15e not started) |
+| Complete | P0, P1, P2, P2b, P3, P4, P5, P5b, P7, P8, P10, P10b, P11, P13 |
+| Partial | P6, P9 (built and wired Oct 14; see below), P12, P14, P15 |
 
-All nine increments required by the "minimum bar before trusting a result"
-(P0-P6, P9, P10) are complete. P6 prevents a run from reaching
+P6 and P9 are the increments the reachability rule reclassified. Both are now
+wired: `vibe/research_pipeline/evaluation.py` supplies the missing seam that
+assembles a `ValidationInput` from a real backtest, and
+`scripts/run_nested_walk_forward.py` composes planner → grid → executor →
+validator → optimizer → selector → driver into a runnable entry point. The
+first end-to-end run completed 8/8 folds against real QQQ data with per-fold
+parameters that differ across folds — the observable property the legacy engine
+can never produce, because it holds parameters fixed.
+
+They remain **Partial** rather than Complete because `finalize_validation` is
+still not wired into the recording path, so runs continue to rest at
+`VALIDATING` and nothing reaches the publish outbox. That is the next step, and
+it also unblocks P15c.
+
+P6 prevents a run from reaching
 `COMPLETED` without a durable one-pass validation report covering normalized
 metrics, accounting and execution reconciliation, data integrity, all six
 leakage checks, and the feature-registry hash. Candidate plausibility outliers
@@ -1563,6 +1588,29 @@ are `INCONCLUSIVE`, and stale execution leases are swept to
 `EXECUTION_FAILED`. P9 confines optimization to TRAIN, selection to VALIDATION,
 and frozen evaluation to each unseen TEST window; incomplete grids or folds
 make the parent inconclusive instead of stitching survivors.
+
+### Legacy walk-forward deprecation (October 14, 2026)
+
+`vibe/backtester/analysis/walk_forward.py` was the defect named in §10 and is
+now explicitly deprecated rather than left to look authoritative:
+
+- `WalkForwardEngine.analyze()` emits a `DeprecationWarning` stating that its
+  results are not out-of-sample evidence.
+- `WalkForwardAnalysis.to_dict()` carries `is_out_of_sample: False` and
+  `parameters_selected_per_fold: False`, so derived artifacts state what they
+  are. A consumer reading `walk_forward_score` out of a JSON file has no access
+  to a docstring, which is how the defect survived this long.
+- `WalkForwardPeriod.degradation` now withholds the ratio when training
+  expectancy is within `1e-6` of zero, instead of reporting an enormous number
+  that reads as a triumph.
+- `pipeline.py` labels the step "fixed-parameter regime comparison" and
+  documents that `best_params` came from a sweep over the entire range, which
+  is the actual origin of the selection leakage.
+
+The pre-existing `test_walk_forward_no_leakage` passed throughout, because it
+only checks that train and test *dates* do not overlap. Date separation is
+necessary and nowhere near sufficient — that test passing while the selection
+leak went unnoticed is the clearest available illustration of why.
 
 ### Increment status
 
