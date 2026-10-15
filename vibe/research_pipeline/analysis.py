@@ -312,6 +312,7 @@ class SqliteAnalysisAdapter:
             "dataset.snapshot_id": identity.get("data_snapshot_id"),
             "dataset.universe_hash": identity.get("universe_hash"),
             "dataset.split_manifest_hash": identity.get("split_manifest_hash"),
+            "dataset.segment_role": _segment_role(row["segment_role"]),
             "validation.state": row["state"],
             "validation.profile": row["profile_name"],
             "validation.leakage_passed": _optional_bool(row["leakage_passed"]),
@@ -696,6 +697,20 @@ def _json_object(value: Any) -> dict[str, Any]:
 
 def _optional_bool(value: Any) -> bool | None:
     return None if value is None else bool(value)
+
+
+def _segment_role(value: Any) -> str:
+    """Name the unlabelled bucket so grouped analyses cannot hide it.
+
+    Runs recorded before the role column existed carry NULL. Leaving that as
+    None makes it an unnamed group that reads like missing data rather than a
+    population whose in-sample status is simply unknown. "unlabelled" matches
+    the vocabulary the local viewer filter already uses.
+    """
+    if value is None:
+        return "unlabelled"
+    text = str(value).strip()
+    return text or "unlabelled"
 
 
 def _policy_dict(policy: AnalysisPolicy) -> dict[str, int]:

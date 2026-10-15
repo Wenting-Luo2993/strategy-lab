@@ -774,6 +774,40 @@ Verified against a copy of the live database: v9 → v10 applies cleanly, all
 `test_an_undeclared_run_is_not_recorded_as_out_of_sample`; the first was
 mutation-checked by coercing NULL to `test`.
 
+**Update 2 — the role is now analysable, not just filterable.** Persisting the
+column and exposing it in the list view still left the *analysis* layer blind:
+`SqliteAnalysisAdapter.field_catalog()` reported 77 fields and none of them was
+the role, so every grouped query silently pooled train, validation and test
+into one population. A dashboard that can filter by role in one view and
+average across roles in another is worse than one that cannot do either,
+because the second view looks authoritative.
+
+`dataset.segment_role` is now projected as a dimension. Because the catalog is
+*inferred from rows* rather than declared as a fixed UI list, the field becomes
+groupable, filterable and screenable everywhere at once, with no frontend
+change.
+
+NULL maps to the string `"unlabelled"` rather than being left as None, for the
+same reason the backfill chose NULL: an unnamed group reads as missing data,
+when what it actually means is "provenance unknown". The spelling matches the
+vocabulary the viewer filter already uses.
+
+Verified against the live 151-run database through the full Node → bridge →
+adapter path. Grouping by role gives:
+
+| role | mean expectancy | runs |
+| --- | --- | --- |
+| train | +0.005R | 15 |
+| validation | **+0.179R** | 15 |
+| test | **−0.036R** | 4 |
+
+That spread is the entire argument for the dimension. Validation looks like a
+working strategy; the genuinely unseen test window is negative — the textbook
+overfitting signature. Pooled, these 147 runs average to a single number that
+means nothing. Pinned by `test_segment_role_is_analysable`,
+`test_unlabelled_runs_group_under_a_named_bucket`, and
+`test_analyses_can_isolate_out_of_sample_runs`, each mutation-checked.
+
 ### 10.6 The inversion that matters most for the viewer
 
 Having made the role queryable, the obvious next question is what the store

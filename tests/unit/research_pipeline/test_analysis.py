@@ -285,6 +285,83 @@ def test_cost_and_response_limits_are_explicit(analysis_db: Path):
     adapter.close()
 
 
+def _role_run(store: SqliteResearchStore, index: int, role) -> str:
+    run_id = store.register_run(
+        fingerprint=_fingerprint(index),
+        methodology_version="research-store-v1",
+        lineage_id=f"family-{index % 2}",
+        segment_role=role,
+    )
+    token = store.start_run(run_id, owner="analysis-test", lease_seconds=60)
+    store.record_metrics(
+        run_id,
+        {"expectancy_r": index / 10, "net_pnl": index * 100},
+        calculation_version=2,
+    )
+    store.record_evidence(run_id, _evidence())
+    store.transition(run_id, target=RunState.VALIDATING, lease_token=token)
+    store.finalize_validation(run_id, _report())
+    return run_id
+
+
+@pytest.fixture
+def role_db(tmp_path: Path) -> Path:
+    from vibe.research_pipeline.contracts import SegmentRole
+
+    path = tmp_path / "roles.sqlite3"
+    store = SqliteResearchStore(path)
+    _role_run(store, 1, SegmentRole.TRAIN)
+    _role_run(store, 2, SegmentRole.TEST)
+    _role_run(store, 3, None)
+    store.close()
+    return path
+
+
+def test_segment_role_is_analysable(role_db: Path):
+    """Without this dimension every analysis silently pools train with test."""
+    adapter = SqliteAnalysisAdapter(role_db)
+    catalog = {item["field"]: item for item in adapter.field_catalog()}
+    assert "dataset.segment_role" in catalog
+    assert catalog["dataset.segment_role"]["groupable"] is True
+    adapter.close()
+
+
+def test_unlabelled_runs_group_under_a_named_bucket(role_db: Path):
+    """A NULL role must read as 'unknown provenance', not as missing data."""
+    adapter = SqliteAnalysisAdapter(role_db)
+    roles = {
+        row.value("dataset.segment_role") for row in adapter.rows()
+    }
+    assert roles == {"train", "test", "unlabelled"}
+    adapter.close()
+
+
+def test_analyses_can_isolate_out_of_sample_runs(role_db: Path):
+    """The whole point: ask for test rows and get only genuinely unseen ones."""
+    adapter = SqliteAnalysisAdapter(role_db)
+    result = adapter.query(
+        _query(
+            screeningColumns=[
+                "identity.display_alias",
+                "dataset.segment_role",
+            ],
+            filters={
+                "op": "and",
+                "children": [
+                    {
+                        "op": "eq",
+                        "field": "dataset.segment_role",
+                        "value": "test",
+                    }
+                ],
+            },
+        )
+    )
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["dataset.segment_role"] == "test"
+    adapter.close()
+
+
 def test_invalid_fields_filter_shapes_and_mixed_metric_versions_are_rejected(
     analysis_db: Path,
 ):
