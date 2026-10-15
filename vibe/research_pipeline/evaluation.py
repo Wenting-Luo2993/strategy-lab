@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import pandas as pd
 
@@ -54,9 +54,11 @@ from vibe.research_pipeline.validation import (
 __all__ = [
     "BarIntegrityCounts",
     "SegmentValidator",
+    "build_run_validator",
     "build_validation_input",
     "measure_bar_integrity",
     "measure_data_integrity",
+    "slice_graded_bars",
 ]
 
 
@@ -284,3 +286,41 @@ class SegmentValidator:
         if frame is None:
             return None
         return slice_graded_bars(frame, segment.start_session, segment.end_session)
+
+
+def build_run_validator(
+    profile: ValidationProfile,
+    leakage_report: LeakageReport,
+    *,
+    starting_equity: float,
+    expected_sessions_for: Callable[[Any], int],
+    bars_for: Optional[Callable[[Any], Optional[pd.DataFrame]]] = None,
+    scope: ValidationScope = ValidationScope.RUN,
+    registry_hash_at_execution: Optional[str] = None,
+) -> Callable[[Any], ValidationReport]:
+    """Build the ``validator`` callable ``RunRecorder`` accepts.
+
+    This is what lets a recorded run leave ``VALIDATING``. It is deliberately
+    a *factory over supplied evidence* rather than a convenience that invents
+    evidence: the caller must say how many sessions the exchange calendar
+    expects and, where it can, which bars the run consumed. A caller holding
+    no leakage evidence passes an empty report and its runs will not reach
+    ``COMPLETED``, because absent required checks are blocking -- which is the
+    correct outcome, not an inconvenience to design around.
+    """
+    validator = MetricValidator(profile)
+
+    def validate(result: Any) -> ValidationReport:
+        return validator.validate(
+            build_validation_input(
+                result,
+                starting_equity=starting_equity,
+                expected_sessions=expected_sessions_for(result),
+                leakage_report=leakage_report,
+                scope=scope,
+                bars=bars_for(result) if bars_for is not None else None,
+                registry_hash_at_execution=registry_hash_at_execution,
+            )
+        )
+
+    return validate

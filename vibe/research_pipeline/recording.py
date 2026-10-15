@@ -21,15 +21,22 @@ mid-simulation leaves an ``EXECUTION_FAILED`` row rather than no row at all. A
 recorder that only persisted successful runs would quietly bias the record
 toward configurations that happen not to crash.
 
-**Recording stops at ``VALIDATING`` and does not finalize.** A terminal state
-is only legitimate via ``finalize_validation``, which requires a real
-``LeakageReport`` and a ``DataIntegritySummary`` measured from the bars the run
-actually consumed. Neither is cheap, and neither can be fabricated: a
+**Recording stops at ``VALIDATING`` unless a real validator is supplied.** A
+terminal state is only legitimate via ``finalize_validation``, which requires a
+real ``LeakageReport`` and a ``DataIntegritySummary`` measured from the bars
+the run actually consumed. Neither is cheap, and neither can be fabricated: a
 synthesized "passing" leakage report would mark unvalidated runs ``COMPLETED``
-and destroy the meaning of the state. Runs therefore come to rest in
-``VALIDATING``, which is non-terminal and truthfully says "recorded, not yet
-judged". ``sweep_stale_leases`` only reaps ``RUNNING``, so resting there is
-safe.
+and destroy the meaning of the state. A caller that *can* produce genuine
+evidence may pass a ``validator`` callable, and the run will then reach its
+true terminal state; a caller that cannot simply omits it and the run comes to
+rest in ``VALIDATING``, which is non-terminal and truthfully says "recorded,
+not yet judged". ``sweep_stale_leases`` only reaps ``RUNNING``, so resting
+there is safe.
+
+Note the asymmetry: supplying a validator cannot *launder* a run, because the
+report it returns is produced by ``MetricValidator`` from evidence the caller
+had to actually measure. ``vibe/research_pipeline/evaluation.py`` is the
+module that assembles that evidence.
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from vibe.research_pipeline.contracts import (
     RetentionProfile,
@@ -358,6 +365,7 @@ class RunRecorder:
         owner: str = "run_backtest",
         lease_seconds: int = 3600,
         notes: Optional[str] = None,
+        validator: Optional[Callable[[Any], Any]] = None,
     ) -> None:
         self._store = store
         self._fingerprint = fingerprint
@@ -366,6 +374,7 @@ class RunRecorder:
         self._owner = owner
         self._lease_seconds = lease_seconds
         self._notes = notes
+        self._validator = validator
 
         self.run_id: Optional[str] = None
         self._lease_token: Optional[str] = None
@@ -437,6 +446,15 @@ class RunRecorder:
             self._store.record_equity_curve(self.run_id, result.equity.equity_curve)
 
         self._recorded = True
+
+        # Finalize only with a report the caller genuinely produced. Omitting
+        # the validator leaves the run at VALIDATING, which is honest; it is
+        # never finalized on the recorder's own authority, because the
+        # recorder has no leakage or data-integrity evidence of its own.
+        if self._validator is not None:
+            report = self._validator(result)
+            self._store.finalize_validation(self.run_id, report)
+
         return self.run_id
 
 
@@ -497,6 +515,7 @@ class BacktestRunSink:
         starting_equity: float,
         retention: RetentionProfile = RetentionProfile.SUMMARY,
         owner: str = "research_study",
+        validator: Optional[Callable[[Any], Any]] = None,
     ) -> None:
         self._store = store
         self._strategy_id = strategy_id
@@ -507,6 +526,7 @@ class BacktestRunSink:
         self._starting_equity = float(starting_equity)
         self._retention = retention
         self._owner = owner
+        self._validator = validator
 
         state = git_state(repo_root)
         self._code_commit = state.commit
@@ -567,6 +587,7 @@ class BacktestRunSink:
                 retention=self._retention,
                 owner=self._owner,
                 notes=notes,
+                validator=self._validator,
             ) as recorder:
                 run_id = recorder.record(
                     result,

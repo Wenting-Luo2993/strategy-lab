@@ -1574,10 +1574,16 @@ first end-to-end run completed 8/8 folds against real QQQ data with per-fold
 parameters that differ across folds — the observable property the legacy engine
 can never produce, because it holds parameters fixed.
 
-They remain **Partial** rather than Complete because `finalize_validation` is
-still not wired into the recording path, so runs continue to rest at
-`VALIDATING` and nothing reaches the publish outbox. That is the next step, and
-it also unblocks P15c.
+They remain **Partial** rather than Complete because the nested walk-forward
+entry point does not yet publish: `finalize_validation` is now reachable from
+the recording path via an optional `validator` on `RunRecorder` and
+`BacktestRunSink` (built by `evaluation.build_run_validator`), but no study
+runner supplies one yet, so runs still rest at `VALIDATING` in practice. The
+seam is deliberately opt-in and cannot launder a run: the recorder holds no
+leakage or data-integrity evidence of its own and never finalizes on its own
+authority, and a caller passing an empty leakage report gets blocking
+`LEAK-003` findings rather than a pass. Supplying that validator from a study
+runner is the next step, and it also unblocks P15c.
 
 P6 prevents a run from reaching
 `COMPLETED` without a durable one-pass validation report covering normalized

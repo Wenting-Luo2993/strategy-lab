@@ -201,6 +201,7 @@ class _FakeStore:
         self.trades: Any = None
         self.curve: Any = None
         self.started = False
+        self.finalized: list[Any] = []
 
     def register_run(self, *, fingerprint, methodology_version, notes=None) -> str:
         return "run-1"
@@ -223,6 +224,9 @@ class _FakeStore:
 
     def record_equity_curve(self, run_id, points) -> None:
         self.curve = points
+
+    def finalize_validation(self, run_id, report) -> None:
+        self.finalized.append(report)
 
 
 @pytest.fixture
@@ -285,6 +289,54 @@ def test_a_recorded_run_comes_to_rest_in_validating(stub_metrics):
     assert store.transitions == [RunState.VALIDATING]
     assert store.metrics == {"net_pnl": 100.0}
     assert store.evidence is not None
+    assert store.finalized == []
+
+
+def test_a_validator_is_required_before_a_run_can_be_finalized(stub_metrics):
+    """The recorder never finalizes on its own authority.
+
+    It holds no leakage report and no data-integrity measurement, so it has
+    no basis on which to judge a run. Finalization happens only when a caller
+    that *does* hold that evidence supplies it.
+    """
+    store = _FakeStore()
+    report = object()
+
+    recorder = RunRecorder(
+        store,
+        fingerprint=object(),
+        methodology_version="test",
+        retention=RetentionProfile.FULL,
+        validator=lambda _result: report,
+    )
+    with recorder:
+        recorder.record(_result(), starting_equity=STARTING_EQUITY)
+
+    assert store.finalized == [report]
+
+
+def test_the_validator_sees_the_result_that_was_recorded(stub_metrics):
+    """A validator judging some other object would be worthless.
+
+    The report must be derived from the same result whose metrics and
+    evidence were just persisted, or the stored verdict describes a different
+    run from the stored numbers.
+    """
+    store = _FakeStore()
+    seen: list[Any] = []
+    result = _result()
+
+    recorder = RunRecorder(
+        store,
+        fingerprint=object(),
+        methodology_version="test",
+        retention=RetentionProfile.FULL,
+        validator=lambda r: seen.append(r) or object(),
+    )
+    with recorder:
+        recorder.record(result, starting_equity=STARTING_EQUITY)
+
+    assert seen == [result]
 
 
 def test_summary_retention_keeps_evidence_but_no_rows(stub_metrics):
@@ -323,3 +375,49 @@ def test_recording_outside_the_context_is_refused(stub_metrics):
 
     with pytest.raises(RecordingError, match="outside its context"):
         recorder.record(_result(), starting_equity=STARTING_EQUITY)
+
+
+def test_the_validation_input_carries_the_supplied_leakage_report():
+    """The report must reach the validator unchanged.
+
+    ``test_validation.py`` already proves that a leakage report missing a
+    required check blocks completion. What is unverified here is the wiring:
+    if ``build_validation_input`` dropped or replaced the report, that
+    blocking behaviour would never be reached and every run would finalize on
+    evidence nobody supplied.
+    """
+    from vibe.research_pipeline.evaluation import build_validation_input
+    from vibe.research_pipeline.features.leakage import LeakageFinding, LeakageReport
+
+    report = LeakageReport(
+        (LeakageFinding("truncation_equivalence", "probe", True, "ok"),)
+    )
+    payload = build_validation_input(
+        _result(),
+        starting_equity=STARTING_EQUITY,
+        expected_sessions=1,
+        leakage_report=report,
+    )
+
+    assert payload.leakage_report is report
+
+
+def test_observed_sessions_are_not_copied_from_the_expectation():
+    """DATA-001 must retain the ability to disagree.
+
+    The check compares what the exchange calendar says exists against what
+    the backtest actually graded. Sourcing both from one number would make it
+    structurally incapable of firing.
+    """
+    from vibe.research_pipeline.evaluation import build_validation_input
+    from vibe.research_pipeline.features.leakage import LeakageReport
+
+    payload = build_validation_input(
+        _result(),
+        starting_equity=STARTING_EQUITY,
+        expected_sessions=99,
+        leakage_report=LeakageReport(()),
+    )
+
+    assert payload.data_integrity.expected_sessions == 99
+    assert payload.data_integrity.observed_sessions != 99
