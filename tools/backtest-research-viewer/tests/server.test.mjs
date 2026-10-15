@@ -31,7 +31,8 @@ function createFixture() {
     INSERT INTO schema_migrations VALUES
       (1, '2026-01-01'), (2, '2026-01-01'), (3, '2026-01-01'),
       (4, '2026-01-01'), (5, '2026-01-01'), (6, '2026-01-01'),
-      (7, '2026-01-01'), (8, '2026-01-01'), (9, '2026-01-01');
+      (7, '2026-01-01'), (8, '2026-01-01'), (9, '2026-01-01'),
+      (10, '2026-01-01');
     CREATE TABLE runs (
       run_id TEXT PRIMARY KEY,
       display_seq INTEGER NOT NULL UNIQUE,
@@ -51,7 +52,8 @@ function createFixture() {
       lease_expires_at TEXT,
       lineage_id TEXT,
       identity_json TEXT,
-      origin_device_id TEXT
+      origin_device_id TEXT,
+      segment_role TEXT
     );
     CREATE TABLE run_metrics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -241,8 +243,9 @@ function createFixture() {
     INSERT INTO runs (
       run_id, display_seq, display_alias, fingerprint, fingerprint_version,
       strategy_id, methodology_version, state, notes, code_commit, code_dirty,
-      created_at, updated_at, lineage_id, identity_json, origin_device_id
-    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      created_at, updated_at, lineage_id, identity_json, origin_device_id,
+      segment_role
+    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (let index = 1; index <= 4; index += 1) {
     const runId = `00000000-0000-7000-8000-${String(index).padStart(12, "0")}`;
@@ -274,6 +277,9 @@ function createFixture() {
       `lineage-${index}`,
       identity,
       "fixture-device",
+      // Run 1 is out-of-sample, run 2 is in-sample, run 3 predates the role
+      // column entirely, run 4 is a train segment.
+      index === 1 ? "test" : index === 2 ? "validation" : index === 4 ? "train" : null,
     );
     database.prepare(`
       INSERT INTO run_metrics (run_id, metric_key, metric_value, calculation_version, recorded_at)
@@ -593,7 +599,7 @@ test("serves endpoint shapes, deterministic pagination, and refreshed rows", asy
   try {
     const meta = await rawRequest(fixture.origin, "/api/meta");
     assert.equal(meta.status, 200);
-    assert.equal(meta.json.schemaVersion, 9);
+    assert.equal(meta.json.schemaVersion, 10);
     assert.equal(meta.json.database.mode, "read-only");
     assert.equal(meta.json.database.queryOnly, true);
     assert.equal(meta.json.database.immutableUri, false);
@@ -673,6 +679,57 @@ test("serves endpoint shapes, deterministic pagination, and refreshed rows", asy
     writer.close();
     const refreshed = await rawRequest(fixture.origin, "/api/runs?page=1&pageSize=10");
     assert.equal(refreshed.json.total, 5);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("filters runs by the sample role they actually ran on", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const aliases = async (query) => {
+      const response = await rawRequest(fixture.origin, `/api/runs?pageSize=50&${query}`);
+      assert.equal(response.status, 200);
+      return response.json.items.map((item) => item.displayAlias).sort();
+    };
+
+    assert.deepEqual(await aliases("segmentRole=test"), ["RUN-000001"]);
+    assert.deepEqual(await aliases("segmentRole=validation"), ["RUN-000002"]);
+    assert.deepEqual(await aliases("segmentRole=train"), ["RUN-000004"]);
+
+    // A run recorded before the column existed is unlabelled, not in-sample
+    // and not out-of-sample. Folding it into either bucket would hand a
+    // reviewer in-sample numbers as out-of-sample evidence.
+    assert.deepEqual(await aliases("segmentRole=unlabelled"), ["RUN-000003"]);
+
+    const all = await aliases("");
+    assert.equal(all.length, 4);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("surfaces the sample role on each run so it cannot be mistaken", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const response = await rawRequest(fixture.origin, "/api/runs?pageSize=50");
+    const byAlias = Object.fromEntries(
+      response.json.items.map((item) => [item.displayAlias, item]),
+    );
+
+    assert.equal(byAlias["RUN-000001"].segmentRole, "test");
+    assert.equal(byAlias["RUN-000003"].segmentRole, null);
+
+    const labels = (alias) => byAlias[alias].badges.map((badge) => badge.label);
+    assert.ok(labels("RUN-000001").includes("Out-of-sample (test)"));
+    assert.ok(labels("RUN-000002").includes("In-sample (validation)"));
+    assert.ok(labels("RUN-000003").includes("Sample role unlabelled"));
+
+    const detail = await rawRequest(
+      fixture.origin,
+      "/api/runs/00000000-0000-7000-8000-000000000001",
+    );
+    assert.equal(detail.json.run.segmentRole, "test");
   } finally {
     await fixture.cleanupAll();
   }

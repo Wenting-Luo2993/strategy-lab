@@ -15,7 +15,7 @@ const PUBLIC_DIR = join(HERE, "public");
 // real guard is assertSchemaContract, which verifies the specific tables and
 // columns actually read, so a newer schema that only adds tables is safe while
 // one that renames or drops something still fails loudly.
-const MINIMUM_SCHEMA_VERSION = 9;
+const MINIMUM_SCHEMA_VERSION = 10;
 const MAX_DETAIL_ROWS = 5_000;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4178;
@@ -272,7 +272,7 @@ export function inspectDatabase(dbPath) {
 
 function assertSchemaContract(database) {
   const required = {
-    runs: ["run_id", "display_seq", "identity_json", "origin_device_id"],
+    runs: ["run_id", "display_seq", "identity_json", "origin_device_id", "segment_role"],
     run_metrics: ["run_id", "metric_key", "metric_value", "calculation_version"],
     run_evidence: ["run_id", "trade_count", "retention_profile", "payload_json"],
     run_findings: ["run_id", "severity", "message"],
@@ -365,6 +365,20 @@ function publicationState(row) {
 
 function trustBadges(run, identity, evidence, validation, findingCounts) {
   const badges = [];
+  // Whether a number is in-sample is the first thing that decides how much it
+  // is worth, so it leads the badge list rather than hiding in a detail pane.
+  // An unlabelled run is shown as unlabelled: it predates the role column and
+  // calling it either thing would manufacture evidence.
+  const role = run.segment_role || null;
+  badges.push(
+    role === "test"
+      ? { label: "Out-of-sample (test)", tone: "good" }
+      : role === "validation"
+        ? { label: "In-sample (validation)", tone: "warning" }
+        : role === "train"
+          ? { label: "In-sample (train)", tone: "warning" }
+          : { label: "Sample role unlabelled", tone: "neutral" },
+  );
   const methodology = run.methodology_version || "Methodology unknown";
   badges.push({
     label: methodology,
@@ -428,6 +442,7 @@ function listRuns(database, searchParams) {
   const { page, pageSize, offset } = parsePage(searchParams);
   const state = parseOptional(searchParams, "state");
   const strategy = parseOptional(searchParams, "strategy");
+  const segmentRole = parseOptional(searchParams, "segmentRole");
   const search = parseOptional(searchParams, "search");
   const order = parseOrder(searchParams, RUN_SORTS, "updated");
   const clauses = [];
@@ -439,6 +454,17 @@ function listRuns(database, searchParams) {
   if (strategy) {
     clauses.push("r.strategy_id = ?");
     params.push(strategy);
+  }
+  if (segmentRole) {
+    // "unlabelled" is a real answer, not a missing one: runs recorded before
+    // the role column existed cannot be claimed as in-sample or out-of-sample
+    // without inventing evidence, so they stay NULL and are filtered as such.
+    if (segmentRole === "unlabelled") {
+      clauses.push("r.segment_role IS NULL");
+    } else {
+      clauses.push("r.segment_role = ?");
+      params.push(segmentRole);
+    }
   }
   if (search) {
     clauses.push(
@@ -453,7 +479,7 @@ function listRuns(database, searchParams) {
   const rows = database.prepare(`
     SELECT r.run_id, r.display_alias, r.strategy_id, r.methodology_version,
            r.state, r.notes, r.code_commit, r.code_dirty, r.created_at, r.updated_at,
-           r.lineage_id, r.identity_json, r.origin_device_id,
+           r.lineage_id, r.identity_json, r.origin_device_id, r.segment_role,
            e.trade_count, e.equity_points, e.retention_profile,
            json_extract(e.payload_json, '$.first_session') AS first_session,
            json_extract(e.payload_json, '$.last_session') AS last_session,
@@ -506,6 +532,7 @@ function listRuns(database, searchParams) {
       updatedAt: row.updated_at,
       lineageId: row.lineage_id || row.run_id,
       originDeviceId: row.origin_device_id,
+      segmentRole: row.segment_role || null,
       executionModelVersion: identity.execution_model_version ?? null,
       retentionProfile: row.retention_profile,
       tradeCount: row.trade_count == null ? null : Number(row.trade_count),
@@ -611,6 +638,7 @@ function getRun(database, runId) {
       updatedAt: run.updated_at,
       lineageId: run.lineage_id || run.run_id,
       originDeviceId: run.origin_device_id,
+      segmentRole: run.segment_role || null,
     },
     identity,
     metrics,

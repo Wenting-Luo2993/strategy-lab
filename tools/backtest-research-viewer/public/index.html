@@ -40,6 +40,15 @@
               <label>Search <input name="search" maxlength="100" placeholder="alias, id, or note"></label>
               <label>State <input name="state" maxlength="100" placeholder="validating"></label>
               <label>Strategy <input name="strategy" maxlength="100" placeholder="orb"></label>
+              <label>Sample role
+                <select name="segmentRole">
+                  <option value="">Any</option>
+                  <option value="test">Out-of-sample (test)</option>
+                  <option value="validation">Validation</option>
+                  <option value="train">Train</option>
+                  <option value="unlabelled">Unlabelled</option>
+                </select>
+              </label>
               <label>Sort
                 <select name="sort">
                   <option value="updated">Newest</option>

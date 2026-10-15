@@ -231,6 +231,9 @@ async function showRun(runId) {
       ${detailGrid("Run identity", {
         "Strategy": run.strategyId,
         "Methodology": run.methodologyVersion,
+        "Sample role": run.segmentRole
+          ? run.segmentRole
+          : "unlabelled (recorded before roles were tracked)",
         "Lineage": run.lineageId,
         "Code commit": run.codeCommit,
         "Origin device": run.originDeviceId,
