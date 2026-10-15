@@ -177,3 +177,79 @@ def test_generate_combinations():
     # Check a few specific combinations
     assert {"P1": 1, "P2": 10, "P3": 100} in combinations
     assert {"P1": 3, "P2": 20, "P3": 100} in combinations
+
+
+# ---------------------------------------------------------------------------
+# Inert sweep axes
+#
+# A parameter read only behind a disabled feature flag scores identically at
+# every value. Reporting that as "no sensitivity" reads as evidence the knob
+# does not matter, when in fact it was never consulted.
+# ---------------------------------------------------------------------------
+
+import yaml as _yaml
+
+from vibe.backtester.analysis.parameter_sweep import ParameterDefinition
+from vibe.backtester.analysis.sensitivity_runner import (
+    drop_inert_parameters,
+    get_base_ruleset_for_strategy,
+    get_parameters_for_strategy,
+)
+
+
+def _ruleset(tmp_path, confirmation):
+    path = tmp_path / "rs.yaml"
+    path.write_text(
+        _yaml.safe_dump(
+            {"trade_filter": {"volume_confirmation": confirmation, "volume_threshold": 1.5}}
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _gated():
+    return ParameterDefinition(
+        path="trade_filter.volume_threshold",
+        values=[1.0, 2.0],
+        name="Volume_Threshold",
+        requires="trade_filter.volume_confirmation",
+    )
+
+
+def _ungated():
+    return ParameterDefinition(
+        path="strategy.orb_duration_minutes", values=[5, 15], name="ORB_Duration"
+    )
+
+
+def test_gated_axis_dropped_when_flag_disabled(tmp_path):
+    live = drop_inert_parameters([_gated(), _ungated()], _ruleset(tmp_path, False))
+    assert [p.name for p in live] == ["ORB_Duration"]
+
+
+def test_gated_axis_kept_when_flag_enabled(tmp_path):
+    """The inverse direction, so a filter that drops everything cannot pass."""
+    live = drop_inert_parameters([_gated(), _ungated()], _ruleset(tmp_path, True))
+    assert [p.name for p in live] == ["Volume_Threshold", "ORB_Duration"]
+
+
+def test_missing_gate_path_treated_as_disabled(tmp_path):
+    path = tmp_path / "rs.yaml"
+    path.write_text(_yaml.safe_dump({"strategy": {}}), encoding="utf-8")
+    assert drop_inert_parameters([_gated()], path) == []
+
+
+def test_volume_threshold_is_gated_in_the_shipped_orb_definitions():
+    """Guards the tagging itself, not just the filter that reads it."""
+    for mode in ("quick", "full"):
+        by_name = {p.name: p for p in get_parameters_for_strategy("orb", mode)}
+        assert by_name["Volume_Threshold"].requires == "trade_filter.volume_confirmation"
+
+
+def test_shipped_orb_sweep_drops_volume_threshold_today():
+    """orb_production.yaml disables volume confirmation, so the axis is inert."""
+    base = get_base_ruleset_for_strategy("orb")
+    live = drop_inert_parameters(get_parameters_for_strategy("orb", "quick"), base)
+    assert "Volume_Threshold" not in {p.name for p in live}
+    assert "EOD_Time" in {p.name for p in live}

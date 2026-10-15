@@ -16,7 +16,22 @@ from vibe.common.models.bar import Bar
 from vibe.common.models.trade import Trade
 
 _ET = ZoneInfo("America/New_York")
+
+#: Fallback EOD cutoff, used only when a caller constructs a
+#: :class:`PortfolioManager` without supplying one. It matches the
+#: ``ExitConfig.eod_time`` default so an unconfigured manager behaves like a
+#: configured one carrying the default ruleset.
 _EOD_CUTOFF = time(15, 55)
+
+
+def parse_hhmm(value: str) -> time:
+    """Parse an ``"HH:MM"`` ruleset time into a :class:`datetime.time`.
+
+    ``ExitConfig`` already validates the format, so this is a conversion rather
+    than a second validation layer.
+    """
+    hour, minute = (int(part) for part in value.split(":"))
+    return time(hour, minute)
 
 
 @dataclass
@@ -46,6 +61,8 @@ class PortfolioManager:
         initial_capital: float,
         trailing_stop_config: Optional[Dict[str, Any]] = None,
         execution_realism: Optional[ExecutionRealismConfig] = None,
+        eod_cutoff: Optional[time] = None,
+        eod_enabled: bool = True,
     ) -> None:
         self.initial_capital = initial_capital
         self.cash = initial_capital
@@ -53,6 +70,13 @@ class PortfolioManager:
         self.equity_curve: List[Tuple[datetime, float]] = []
         self.trade_history: List[Trade] = []
         self.trailing_stop_config = trailing_stop_config
+        # The EOD exit time is a ruleset decision (``exit.eod_time``), not a
+        # property of the simulator. It was previously a module constant, which
+        # silently pinned every backtest to 15:55 and made the sensitivity
+        # sweep's EOD_Time axis inert -- the sweep reported "no sensitivity"
+        # for a knob that was never read.
+        self.eod_cutoff = eod_cutoff if eod_cutoff is not None else _EOD_CUTOFF
+        self.eod_enabled = eod_enabled
         # Defaults to legacy semantics per ADR-015, so existing results are
         # reproduced exactly unless a caller opts in.
         self.execution_realism = execution_realism or ExecutionRealismConfig.legacy()
@@ -378,10 +402,13 @@ class PortfolioManager:
         counted in ``ambiguous_exit_bars`` regardless of mode.
 
         Exit priority when unambiguous: TP/Stop (whichever triggered) > EOD.
+        The EOD cutoff comes from ``self.eod_cutoff`` (the ruleset's
+        ``exit.eod_time``), and EOD exits are skipped entirely when
+        ``exit.eod`` is disabled.
         ``clock`` must have a ``.now()`` returning a timezone-aware datetime.
         """
         local_time = clock.now().astimezone(_ET).time()
-        is_eod = local_time >= _EOD_CUTOFF
+        is_eod = self.eod_enabled and local_time >= self.eod_cutoff
         policy = self.execution_realism
 
         for symbol in list(self.positions.keys()):

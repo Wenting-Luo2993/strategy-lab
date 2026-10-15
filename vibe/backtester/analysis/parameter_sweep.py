@@ -37,11 +37,19 @@ class ParameterDefinition:
         values: List of values to test for this parameter
         name: Human-readable name for reporting (optional, defaults to last path component)
         base_value: Default value to use when not sweeping this parameter (one-at-a-time mode)
+        requires: Optional dot-separated path to a boolean flag in the ruleset
+            that must be truthy for this axis to affect anything. A parameter
+            that is read only behind a disabled feature flag produces
+            byte-identical results at every value, and a sweep that reports
+            "no sensitivity" for such an axis is actively misleading -- it
+            looks like evidence the knob does not matter, when in fact the
+            knob was never consulted. See ``drop_inert_parameters``.
     """
     path: str
     values: List[Any]
     name: Optional[str] = None
     base_value: Optional[Any] = None
+    requires: Optional[str] = None
     
     def __post_init__(self):
         if self.name is None:

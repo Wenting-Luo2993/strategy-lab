@@ -41,7 +41,7 @@ from vibe.backtester.core.execution_realism import (
     ExecutionRealismConfig,
 )
 from vibe.backtester.core.fill_simulator import FillResult, FillSimulator
-from vibe.backtester.core.portfolio import PortfolioManager
+from vibe.backtester.core.portfolio import PortfolioManager, parse_hhmm
 from vibe.backtester.core.reconciliation import reconcile_portfolio
 from vibe.backtester.data.parquet_loader import ParquetLoader
 from vibe.backtester.runner import RuleSetRunner
@@ -325,6 +325,8 @@ class PortfolioBacktestEngine(BacktestEngine):
             self.initial_capital,
             trailing_stop_config=trailing,
             execution_realism=self.execution_realism,
+            eod_cutoff=parse_hhmm(self.ruleset.exit.eod_time),
+            eod_enabled=self.ruleset.exit.eod,
         )
         runner = self._make_runner()
         clock = SimulatedClock()

@@ -7,7 +7,7 @@ import pandas as pd
 
 from vibe.backtester.core.clock import SimulatedClock
 from vibe.backtester.core.fill_simulator import FillSimulator, FillResult
-from vibe.backtester.core.portfolio import PortfolioManager
+from vibe.backtester.core.portfolio import PortfolioManager, parse_hhmm
 from vibe.backtester.core.execution_realism import (
     EntryFillPolicy,
     ExecutionRealismConfig,
@@ -239,6 +239,8 @@ class BacktestEngine:
             self.initial_capital,
             trailing_stop_config=trailing_stop_config,
             execution_realism=self.execution_realism,
+            eod_cutoff=parse_hhmm(self.ruleset.exit.eod_time),
+            eod_enabled=self.ruleset.exit.eod,
         )
         # The signal gate and the fill price are two halves of one execution
         # model. Rejecting a retraced wick while still filling at the ORB level

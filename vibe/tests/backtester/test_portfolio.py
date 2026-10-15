@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 from vibe.backtester.core.portfolio import PortfolioManager
 from vibe.backtester.core.fill_simulator import FillResult
@@ -126,3 +126,79 @@ def test_check_exits_eod():
     pm.check_exits(bars, clock)
     assert len(pm.trade_history) == 1
     assert pm.trade_history[0].exit_reason == "EOD"
+
+
+# ---------------------------------------------------------------------------
+# EOD cutoff is a ruleset decision, not a simulator constant.
+#
+# These guard a real defect: the cutoff was a module-level constant, so
+# ``exit.eod_time`` was never read. The sensitivity sweep's EOD_Time axis
+# therefore reported "no sensitivity" for a knob nothing consumed, which is
+# worse than reporting nothing at all.
+# ---------------------------------------------------------------------------
+
+def _open_at(pm, hour, minute):
+    from vibe.backtester.core.clock import SimulatedClock
+    clock = SimulatedClock()
+    clock.set_time(datetime(2024, 1, 15, hour, minute, tzinfo=ET))
+    pm.open_position(_fill(price=480.0, qty=10), stop_price=400.0, timestamp=clock.now())
+    return clock
+
+
+def _quiet_bar():
+    # Nowhere near the stop, so any exit observed must be the EOD exit.
+    return {"QQQ": _bar(close=480.0, low=479.0, high=481.0)}
+
+
+def test_eod_cutoff_defaults_to_ruleset_default():
+    pm = PortfolioManager(10_000.0)
+    assert pm.eod_cutoff == time(15, 55)
+    assert pm.eod_enabled is True
+
+
+def test_configured_eod_cutoff_closes_early():
+    pm = PortfolioManager(10_000.0, eod_cutoff=time(12, 0))
+    clock = _open_at(pm, 10, 0)
+    clock.set_time(datetime(2024, 1, 15, 12, 0, tzinfo=ET))
+    pm.check_exits(_quiet_bar(), clock)
+    assert pm.trade_history, "configured 12:00 cutoff did not close the position"
+    assert pm.trade_history[0].exit_reason == "EOD"
+
+
+def test_configured_eod_cutoff_holds_past_the_default():
+    """The inverse direction: a later cutoff must *prevent* the 15:55 exit.
+
+    Without this, a manager that ignored ``eod_cutoff`` and always closed at
+    15:55 would still pass the early-close test above whenever the configured
+    time happened to be earlier.
+    """
+    pm = PortfolioManager(10_000.0, eod_cutoff=time(15, 58))
+    clock = _open_at(pm, 10, 0)
+    clock.set_time(datetime(2024, 1, 15, 15, 55, tzinfo=ET))
+    pm.check_exits(_quiet_bar(), clock)
+    assert not pm.trade_history, "closed at the hardcoded 15:55 despite a 15:58 cutoff"
+    clock.set_time(datetime(2024, 1, 15, 15, 58, tzinfo=ET))
+    pm.check_exits(_quiet_bar(), clock)
+    assert pm.trade_history[0].exit_reason == "EOD"
+
+
+def test_eod_disabled_never_closes_on_time():
+    pm = PortfolioManager(10_000.0, eod_enabled=False)
+    clock = _open_at(pm, 10, 0)
+    clock.set_time(datetime(2024, 1, 15, 15, 59, tzinfo=ET))
+    pm.check_exits(_quiet_bar(), clock)
+    assert not pm.trade_history, "eod=false still produced an EOD exit"
+
+
+def test_engine_threads_eod_time_from_the_ruleset():
+    """The constructor seam above is useless if the engine never uses it."""
+    import inspect
+    from vibe.backtester.core import engine, portfolio_engine
+
+    for module in (engine, portfolio_engine):
+        source = inspect.getsource(module)
+        assert "eod_cutoff=parse_hhmm(" in source, (
+            f"{module.__name__} builds a PortfolioManager without passing the "
+            "ruleset eod_time; the EOD_Time sweep axis is inert again"
+        )
+        assert "eod_enabled=" in source, f"{module.__name__} ignores exit.eod"

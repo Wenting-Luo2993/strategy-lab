@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import yaml
+
 try:
     from dotenv import load_dotenv
     # Look for .env in project root (3 levels up from this file)
@@ -37,6 +39,8 @@ from vibe.backtester.data.paths import (
 )
 
 ET = ZoneInfo("America/New_York")
+
+logger = logging.getLogger(__name__)
 
 # Logging configuration will be set in main() based on --verbose flag
 
@@ -114,6 +118,7 @@ def get_orb_parameters(mode: str = "quick") -> list:
                 values=[1.0, 1.5, 2.0],
                 base_value=1.5,
                 name="Volume_Threshold",
+                requires="trade_filter.volume_confirmation",
             ),
         ]
     elif mode == "full":
@@ -175,6 +180,7 @@ def get_orb_parameters(mode: str = "quick") -> list:
                 values=[1.0, 1.5, 2.0, 2.5],
                 base_value=1.5,
                 name="Volume_Threshold",
+                requires="trade_filter.volume_confirmation",
             ),
         ]
     else:
@@ -203,6 +209,53 @@ def get_parameters_for_strategy(strategy: str, mode: str = "quick") -> list:
         raise ValueError(f"Unknown strategy: {strategy}. Available: {list(strategy_params.keys())}")
     
     return strategy_params[strategy](mode)
+
+
+def drop_inert_parameters(parameters: list, base_ruleset_path: Path) -> list:
+    """Remove swept axes whose gating feature flag is disabled in the base ruleset.
+
+    A parameter guarded by a disabled flag is never read, so every value in its
+    sweep produces byte-identical results. Reporting that as "no sensitivity"
+    is worse than reporting nothing: it reads as evidence the knob does not
+    matter, when the truth is the knob was never consulted.
+
+    Dropping the axis and saying so out loud is the honest alternative. To
+    actually study such a parameter, enable its flag in the base ruleset (or
+    sweep the flag itself).
+
+    Returns:
+        The parameters that remain live for this ruleset.
+    """
+    with open(base_ruleset_path, encoding="utf-8") as handle:
+        ruleset = yaml.safe_load(handle)
+
+    live = []
+    for parameter in parameters:
+        gate = getattr(parameter, "requires", None)
+        if gate is None:
+            live.append(parameter)
+            continue
+
+        node = ruleset
+        for key in gate.split("."):
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
+                break
+
+        if node:
+            live.append(parameter)
+        else:
+            logger.warning(
+                "Dropping sweep axis %s: it is only read when '%s' is enabled, "
+                "and %s sets it to %r. Every value would score identically, so "
+                "sweeping it would report a false 'no sensitivity' result.",
+                parameter.name, gate, base_ruleset_path.name, node,
+            )
+            print(
+                f"  [skipped] {parameter.name}: inert because "
+                f"{gate}={node!r} in {base_ruleset_path.name}"
+            )
+    return live
 
 
 def get_base_ruleset_for_strategy(strategy: str) -> Path:
@@ -326,6 +379,7 @@ def main() -> None:
     # Get strategy configuration
     base_ruleset = get_base_ruleset_for_strategy(args.strategy)
     parameters = get_parameters_for_strategy(args.strategy, args.mode)
+    parameters = drop_inert_parameters(parameters, base_ruleset)
     
     # Determine sweep mode based on test mode
     sweep_mode = "one_at_a_time" if args.mode == "quick" else "grid"

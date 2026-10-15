@@ -142,7 +142,7 @@ produce" is the entire gap.
 | G5 | `timedelta(days=months * 30)` instead of sessions | Medium | Violates §8 explicitly; folds drift. |
 | G6 | "Freeze methodology" is not a mechanism | Medium | §3 requires freezing before validation; nothing enforces or records it. |
 | G7 | No `BacktestRunRequest` type | Low | Cosmetic; identity is already captured by the fingerprint. |
-| G8 | Swept parameters produce byte-identical results | **High, separate defect** | `Entry_Cutoff`, `EOD_Time`, `Volume_Threshold` gave identical sweep rows, suggesting they are not wired into the strategy. Tracked separately from this audit. |
+| G8 | Swept parameters produce byte-identical results | **Resolved — see §6** | Measured, not assumed. One real defect (`EOD_Time` was never read), one misinformation defect (`Volume_Threshold` is gated off), one false alarm (`Entry_Cutoff` is wired and genuinely non-binding). |
 
 ---
 
@@ -154,9 +154,110 @@ produce" is the entire gap.
 3. **G3** — mark the affected stored runs so existing rows stop asserting
    out-of-sample status.
 4. **G4/G5** — fold into G2 rather than polishing a deprecated path.
-5. **G6, G7, G8** — follow-ups, tracked but not in this pass.
+5. **G6, G7** — follow-ups, tracked but not in this pass.
+6. **G8** — resolved in this pass; see §6.
 
 The guiding rule for this work, which the audit itself demonstrates: *a
 capability that nothing calls is indistinguishable from a capability that does
 not exist.* Each fix below therefore ends at a command a person can run, not at
 a class that passes a unit test.
+
+---
+
+## 6. G8 resolved — three identical symptoms, three different causes
+
+The reported symptom was one line in the sensitivity output: `Entry_Cutoff`,
+`EOD_Time` and `Volume_Threshold` each produced byte-identical rows at every
+swept value. It would have been easy to file that as a single "parameters not
+wired" defect. Measuring each axis separately showed three unrelated causes,
+only one of which was a wiring bug.
+
+The method was the same in each case, and it is the part worth keeping: **run
+the axis at a value so extreme that an inert result is impossible**, and
+include a positive control so the harness itself is proven able to detect
+change. Sweeping only the configured values cannot distinguish "this knob does
+nothing" from "this knob is never read."
+
+QQQ 5m, 2022-01-03 .. 2022-06-30, `orb_production.yaml`:
+
+| Probe | Trades | Net P&L | Verdict |
+|---|---|---|---|
+| `entry_cutoff` 14:00 / 15:00 / 15:30 | 124 / 124 / 124 | identical | suspicious |
+| `entry_cutoff` **09:36** (extreme) | 51 | 2,935.92 | **wired** |
+| `eod_time` 15:50 / 15:55 / 16:00 | 124 / 124 / 124 | identical | suspicious |
+| `eod_time` **10:30** (extreme) | 124 | identical | **defect** |
+| `volume_threshold` 1.0 / 2.0 / 5.0 | 124 / 124 / 124 | identical | suspicious |
+| `volume_confirmation=true`, threshold **99** | 0 | 0.00 | **wired, but gated off** |
+| `orb_duration` 30 (positive control) | 123 | 3,266.01 | harness can detect change |
+
+### 6.1 `EOD_Time` — a real defect
+
+`PortfolioManager.check_exits` compared against a module-level constant,
+`_EOD_CUTOFF = time(15, 55)`. `exit.eod_time` was validated by the ruleset
+model, threaded into `ORBStrategy` as `market_close_time`, swept by the
+sensitivity runner — and then never consulted on the exit path. Setting it to
+10:30 changed nothing, while 41 of 124 trades still exited with reason `EOD`.
+
+This is the most dangerous shape of bug in a research pipeline: the
+configuration is *accepted*, so nothing errors, and the sweep dutifully
+reports that the parameter has no effect. A reader concludes the exit time
+does not matter. It matters a great deal — at a 10:30 cutoff the same strategy
+returns 5,608.86 instead of 10,935.10.
+
+The cutoff is now a constructor argument on `PortfolioManager`
+(`eod_cutoff`, `eod_enabled`), supplied from `exit.eod_time` / `exit.eod` by
+both `engine.py` and `portfolio_engine.py`.
+
+**Goldens are unaffected.** The former constant equals the `ExitConfig`
+default, so the production ruleset reproduces byte-identically (124 trades,
+10,935.10, STOP 83 / EOD 41). Only configurations that previously had *no*
+effect now behave as written — 15:50 moves to 11,216.10, where it was
+previously indistinguishable from 15:55.
+
+`portfolio_engine._close_at_session_end` is deliberately left alone. It flattens
+at each session's final bar and exists to handle early closes, which is a
+correctness backstop rather than a configured exit rule.
+
+### 6.2 `Volume_Threshold` — misinformation, not a bug
+
+The threshold is correctly wired, but it is only read when
+`trade_filter.volume_confirmation` is true, and `orb_production.yaml` sets it
+to `false`. Every swept value was therefore identical *by construction*.
+
+Nothing here is broken, yet the sweep output was still wrong in the way that
+matters: it presented "no sensitivity" for a parameter that was never
+consulted. That is indistinguishable, to a reader, from the genuine finding
+that a parameter does not matter — and it is false.
+
+`ParameterDefinition` gained a `requires` field naming the gating flag, and
+`drop_inert_parameters()` removes such axes from the sweep with an explicit
+message saying why. The axis is now **absent and explained** rather than
+**present and misleading**.
+
+### 6.3 `Entry_Cutoff` — a false alarm, and a legitimate result
+
+The cutoff is wired (09:36 cuts trades from 124 to 51). The swept values
+(14:00, 15:00, 15:30) are simply later than every ORB entry this strategy
+takes, because an opening-range breakout fires in the morning or not at all.
+
+This one is left exactly as it is. "The entry cutoff does not bind at any
+plausible value" is a true and useful finding about the strategy, and it is
+the kind of answer a sensitivity sweep exists to produce. The distinction
+from §6.2 is the whole point: there, the pipeline could not have detected an
+effect; here, it could have, and correctly reports there is none.
+
+### 6.4 What this generalises to
+
+Three axes, one symptom, three causes — and the symptom alone could not tell
+them apart. A sweep that reports "no sensitivity" is making one of three very
+different claims, and it currently has no way to say which:
+
+1. the parameter was never read (a bug),
+2. the parameter is disabled by a flag (a configuration fact), or
+3. the parameter is read and genuinely does not bind (a result).
+
+Only the third is a research finding. The `requires` mechanism separates (2)
+from (3); the regression tests in `test_portfolio.py` keep (1) from recurring
+for this parameter. A general guard — asserting that at least one extreme
+value of every live axis moves the result — would be the stronger fix, and is
+worth considering if more inert axes appear.
