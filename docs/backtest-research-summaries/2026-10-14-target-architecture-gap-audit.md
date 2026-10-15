@@ -733,3 +733,39 @@ This is not cleanup; it is the missing wiring that the viewer work depends on,
 and it should be the next increment. Recording a fold properly means one run
 per evaluation with its true `SegmentRole` (TRAIN / VALIDATION / TEST), which
 is now expressible because the column exists.
+
+**Update — wired.** `scripts/run_nested_walk_forward.py` gained `--record-runs`
+(and `--record-test-only` for large grids). The approach matters as much as
+the result: `NestedWalkForwardDriver` stays pure, performing no I/O. Instead
+`vibe/research_pipeline/recording_executor.py` decorates the
+`CandidateExecutor` the driver was already given.
+
+That placement is what makes the labels trustworthy. Every evaluation a
+walk-forward performs — each training candidate, each validation candidate,
+and the one frozen test run — passes through the executor exactly once, and
+`SessionSegment` already carries its own `SegmentRole`. The role is therefore
+*read off the segment being evaluated* rather than asserted by the caller, so
+a run cannot be filed under a role it was not run on. That is precisely the
+failure mode of §2, reintroduced structurally impossible.
+
+Supporting changes:
+
+- `RulesetSegmentExecutor.effective_ruleset()` was extracted from `__call__`
+  and made public, so a recorded run pins the configuration that actually
+  executed. Rebuilding it at the call site would let the recorder and the
+  engine drift into disagreeing about what ran; recording the *base* ruleset
+  instead would file every swept point under identical settings. An executor
+  that cannot supply it is refused at construction rather than after a
+  multi-hour walk-forward.
+- A store that is unreachable or mid-migration cannot alter a research result:
+  recording failures are logged and collected, and the inner result is
+  returned untouched. An infrastructure fact must not become a research
+  finding.
+
+Pinned by `tests/unit/research_pipeline/test_recording_executor.py`;
+`test_each_segment_is_recorded_under_the_role_it_actually_ran_on` was
+mutation-checked by hard-coding `SegmentRole.TEST`, which fails it.
+
+Still open: the 12 legacy rows remain in the store (now correctly labelled
+TRAIN, see §10.5), and no recorded nested walk-forward exists yet because
+this worktree has no materialized parquet.

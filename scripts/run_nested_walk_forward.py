@@ -49,6 +49,10 @@ logger = logging.getLogger("nested_walk_forward")
 
 DEFAULT_RULESET = Path("vibe/rulesets/orb_production.yaml")
 
+# Bump when a change alters what a recorded fold *means*, not merely how fast
+# it runs. Runs carrying different methodology versions are not comparable.
+METHODOLOGY_VERSION = "nested_walk_forward/v1"
+
 
 def _parse_axis(raw: str) -> tuple[str, str, tuple[Any, ...]]:
     """Parse ``name=dotted.path:v1,v2,v3`` into an axis definition.
@@ -185,6 +189,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             "pass. Plumbing diagnostics only."
         ),
     )
+    parser.add_argument(
+        "--record-runs",
+        action="store_true",
+        help=(
+            "Record every evaluated segment into the local research store, "
+            "labelled with its true segment role. Without this the only "
+            "walk-forward that produces genuine out-of-sample evidence "
+            "leaves no trace, and the viewer shows only in-sample runs."
+        ),
+    )
+    parser.add_argument(
+        "--record-test-only",
+        action="store_true",
+        help=(
+            "With --record-runs, persist only the frozen TEST evaluations. "
+            "Useful when the grid is large enough that recording every "
+            "training candidate would bury the folds it produced."
+        ),
+    )
+    parser.add_argument(
+        "--strategy-id",
+        default="orb",
+        help="Strategy identifier recorded alongside each run.",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -197,6 +225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         MarketDataNotFoundError,
         resolve_market_data_dir,
     )
+    from vibe.research_pipeline.contracts import SegmentRole
     from vibe.research_pipeline.evaluation import SegmentValidator
     from vibe.research_pipeline.features.leakage import LeakageReport
     from vibe.research_pipeline.lifecycle import RunState
@@ -312,6 +341,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         # as an AttributeError rather than silently scoring the wrong object.
         return float(backtest_result.overall.expectancy_r)
 
+    sink = None
+    if args.record_runs:
+        from vibe.backtester.analysis.research_sink import open_run_sink
+        from vibe.research_pipeline.recording_executor import (
+            RecordingSegmentExecutor,
+        )
+
+        sink = open_run_sink(
+            data_dir=data_dir,
+            symbol=args.symbol,
+            strategy_id=args.strategy_id,
+            starting_equity=args.capital,
+            methodology_version=METHODOLOGY_VERSION,
+        )
+        roles = (
+            frozenset({SegmentRole.TEST})
+            if args.record_test_only
+            else frozenset(SegmentRole)
+        )
+        executor = RecordingSegmentExecutor(executor, sink, record_roles=roles)
+        logger.info(
+            "Recording %s segments into the research store.",
+            "TEST" if args.record_test_only else "all",
+        )
+
     driver = NestedWalkForwardDriver(
         Optimizer(executor, validator, score),
         Selector(executor, validator, score),
@@ -321,6 +375,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     result = driver.run(plan, candidates)
     _report(result, RunState)
+    if sink is not None:
+        logger.info("Research store: %s", sink.summary())
+        for failure in sink.failures:
+            logger.warning("RECORDING %s", failure)
     return 0 if result.state is RunState.COMPLETED else 2
 
 

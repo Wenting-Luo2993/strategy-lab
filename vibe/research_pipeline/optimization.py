@@ -121,9 +121,14 @@ class RulesetSegmentExecutor:
             raise ValueError(f"Ruleset {ruleset_path} must contain a mapping")
         return cls(config, parameter_paths, **kwargs)
 
-    def __call__(
-        self, candidate: "CandidateSpec", segment: SessionSegment
-    ) -> SegmentResult:
+    def effective_ruleset(self, candidate: "CandidateSpec") -> StrategyRuleSet:
+        """Materialize the configuration a candidate would actually execute.
+
+        Public because recording a run has to pin the *effective* ruleset, not
+        the file it started from. Returning it from here rather than rebuilding
+        it at the call site is what stops a recorder and the engine from
+        drifting into disagreeing about what ran.
+        """
         parameters = candidate.parameter_map
         missing = sorted(set(self._parameter_paths) - set(parameters))
         extra = sorted(set(parameters) - set(self._parameter_paths))
@@ -136,7 +141,12 @@ class RulesetSegmentExecutor:
         config = deepcopy(self._base_ruleset)
         for name, path in sorted(self._parameter_paths.items()):
             self._set_nested(config, path, parameters[name])
-        ruleset = StrategyRuleSet(**config)
+        return StrategyRuleSet(**config)
+
+    def __call__(
+        self, candidate: "CandidateSpec", segment: SessionSegment
+    ) -> SegmentResult:
+        ruleset = self.effective_ruleset(candidate)
         engine = self._engine_factory(ruleset)
         symbol = ruleset.instruments.symbols[0]
         if (
