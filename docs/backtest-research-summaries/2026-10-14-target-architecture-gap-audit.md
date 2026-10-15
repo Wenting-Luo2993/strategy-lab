@@ -659,23 +659,51 @@ legitimate question; only its *name* and its *labels* were wrong. Removal
 should wait until `run_nested_walk_forward.py` demonstrably covers the use
 case.
 
-### 10.2 A second, parallel research-recording system is still live
+### 10.2 The legacy journal is a facade, not a second system of record
+
+**This section originally claimed `vibe/research_journal/` was a live parallel
+recording system writing to its own store. That claim is wrong, and it was
+about to justify deleting fifteen files. The correction matters more than the
+cleanup.**
 
 `vibe/research_journal/` (10 modules) is the predecessor of
-`vibe/research_pipeline/`. P11 migrated the registry across — the research DB
-carries `registry_records`, `registry_relationships`, and
-`registry_import_audit` — but **the old writer was never retired**. It is
-still imported by `vibe/backtester/optimization/pipeline.py` (lines 28, 189,
-282, 284, 431) and `scripts/optimize_strategy.py:430`, behind a
-`register_in_research_journal` flag.
+`vibe/research_pipeline/`. P11 did not merely migrate the data across -- it
+**converted the journal into a facade over the same store**.
+`ResearchRegistry.__init__` constructs a `SqliteResearchStore`
+(`registry.py:29,61`), and every read and write goes through it:
+`create_registry_record`, `update_registry_record`, `get_registry_record`,
+`query_registry_records`, `allocate_registry_id`. There is no YAML writer and
+no second schema left behind it.
 
-So a sweep run through `optimize_strategy.py` can write to the legacy journal,
-while everything else writes to the research pipeline store. Two systems of
-record for the same question is the condition the research store exists to
-eliminate. This is the largest remaining cleanup, and it is a genuine piece of
-work rather than a label fix: the flag, its call sites, the adapter, and the
-10 journal modules all come out together, and only after confirming the P11
-migration captured everything worth keeping.
+The one place a separate file can appear is `_compatibility_db_path`
+(`registry.py:460`), and it is deliberate: an **explicit** `research_root`
+outside a git tree gets an isolated side database, which is what tests, tools
+and imports want. With `research_root=None` -- the production path, and what
+`optimize_strategy.py` passes -- it resolves to `research_db_path()`, the main
+research DB.
+
+Measured on this machine:
+
+```
+research databases on disk : exactly 1 (AppData/Local/strategy-lab/research.sqlite3)
+registry_records           : 0 rows
+```
+
+So there is **one** system of record, and the `--journal` flag has never
+actually been used. Both halves of the original worry are empty.
+
+**Revised disposition.** Removing `vibe/research_journal/`, the two trackers,
+the two `examples/` files and the `register_in_research_journal` flag is still
+reasonable -- it is roughly fifteen files and ~400 lines of tracker code
+serving a feature with zero recorded usage, and a smaller API surface is
+easier to keep honest. But it is now **optional cleanup, not correctness
+work**, and it deletes a working user-facing flag. That is a product decision
+and should be confirmed rather than taken unilaterally.
+
+The lesson generalises: "module X is still imported" establishes reachability,
+not duplication. This audit reached "two systems of record" from an import
+graph without opening the module or querying the store, and both checks
+refuted it in minutes.
 
 ### 10.3 Test-only modules — three different dispositions
 
@@ -686,8 +714,8 @@ Being test-only is not by itself a defect. These split into three groups:
 | `vibe/research_pipeline/analysis.py` | 712 | **Wire it, do not delete.** This is the adapter-neutral analysis layer over validated run summaries, mirroring the dashboard's Supabase contract. It is exactly what the local viewer and remote dashboard work needs. Built, tested, never wired — the familiar pattern. |
 | `vibe/research_pipeline/universe.py` | 369 | **Keep.** Planned P5b cross-sectional capability, awaiting an entry point. |
 | `vibe/backtester/core/portfolio_engine.py` | 1008 | **Keep.** Planned shared-capital multi-symbol simulation, awaiting an entry point. |
-| `vibe/backtester/integration/experiment_tracker.py` | 158 | **Remove with 10.2.** Depends on `vibe.research_journal`; superseded by `research_sink`. |
-| `vibe/backtester/integration/sweep_tracker.py` | 284 | **Remove with 10.2.** Same dependency, same supersession. |
+| `vibe/backtester/integration/experiment_tracker.py` | 158 | **Optional removal with 10.2.** Depends on `vibe.research_journal`, which is a facade over the same store rather than a rival one, so this is surface reduction, not de-duplication. Superseded in practice by `research_sink`. |
+| `vibe/backtester/integration/sweep_tracker.py` | 284 | **Optional removal with 10.2.** Same dependency, same reasoning. |
 | `vibe/backtester/analysis/regime.py` | 71 | **Removed.** Standalone ADX classifier superseded by the reachable `vibe/backtester/analysis/regime_research/` package (`labeler`, `features`, `filter_evaluator`, `attribution`, `reporting`). Deleted with its test; nothing else imported it and it was not re-exported from the package `__init__`. |
 
 The two trackers are also demonstrated by `examples/backtest_experiment_tracking.py`
