@@ -419,3 +419,55 @@ def test_degradation_withholds_the_ratio_near_zero_training_expectancy():
     )
 
     assert period.degradation == 0.0
+
+
+def test_recorded_folds_are_never_labelled_out_of_sample():
+    """The store must not receive a TEST row from this engine.
+
+    Parameters reaching this engine were selected by a sweep over the whole
+    date range, so the later window is in-sample too. A research store that
+    recorded it as SegmentRole.TEST would let the viewer present an in-sample
+    number as out-of-sample evidence -- the one error the role field exists
+    to make impossible.
+    """
+    from vibe.backtester.analysis.walk_forward import (
+        WalkForwardEngine,
+        WalkForwardPeriod,
+    )
+    from vibe.research_pipeline.contracts import SegmentRole
+
+    recorded = []
+
+    class _Sink:
+        def record(self, result, **kwargs):
+            recorded.append(kwargs)
+            return None
+
+        def summary(self):
+            return "stub"
+
+    engine = WalkForwardEngine.__new__(WalkForwardEngine)
+    engine.run_sink = _Sink()
+    engine.ruleset = object()
+    engine.initial_capital = 10_000.0
+    engine.slippage_ticks = 5
+
+    period = WalkForwardPeriod(
+        train_start=datetime(2022, 1, 1),
+        train_end=datetime(2022, 3, 1),
+        test_start=datetime(2022, 3, 1),
+        test_end=datetime(2022, 4, 1),
+        train_result=object(),
+        test_result=object(),
+    )
+
+    engine._record_fold(period, symbol="QQQ", fold=1, total=1)
+
+    assert len(recorded) == 2, "both halves should still be recorded"
+    roles = [call["segment_role"] for call in recorded]
+    assert SegmentRole.TEST not in roles, (
+        "the legacy regime-comparison engine must never write a TEST row; "
+        f"got {roles}"
+    )
+    assert all(role is SegmentRole.TRAIN for role in roles)
+    assert all("NOT out-of-sample" in call["notes"] for call in recorded)

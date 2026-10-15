@@ -71,9 +71,27 @@ class OptimizationResult:
             lines.append(f"  Expectancy Std: ±{self.robustness_analysis.expectancy_std:.3f}R")
         
         if self.walk_forward_analysis:
-            lines.append(f"\nWalk-Forward Score: {self.walk_forward_analysis.walk_forward_score:.3f}")
-            lines.append(f"  Avg Test Expectancy: {self.walk_forward_analysis.avg_test_expectancy:.3f}R")
-            lines.append(f"  Avg Degradation: {self.walk_forward_analysis.avg_degradation:.1%}")
+            # Deliberately not labelled "walk-forward": the parameters below
+            # were chosen by a sweep over the entire date range, so every
+            # window this analysis calls a "test" window was part of the
+            # selection data. Printing it as out-of-sample evidence is the
+            # exact misreading this pipeline used to invite.
+            lines.append(
+                f"\nRegime-Stability Score (IN-SAMPLE, not walk-forward): "
+                f"{self.walk_forward_analysis.walk_forward_score:.3f}"
+            )
+            lines.append(
+                f"  Avg Later-Window Expectancy: "
+                f"{self.walk_forward_analysis.avg_test_expectancy:.3f}R"
+            )
+            lines.append(
+                f"  Avg Cross-Window Drift: "
+                f"{self.walk_forward_analysis.avg_degradation:.1%}"
+            )
+            lines.append(
+                "  NOTE: these windows are NOT out-of-sample. For genuine "
+                "out-of-sample evidence run scripts/run_nested_walk_forward.py."
+            )
         
         if self.surface_analysis:
             lines.append(f"\nSurface Analysis:")

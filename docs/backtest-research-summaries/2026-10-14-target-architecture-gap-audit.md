@@ -561,3 +561,129 @@ plausibility gate is a research-policy decision with real consequences for what
 the pipeline will let through, and it should be made explicitly rather than
 folded into a maintenance pass. The diagnostics needed to make that decision --
 which gate, what value, what sample -- are now in the runner's output.
+
+
+## 10. Legacy inventory: what should be deprecated or cleaned up
+
+Prompted by the question "is there things we implemented before that should be
+deprecated/cleaned up?", this section replaces guesswork with a measured
+reachability map. Every module under `vibe/backtester` and
+`vibe/research_pipeline` was classified by walking the import graph from two
+root sets: `scripts/` (can a person run it?) and the test suites (is it
+covered?). Package `__init__` modules are treated as implicitly imported, so
+they do not show up as false orphans.
+
+Result over 84 owned modules: **76 reachable from a script, 7 test-only, 1
+`__main__`**. The repo is in better shape than the recurring
+"built, tested, never wired" theme suggested — but the exceptions matter, and
+they are not all the same kind of problem.
+
+### 10.1 Live but wrong — the real cleanup target
+
+`vibe/backtester/analysis/walk_forward.py` is still reachable in production via
+`vibe/backtester/optimization/pipeline.py` → `scripts/optimize_strategy.py`. A
+previous pass already gave it an accurate module docstring, a runtime
+`DeprecationWarning`, honest log lines, and `is_out_of_sample: False` in its
+exported dict. Two user-facing surfaces were still lying, and both are fixed
+here:
+
+1. **The summary report.** `OptimizationResult.summary()` printed
+   `Walk-Forward Score`, `Avg Test Expectancy`, and `Avg Degradation`. That is
+   the artifact a person actually reads; the corrected docstring is not in
+   front of them when they read it. It now prints
+   `Regime-Stability Score (IN-SAMPLE, not walk-forward)`,
+   `Avg Later-Window Expectancy`, `Avg Cross-Window Drift`, and an explicit
+   pointer to `scripts/run_nested_walk_forward.py`.
+
+2. **The research store — the more serious one.** `_record_fold` recorded the
+   second half of every fold as `SegmentRole.TEST`. Its docstring argued this
+   prevented confusion. It did the opposite. Parameters reaching this engine
+   are chosen by a sweep over the *entire* date range (`pipeline.py:255-266`,
+   `pipeline.py:342`), so the later window is in-sample as well. Writing it as
+   `TEST` meant the store — and therefore the local viewer being built for
+   evaluating runs — would present an in-sample number as out-of-sample
+   evidence. Both halves are now recorded as `SegmentRole.TRAIN`, which is
+   what they are. The fingerprints stay distinct because the halves span
+   different windows and so hash to different `split_manifest_hash` values.
+
+   There are **12 such rows already in the local research store** (6 folds ×
+   2 halves), 6 of which were written under the `TEST` role. They predate this
+   fix and cannot be relabelled in place without changing their fingerprints.
+   They are identifiable by `notes LIKE 'Walk-forward fold%'`.
+
+`vibe/tests/backtester/test_walk_forward.py::test_recorded_folds_are_never_labelled_out_of_sample`
+pins the invariant. It was mutation-checked: restoring `SegmentRole.TEST`
+fails it.
+
+**Not deleted, deliberately.** `scripts/optimize_strategy.py` is a live entry
+point — it was edited during this audit for the `--end` window fix — so
+deleting the engine underneath it would break a path someone uses. What the
+module measures (one fixed parameter set across different market regimes) is a
+legitimate question; only its *name* and its *labels* were wrong. Removal
+should wait until `run_nested_walk_forward.py` demonstrably covers the use
+case.
+
+### 10.2 A second, parallel research-recording system is still live
+
+`vibe/research_journal/` (10 modules) is the predecessor of
+`vibe/research_pipeline/`. P11 migrated the registry across — the research DB
+carries `registry_records`, `registry_relationships`, and
+`registry_import_audit` — but **the old writer was never retired**. It is
+still imported by `vibe/backtester/optimization/pipeline.py` (lines 28, 189,
+282, 284, 431) and `scripts/optimize_strategy.py:430`, behind a
+`register_in_research_journal` flag.
+
+So a sweep run through `optimize_strategy.py` can write to the legacy journal,
+while everything else writes to the research pipeline store. Two systems of
+record for the same question is the condition the research store exists to
+eliminate. This is the largest remaining cleanup, and it is a genuine piece of
+work rather than a label fix: the flag, its call sites, the adapter, and the
+10 journal modules all come out together, and only after confirming the P11
+migration captured everything worth keeping.
+
+### 10.3 Test-only modules — three different dispositions
+
+Being test-only is not by itself a defect. These split into three groups:
+
+| Module | Lines | Disposition |
+|---|---|---|
+| `vibe/research_pipeline/analysis.py` | 712 | **Wire it, do not delete.** This is the adapter-neutral analysis layer over validated run summaries, mirroring the dashboard's Supabase contract. It is exactly what the local viewer and remote dashboard work needs. Built, tested, never wired — the familiar pattern. |
+| `vibe/research_pipeline/universe.py` | 369 | **Keep.** Planned P5b cross-sectional capability, awaiting an entry point. |
+| `vibe/backtester/core/portfolio_engine.py` | 1008 | **Keep.** Planned shared-capital multi-symbol simulation, awaiting an entry point. |
+| `vibe/backtester/integration/experiment_tracker.py` | 158 | **Remove with 10.2.** Depends on `vibe.research_journal`; superseded by `research_sink`. |
+| `vibe/backtester/integration/sweep_tracker.py` | 284 | **Remove with 10.2.** Same dependency, same supersession. |
+| `vibe/backtester/analysis/regime.py` | 71 | **Remove.** Standalone ADX classifier superseded by the reachable `vibe/backtester/analysis/regime_research/` package (`labeler`, `features`, `filter_evaluator`, `attribution`, `reporting`). |
+
+The two trackers are also demonstrated by `examples/backtest_experiment_tracking.py`
+and `examples/parameter_sweep_experiment_tracking.py`, which must be removed in
+the same change or they will import a deleted module.
+
+### 10.4 Deliberate hard-failure shims — keep
+
+`SqliteResearchStore.enqueue_publication` raises `StoreError` by design. It
+looks like dead code to a caller search, but it is a load-bearing guard that
+stops legacy callers supplying arbitrary publication payloads; the real path is
+`_enqueue_run_publication_tx`, called atomically from `finalize_validation()`.
+Do not "clean this up".
+
+### 10.5 A gap this survey exposed, relevant to the dashboard work
+
+`segment_role` is accepted by `ResearchRunSink.record()` and flows into
+`recording.py:290` — but **only to compute `split_manifest_hash`. It is never
+persisted as a queryable column.** The `runs` table has no role column, and no
+table in the store does.
+
+Two consequences:
+
+- The store cannot answer "show me only out-of-sample runs." For a dashboard
+  whose entire purpose is judging whether results are trustworthy, that is the
+  single most important filter, and it is currently impossible without parsing
+  the free-text `notes` field.
+- `segment_role` defaults to `SegmentRole.TEST` in both `recording.py:248` and
+  `recording.py:549`. Every ordinary `record()` call that does not pass a role
+  is fingerprinted as a test-role run. The default should be the conservative
+  one.
+
+Promoting `segment_role` to a first-class indexed column is a schema migration
+(v7) and new capability rather than cleanup, so it is recorded here as a
+prerequisite for the viewer/dashboard work rather than executed in this pass.

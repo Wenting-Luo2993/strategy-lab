@@ -353,12 +353,21 @@ class WalkForwardEngine:
     ) -> None:
         """Record both halves of one fold as separate research runs.
 
-        The two halves are recorded under different segment roles. This is the
-        whole point: a training fold is in-sample by construction, and a store
-        that labelled it ``test`` would let an in-sample number be read as
-        out-of-sample evidence -- the exact confusion walk-forward analysis
-        exists to prevent. The roles also keep the two fingerprints distinct
-        even in the degenerate case where a train and test window coincide.
+        Both halves are recorded as :attr:`SegmentRole.TRAIN`, because both
+        halves *are* in-sample. The caller
+        (``vibe/backtester/optimization/pipeline.py``) selects parameters with
+        a sweep over the entire date range, so the window this engine calls
+        "test" was part of the selection data. Recording it as
+        :attr:`SegmentRole.TEST` would let an in-sample number be read as
+        out-of-sample evidence -- precisely the confusion walk-forward
+        analysis exists to prevent, and the one a research store must never
+        encode.
+
+        The two fingerprints stay distinct because the halves span different
+        windows, which gives them different ``split_manifest_hash`` values.
+
+        Genuine out-of-sample rows come from
+        :class:`vibe.research_pipeline.walk_forward.NestedWalkForwardDriver`.
         """
         if self.run_sink is None:
             return
@@ -366,10 +375,10 @@ class WalkForwardEngine:
         from vibe.research_pipeline.contracts import SegmentRole
 
         halves = (
-            (SegmentRole.TRAIN, period.train_result, "train"),
-            (SegmentRole.TEST, period.test_result, "test"),
+            (period.train_result, "train"),
+            (period.test_result, "later-window (in-sample)"),
         )
-        for role, result, label in halves:
+        for result, label in halves:
             if result is None:
                 continue
             self.run_sink.record(
@@ -379,10 +388,13 @@ class WalkForwardEngine:
                     "symbol": symbol,
                     "initial_capital": self.initial_capital,
                     "slippage_ticks": self.slippage_ticks,
-                    "walk_forward_half": label,
+                    "regime_comparison_half": label,
                 },
-                segment_role=role,
-                notes=f"Walk-forward fold {fold}/{total} ({label})",
+                segment_role=SegmentRole.TRAIN,
+                notes=(
+                    f"Fixed-parameter regime comparison fold {fold}/{total} "
+                    f"({label}) -- NOT out-of-sample"
+                ),
             )
 
     def _subset_features(
