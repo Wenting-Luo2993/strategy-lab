@@ -374,3 +374,95 @@ disagree with the thing it was checking.
 The corollary is uncomfortable but worth stating: results produced before this
 point should be treated as unvalidated, because the mechanism that would have
 caught these problems was never switched on.
+
+---
+
+## 8. Re-freezing the ORB golden, and proving the new baseline is the right one
+
+The session-end backstop (§7.3) moved the QQQ ORB golden. A moved golden is
+exactly the signal that fixture exists to raise, so the question was never
+"make it green" but "is the new number the correct one?". A stale baseline and
+a real regression look identical until you look.
+
+### 8.1 What moved
+
+```
+n_trades                  1257 -> 1258
+exit_reason_counts.EOD     478 -> 480
+exit_reason_counts.STOP    779 -> 778
+gap_through_exits            3 -> 1
+trade_ledger_sha256     62bb5a1b... -> c56f47b8...
+equity_curve_sha256     10fc520d... -> 14545b34...
+```
+
+Two more EOD exits, two fewer gap-through exits, one extra trade. Over five
+years and 1258 trades this is a very small, very specific change -- which is
+itself informative. A metric-definition error or an accounting error would
+move many trades, not three.
+
+### 8.2 The prediction, and the check that could have refuted it
+
+If the backstop is correct, the extra EOD closes must land only on sessions
+where the configured cutoff *never occurs*. `orb_production` sets
+`eod_time: 15:55`, so the prediction was specific and falsifiable: the new
+exits must fall on sessions whose last bar precedes 15:55, and nowhere else.
+Had they appeared on ordinary sessions, the backstop would be firing when the
+EOD rule should have, and the fix would be wrong.
+
+Grouping the run's EOD exits by wall-clock time:
+
+```
+15:15  x1
+15:45  x2
+15:55  x477
+```
+
+Exactly three exits at a non-standard time:
+
+```
+2019-07-03 15:45
+2019-12-24 15:15
+2020-12-24 15:47  (reported in the 15:45 bucket)
+```
+
+Day before Independence Day, and two Christmas Eves -- all NYSE early-close
+sessions. Reading the last bar actually present for each session in the
+parquet confirms it:
+
+```
+2019-07-03  last bar 15:46
+2019-12-24  last bar 15:15
+2020-12-24  last bar 15:47
+every ordinary session  last bar 15:59
+```
+
+Those three sessions end *before* the 15:55 cutoff. The EOD rule could never
+have fired on them.
+
+### 8.3 Why the old number was the wrong one
+
+On those three days the ORB position was previously carried overnight. That is
+not a strategy choice -- the ruleset says flatten at 15:55 -- it is the
+simulator failing to honour the rule because the clock ran out first. The
+carried position then blocked every subsequent entry, because both engines only
+open when flat.
+
+`gap_through_exits` falling from 3 to 1 is the confirming detail, and it is the
+part that makes this more than bookkeeping. Two of those overnight carries were
+being exited the following morning *through* their stop, at whatever gap the
+open presented. Those two fills were pure artifact: trades the strategy had
+already ordered closed, priced against a gap it should never have been exposed
+to. Removing them removes a small, silent, systematically-wrong-signed source
+of P&L.
+
+So the new baseline is not merely different, it is the one that matches the
+ruleset. Re-frozen via `GOLDEN_UPDATE=1`, and green on a clean re-run.
+
+### 8.4 What this says about half-days generally
+
+Any rule expressed as a wall-clock time carries the same latent assumption:
+that the clock will be reached. Early closes break it roughly nine times a
+year, and the failure is silent because the position simply persists. The
+backstop is the general answer -- it is a correctness guard keyed to the
+session's own final bar rather than to a configured time, so it holds whatever
+`eod_time` is set to, including when the EOD rule is disabled entirely.
