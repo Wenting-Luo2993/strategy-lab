@@ -218,3 +218,57 @@ def test_the_effective_ruleset_hash_tracks_the_configuration(tmp_path):
     assert hash_effective_ruleset(_Ruleset()) != hash_effective_ruleset(
         _Ruleset(stop_atr_multiple=2.0)
     )
+
+
+# -- the recorded window is the one the run was graded over --------------
+#
+# It used to be the *trade* window, which was wrong twice over: a run that
+# took no trades could not be recorded at all, and two points swept over
+# identical data described themselves as covering different windows because
+# their first trade fell on different days.
+
+
+def test_a_run_that_took_no_trades_is_still_recordable(tmp_path, stub_metrics):
+    """"This configuration never fires" is a research result, not an error."""
+    quiet = _result()
+    quiet.trades = []
+    quiet.overall.first_date = ""  # no trades, so no trade dates
+    quiet.overall.last_date = ""
+    quiet.start_date = "2023-03-01"
+    quiet.end_date = "2023-03-31"
+
+    outcome = _sink(tmp_path).record(quiet, ruleset=_Ruleset(), parameters={})
+
+    assert outcome is not None, f"zero-trade run rejected"
+    assert outcome.recorded
+
+
+def test_the_graded_window_outranks_the_trade_window(tmp_path, stub_metrics):
+    """Two points over the same data must agree on the window they covered.
+
+    Without this the fingerprints differ for a reason that has nothing to do
+    with the configuration, and a sweep cannot be compared against itself.
+    """
+    early = _result(first=date(2023, 3, 1), last=date(2023, 3, 20))
+    early.start_date, early.end_date = "2023-03-01", "2023-03-31"
+    late = _result(first=date(2023, 3, 9), last=date(2023, 3, 28))
+    late.start_date, late.end_date = "2023-03-01", "2023-03-31"
+
+    sink = _sink(tmp_path)
+    first = sink.record(early, ruleset=_Ruleset(), parameters={})
+    second = sink.record(late, ruleset=_Ruleset(), parameters={})
+
+    assert second.run_id == first.run_id and not second.recorded, (
+        "the same configuration over the same window produced two runs "
+        "because the trade dates differed"
+    )
+
+
+def test_an_unreadable_window_is_still_refused(tmp_path, stub_metrics):
+    """The fallback must not become a licence to guess."""
+    broken = _result()
+    broken.overall.first_date = None
+    broken.start_date = None
+    broken.end_date = None
+
+    assert _sink(tmp_path).record(broken, ruleset=_Ruleset(), parameters={}) is None

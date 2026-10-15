@@ -253,3 +253,41 @@ def test_shipped_orb_sweep_drops_volume_threshold_today():
     live = drop_inert_parameters(get_parameters_for_strategy("orb", "quick"), base)
     assert "Volume_Threshold" not in {p.name for p in live}
     assert "EOD_Time" in {p.name for p in live}
+
+
+# ---------------------------------------------------------------------------
+# --end names a session, not a midnight boundary.
+# ---------------------------------------------------------------------------
+
+def test_window_end_covers_the_whole_final_session():
+    from vibe.backtester.analysis.sensitivity_runner import parse_window_end
+
+    end = parse_window_end("2022-03-31")
+    assert end.date().isoformat() == "2022-03-31"
+    assert (end.hour, end.minute) != (0, 0), (
+        "--end truncated to midnight drops the final trading session, which "
+        "disagrees with the inclusive exchange calendar and fails DATA-001"
+    )
+
+
+def test_the_run_window_agrees_with_the_exchange_calendar():
+    """The inverse check: count sessions both ways and require a match.
+
+    The midnight bug was a one-session discrepancy, so only a test that
+    actually counts can catch it.
+    """
+    from datetime import date
+
+    from vibe.backtester.analysis.sensitivity_runner import (
+        parse_window_end,
+        parse_window_start,
+    )
+    from vibe.research_pipeline.splits.calendar import SessionCalendar
+
+    start, end = parse_window_start("2022-01-03"), parse_window_end("2022-03-31")
+    expected = SessionCalendar("XNYS").sessions_between(start.date(), end.date())
+
+    assert expected[0] == date(2022, 1, 3)
+    assert expected[-1] == date(2022, 3, 31), (
+        "the window excludes the session the user named on the command line"
+    )

@@ -557,13 +557,14 @@ class BacktestRunSink:
         it started from, so a swept point pins what actually executed.
         """
         try:
+            first_session, last_session = _evaluation_window(result)
             fingerprint = build_run_fingerprint(
                 strategy_id=self._strategy_id,
                 ruleset_sha256=hash_effective_ruleset(ruleset),
                 parameters=dict(parameters),
                 symbol=self._symbol,
-                first_session=_require_date(result.overall.first_date, "first"),
-                last_session=_require_date(result.overall.last_date, "last"),
+                first_session=first_session,
+                last_session=last_session,
                 session_count=int(result.equity.n_sessions),
                 data_snapshot_id=self._data_snapshot_id,
                 execution_model_version=self._execution_model_version,
@@ -623,3 +624,31 @@ def _require_date(value: Any, which: str) -> date:
             f"manifest, and guessing one would make unrelated runs collide."
         )
     return parsed
+
+
+def _evaluation_window(result: Any) -> tuple[date, date]:
+    """Return the window the run was *graded over*, not the one it traded in.
+
+    These are different things, and using the trade window was wrong twice
+    over.  A run that took no trades has no first or last trade date, so it
+    could not be recorded at all -- yet "this configuration never fires" is a
+    real and useful research result that the store should be able to hold.
+    And for runs that did trade, the first trade date drifts with the
+    parameters, so two points swept over identical data described themselves
+    as covering different windows.
+
+    ``BacktestResult.start_date`` / ``end_date`` are the graded window the
+    engine reports after excluding warmup, which is exactly what the split
+    manifest is supposed to pin.  The trade dates remain the fallback for
+    callers constructing a result without them, and the original error still
+    fires when neither is available -- the window is never guessed.
+    """
+    start = _as_date(getattr(result, "start_date", None))
+    end = _as_date(getattr(result, "end_date", None))
+    if start is not None and end is not None:
+        return start, end
+    overall = result.overall
+    return (
+        _require_date(overall.first_date, "first"),
+        _require_date(overall.last_date, "last"),
+    )

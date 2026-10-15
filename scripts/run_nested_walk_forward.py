@@ -85,111 +85,28 @@ def _as_date(raw: str) -> date:
     return datetime.strptime(raw, "%Y-%m-%d").date()
 
 
+# The leakage suite and the ORB boundary check live in
+# vibe.backtester.analysis.research_evidence so that this script and the
+# sweep runner cannot drift into measuring different things. Two copies of a
+# leakage check that disagree are worse than one.
+from vibe.backtester.analysis.research_evidence import (  # noqa: E402
+    build_orb_boundary_report,
+)
+
+
 def build_leakage_report(symbol: str, data_dir: Path, spec) -> Any:
-    """Run the run-wide leakage suite against the research precompute path.
+    """Measure leakage over the development window this plan was built from.
 
-    Once per run, not per candidate: leakage is a property of the feature
-    code, and no parameter value can make a causal feature peek. Pointing the
-    suite at the engine instead of the research precompute step would produce
-    a green report that means nothing, because the engine is downstream of the
-    contamination.
+    Only the plan-specific part stays here: which window to measure. The
+    measurement itself is shared.
     """
-    import asyncio
-    from zoneinfo import ZoneInfo
-
-    from vibe.backtester.core.engine import _resample
-    from vibe.backtester.analysis.regime_research.features import FeatureEngine
-    from vibe.backtester.data.parquet_loader import ParquetLoader
-    from vibe.research_pipeline.features.leakage import run_leakage_suite
-    from vibe.research_pipeline.features.registry import SWEEP_PRECOMPUTED_FEATURES
-
-    # Exchange-local rather than UTC: a session is identified by its
-    # exchange-local calendar date, so converting would shift the boundary.
-    tz = ZoneInfo("America/New_York")
-    loader = ParquetLoader(data_dir, [symbol])
-    bars_1m = asyncio.run(
-        loader.get_bars(
-            symbol,
-            start_time=datetime.combine(spec.dev_start, datetime.min.time(), tzinfo=tz),
-            end_time=datetime.combine(spec.dev_end, datetime.max.time(), tzinfo=tz),
-        )
-    )
-    bars = _resample(bars_1m, "5min")
-
-    engine = FeatureEngine()
-
-    def compute(frame):
-        return engine.compute(frame, features=list(SWEEP_PRECOMPUTED_FEATURES))
-
-    report = run_leakage_suite(
-        bars,
-        compute,
-        cut=max(1, len(bars) // 2),
-        features=list(SWEEP_PRECOMPUTED_FEATURES),
-    )
-    return report, bars
-
-
-def build_orb_boundary_report(bars, ruleset_config: dict) -> Any:
-    """Check the opening range never contains the bar that breaks it.
-
-    Driven off the ruleset's own window definition and the real bar grid, so
-    it fails if the configured ORB duration does not align with the bar
-    interval -- the case where the breakout bar is still inside the range it
-    is tested against and the signal measures itself.
-    """
-    import pandas as pd
-
-    from vibe.research_pipeline.features.leakage import (
-        LeakageFinding,
-        LeakageReport,
-        check_orb_boundary,
+    from vibe.backtester.analysis.research_evidence import (
+        build_leakage_report as run_suite,
+        load_session_bars,
     )
 
-    strategy = ruleset_config.get("strategy", {})
-    start_clock = str(strategy.get("orb_start_time", "09:30"))
-    duration = int(strategy.get("orb_duration_minutes", 5))
-
-    stamps = bars.index
-    sessions = pd.Series(stamps).dt.date
-    findings: list[LeakageFinding] = []
-
-    # One representative session is enough: the window geometry is identical
-    # every day, so a second session re-tests the same arithmetic.
-    for session in list(dict.fromkeys(sessions))[:1]:
-        day = bars.loc[sessions.to_numpy() == session]
-        if day.empty:
-            continue
-        hour, minute = (int(part) for part in start_clock.split(":")[:2])
-        session_open = pd.Timestamp(
-            datetime.combine(session, datetime.min.time()), tz=stamps.tz
-        ).replace(hour=hour, minute=minute)
-        or_end = session_open + pd.Timedelta(minutes=duration)
-
-        window = day.loc[(day.index >= session_open) & (day.index < or_end)]
-        after = day.loc[day.index >= or_end]
-        if window.empty or after.empty:
-            findings.append(
-                LeakageFinding(
-                    "orb_boundary",
-                    "window",
-                    False,
-                    f"Session {session} has no bars in the opening range "
-                    f"{session_open}..{or_end}; the boundary cannot be checked.",
-                )
-            )
-            continue
-
-        return check_orb_boundary(
-            day,
-            float(window["high"].max()),
-            float(window["low"].min()),
-            session_open=session_open,
-            or_end=or_end,
-            breakout_time=after.index[0],
-        )
-
-    return LeakageReport(tuple(findings))
+    bars = load_session_bars(symbol, data_dir, spec.dev_start, spec.dev_end)
+    return run_suite(bars), bars
 
 
 def build_fold_leakage(plan, calendar_name: str) -> dict:

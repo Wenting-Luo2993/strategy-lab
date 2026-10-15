@@ -261,3 +261,116 @@ from (3); the regression tests in `test_portfolio.py` keep (1) from recurring
 for this parameter. A general guard — asserting that at least one extreme
 value of every live axis moves the result — would be the stronger fix, and is
 worth considering if more inert axes appear.
+
+---
+
+## 7. Turning validation on, and the three defects it found
+
+Section 6 ended with the sweep axes fixed. The next gap was that **no
+recorded run had ever left `VALIDATING`**: the whole validation layer existed,
+was unit-tested, and was never reachable from a study runner. Wiring it up was
+a two-line change in principle. What it exposed was not.
+
+The honest summary is that *switching on the validator immediately found three
+real defects that every previous backtest had silently carried*. That is the
+system working: each one had been producing wrong numbers for as long as the
+pipeline has existed, and none of them announced itself.
+
+### 7.1 The validator could never have completed a run
+
+`MetricValidator` skips the plausibility and research-acceptance gates unless
+the scope is `CANDIDATE` or `PROMOTION`, and records the reduced set in
+`checked_categories`. But `SqliteResearchStore._assert_completed_report_is_valid`
+refuses a `COMPLETED` report that omitted *any* category. A `RUN`- or
+`SWEEP_ROW`-scoped report therefore could not finish a run under any
+circumstances — the two halves of the contract disagreed.
+
+The store is right to be strict, so the fix is on the calling side:
+`build_study_validator` now uses `ValidationScope.CANDIDATE`. That is also the
+correct description of what a sweep point *is*. Each point is a candidate
+parameterization, and the gates that ask "is this result too good to believe?"
+are exactly the ones worth applying before one can be selected.
+
+### 7.2 `--end` silently dropped the final trading session
+
+`datetime.strptime(args.end, "%Y-%m-%d")` yields midnight, so the session the
+user named on the command line contributed no bars. The exchange calendar's
+`sessions_between` is inclusive at both ends, so the run and the calendar
+disagreed by exactly one session — every recorded run failed with a blocking
+`DATA-001`.
+
+This had been wrong in every sweep ever run. It was invisible because nothing
+previously compared the run's session count against an independent source;
+the run agreed with itself. `DATA-007` deliberately takes `observed_sessions`
+from the metric layer rather than from the bars for precisely this reason, and
+that choice is what made the bug visible the moment validation was enabled.
+
+### 7.3 A zero-trade run with a moving equity curve
+
+One sweep point (`EOD_Time = 16:00`) reported **0 trades and +$882 of equity
+change**. The accounting check rejected it: *money was created or destroyed
+outside the trade ledger*.
+
+The check was right, and the cause is the most interesting finding in this
+document. Making `eod_time` configurable (§6.1) removed an accident that had
+been load-bearing: while the cutoff was hardcoded to 15:55, an intraday
+position was *always* closed before the session ended. With the cutoff set to
+the closing bell, the EOD rule never fires, and `engine.py` had no other way
+to close a position — unlike `portfolio_engine.py`, which has always had a
+session-end backstop.
+
+So the position survived overnight. It then blocked every subsequent entry,
+because the engine only enters when flat, and it never reached the trade
+ledger. The result: a run claiming the strategy never traded, with an equity
+curve that moved anyway.
+
+`PortfolioManager.close_open_positions_at_session_end` is the fix, called from
+the engine on each session's final bar. It is a correctness backstop, not a
+strategy rule — exactly parallel to `portfolio_engine._close_at_session_end`.
+
+The production baseline is **byte-identical** (124 trades, `STOP` 83 / `EOD`
+41, over 2022-01-03..2022-06-30), because at 15:55 the EOD rule still fires
+first and the backstop is a no-op. Only configurations that were already
+silently broken changed.
+
+### 7.4 The recorded window was the trade window
+
+A zero-trade run also could not be *recorded* at all: the run fingerprint took
+its first and last session from `result.overall.first_date` / `last_date`,
+which are **trade** dates. With no trades there are no dates, and the sink
+refused to guess.
+
+Refusing to guess was correct; asking the wrong source was not. Two sweep
+points over identical data also described themselves as covering different
+windows whenever their first trade fell on different days — so the same
+configuration over the same data could produce two distinct runs for a reason
+having nothing to do with the configuration.
+
+`BacktestResult.start_date` / `end_date` are the *graded* window the engine
+reports after excluding warmup, which is what the split manifest is meant to
+pin. The trade dates remain a fallback, and the original refusal still fires
+when neither is available.
+
+### 7.5 Result
+
+A 13-point quick sweep over QQQ now records **13 runs, all reaching
+`COMPLETED`** — the first validated runs this pipeline has ever produced. The
+nested walk-forward script runs per-fold optimization end to end (`TRAIN grid:
+2/2 evaluated`, selection margin, plateau size, unseen TEST result) against the
+shared evidence module rather than its own copy of the leakage suite.
+
+The 52 legacy rows left at `validating` predate the validator being reachable
+and are expected; they cannot be retro-validated because no leakage report was
+ever measured for them.
+
+### 7.6 What this generalises to
+
+Every one of §7.1–§7.4 was a defect that produced plausible-looking numbers.
+None of them crashed, and none would have been found by reading the code —
+§7.3 in particular was *created* by a correct fix removing an accidental
+guarantee. They were found because an independent check was finally allowed to
+disagree with the thing it was checking.
+
+The corollary is uncomfortable but worth stating: results produced before this
+point should be treated as unvalidated, because the mechanism that would have
+caught these problems was never switched on.

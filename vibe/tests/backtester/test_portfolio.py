@@ -202,3 +202,63 @@ def test_engine_threads_eod_time_from_the_ruleset():
             "ruleset eod_time; the EOD_Time sweep axis is inert again"
         )
         assert "eod_enabled=" in source, f"{module.__name__} ignores exit.eod"
+
+
+# ---------------------------------------------------------------------------
+# Nothing is carried overnight.
+#
+# Making ``eod_time`` configurable removed the guarantee that an intraday
+# position always closed: a ruleset setting it to the closing bell, or
+# disabling ``exit.eod``, left the position open forever. It then blocked
+# every later entry (the engines only enter when flat) and never reached the
+# trade ledger, so the run reported *zero trades* while its equity curve kept
+# moving with the unrealized position -- which the accounting validator
+# correctly rejected as money created outside the trade ledger.
+# ---------------------------------------------------------------------------
+
+def test_session_end_flattens_a_position_the_eod_rule_never_closed():
+    pm = PortfolioManager(10_000.0, eod_enabled=False)
+    clock = _open_at(pm, 10, 0)
+    clock.set_time(datetime(2024, 1, 15, 16, 0, tzinfo=ET))
+    pm.check_exits(_quiet_bar(), clock)
+    assert not pm.trade_history, "precondition: the EOD rule must not have fired"
+
+    pm.close_open_positions_at_session_end(_quiet_bar(), clock)
+    assert pm.trade_history, "position survived the end of its session"
+    assert pm.trade_history[0].exit_reason == "EOD"
+    assert not pm.positions
+
+
+def test_session_end_is_a_no_op_once_the_eod_rule_has_closed():
+    """The inverse: the backstop must not invent a second exit.
+
+    A backstop that closed unconditionally would double-count every trade,
+    which the first test above cannot detect.
+    """
+    pm = PortfolioManager(10_000.0, eod_cutoff=time(15, 55))
+    clock = _open_at(pm, 10, 0)
+    clock.set_time(datetime(2024, 1, 15, 15, 55, tzinfo=ET))
+    pm.check_exits(_quiet_bar(), clock)
+    assert len(pm.trade_history) == 1
+
+    pm.close_open_positions_at_session_end(_quiet_bar(), clock)
+    assert len(pm.trade_history) == 1, "backstop re-closed an already-closed trade"
+
+
+def test_session_end_skips_symbols_without_a_bar():
+    pm = PortfolioManager(10_000.0, eod_enabled=False)
+    clock = _open_at(pm, 10, 0)
+    pm.close_open_positions_at_session_end({}, clock)
+    assert pm.positions, "closed a position at a price no bar supplied"
+
+
+def test_engine_calls_the_session_end_backstop():
+    """A correct PortfolioManager is useless if the loop never calls it."""
+    import inspect
+    from vibe.backtester.core import engine
+
+    source = inspect.getsource(engine)
+    assert "close_open_positions_at_session_end(" in source, (
+        "the engine relies on the configurable EOD rule alone, so a ruleset "
+        "that disables it carries positions overnight again"
+    )

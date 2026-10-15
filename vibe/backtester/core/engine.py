@@ -265,6 +265,17 @@ class BacktestEngine:
         bar_index = 0  # Track bar index for latency support
         warmup_sessions_seen: set[date] = set()
 
+        # The last bar of each session, so an open position is never carried
+        # overnight. This is a correctness backstop, not a strategy rule: the
+        # EOD exit above is configurable and may legitimately be disabled or
+        # set to the closing bell, and an intraday position that outlives its
+        # session would block every later entry and leave its P&L unrealized
+        # -- producing a run with zero trades and a moving equity curve.
+        session_last_ts = {
+            session: group_index[-1]
+            for session, group_index in df.groupby(df.index.date).groups.items()
+        }
+
         for i, (ts, row) in enumerate(df.iterrows()):
             clock.set_time(ts.to_pydatetime())
             current_date = ts.date()
@@ -503,6 +514,16 @@ class BacktestEngine:
 
             # Keep exposed state synchronized for tests/diagnostics.
             self.pending_orders = [entry.order for entry in pending_queue._orders]
+
+            # Never carry an intraday position overnight. Runs before this
+            # relied on the EOD exit alone, which was safe only while its
+            # cutoff was hardcoded to 15:55; a ruleset setting eod_time to the
+            # closing bell, or disabling exit.eod, left the position open.
+            if ts == session_last_ts.get(current_date):
+                open_before_close = set(portfolio.positions.keys())
+                portfolio.close_open_positions_at_session_end(current_bars, clock)
+                for closed_sym in open_before_close - set(portfolio.positions.keys()):
+                    runner.close_position(closed_sym)
 
             # Warmup sessions are absent from the equity curve, which is what
             # keeps them out of every metric denominator: PerformanceAnalyzer

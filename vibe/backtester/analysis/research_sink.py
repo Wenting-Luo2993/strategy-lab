@@ -54,12 +54,23 @@ def open_run_sink(
     retention: str = "full",
     owner: str = "research_study",
     db_path: Optional[Path] = None,
+    validator: Optional[Any] = None,
 ) -> Any:
     """Create a :class:`BacktestRunSink` writing to the local research store.
 
     Imports are deferred so that merely importing an analysis module does not
     pull in the storage layer; a sweep run without ``--record-runs`` should not
     need sqlite at all.
+
+    Args:
+        validator: Optional callable built by
+            :func:`vibe.backtester.analysis.research_evidence.build_study_validator`.
+            Without it, recorded runs stop at ``VALIDATING`` and never reach
+            the publish outbox -- correct, but it means the study produced no
+            validated evidence. It is optional rather than required because
+            the sink must not be able to finalize a run on its own authority:
+            it holds no leakage report and no data-integrity measurement, so
+            inventing one would launder the run rather than validate it.
     """
     from vibe.backtester.core.execution_realism import EXECUTION_MODEL_VERSION
     from vibe.research_pipeline.contracts import RetentionProfile
@@ -82,7 +93,14 @@ def open_run_sink(
         starting_equity=starting_equity,
         retention=RetentionProfile(retention),
         owner=owner,
+        validator=validator,
     )
+    if validator is None:
+        logger.warning(
+            "No validator supplied; recorded runs will rest at VALIDATING and "
+            "will not reach the publish outbox. Pass one from "
+            "research_evidence.build_study_validator to finish them."
+        )
     if sink.code_dirty:
         logger.warning(
             "Working tree has uncommitted source changes; recorded runs are "

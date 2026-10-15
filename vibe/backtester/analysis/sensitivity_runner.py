@@ -45,6 +45,26 @@ logger = logging.getLogger(__name__)
 # Logging configuration will be set in main() based on --verbose flag
 
 
+def parse_window_start(value: str) -> datetime:
+    """Parse ``YYYY-MM-DD`` as the first instant of that session's day."""
+    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=ET)
+
+
+def parse_window_end(value: str) -> datetime:
+    """Parse ``YYYY-MM-DD`` as the *last* instant of that day, not midnight.
+
+    ``--end`` names a session the user expects to be included, and the
+    exchange calendar agrees: ``sessions_between`` is inclusive at both ends.
+    Parsing it as midnight silently dropped the final trading day, so the run
+    covered one session fewer than the calendar said it should. That was
+    invisible until validation was switched on, at which point every recorded
+    run failed with a blocking DATA-001 session-count mismatch.
+    """
+    return datetime.strptime(value, "%Y-%m-%d").replace(
+        hour=23, minute=59, second=59, tzinfo=ET
+    )
+
+
 # ============================================================================
 # Strategy-Specific Parameter Definitions
 # ============================================================================
@@ -337,6 +357,14 @@ def main() -> None:
              "sweep is visible in the research viewer, not just the CSV",
     )
     parser.add_argument(
+        "--skip-validation",
+        action="store_true",
+        help="Record runs without measuring validation evidence. Runs then "
+             "rest at VALIDATING and never reach the publish outbox, so the "
+             "sweep produces no validated results -- use only to skip the "
+             "leakage suite's cost while iterating on the sweep itself",
+    )
+    parser.add_argument(
         "--retention",
         default="full",
         choices=["summary", "diagnostic", "full"],
@@ -383,11 +411,37 @@ def main() -> None:
     
     # Determine sweep mode based on test mode
     sweep_mode = "one_at_a_time" if args.mode == "quick" else "grid"
-    
+
+    # Parse dates before building the sink: the validator needs the exact
+    # window so it can measure leakage and data integrity over the bars the
+    # study actually consumed.
+    #
+    # ``--end`` is inclusive of its session. Truncating it to midnight silently
+    # dropped the final trading day, which is both surprising on its own terms
+    # and disagrees with the exchange calendar -- the mismatch surfaces as a
+    # blocking DATA-001 the moment validation is switched on.
+    start = parse_window_start(args.start)
+    end = parse_window_end(args.end)
+
     # Create sweep
     run_sink = None
     if args.record_runs:
+        from vibe.backtester.analysis.research_evidence import build_study_validator
         from vibe.backtester.analysis.research_sink import open_run_sink
+
+        validator = None
+        if not args.skip_validation:
+            print("Measuring leakage and data integrity for validation...")
+            with open(base_ruleset, encoding="utf-8") as handle:
+                ruleset_config = yaml.safe_load(handle)
+            validator = build_study_validator(
+                symbol=args.symbol,
+                data_dir=data_dir,
+                start=start.date(),
+                end=end.date(),
+                ruleset_config=ruleset_config,
+                starting_equity=args.capital,
+            )
 
         run_sink = open_run_sink(
             data_dir=data_dir,
@@ -397,6 +451,7 @@ def main() -> None:
             methodology_version=f"sensitivity_runner/{args.mode}/v1",
             retention=args.retention,
             owner="sensitivity_runner",
+            validator=validator,
         )
 
     sweep = ParameterSweep(
@@ -408,11 +463,7 @@ def main() -> None:
         sweep_mode=sweep_mode,
         run_sink=run_sink,
     )
-    
-    # Parse dates
-    start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=ET)
-    end = datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=ET)
-    
+
     # Set output path if not specified
     if args.output is None:
         output_path = Path(f"reports/parameter-sensitivity/{args.strategy}-{args.mode}.csv")

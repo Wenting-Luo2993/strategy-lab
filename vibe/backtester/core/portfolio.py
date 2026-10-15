@@ -448,19 +448,48 @@ class PortfolioManager:
                 )
                 continue
             if is_eod:
-                close_side = "sell" if is_long else "buy"
-                self.close_position(
-                    FillResult(
-                        symbol=symbol, side=close_side,
-                        filled_qty=pos.quantity,
-                        avg_price=self._apply_exit_slippage(
-                            bar.close, reason="EOD", side=close_side,
-                            quantity=pos.quantity, bar=bar,
-                        ),
-                    ),
-                    exit_reason="EOD",
-                    timestamp=clock.now(),
-                )
+                self._close_at_bar_close(symbol, bar, clock, reason="EOD")
+
+    def _close_at_bar_close(
+        self, symbol: str, bar: Bar, clock, *, reason: str
+    ) -> None:
+        """Flatten ``symbol`` at ``bar.close``, paying exit slippage."""
+        pos = self.positions[symbol]
+        close_side = "sell" if pos.side == "buy" else "buy"
+        self.close_position(
+            FillResult(
+                symbol=symbol, side=close_side,
+                filled_qty=pos.quantity,
+                avg_price=self._apply_exit_slippage(
+                    bar.close, reason=reason, side=close_side,
+                    quantity=pos.quantity, bar=bar,
+                ),
+            ),
+            exit_reason=reason,
+            timestamp=clock.now(),
+        )
+
+    def close_open_positions_at_session_end(
+        self, current_bars: Dict[str, Bar], clock
+    ) -> None:
+        """Flatten anything still open on the final bar of a session.
+
+        This is a correctness backstop, not a strategy rule, and the caller is
+        responsible for invoking it only on a session's last bar.
+        ``exit.eod_time`` is configurable and ``exit.eod`` can be switched off,
+        so the EOD rule cannot be relied upon to close an intraday position.
+        When it does not fire, the position survives into the next session,
+        blocks every subsequent entry (the engines only enter when flat), and
+        never reaches the trade ledger -- yielding a run that reports zero
+        trades while its equity curve still moves with the unrealized
+        position. The exit reason is ``EOD`` rather than a new category so
+        that existing exit-reason analysis keeps summing to the trade count.
+        """
+        for symbol in list(self.positions.keys()):
+            bar = current_bars.get(symbol)
+            if bar is None:
+                continue
+            self._close_at_bar_close(symbol, bar, clock, reason="EOD")
 
     def _close_at_level(
         self, pos: Position, bar: Bar, level: float, reason: str, clock
