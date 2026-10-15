@@ -203,7 +203,10 @@ class _FakeStore:
         self.started = False
         self.finalized: list[Any] = []
 
-    def register_run(self, *, fingerprint, methodology_version, notes=None) -> str:
+    def register_run(
+        self, *, fingerprint, methodology_version, notes=None, segment_role=None
+    ) -> str:
+        self.registered_segment_role = segment_role
         return "run-1"
 
     def start_run(self, run_id, *, owner, lease_seconds) -> str:
@@ -421,3 +424,115 @@ def test_observed_sessions_are_not_copied_from_the_expectation():
 
     assert payload.data_integrity.expected_sessions == 99
     assert payload.data_integrity.observed_sessions != 99
+
+
+# -- segment_role must be queryable, not buried in the fingerprint -------
+
+
+def _role_fingerprint(*, segment_role, seed: str = "s"):
+    """A real fingerprint, so the identity assertions mean something."""
+    from vibe.research_pipeline.recording import build_run_fingerprint
+
+    return build_run_fingerprint(
+        strategy_id="orb",
+        ruleset_sha256="a" * 64,
+        parameters={"seed": seed},
+        symbol="QQQ",
+        first_session=date(2023, 1, 3),
+        last_session=date(2023, 3, 1),
+        session_count=40,
+        data_snapshot_id="snap-1",
+        execution_model_version=1,
+        metric_calculation_version=1,
+        repo_root=".",
+        segment_role=segment_role,
+        code_commit="c" * 40,
+        code_dirty=False,
+    )
+
+
+def test_segment_role_is_queryable_not_buried_in_the_fingerprint(tmp_path):
+    """A viewer must be able to filter out-of-sample runs with a WHERE clause.
+
+    Before this column existed, segment_role only fed split_manifest_hash, so
+    the only way to tell a test run from a train run was to parse free-text
+    notes. That is precisely how an in-sample number gets presented as
+    out-of-sample evidence.
+    """
+    import sqlite3
+
+    from vibe.research_pipeline.contracts import SegmentRole
+    from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
+
+    db = tmp_path / "roles.sqlite3"
+    store = SqliteResearchStore(db)
+
+    seen = {}
+    for role in (SegmentRole.TRAIN, SegmentRole.TEST, None):
+        fingerprint = _role_fingerprint(
+            segment_role=role or SegmentRole.TEST, seed=str(role)
+        )
+        seen[role] = store.register_run(
+            fingerprint=fingerprint,
+            methodology_version="v1",
+            segment_role=role,
+        )
+
+    conn = sqlite3.connect(str(db))
+    rows = dict(conn.execute("SELECT run_id, segment_role FROM runs").fetchall())
+    conn.close()
+
+    assert rows[seen[SegmentRole.TRAIN]] == "train"
+    assert rows[seen[SegmentRole.TEST]] == "test"
+    assert rows[seen[None]] is None, (
+        "an undeclared run must stay NULL; stamping it 'test' would hand a "
+        "viewer exploratory runs as out-of-sample evidence"
+    )
+
+    # The point of the column: one WHERE clause, no notes parsing.
+    conn = sqlite3.connect(str(db))
+    oos = conn.execute(
+        "SELECT COUNT(*) FROM runs WHERE segment_role = 'test'"
+    ).fetchone()[0]
+    conn.close()
+    assert oos == 1
+
+
+def test_persisting_the_role_did_not_move_any_fingerprint():
+    """The column must be additive to identity, never a rewrite of it.
+
+    If adding the column changed how a run hashes, every run already in a
+    store would be orphaned from its own future re-runs.
+    """
+    from vibe.research_pipeline.contracts import SegmentRole
+
+    explicit = _role_fingerprint(segment_role=SegmentRole.TEST, seed="same")
+    defaulted = _role_fingerprint(segment_role=SegmentRole.TEST, seed="same")
+    assert explicit.fingerprint == defaulted.fingerprint
+
+    train = _role_fingerprint(segment_role=SegmentRole.TRAIN, seed="same")
+    assert train.fingerprint != explicit.fingerprint, (
+        "roles must still separate identities; otherwise a train and test run "
+        "over the same window would collide"
+    )
+
+
+def test_an_undeclared_run_is_not_recorded_as_out_of_sample(stub_metrics):
+    """The sink's default must not manufacture out-of-sample evidence.
+
+    ``record()`` still fingerprints an undeclared run as TEST to preserve
+    identities established before the column existed, but it must not write
+    that assumption into the queryable column.
+    """
+    store = _FakeStore()
+
+    recorder = RunRecorder(
+        store,
+        fingerprint=object(),
+        methodology_version="test",
+        retention=RetentionProfile.SUMMARY,
+    )
+    with recorder:
+        recorder.record(_result(), starting_equity=STARTING_EQUITY)
+
+    assert store.registered_segment_role is None

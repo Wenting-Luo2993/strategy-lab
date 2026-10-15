@@ -366,6 +366,7 @@ class RunRecorder:
         lease_seconds: int = 3600,
         notes: Optional[str] = None,
         validator: Optional[Callable[[Any], Any]] = None,
+        segment_role: Optional[SegmentRole] = None,
     ) -> None:
         self._store = store
         self._fingerprint = fingerprint
@@ -375,6 +376,7 @@ class RunRecorder:
         self._lease_seconds = lease_seconds
         self._notes = notes
         self._validator = validator
+        self._segment_role = segment_role
 
         self.run_id: Optional[str] = None
         self._lease_token: Optional[str] = None
@@ -385,6 +387,7 @@ class RunRecorder:
             fingerprint=self._fingerprint,
             methodology_version=self._methodology_version,
             notes=self._notes,
+            segment_role=self._segment_role,
         )
         self._lease_token = self._store.start_run(
             self.run_id, owner=self._owner, lease_seconds=self._lease_seconds
@@ -546,7 +549,7 @@ class BacktestRunSink:
         *,
         ruleset: Any,
         parameters: Mapping[str, Any],
-        segment_role: SegmentRole = SegmentRole.TEST,
+        segment_role: Optional[SegmentRole] = None,
         notes: Optional[str] = None,
         random_seed: Optional[int] = None,
         starting_equity: Optional[float] = None,
@@ -555,6 +558,15 @@ class BacktestRunSink:
 
         ``ruleset`` is the *effective* configuration the run used, not the file
         it started from, so a swept point pins what actually executed.
+
+        ``segment_role`` is deliberately split in two directions. The
+        *fingerprint* keeps defaulting to :attr:`SegmentRole.TEST` so that
+        identities established before the role was persisted continue to hash
+        the same way -- changing it would silently orphan every run already in
+        the store. The *column*, by contrast, is written only when a caller
+        actually declares a role. An undeclared run is recorded as NULL rather
+        than as ``test``, because a viewer filtering for out-of-sample evidence
+        must not be handed exploratory runs that never claimed to be one.
         """
         try:
             first_session, last_session = _evaluation_window(result)
@@ -570,7 +582,9 @@ class BacktestRunSink:
                 execution_model_version=self._execution_model_version,
                 metric_calculation_version=int(result.overall.calculation_version),
                 repo_root=".",  # unused; commit and dirtiness are supplied
-                segment_role=segment_role,
+                segment_role=(
+                    SegmentRole.TEST if segment_role is None else segment_role
+                ),
                 code_commit=self._code_commit,
                 code_dirty=self._code_dirty,
                 random_seed=random_seed,
@@ -589,6 +603,7 @@ class BacktestRunSink:
                 owner=self._owner,
                 notes=notes,
                 validator=self._validator,
+                segment_role=segment_role,
             ) as recorder:
                 run_id = recorder.record(
                     result,

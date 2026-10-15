@@ -28,6 +28,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 from vibe.research_pipeline.contracts import RunEvidence, ValidationFinding
 from vibe.research_pipeline.contracts import RetentionProfile
+from vibe.research_pipeline.contracts import SegmentRole
 from vibe.research_pipeline.contracts import Severity, ValidationCategory
 from vibe.research_pipeline.evidence import equity_curve_digest, trade_ledger_digest
 from vibe.research_pipeline.holdout import load_lock, read_access_log
@@ -191,8 +192,18 @@ class SqliteResearchStore:
         methodology_version: str,
         notes: Optional[str] = None,
         lineage_id: Optional[str] = None,
+        segment_role: Optional[SegmentRole] = None,
     ) -> str:
-        """Create a run in ``REGISTERED``; idempotent on the fingerprint hash."""
+        """Create a run in ``REGISTERED``; idempotent on the fingerprint hash.
+
+        ``segment_role`` is persisted as a queryable column rather than left
+        inside the fingerprint hash. A research viewer has to be able to filter
+        out-of-sample runs directly; recovering that from free-text notes is
+        how an in-sample number ends up being read as evidence. ``None`` is
+        preserved as NULL -- "role not recorded" -- because inventing a role
+        for a run that never declared one is the failure this column exists to
+        prevent.
+        """
         fp = fingerprint.fingerprint
         existing = self._conn.execute(
             "SELECT run_id FROM runs WHERE fingerprint = ?", (fp,)
@@ -215,8 +226,8 @@ class SqliteResearchStore:
                         run_id, display_seq, display_alias, fingerprint,
                         fingerprint_version, strategy_id, methodology_version,
                         state, notes, code_commit, code_dirty, created_at, updated_at,
-                        lineage_id, identity_json, origin_device_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        lineage_id, identity_json, origin_device_id, segment_role
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run_id,
@@ -235,6 +246,7 @@ class SqliteResearchStore:
                         lineage_id,
                         fingerprint.model_dump_json(),
                         self._origin_device_id,
+                        None if segment_role is None else SegmentRole(segment_role).value,
                     ),
                 )
                 self._conn.execute(

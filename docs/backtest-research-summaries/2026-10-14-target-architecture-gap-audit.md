@@ -687,3 +687,49 @@ Two consequences:
 Promoting `segment_role` to a first-class indexed column is a schema migration
 (v7) and new capability rather than cleanup, so it is recorded here as a
 prerequisite for the viewer/dashboard work rather than executed in this pass.
+
+**Update — implemented as schema v10.** `runs.segment_role` is now a persisted,
+indexed column, so a viewer can filter out-of-sample runs with a `WHERE`
+clause instead of parsing notes. Two details were load-bearing:
+
+- **Existing rows backfill to NULL, not to a guess.** NULL means "recorded
+  before the role was persisted". Defaulting them to `test` would manufacture
+  out-of-sample evidence that was never established.
+- **The fingerprint default is unchanged.** `record()` still hashes an
+  undeclared run as `SegmentRole.TEST` so identities already in the store
+  continue to hash the same way, but it now writes NULL to the *column*. The
+  two were deliberately decoupled: changing the hash default would have
+  orphaned every existing run from its own future re-runs, while keeping the
+  column default would have handed the viewer every exploratory backtest as
+  out-of-sample evidence.
+
+Verified against a copy of the live database: v9 → v10 applies cleanly, all
+117 runs preserved, index created, re-migration idempotent. Pinned by
+`test_segment_role_is_queryable_not_buried_in_the_fingerprint`,
+`test_persisting_the_role_did_not_move_any_fingerprint`, and
+`test_an_undeclared_run_is_not_recorded_as_out_of_sample`; the first was
+mutation-checked by coercing NULL to `test`.
+
+### 10.6 The inversion that matters most for the viewer
+
+Having made the role queryable, the obvious next question is what the store
+would actually return. The answer is the sharpest finding in this section:
+
+| Path | Correct methodology? | Writes to the research store? |
+|---|---|---|
+| `vibe/backtester/analysis/walk_forward.py` (legacy) | No | **Yes** — 12 rows |
+| `vibe/research_pipeline/walk_forward.py` (genuine) | Yes | **No — nothing at all** |
+
+`NestedWalkForwardDriver` and `scripts/run_nested_walk_forward.py` contain no
+reference to a run sink, a store, or `record()`. The nested walk-forward —
+the only path that performs per-fold optimization, holds out a real test
+window, and enforces purge/embargo — leaves no trace in the research store.
+
+So every row in the store that was ever labelled out-of-sample came from the
+path that could not produce out-of-sample evidence, and every genuinely
+out-of-sample result produced by this repo exists only in console output.
+
+This is not cleanup; it is the missing wiring that the viewer work depends on,
+and it should be the next increment. Recording a fold properly means one run
+per evaluation with its true `SegmentRole` (TRAIN / VALIDATION / TEST), which
+is now expressible because the column exists.

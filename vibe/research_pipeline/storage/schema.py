@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -791,6 +791,21 @@ CREATE TABLE run_equity_points (
 CREATE INDEX idx_run_equity_points_run ON run_equity_points(run_id, sequence);
 """
 
+# ``segment_role`` was previously accepted by the recording API but only ever
+# folded into ``split_manifest_hash``. That made fingerprints distinct but left
+# the store unable to answer the question a research viewer most needs to ask:
+# "which of these runs are out-of-sample?" Reviewers had to parse free-text
+# notes, which is exactly how an in-sample number gets read as evidence.
+#
+# Existing rows are backfilled to NULL rather than guessed. NULL means
+# "recorded before the role was persisted", which is honest; defaulting them to
+# 'test' would manufacture out-of-sample evidence that was never established,
+# and defaulting them to 'train' would silently rewrite history the other way.
+_MIGRATION_10 = """
+ALTER TABLE runs ADD COLUMN segment_role TEXT;
+CREATE INDEX idx_runs_segment_role ON runs(segment_role);
+"""
+
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
@@ -802,6 +817,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (7, _MIGRATION_7),
     (8, _MIGRATION_8),
     (9, _MIGRATION_9),
+    (10, _MIGRATION_10),
 ]
 
 
