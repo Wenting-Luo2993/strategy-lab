@@ -1577,13 +1577,39 @@ can never produce, because it holds parameters fixed.
 They remain **Partial** rather than Complete because the nested walk-forward
 entry point does not yet publish: `finalize_validation` is now reachable from
 the recording path via an optional `validator` on `RunRecorder` and
-`BacktestRunSink` (built by `evaluation.build_run_validator`), but no study
-runner supplies one yet, so runs still rest at `VALIDATING` in practice. The
-seam is deliberately opt-in and cannot launder a run: the recorder holds no
-leakage or data-integrity evidence of its own and never finalizes on its own
-authority, and a caller passing an empty leakage report gets blocking
-`LEAK-003` findings rather than a pass. Supplying that validator from a study
-runner is the next step, and it also unblocks P15c.
+`BacktestRunSink` (built by `evaluation.build_run_validator`), **and
+`sensitivity_runner` now supplies one**, so recorded runs finally reach
+`COMPLETED`. The seam is deliberately opt-in and cannot launder a run: the
+recorder holds no leakage or data-integrity evidence of its own and never
+finalizes on its own authority, and a caller passing an empty leakage report
+gets blocking `LEAK-003` findings rather than a pass.
+
+> **Update, October 14, 2026 (later).** The validator is now reachable from a
+> real study runner. `vibe/backtester/analysis/research_evidence.py` supplies
+> the evidence (leakage suite, ORB boundary check, session bars) and
+> `build_study_validator` assembles it; `sensitivity_runner --record-runs`
+> passes it, and `scripts/run_nested_walk_forward.py` imports the same module
+> rather than its own copy. A 13-point quick sweep over QQQ records **13 runs,
+> all `COMPLETED`** — the first validated runs the pipeline has produced.
+>
+> Switching it on immediately found three defects that every prior backtest
+> had silently carried: a `RUN`-scoped report could never satisfy the store's
+> all-categories requirement (now `CANDIDATE`, which is what a swept point
+> actually is); `--end` was parsed as midnight and dropped the final trading
+> session, disagreeing with the inclusive exchange calendar; and a ruleset
+> setting `eod_time` to the closing bell left intraday positions open
+> overnight, because only `portfolio_engine.py` had a session-end backstop —
+> producing a run with zero trades and a moving equity curve, which the
+> accounting check correctly rejected. The run fingerprint also took its
+> window from *trade* dates, so zero-trade runs could not be recorded at all.
+> All four are fixed, with regression tests; the production baseline is
+> byte-identical. See §7 of `2026-10-14-target-architecture-gap-audit.md`.
+>
+> The 52 rows still at `validating` predate reachability and cannot be
+> retro-validated: no leakage report was ever measured for them.
+>
+> P12/P15c remain **Partial**: `COMPLETED` runs now exist, so the publish
+> outbox is finally testable, but it has not yet been exercised end to end.
 
 P6 prevents a run from reaching
 `COMPLETED` without a durable one-pass validation report covering normalized
