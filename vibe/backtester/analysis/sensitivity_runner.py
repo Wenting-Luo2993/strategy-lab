@@ -45,24 +45,12 @@ logger = logging.getLogger(__name__)
 # Logging configuration will be set in main() based on --verbose flag
 
 
-def parse_window_start(value: str) -> datetime:
-    """Parse ``YYYY-MM-DD`` as the first instant of that session's day."""
-    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=ET)
-
-
-def parse_window_end(value: str) -> datetime:
-    """Parse ``YYYY-MM-DD`` as the *last* instant of that day, not midnight.
-
-    ``--end`` names a session the user expects to be included, and the
-    exchange calendar agrees: ``sessions_between`` is inclusive at both ends.
-    Parsing it as midnight silently dropped the final trading day, so the run
-    covered one session fewer than the calendar said it should. That was
-    invisible until validation was switched on, at which point every recorded
-    run failed with a blocking DATA-001 session-count mismatch.
-    """
-    return datetime.strptime(value, "%Y-%m-%d").replace(
-        hour=23, minute=59, second=59, tzinfo=ET
-    )
+# Re-exported so existing callers and tests keep importing them from here;
+# the canonical definition lives in windows.py because four runners need it.
+from vibe.backtester.analysis.windows import (  # noqa: E402
+    parse_window_end,
+    parse_window_start,
+)
 
 
 # ============================================================================

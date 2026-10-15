@@ -291,3 +291,51 @@ def test_the_run_window_agrees_with_the_exchange_calendar():
     assert expected[-1] == date(2022, 3, 31), (
         "the window excludes the session the user named on the command line"
     )
+
+
+def test_no_runner_parses_a_cli_window_bound_as_midnight():
+    """Every CLI ``--start``/``--end`` must go through the shared parsers.
+
+    The midnight truncation was originally fixed in one runner while three
+    scripts kept private copies, so the same window meant different things
+    depending on which entry point produced it. This fails if any entry point
+    grows a private ``strptime(args.<bound>, "%Y-%m-%d")`` again.
+
+    It deliberately matches only ``args.*`` operands: parsing a stored date
+    string for display, or into a ``date`` for the session calendar, cannot
+    truncate a window and is not the defect being guarded.
+    """
+    import ast
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    offenders = []
+    for root in (repo / "scripts", repo / "vibe" / "backtester" / "analysis"):
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not (isinstance(func, ast.Attribute) and func.attr == "strptime"):
+                    continue
+                if not any(
+                    isinstance(a, ast.Constant) and a.value == "%Y-%m-%d"
+                    for a in node.args
+                ):
+                    continue
+                operand = node.args[0] if node.args else None
+                is_cli_bound = (
+                    isinstance(operand, ast.Attribute)
+                    and isinstance(operand.value, ast.Name)
+                    and operand.value.id == "args"
+                )
+                if is_cli_bound:
+                    offenders.append(
+                        f"{path.name}:{node.lineno} (args.{operand.attr})"
+                    )
+
+    assert not offenders, (
+        "these parse a CLI date bound directly and will truncate --end to "
+        f"midnight; use parse_window_start/parse_window_end instead: {offenders}"
+    )

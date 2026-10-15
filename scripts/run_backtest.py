@@ -25,6 +25,7 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from vibe.backtester.analysis.windows import parse_window_end, parse_window_start
 from vibe.backtester.core.engine import BacktestEngine
 from vibe.backtester.data.paths import (
     MarketDataNotFoundError,
@@ -181,8 +182,8 @@ def main() -> None:
                               initial_capital=args.capital,
                               slippage_ticks=args.slippage_ticks)
 
-    start = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=ET)
-    end   = datetime.strptime(args.end,   "%Y-%m-%d").replace(tzinfo=ET)
+    start = parse_window_start(args.start)
+    end   = parse_window_end(args.end)
 
     print(f"Running {args.ruleset} on {args.symbol} from {args.start} to {args.end}...")
     result = engine.run(symbol=args.symbol, start_date=start, end_date=end)

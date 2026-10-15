@@ -21,6 +21,7 @@ import pandas as pd
 import yaml
 
 from vibe.backtester.analysis.parameter_sweep import ParameterDefinition, ParameterSweep
+from vibe.backtester.analysis.windows import parse_window_end, parse_window_start
 from vibe.backtester.core.engine import BacktestEngine
 from vibe.common.ruleset.models import StrategyRuleSet
 
@@ -81,10 +82,6 @@ def parse_args() -> argparse.Namespace:
         help="Disable cache loading and force fresh backtests",
     )
     return parser.parse_args()
-
-
-def parse_date(date_str: str) -> datetime:
-    return datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=ET)
 
 
 def parse_top_pcts(raw: str) -> list[float]:
@@ -241,8 +238,8 @@ def main() -> None:
         set_quiet_loggers()
 
     top_pcts = parse_top_pcts(args.top_pcts)
-    start = parse_date(args.start)
-    end = parse_date(args.end)
+    start = parse_window_start(args.start)
+    end = parse_window_end(args.end)
 
     ruleset_path = Path(args.ruleset)
     data_dir = Path(args.data_dir)

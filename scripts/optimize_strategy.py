@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from vibe.backtester.optimization.pipeline import OptimizationPipeline
 from vibe.backtester.analysis.parameter_sweep import ParameterDefinition
+from vibe.backtester.analysis.windows import parse_window_end, parse_window_start
 
 ET = ZoneInfo("America/New_York")
 
@@ -354,8 +355,8 @@ def main():
     
     # Parse dates
     try:
-        start_date = datetime.strptime(args.start, "%Y-%m-%d").replace(tzinfo=ET)
-        end_date = datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=ET)
+        start_date = parse_window_start(args.start)
+        end_date = parse_window_end(args.end)
     except ValueError as e:
         print(f"Error parsing dates: {e}", file=sys.stderr)
         sys.exit(1)
