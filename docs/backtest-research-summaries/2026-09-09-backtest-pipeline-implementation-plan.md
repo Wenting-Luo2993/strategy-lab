@@ -927,9 +927,26 @@ resolutions before the optimizer could pick a candidate.
 | --- | --- | --- |
 | `wins + losses = trades` | Tautological against `win_rate`; fails spuriously against `losing_trades` on any exactly-zero-R trade | Unify definitions first; then assert against the trade ledger, not between two derived metrics |
 | `max_drawdown` bounds | Sign and unit ambiguous between modules | Declare sign and unit in the metric contract |
-| `Sharpe > 2.5` | Current Sharpe is per-5-minute-bar annualized with a hardcoded 78, on a series that is flat overnight; not comparable to the daily Sharpe the threshold assumes | Compute from session returns before wiring the gate |
+| `Sharpe > 2.5` | The original per-bar metric was not comparable to daily Sharpe | P1 now uses session returns. Independently audit its calculation at every scope; candidate review uses configurable `abs(Sharpe) > 5` with at least 20 returns, not a universal validity cutoff |
 | ORB `win_rate` 25-45% | `CLAUDE_MEMORY.md` records 54.5% and 55.7% win rates for 10/15-minute ORB after the caching fix, so a naive band fires on known-good results. Win rate is a function of the take-profit multiple | Flag the combination `win_rate > 55% AND avg_win_r >= avg_loss_r`, or condition the band on exit configuration |
 | Zero trades in a fold | Legitimate for a short window with restrictive filters | Always `INCONCLUSIVE`, never `VALIDATION_FAILED` |
+
+**Expanded run-credibility checks (2026-10).** Hard invariants now verify the
+retained R population (`CROSS-005`), mean net-R expectancy (`CROSS-006`),
+independently recomputed session Sharpe (`CROSS-007`), and valid ordered equity
+observations/session counts (`CROSS-008`) at every scope. Metric version 2 is
+unchanged: close-to-close exchange-local session returns, sample standard
+deviation (`ddof=1`), `sqrt(252)`, excluding the initial session return.
+
+Candidate/promotion review defaults are expectancy outside `[-5, 5]` R
+(`PLAUS-004`), absolute Sharpe above 5 (`PLAUS-005`), a single session contributing
+more than 50% of summed absolute returns (`PLAUS-006`), and return standard
+deviation below `1e-6` with nontrivial mean (`PLAUS-007`). The three
+return-distribution checks require at least 20 close-to-close returns.
+These configurable diagnostic envelopes are not physical laws or statistical
+proof of a defect. Concentration findings retain the session, its return, full
+Sharpe and leave-one-out Sharpe. `plausibility_alpha=0.05` remains the separate
+sample-aware win-rate policy. Multiple-testing-adjusted Sharpe remains deferred.
 
 ### Run evidence record
 

@@ -10,8 +10,8 @@ import pytest
 from vibe.backtester.analysis.metrics import (
     BacktestResult,
     ConvexityMetrics,
-    EquityMetrics,
 )
+from vibe.backtester.analysis.performance import PerformanceAnalyzer
 from vibe.research_pipeline.contracts import (
     RetentionProfile,
     RunEvidence,
@@ -62,19 +62,9 @@ def _result(**metric_overrides) -> BacktestResult:
     )
     metric_defaults.update(metric_overrides)
     overall = ConvexityMetrics(**metric_defaults)
-    equity = EquityMetrics(
-        total_return=0.1,
-        annualized_return=0.1,
-        sharpe_ratio=1.0,
-        max_drawdown=-0.1,
-        max_drawdown_duration_days=2,
-        equity_curve=pd.Series(
-            [1_000.0, 1_100.0],
-            index=pd.to_datetime(["2026-01-02", "2026-01-03"]),
-        ),
-        drawdown_curve=pd.Series([0.0, -0.1]),
-        bars_per_session=78.0,
-        n_sessions=10,
+    equity = PerformanceAnalyzer._calc_equity(
+        list(zip(pd.bdate_range("2026-01-02", periods=10), [1000.0, 1100.0] * 5)),
+        initial_capital=1000.0,
     )
     return BacktestResult(
         overall=overall,
@@ -105,7 +95,7 @@ def _evidence(**overrides) -> RunEvidence:
         trade_count=2,
         trade_ledger_sha256="1" * 64,
         equity_curve_sha256="2" * 64,
-        equity_points=2,
+        equity_points=10,
         first_session=date(2026, 1, 2),
         last_session=date(2026, 1, 15),
         starting_equity=1_000.0,
@@ -276,6 +266,8 @@ def _sample(wins: int, losses: int, **overrides) -> BacktestResult:
     and trips the cross-check gates instead of the one under test.
     """
     n = wins + losses
+    win_r = overrides.get("avg_win_r", 1.2)
+    loss_r = overrides.get("avg_loss_r", -1.0)
     base = dict(
         n_trades=n,
         win_rate=wins / n,
@@ -284,7 +276,12 @@ def _sample(wins: int, losses: int, **overrides) -> BacktestResult:
         breakeven_trades=0,
         stop_wins=wins,
         stop_losses=losses,
-        r_multiples=[1.2] * wins + [-1.0] * losses,
+        avg_win_r=win_r,
+        avg_loss_r=loss_r,
+        expectancy_r=(wins * win_r + losses * loss_r) / n,
+        max_win_r=win_r if wins else 0.0,
+        max_loss_r=loss_r if losses else 0.0,
+        r_multiples=[win_r] * wins + [loss_r] * losses,
         r_sample_size=n,
         max_losing_streak=1 if losses else 0,
         trade_objects=n,
@@ -422,6 +419,179 @@ def test_acceptance_failure_is_advisory_and_run_still_completes():
     )
     assert report.target_state is RunState.COMPLETED
     assert [finding.code for finding in report.findings] == ["ACCEPT-001"]
+
+
+def _return_input(returns, *, scope=ValidationScope.CANDIDATE, intraday=False):
+    values = [1000.0]
+    for change in returns:
+        values.append(values[-1] * (1 + change))
+    sessions = pd.bdate_range("2026-01-02", periods=len(values), tz="America/New_York")
+    observations = []
+    for session, close in zip(sessions, values):
+        if intraday:
+            observations.append((session + pd.Timedelta(hours=10), close * 0.99))
+        observations.append((session + pd.Timedelta(hours=16), close))
+    result = _result()
+    result.equity = PerformanceAnalyzer._calc_equity(observations, initial_capital=1000.0)
+    return _input(
+        result=result,
+        evidence=_evidence(equity_points=len(observations)),
+        scope=scope,
+        data=DataIntegritySummary(
+            expected_sessions=len(values),
+            observed_sessions=len(values),
+            bar_count=len(observations),
+        ),
+    )
+
+
+@pytest.mark.parametrize("scope", list(ValidationScope))
+@pytest.mark.parametrize("metric", ["expectancy_r", "sharpe_ratio"])
+def test_incorrect_metric_arithmetic_blocks_every_scope(scope, metric):
+    value = _input(scope=scope)
+    target = value.result.overall if metric == "expectancy_r" else value.result.equity
+    setattr(target, metric, getattr(target, metric) + 10)
+    report = _validate(value)
+    assert report.target_state is RunState.VALIDATION_FAILED
+    code = "CROSS-006" if metric == "expectancy_r" else "CROSS-007"
+    finding = next(finding for finding in report.findings if finding.code == code)
+    assert finding.metric_key == metric
+    assert finding.expected and finding.context
+
+
+@pytest.mark.parametrize("sample", [[], [1.0], [1.0, float("nan")], [1.0, float("inf")]])
+def test_unusable_r_samples_cannot_hide_behind_finite_headlines(sample):
+    report = _validate(_input(result=_result(r_multiples=sample)))
+    assert report.target_state is RunState.VALIDATION_FAILED
+    assert "CROSS-005" in {finding.code for finding in report.findings}
+
+
+@pytest.mark.parametrize("scale", [252**0.5, 78**0.5, -1.0])
+def test_wrong_sharpe_annualization_or_sign_is_not_just_a_review_warning(scale):
+    value = _return_input([0.02, -0.01, 0.015, -0.005] * 6)
+    value.result.equity.sharpe_ratio *= scale
+    report = _validate(value)
+    assert report.target_state is RunState.VALIDATION_FAILED
+    assert "CROSS-007" in {finding.code for finding in report.findings}
+
+
+def test_daily_sharpe_audit_ignores_intraday_frequency_and_calendar_gaps():
+    daily = _return_input([0.01, -0.01] * 35)
+    intraday = _return_input([0.01, -0.01] * 35, intraday=True)
+    assert daily.result.equity.sharpe_ratio == pytest.approx(intraday.result.equity.sharpe_ratio)
+    assert _validate(daily).target_state is RunState.COMPLETED
+    assert _validate(intraday).target_state is RunState.COMPLETED
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "unordered", "nonpositive", "nan", "session_count"])
+def test_invalid_equity_evidence_is_a_blocking_diagnosis_not_an_exception(mutation):
+    value = _return_input([0.01, -0.01] * 10)
+    equity = value.result.equity
+    if mutation == "duplicate":
+        equity.equity_curve.index = pd.DatetimeIndex([equity.equity_curve.index[0]] * len(equity.equity_curve))
+    elif mutation == "unordered":
+        equity.equity_curve = equity.equity_curve.iloc[::-1]
+    elif mutation == "nonpositive":
+        equity.equity_curve.iloc[3] = 0.0
+    elif mutation == "nan":
+        equity.equity_curve.iloc[3] = float("nan")
+    else:
+        equity.n_sessions += 1
+    report = _validate(value)
+    assert report.target_state is RunState.VALIDATION_FAILED
+    assert "CROSS-008" in {finding.code for finding in report.findings}
+
+
+@pytest.mark.parametrize("expectancy", [24.5, -24.5])
+def test_consistent_but_extreme_expectancy_requires_review_not_arithmetic_failure(expectancy):
+    result = _sample(
+        1, 1,
+        avg_win_r=50.0 if expectancy > 0 else 1.0,
+        avg_loss_r=-1.0 if expectancy > 0 else -50.0,
+    )
+    assert result.overall.expectancy_r == expectancy
+    report = _validate(_input(
+        result=result,
+        scope=ValidationScope.CANDIDATE,
+    ))
+    assert report.target_state is RunState.REVIEW_REQUIRED
+    assert {finding.code for finding in report.findings} == {"PLAUS-004"}
+
+
+def test_expectancy_envelope_is_explicit_and_configurable():
+    value = _input(
+        result=_sample(1, 1, avg_win_r=10.0),
+        scope=ValidationScope.CANDIDATE,
+    )
+    assert _validate(value).target_state is RunState.COMPLETED
+    report = _validate(value, max_expectancy_r=1.0)
+    assert report.target_state is RunState.REVIEW_REQUIRED
+    assert next(f for f in report.findings if f.code == "PLAUS-004").observed == 4.5
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_extreme_daily_sharpe_is_reviewed_in_both_directions(sign):
+    report = _validate(_return_input([sign * 0.01, sign * 0.011] * 15))
+    assert report.target_state is RunState.REVIEW_REQUIRED
+    assert "PLAUS-005" in {finding.code for finding in report.findings}
+    assert not any(f.code.startswith("CROSS") for f in report.findings)
+
+
+def test_short_lucky_window_does_not_trip_long_sample_sharpe_checks():
+    value = _return_input([0.01, 0.011] * 5)
+    assert abs(value.result.equity.sharpe_ratio) > 5
+    assert _validate(value).target_state is RunState.COMPLETED
+    assert _validate(value, min_sharpe_returns=10).target_state is RunState.REVIEW_REQUIRED
+
+
+def test_default_sharpe_minimum_is_exactly_twenty_returns():
+    assert _validate(_return_input([0.01, 0.011] * 9 + [0.01])).target_state is RunState.COMPLETED
+    assert _validate(_return_input([0.01, 0.011] * 10)).target_state is RunState.REVIEW_REQUIRED
+
+
+def test_using_population_instead_of_sample_deviation_is_a_calculation_failure():
+    value = _return_input([0.02, -0.01, 0.015, -0.005] * 6)
+    value.result.equity.sharpe_ratio *= (24 / 23) ** 0.5
+    report = _validate(value)
+    assert report.target_state is RunState.VALIDATION_FAILED
+    assert "CROSS-007" in {finding.code for finding in report.findings}
+
+
+@pytest.mark.parametrize("scope", [ValidationScope.RUN, ValidationScope.SWEEP_ROW])
+def test_range_reviews_do_not_turn_a_sweep_into_manual_approval_per_row(scope):
+    report = _validate(_return_input([0.01, 0.011] * 15, scope=scope))
+    assert report.target_state is RunState.COMPLETED
+    assert not any(f.code.startswith("PLAUS") for f in report.findings)
+
+
+@pytest.mark.parametrize("outlier", [0.5, -0.5])
+def test_single_session_concentration_explains_sharpe_sensitivity(outlier):
+    report = _validate(_return_input([0.001, -0.001] * 15 + [outlier]))
+    finding = next(f for f in report.findings if f.code == "PLAUS-006")
+    assert report.target_state is RunState.REVIEW_REQUIRED
+    assert finding.observed > 0.9
+    assert finding.context["return_count"] == 31
+    assert finding.context["session_return"] == pytest.approx(outlier)
+    assert finding.context["sharpe_without_largest_session"] == pytest.approx(0.0, abs=1e-10)
+
+
+def test_near_constant_nonzero_returns_warn_but_a_flat_curve_does_not():
+    report = _validate(_return_input([0.01] * 30))
+    assert "PLAUS-007" in {f.code for f in report.findings}
+    assert _validate(_return_input([0.0] * 30)).target_state is RunState.COMPLETED
+
+
+@pytest.mark.parametrize("overrides", [
+    {"min_expectancy_r": 5, "max_expectancy_r": 1},
+    {"max_expectancy_r": float("inf")},
+    {"max_abs_sharpe": 0},
+    {"min_sharpe_returns": 1},
+    {"max_single_session_return_share": 1.01},
+    {"min_session_return_std": 0},
+])
+def test_invalid_diagnostic_profiles_are_rejected(overrides):
+    with pytest.raises(ValueError):
+        ValidationProfile(**overrides)
 
 
 def test_zero_trades_is_inconclusive_not_failed():

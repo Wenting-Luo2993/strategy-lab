@@ -792,6 +792,52 @@ test("reports retained rows as available only when the rows are actually present
   }
 });
 
+test("exposes finding evidence with recursive redaction and tolerates legacy payloads", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const runId = "00000000-0000-7000-8000-000000000001";
+    const writer = new DatabaseSync(fixture.dbPath);
+    const insert = writer.prepare(`
+      INSERT INTO run_findings
+        (run_id, code, category, severity, message, payload_json, recorded_at)
+      VALUES (?, ?, 'plausibility', 'review', 'Review session returns', ?, '2026-01-01')
+    `);
+    insert.run(runId, "PLAUS-006", JSON.stringify({
+      observed: 0.9,
+      expected: "<= 0.5",
+      context: {
+        full_sample_sharpe: 4,
+        sharpe_without_largest_session: 0.1,
+        api_key: "do-not-leak",
+      },
+      privateField: "not-exposed",
+    }));
+    insert.run(runId, "LEGACY", "null");
+    insert.run(runId, "MALFORMED", "{bad");
+    writer.close();
+    const response = await rawRequest(fixture.origin, `/api/runs/${runId}`);
+    assert.equal(response.status, 200);
+    const finding = response.json.findings.items.find((item) => item.code === "PLAUS-006");
+    assert.equal(finding.observed, 0.9);
+    assert.equal(finding.expected, "<= 0.5");
+    assert.deepEqual(finding.context, {
+      full_sample_sharpe: 4,
+      sharpe_without_largest_session: 0.1,
+      api_key: "[redacted]",
+    });
+    assert.equal("payloadJson" in finding, false);
+    assert.equal("privateField" in finding, false);
+    for (const code of ["LEGACY", "MALFORMED"]) {
+      const legacy = response.json.findings.items.find((item) => item.code === code);
+      assert.equal(legacy.observed, null);
+      assert.equal(legacy.expected, null);
+      assert.deepEqual(legacy.context, {});
+    }
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
 test("serves retained trade rows and 404s for an unknown run", async () => {
   const fixture = await startFixtureServer();
   try {

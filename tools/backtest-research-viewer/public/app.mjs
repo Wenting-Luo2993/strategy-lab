@@ -286,7 +286,14 @@ async function showRun(runId) {
           "Finding counts": formatJson(detail.findingCounts),
         })}
         ${cards("Validation findings", detail.findings, (finding) => `
-          <article class="finding ${escapeAttribute(finding.severity)}"><strong>${escapeHtml(finding.code)} · ${escapeHtml(finding.severity)}</strong><p>${escapeHtml(finding.message)}</p><small>${escapeHtml(finding.category)}${finding.metricKey ? ` · ${escapeHtml(finding.metricKey)}` : ""}</small></article>
+          <article class="finding ${escapeAttribute(finding.severity)}"><strong>${escapeHtml(finding.code)} · ${escapeHtml(finding.severity)}</strong><p>${escapeHtml(finding.message)}</p><small>${escapeHtml(finding.category)}${finding.metricKey ? ` · ${escapeHtml(finding.metricKey)}` : ""}</small>
+          <details class="finding-evidence"><summary>Observed values, expected bounds & diagnostic context</summary>
+            ${statGrid({
+              "Observed": finding.observed == null ? "Not recorded" : formatValue(finding.observed),
+              "Expected": finding.expected || "Not recorded",
+              "Context": formatJson(finding.context),
+            })}
+          </details></article>
         `, "No validation findings recorded. This alone is not proof of validation; check the report above.")}
       </section>
       <section role="tabpanel" id="panel-audit" aria-labelledby="tab-audit" hidden>

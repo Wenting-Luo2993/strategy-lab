@@ -594,9 +594,21 @@ and falls back to a normal approximation with continuity correction beyond
 `p = 0.55`, which would have made every long run look *impossible* -- the
 opposite failure, and a much quieter one.
 
-**Still a user call:** whether `plausibility_alpha = 0.05` is the right default
-is a genuine research-policy knob. It is now an explicit, named field with a
-defensible default rather than an implicit consequence of a bare threshold.
+**User decision:** retain `plausibility_alpha = 0.05`. It remains an explicit
+research-policy knob, not an implicit consequence of a bare threshold.
+
+**Expanded credibility checks.** Calculation correctness now independently
+reconciles mean net-R expectancy and session-based Sharpe, and rejects invalid
+R/equity populations at every scope (`CROSS-005` through `CROSS-008`).
+Candidate/promotion plausibility also reviews expectancy outside `[-5, 5]` R,
+absolute Sharpe above 5, one-session absolute-return concentration above 50%,
+and near-zero variability with nonzero mean (`PLAUS-004` through `PLAUS-007`).
+Return-distribution reviews require at least 20 returns. These configurable
+review defaults are broad diagnostic envelopes, not proof of invalidity.
+Concentration reports include leave-one-out Sharpe; findings retain their
+observed values, bounds and diagnostic context, now inspectable in the local
+viewer's Validation tab. Existing persisted runs are not silently revalidated.
+Metric version 2 and its first-session exclusion are unchanged.
 
 
 ## 10. Legacy inventory: what should be deprecated or cleaned up
@@ -692,13 +704,10 @@ registry_records           : 0 rows
 So there is **one** system of record, and the `--journal` flag has never
 actually been used. Both halves of the original worry are empty.
 
-**Revised disposition.** Removing `vibe/research_journal/`, the two trackers,
-the two `examples/` files and the `register_in_research_journal` flag is still
-reasonable -- it is roughly fifteen files and ~400 lines of tracker code
-serving a feature with zero recorded usage, and a smaller API surface is
-easier to keep honest. But it is now **optional cleanup, not correctness
-work**, and it deletes a working user-facing flag. That is a product decision
-and should be confirmed rather than taken unilaterally.
+**User decision: retain the journal feature.** Keep `vibe/research_journal/`,
+its trackers/examples and the `register_in_research_journal` flag as the
+SQLite-backed notebook facade. Zero local usage is not grounds to remove a
+working user-facing feature. This is not competing persistence.
 
 The lesson generalises: "module X is still imported" establishes reachability,
 not duplication. This audit reached "two systems of record" from an import
@@ -714,8 +723,8 @@ Being test-only is not by itself a defect. These split into three groups:
 | `vibe/research_pipeline/analysis.py` | 712 | **Wire it, do not delete.** This is the adapter-neutral analysis layer over validated run summaries, mirroring the dashboard's Supabase contract. It is exactly what the local viewer and remote dashboard work needs. Built, tested, never wired — the familiar pattern. |
 | `vibe/research_pipeline/universe.py` | 369 | **Keep.** Planned P5b cross-sectional capability, awaiting an entry point. |
 | `vibe/backtester/core/portfolio_engine.py` | 1008 | **Keep.** Planned shared-capital multi-symbol simulation, awaiting an entry point. |
-| `vibe/backtester/integration/experiment_tracker.py` | 158 | **Optional removal with 10.2.** Depends on `vibe.research_journal`, which is a facade over the same store rather than a rival one, so this is surface reduction, not de-duplication. Superseded in practice by `research_sink`. |
-| `vibe/backtester/integration/sweep_tracker.py` | 284 | **Optional removal with 10.2.** Same dependency, same reasoning. |
+| `vibe/backtester/integration/experiment_tracker.py` | 158 | **Retain with 10.2 by user decision.** SQLite-backed journal facade, not duplicate storage. New run evidence uses `research_sink`. |
+| `vibe/backtester/integration/sweep_tracker.py` | 284 | **Retain with 10.2 by user decision.** Same journal-facade contract. |
 | `vibe/backtester/analysis/regime.py` | 71 | **Removed.** Standalone ADX classifier superseded by the reachable `vibe/backtester/analysis/regime_research/` package (`labeler`, `features`, `filter_evaluator`, `attribution`, `reporting`). Deleted with its test; nothing else imported it and it was not re-exported from the package `__init__`. |
 
 The two trackers are also demonstrated by `examples/backtest_experiment_tracking.py`
@@ -773,6 +782,12 @@ Verified against a copy of the live database: v9 → v10 applies cleanly, all
 `test_persisting_the_role_did_not_move_any_fingerprint`, and
 `test_an_undeclared_run_is_not_recorded_as_out_of_sample`; the first was
 mutation-checked by coercing NULL to `test`.
+
+**Cleanup decision.** The user permits deleting old experimental runs instead
+of quarantining them. No deletion is required to enable the new checks, and
+this credibility-check update leaves the existing database intact. NULL roles
+remain unknown, not evidence of corrupt results; viewing a run does not
+revalidate or rewrite its historical report.
 
 **Update 2 — the role is now analysable, not just filterable.** Persisting the
 column and exposing it in the list view still left the *analysis* layer blind:

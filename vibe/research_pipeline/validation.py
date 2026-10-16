@@ -8,10 +8,12 @@ consistent, sufficiently evidenced, and plausible enough to trust.
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
+import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vibe.backtester.analysis.metrics import BacktestResult
@@ -162,6 +164,12 @@ class ValidationProfile(_Frozen):
     # this, so a short window has to be far more lopsided than a long one
     # before it is called suspicious.
     plausibility_alpha: float = Field(0.05, gt=0.0, lt=1.0)
+    min_expectancy_r: float = Field(-5.0, allow_inf_nan=False)
+    max_expectancy_r: float = Field(5.0, allow_inf_nan=False)
+    max_abs_sharpe: float = Field(5.0, gt=0.0, allow_inf_nan=False)
+    min_sharpe_returns: int = Field(20, ge=2)
+    max_single_session_return_share: float = Field(0.5, gt=0.0, le=1.0)
+    min_session_return_std: float = Field(1e-6, gt=0.0, allow_inf_nan=False)
     ambiguous_exit_rate: float = Field(0.05, ge=0.0, le=1.0)
     required_leakage_checks: tuple[str, ...] = (
         "truncation_equivalence",
@@ -172,6 +180,20 @@ class ValidationProfile(_Frozen):
         "split_contamination",
     )
     acceptance_rules: tuple[AcceptanceRule, ...] = ()
+
+    @model_validator(mode="after")
+    def _ordered_expectancy_bounds(self) -> "ValidationProfile":
+        if self.min_expectancy_r >= self.max_expectancy_r:
+            raise ValueError("min_expectancy_r must be below max_expectancy_r")
+        return self
+
+
+def _session_sharpe(returns: Sequence[float]) -> float:
+    """Independently check v2: sample std, sqrt(252), zero if undefined."""
+    if len(returns) < 2:
+        return 0.0
+    deviation = statistics.stdev(returns)
+    return statistics.mean(returns) / deviation * math.sqrt(252) if deviation > 0 else 0.0
 
 
 class DataIntegritySummary(_Frozen):
@@ -332,13 +354,14 @@ class MetricValidator:
         findings: list[ValidationFinding] = []
         self._check_mathematics(validation_input, findings)
         self._check_cross_metrics(validation_input, findings)
+        session_returns = self._check_equity_metrics(validation_input, findings)
         self._check_accounting(validation_input, findings)
         self._check_execution(validation_input, findings)
         self._check_data(validation_input, findings)
         self._check_leakage(validation_input, findings)
         self._check_sufficiency(validation_input, findings)
         if validation_input.scope.applies_candidate_gates:
-            self._check_plausibility(validation_input, findings)
+            self._check_plausibility(validation_input, findings, session_returns)
             self._check_acceptance(validation_input, findings)
 
         if any(f.severity is Severity.BLOCKING for f in findings):
@@ -483,6 +506,115 @@ class MetricValidator:
                     expected="0",
                 )
             )
+        sample = metrics.r_multiples
+        if len(sample) != metrics.r_sample_size or not all(math.isfinite(r) for r in sample):
+            findings.append(
+                _finding(
+                    "CROSS-005",
+                    ValidationCategory.HARD_INVARIANT,
+                    Severity.BLOCKING,
+                    "The R sample is incomplete or contains non-finite values.",
+                    metric_key="r_sample_size",
+                    observed={"declared": metrics.r_sample_size, "retained": len(sample)},
+                    expected="one finite R-multiple for each declared R-sample trade",
+                )
+            )
+        else:
+            expected = statistics.mean(sample) if sample else 0.0
+            if math.isfinite(metrics.expectancy_r) and not math.isclose(
+                metrics.expectancy_r, expected, rel_tol=1e-7, abs_tol=1e-9
+            ):
+                findings.append(
+                    _finding(
+                        "CROSS-006",
+                        ValidationCategory.HARD_INVARIANT,
+                        Severity.BLOCKING,
+                        "Reported expectancy disagrees with the mean net R-multiple.",
+                        metric_key="expectancy_r",
+                        observed=metrics.expectancy_r,
+                        expected=f"mean(net R sample) = {expected:.12g}",
+                        context={"recomputed_expectancy_r": expected, "r_sample_size": len(sample)},
+                    )
+                )
+
+    def _check_equity_metrics(
+        self, value: ValidationInput, findings: list[ValidationFinding]
+    ) -> Optional[pd.Series]:
+        equity = value.result.equity
+        curve = equity.equity_curve
+        if curve.empty and equity.n_sessions == 0 and value.evidence.equity_points == 0:
+            returns = pd.Series(dtype=float)
+        elif (
+            curve.empty
+            or not isinstance(curve.index, pd.DatetimeIndex)
+            or curve.index.hasnans
+            or not curve.index.is_monotonic_increasing
+            or curve.index.has_duplicates
+            or not all(math.isfinite(point) and point > 0 for point in curve)
+        ):
+            findings.append(
+                _finding(
+                    "CROSS-008",
+                    ValidationCategory.HARD_INVARIANT,
+                    Severity.BLOCKING,
+                    "Equity observations cannot support a session-return metric audit.",
+                    metric_key="sharpe_ratio",
+                    expected="positive finite equity on a unique, ordered datetime index",
+                )
+            )
+            return None
+        else:
+            closes = curve.groupby(curve.index.normalize()).last()
+            if equity.n_sessions != len(closes):
+                findings.append(
+                    _finding(
+                        "CROSS-008",
+                        ValidationCategory.HARD_INVARIANT,
+                        Severity.BLOCKING,
+                        "Reported session count disagrees with the equity observations.",
+                        metric_key="n_sessions",
+                        observed=equity.n_sessions,
+                        expected=str(len(closes)),
+                    )
+                )
+            # V2 starts at the first retained session close, not initial capital.
+            returns = closes / closes.shift(1) - 1
+            returns = returns.iloc[1:]
+            if not all(math.isfinite(point) for point in returns):
+                findings.append(
+                    _finding(
+                        "CROSS-008",
+                        ValidationCategory.HARD_INVARIANT,
+                        Severity.BLOCKING,
+                        "Session returns derived from equity are not finite.",
+                        metric_key="sharpe_ratio",
+                        expected="finite session-close percentage changes",
+                    )
+                )
+                return None
+        expected = _session_sharpe(returns.tolist())
+        if math.isfinite(equity.sharpe_ratio) and not math.isclose(
+            equity.sharpe_ratio, expected, rel_tol=1e-7, abs_tol=1e-8
+        ):
+            findings.append(
+                _finding(
+                    "CROSS-007",
+                    ValidationCategory.HARD_INVARIANT,
+                    Severity.BLOCKING,
+                    "Reported Sharpe disagrees with annualized session-close returns.",
+                    metric_key="sharpe_ratio",
+                    observed=equity.sharpe_ratio,
+                    expected=f"mean(session returns) / sample std * sqrt(252) = {expected:.12g}",
+                    context={
+                        "recomputed_sharpe": expected,
+                        "return_count": len(returns),
+                        "annualization_sessions": 252,
+                        "std_ddof": 1,
+                        "calculation_version": equity.calculation_version,
+                    },
+                )
+            )
+        return returns
 
     def _check_accounting(
         self, value: ValidationInput, findings: list[ValidationFinding]
@@ -745,7 +877,10 @@ class MetricValidator:
             )
 
     def _check_plausibility(
-        self, value: ValidationInput, findings: list[ValidationFinding]
+        self,
+        value: ValidationInput,
+        findings: list[ValidationFinding],
+        session_returns: Optional[pd.Series],
     ) -> None:
         metrics = value.result.overall
         win_rate_pvalue = _binomial_tail_pvalue(
@@ -773,6 +908,23 @@ class MetricValidator:
                     ),
                 )
             )
+        if metrics.r_sample_size > 0 and math.isfinite(metrics.expectancy_r) and not (
+            self.profile.min_expectancy_r <= metrics.expectancy_r <= self.profile.max_expectancy_r
+        ):
+            findings.append(
+                _finding(
+                    "PLAUS-004",
+                    ValidationCategory.PLAUSIBILITY,
+                    Severity.REVIEW,
+                    "Expectancy lies outside the declared diagnostic envelope; review risk units and payoff assumptions.",
+                    metric_key="expectancy_r",
+                    observed=metrics.expectancy_r,
+                    expected=f"{self.profile.min_expectancy_r} <= expectancy_r <= {self.profile.max_expectancy_r}",
+                    context={"r_sample_size": metrics.r_sample_size, "bounds_are_not_physical_limits": True},
+                )
+            )
+        if session_returns is not None and len(session_returns) >= self.profile.min_sharpe_returns:
+            self._check_return_plausibility(session_returns, findings)
         ambiguous = value.result.execution_diagnostics.get("ambiguous_exit_bars", 0.0)
         rate = ambiguous / metrics.n_trades if metrics.n_trades else 0.0
         if rate > self.profile.ambiguous_exit_rate:
@@ -801,6 +953,63 @@ class MetricValidator:
                     metric_key="total_costs",
                     observed=metrics.total_costs,
                     expected="> 0 when n_trades > 0",
+                )
+            )
+
+    def _check_return_plausibility(
+        self, returns: pd.Series, findings: list[ValidationFinding]
+    ) -> None:
+        samples = returns.tolist()
+        sharpe = _session_sharpe(samples)
+        context = {"return_count": len(samples), "minimum_returns": self.profile.min_sharpe_returns}
+        if abs(sharpe) > self.profile.max_abs_sharpe:
+            findings.append(
+                _finding(
+                    "PLAUS-005",
+                    ValidationCategory.PLAUSIBILITY,
+                    Severity.REVIEW,
+                    "Session-return Sharpe is outside the declared diagnostic envelope.",
+                    metric_key="sharpe_ratio",
+                    observed=sharpe,
+                    expected=f"abs(annualized session Sharpe) <= {self.profile.max_abs_sharpe}",
+                    context=context,
+                )
+            )
+        absolute_sum = math.fsum(abs(point) for point in samples)
+        if absolute_sum > 0:
+            largest = max(range(len(samples)), key=lambda index: abs(samples[index]))
+            share = abs(samples[largest]) / absolute_sum
+            if share > self.profile.max_single_session_return_share:
+                findings.append(
+                    _finding(
+                        "PLAUS-006",
+                        ValidationCategory.PLAUSIBILITY,
+                        Severity.REVIEW,
+                        "One session dominates absolute return variation; review outliers and Sharpe sensitivity.",
+                        metric_key="sharpe_ratio",
+                        observed=share,
+                        expected=f"largest absolute session return / sum(abs(session returns)) <= {self.profile.max_single_session_return_share}",
+                        context={
+                            **context,
+                            "session": returns.index[largest].isoformat(),
+                            "session_return": samples[largest],
+                            "full_sample_sharpe": sharpe,
+                            "sharpe_without_largest_session": _session_sharpe(samples[:largest] + samples[largest + 1:]),
+                        },
+                    )
+                )
+        deviation = statistics.stdev(samples)
+        if deviation < self.profile.min_session_return_std and abs(statistics.mean(samples)) > self.profile.min_session_return_std:
+            findings.append(
+                _finding(
+                    "PLAUS-007",
+                    ValidationCategory.PLAUSIBILITY,
+                    Severity.REVIEW,
+                    "Nonzero session returns have almost no variability; Sharpe is unstable or uses the zero-variance sentinel.",
+                    metric_key="sharpe_ratio",
+                    observed=deviation,
+                    expected=f"session-return std >= {self.profile.min_session_return_std} for a nonzero mean",
+                    context={**context, "mean_session_return": statistics.mean(samples), "recomputed_sharpe": sharpe},
                 )
             )
 

@@ -579,11 +579,21 @@ function getRun(database, runId) {
   const findings = boundedRows(database, {
     countSql: "SELECT COUNT(*) AS count FROM run_findings WHERE run_id = ?",
     listSql: `
-    SELECT code, category, severity, message, metric_key AS metricKey, recorded_at AS recordedAt
+    SELECT code, category, severity, message, metric_key AS metricKey,
+           payload_json AS payloadJson, recorded_at AS recordedAt
     FROM run_findings WHERE run_id = ? ORDER BY id LIMIT ?
     `,
     params: [runId],
     limit: DETAIL_LIMITS.findings,
+    map: ({ payloadJson, ...finding }) => {
+      const payload = redactSecrets(safeJsonParse(payloadJson, {})) ?? {};
+      return {
+        ...finding,
+        observed: payload.observed ?? null,
+        expected: payload.expected ?? null,
+        context: payload.context ?? {},
+      };
+    },
   });
   const transitions = boundedRows(database, {
     countSql: "SELECT COUNT(*) AS count FROM experiment_state_transitions WHERE run_id = ?",

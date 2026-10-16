@@ -58,6 +58,15 @@ by the supplied QuantConnect reference:
   status available without burying the charts. Tabs support arrow/Home/End
   keyboard navigation.
 
+Validation findings expose their retained observed value, expected bound, and
+diagnostic context in an expandable evidence panel, with recursive credential
+redaction. New calculations are audited independently: expectancy against the
+net R sample, and Sharpe against exchange-local session-close returns. Candidate
+review flags cover extreme expectancy/Sharpe, single-session concentration
+(including leave-one-out Sharpe), and almost constant nonzero returns.
+These flags request investigation, not a declaration that a strategy is invalid.
+Old runs are not revalidated merely by viewing them.
+
 The role warning remains above every tab. An unlabelled run is **not** inferred
 to be a test run, and a test role does not imply validation has completed.
 No records are quarantined, relabelled, or deleted by opening this dialog.
