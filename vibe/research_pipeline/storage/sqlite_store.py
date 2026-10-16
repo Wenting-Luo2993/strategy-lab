@@ -183,6 +183,44 @@ class SqliteResearchStore:
     def close(self) -> None:
         self._conn.close()
 
+    def start_experiment(self, title: str, definition: dict[str, Any]) -> str:
+        """Create a study execution, separate from reusable segment-run identity."""
+        if not title.strip():
+            raise ValueError("Experiment title must not be empty")
+        experiment_id = _uuid7()
+        now = schema.utc_now_iso()
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO research_experiments VALUES (?, ?, 'running', ?, NULL, ?, ?)",
+                (experiment_id, title, json.dumps(definition, allow_nan=False), now, now),
+            )
+        return experiment_id
+
+    def link_experiment_run(
+        self, experiment_id: str, fold_index: int, candidate_id: str,
+        segment_role: SegmentRole, run_id: str,
+    ) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO research_experiment_runs VALUES (?, ?, ?, ?, ?)",
+                (experiment_id, fold_index, candidate_id, segment_role.value, run_id),
+            )
+
+    def finish_experiment(
+        self, experiment_id: str, state: str, result: dict[str, Any],
+    ) -> None:
+        if state not in {"completed", "inconclusive", "execution_failed"}:
+            raise ValueError(f"Invalid experiment terminal state: {state}")
+        with self._conn:
+            changed = self._conn.execute(
+                """UPDATE research_experiments
+                   SET state = ?, result_json = ?, updated_at = ?
+                   WHERE experiment_id = ? AND state = 'running'""",
+                (state, json.dumps(result, allow_nan=False), schema.utc_now_iso(), experiment_id),
+            ).rowcount
+            if changed != 1:
+                raise ImmutableRecordError("Experiment is absent or already finished")
+
     # -- lifecycle -------------------------------------------------------
 
     def register_run(

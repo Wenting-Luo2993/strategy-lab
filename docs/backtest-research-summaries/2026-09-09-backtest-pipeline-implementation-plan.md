@@ -534,6 +534,19 @@ for local field discovery, cost estimates, typed filters, grouping, and aggregat
 measures. The loopback server keeps legacy populations disabled and enforces
 query-length, subprocess-time, and response-buffer limits.
 
+**Experiment-first local inspection (schema v11).** A controlled parameter
+experiment is now the primary explorer object, containing its declared axes,
+candidate grid, fixed reference configuration, split plan and fold outcomes.
+Each fold aligns all training/validation candidates, the validation plateau
+selection and the frozen held-out test; linked segment runs open the existing
+chart/trade dialog. `--record-runs` on the nested walk-forward entry point
+persists explicit experiment/fold membership and final selector evidence.
+Repeated studies have distinct IDs while reusable segment runs retain their
+fingerprints. Older unlinked runs remain explicitly ungrouped, not reconstructed
+from notes. Training has no performance-based shortlist, and the view states
+that limitation rather than implying one. Interrupted/inconclusive studies and
+missing recordings cannot masquerade as completed all-fold evidence.
+
 ### Shared remote dashboard
 
 Add a statically exported `/research` route to

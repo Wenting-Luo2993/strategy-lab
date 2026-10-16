@@ -55,6 +55,7 @@ const STATIC_FILES = new Map([
   ["/index.html", [join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8"]],
   ["/app.mjs", [join(PUBLIC_DIR, "app.mjs"), "text/javascript; charset=utf-8"]],
   ["/run-charts.mjs", [join(PUBLIC_DIR, "run-charts.mjs"), "text/javascript; charset=utf-8"]],
+  ["/experiment-view.mjs", [join(PUBLIC_DIR, "experiment-view.mjs"), "text/javascript; charset=utf-8"]],
   ["/styles.css", [join(PUBLIC_DIR, "styles.css"), "text/css; charset=utf-8"]],
   [
     "/research-analysis-workspace.mjs",
@@ -402,7 +403,9 @@ function trustBadges(run, identity, evidence, validation, findingCounts) {
   const review = Number(findingCounts.review || 0);
   badges.push(blocking > 0
     ? { label: `${blocking} blocking finding${blocking === 1 ? "" : "s"}`, tone: "danger" }
-    : validation?.leakage_passed === 0
+    : !validation
+      ? { label: "Not validated", tone: "warning" }
+    : validation.leakage_passed === 0
       ? { label: "Leakage check failed", tone: "danger" }
       : review > 0
         ? { label: `${review} review finding${review === 1 ? "" : "s"}`, tone: "warning" }
@@ -668,6 +671,79 @@ function getRun(database, runId) {
     badges: trustBadges(run, identity, evidence, validationRow, findingCounts),
     localArtifacts: localArtifactAvailability(database, runId, evidenceRow),
   };
+}
+
+function hasExperiments(database) {
+  return Boolean(database.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'research_experiments'",
+  ).get());
+}
+
+function experimentRow(row) {
+  const definition = safeJsonParse(row.definition_json);
+  const result = safeJsonParse(row.result_json);
+  const exceedsBounds = (value, depth = 0) => {
+    if (depth > MAX_JSON_DEPTH) return true;
+    if (!value || typeof value !== "object") return false;
+    const children = Array.isArray(value) ? value : Object.values(value);
+    return children.length > MAX_JSON_ITEMS || children.some((child) => exceedsBounds(child, depth + 1));
+  };
+  return {
+    experimentId: row.experiment_id, title: redactSecrets(row.title),
+    state: row.state, createdAt: row.created_at, updatedAt: row.updated_at,
+    definition: redactSecrets(definition), result: redactSecrets(result),
+    payloadUnavailable: !definition || (row.result_json !== null && !result)
+      || exceedsBounds(definition) || exceedsBounds(result),
+  };
+}
+
+function listExperiments(database, searchParams) {
+  const { page, pageSize, offset } = parsePage(searchParams);
+  const ungroupedRuns = database.prepare(hasExperiments(database)
+    ? `SELECT COUNT(*) AS count FROM runs r WHERE NOT EXISTS
+       (SELECT 1 FROM research_experiment_runs e WHERE e.run_id = r.run_id)`
+    : "SELECT COUNT(*) AS count FROM runs").get().count;
+  if (!hasExperiments(database)) {
+    return { ...pageResponse([], 0, page, pageSize), ungroupedRuns, available: false };
+  }
+  const total = database.prepare("SELECT COUNT(*) AS count FROM research_experiments").get().count;
+  const rows = database.prepare(`
+    SELECT e.*,
+      (SELECT COUNT(*) FROM research_experiment_runs r WHERE r.experiment_id = e.experiment_id) AS linked_runs
+    FROM research_experiments e ORDER BY e.created_at DESC, e.experiment_id DESC LIMIT ? OFFSET ?
+  `).all(pageSize, offset).map((row) => {
+    const experiment = experimentRow(row);
+    return {
+      experimentId: experiment.experimentId, title: experiment.title,
+      state: experiment.state, createdAt: experiment.createdAt,
+      symbol: experiment.definition?.symbol,
+      axes: experiment.payloadUnavailable ? null : experiment.definition?.axes,
+      expectedFolds: experiment.payloadUnavailable ? null : experiment.definition?.plan?.folds?.length,
+      completedFolds: experiment.payloadUnavailable ? null : experiment.result?.n_folds_completed,
+      linkedRuns: row.linked_runs,
+      recordingErrors: experiment.result?.recording_errors?.length || 0,
+      payloadUnavailable: experiment.payloadUnavailable,
+    };
+  });
+  return { ...pageResponse(rows, total, page, pageSize), ungroupedRuns, available: true };
+}
+
+function getExperiment(database, experimentId) {
+  validateIdentity(experimentId, "experiment id");
+  const row = hasExperiments(database) && database.prepare(
+    "SELECT * FROM research_experiments WHERE experiment_id = ?",
+  ).get(experimentId);
+  if (!row) throw new HttpError(404, "Experiment not found.");
+  const runs = boundedRows(database, {
+    countSql: "SELECT COUNT(*) AS count FROM research_experiment_runs WHERE experiment_id = ?",
+    listSql: `SELECT e.fold_index AS foldIndex, e.candidate_id AS candidateId,
+      e.segment_role AS segmentRole, e.run_id AS runId,
+      r.display_alias AS displayAlias, r.state AS runState
+      FROM research_experiment_runs e JOIN runs r ON r.run_id = e.run_id
+      WHERE e.experiment_id = ? ORDER BY e.fold_index, e.segment_role, e.candidate_id LIMIT ?`,
+    params: [experimentId], limit: MAX_DETAIL_ROWS,
+  });
+  return { ...experimentRow(row), runs };
 }
 
 function getRunTrades(database, runId) {
@@ -1359,6 +1435,9 @@ function routeApi(database, pathname, searchParams, repositoryRoot, artifactStag
   if (pathname === "/api/meta") return null;
   if (pathname === "/api/overview") return getOverview(database);
   if (pathname === "/api/runs") return listRuns(database, searchParams);
+  if (pathname === "/api/experiments") return listExperiments(database, searchParams);
+  const experimentMatch = pathname.match(/^\/api\/experiments\/([^/]+)$/);
+  if (experimentMatch) return getExperiment(database, decodeURIComponent(experimentMatch[1]));
   if (pathname === "/api/registry") return listRegistry(database, searchParams);
   if (pathname === "/api/publications") return listPublications(database, searchParams);
   if (pathname === "/api/artifacts") return listArtifactOutbox(database, searchParams);

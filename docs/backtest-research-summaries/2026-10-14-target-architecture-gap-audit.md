@@ -882,3 +882,32 @@ mutation-checked by hard-coding `SegmentRole.TEST`, which fails it.
 Still open: the 12 legacy rows remain in the store (now correctly labelled
 TRAIN, see §10.5), and no recorded nested walk-forward exists yet because
 this worktree has no materialized parquet.
+
+## 11. Experiment-first local inspection
+
+The user identified a presentation and provenance gap: a controlled question
+such as "ORB duration 5 / 15 / 30" appeared as many unrelated train/validation/test
+rows. The local viewer now makes the **experiment** the primary review object.
+Each experiment declares its axes, candidate grid, objective and split plan;
+each fold aligns training evidence, validation comparison/selection and the
+frozen held-out test. Segment charts and trades remain drill-downs.
+
+Schema v11 persists `research_experiments` and explicit
+`research_experiment_runs` membership, outside the run fingerprint. A rerun
+gets a new experiment ID while identical segment runs may be reused. The
+recording decorator attaches run IDs during evaluation; the composition root
+persists final fold outcomes and selector rationale. No persistence was added
+to the pure driver. Test-only retention preserves comparison summaries while
+truthfully reporting unavailable training/validation run details.
+
+The UI explicitly states the current policy: training scores every candidate
+but does not performance-shortlist; validation selects a plateau medoid; test
+evaluates only the frozen setting. Study grading and individual recorded-run
+lifecycle validation are separate facts. Missing run validation no longer
+produces a green "No blocking findings" badge.
+
+No experiment membership or past selection rationale is inferred for historical
+runs. Interrupted or failed studies, recording errors, untested settings and
+missing/oversized reports remain visible rather than becoming successful-looking
+aggregates. Local synthetic preview data is isolated from the real research DB
+and explicitly labelled; it does not establish strategy performance.

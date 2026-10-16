@@ -214,6 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Strategy identifier recorded alongside each run.",
     )
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--experiment-title", help="Human-readable controlled-experiment name.")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -342,11 +343,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return float(backtest_result.overall.expectancy_r)
 
     sink = None
+    experiment = None
     if args.record_runs:
         from vibe.backtester.analysis.research_sink import open_run_sink
         from vibe.research_pipeline.recording_executor import (
             RecordingSegmentExecutor,
         )
+        from vibe.research_pipeline.experiments import ExperimentRecorder
 
         sink = open_run_sink(
             data_dir=data_dir,
@@ -360,7 +363,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.record_test_only
             else frozenset(SegmentRole)
         )
-        executor = RecordingSegmentExecutor(executor, sink, record_roles=roles)
+        experiment = ExperimentRecorder(
+            sink.store,
+            title=args.experiment_title or f"{args.symbol} {args.strategy_id.upper()} - " + ", ".join(
+                f"{name}: {' / '.join(map(str, values))}" for name, _, values in parsed
+            ),
+            plan=plan, candidates=candidates,
+            axes=[{"name": name, "path": path, "values": list(values)}
+                  for name, path, values in parsed],
+            symbol=args.symbol, strategy_id=args.strategy_id,
+            methodology_version=METHODOLOGY_VERSION,
+            record_test_only=args.record_test_only,
+            reference_configuration=executor.effective_ruleset(candidates[0]).model_dump(mode="json"),
+        )
+        executor = RecordingSegmentExecutor(
+            executor, sink, record_roles=roles, on_record=experiment.record_run,
+        )
         logger.info(
             "Recording %s segments into the research store.",
             "TEST" if args.record_test_only else "all",
@@ -373,7 +391,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         validator,
     )
 
-    result = driver.run(plan, candidates)
+    try:
+        result = driver.run(plan, candidates)
+    except Exception as exc:
+        if experiment is not None:
+            sink.store.finish_experiment(experiment.experiment_id, "execution_failed", {
+                "reason": f"{type(exc).__name__}: {exc}",
+                "recording_errors": [*sink.failures, *experiment.recording_errors],
+            })
+        raise
+    if experiment is not None:
+        experiment.finish(result, recording_errors=sink.failures)
+        logger.info("Experiment: %s", experiment.experiment_id)
     _report(result, RunState)
     if sink is not None:
         logger.info("Research store: %s", sink.summary())

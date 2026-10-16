@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from types import SimpleNamespace
 
 from vibe.research_pipeline.contracts import SegmentRole, SessionSegment
 from vibe.research_pipeline.recording_executor import RecordingSegmentExecutor
@@ -172,3 +173,33 @@ def test_a_real_session_segment_is_accepted():
     executor(_Candidate(), segment)
 
     assert sink.records[0]["segment_role"] is SegmentRole.TEST
+
+
+def test_link_callback_receives_reused_run_identity_and_actual_segment():
+    class ReusingSink(_Sink):
+        def record(self, result, **kwargs):
+            super().record(result, **kwargs)
+            return SimpleNamespace(run_id="already-recorded", recorded=False)
+
+    links = []
+    executor = RecordingSegmentExecutor(
+        _Inner(), ReusingSink(),
+        on_record=lambda candidate, segment, outcome: links.append(
+            (candidate.candidate_id, segment.role, outcome.run_id)
+        ),
+    )
+    executor(_Candidate("c7"), _Segment(SegmentRole.VALIDATION))
+    assert links == [("c7", SegmentRole.VALIDATION, "already-recorded")]
+
+
+def test_failed_linking_is_logged_without_changing_research_result(caplog):
+    class RecordedSink(_Sink):
+        def record(self, result, **kwargs):
+            return SimpleNamespace(run_id="r1")
+
+    def fail(candidate, segment, outcome):
+        raise RuntimeError("link persistence failed")
+
+    executor = RecordingSegmentExecutor(_Inner(), RecordedSink(), on_record=fail)
+    assert executor(_Candidate(), _Segment(SegmentRole.TEST)).result == "backtest-test"
+    assert "link persistence failed" in caplog.text

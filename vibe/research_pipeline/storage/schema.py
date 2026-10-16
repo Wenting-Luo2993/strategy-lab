@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -807,6 +807,40 @@ CREATE INDEX idx_runs_segment_role ON runs(segment_role);
 """
 
 # Forward-only: (version, ddl). Append new migrations; never edit an applied one.
+_MIGRATION_11 = """
+CREATE TABLE research_experiments (
+    experiment_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('running', 'completed', 'inconclusive', 'execution_failed')),
+    definition_json TEXT NOT NULL,
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE research_experiment_runs (
+    experiment_id TEXT NOT NULL REFERENCES research_experiments(experiment_id),
+    fold_index INTEGER NOT NULL CHECK (fold_index >= 0),
+    candidate_id TEXT NOT NULL,
+    segment_role TEXT NOT NULL CHECK (segment_role IN ('train', 'validation', 'test')),
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    PRIMARY KEY (experiment_id, fold_index, segment_role, candidate_id)
+);
+CREATE INDEX idx_experiment_runs_run ON research_experiment_runs(run_id);
+CREATE TRIGGER immutable_finished_experiment
+BEFORE UPDATE ON research_experiments
+WHEN OLD.state != 'running'
+BEGIN
+    SELECT RAISE(ABORT, 'Finished experiment is immutable');
+END;
+CREATE TRIGGER experiment_membership_guard
+BEFORE INSERT ON research_experiment_runs
+WHEN (SELECT state FROM research_experiments WHERE experiment_id = NEW.experiment_id) != 'running'
+    OR (SELECT segment_role FROM runs WHERE run_id = NEW.run_id) IS NOT NEW.segment_role
+BEGIN
+    SELECT RAISE(ABORT, 'Experiment membership requires a running experiment and matching run role');
+END;
+"""
+
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -818,6 +852,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (8, _MIGRATION_8),
     (9, _MIGRATION_9),
     (10, _MIGRATION_10),
+    (11, _MIGRATION_11),
 ]
 
 

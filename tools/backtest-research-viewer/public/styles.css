@@ -82,6 +82,24 @@ th, td { padding: .8rem; border-bottom: 1px solid var(--border); text-align: lef
 th { color: var(--muted); font-size: .72rem; text-transform: uppercase; }
 td small { display: block; margin-top: .3rem; color: var(--muted); }
 .link { border: 0; background: none; color: var(--accent); padding: 0; font-weight: 800; }
+.experiment-heading h2 { margin-bottom: .5rem; }
+.experiment-heading p:last-child { margin-top: 1rem; }
+.experiment-fold { border: 1px solid var(--border); border-radius: .65rem; margin: 1rem 0; padding: 1rem; }
+.experiment-fold > summary, #individual-runs > summary { cursor: pointer; font-weight: 700; }
+.phase-timeline { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-top: 1rem; }
+.phase { border: 1px solid var(--border); border-top: 3px solid var(--accent); border-radius: .5rem; padding: .8rem; }
+.phase.validation { border-top-color: var(--warning); }
+.phase.test { border-top-color: var(--good); }
+.phase span, .phase small { display: block; color: var(--muted); }
+.selected-candidate { background: color-mix(in srgb, var(--accent) 9%, var(--surface)); }
+.experiment-fold table { min-width: 850px; }
+.experiment-fold th[scope="row"] { text-transform: none; color: var(--text); font-size: .85rem; }
+.selection-explanation { color: var(--muted); margin: 1rem 0 0; }
+.evaluation-findings { margin-top: .75rem; max-width: 22rem; }
+.evaluation-findings p { font-size: .8rem; }
+#experiment-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+#experiment-detail a { color: var(--accent); }
+@media (max-width: 760px) { .phase-timeline { grid-template-columns: 1fr; } }
 .badge-list { display: flex; flex-wrap: wrap; gap: .35rem; }
 .badge { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; padding: .16rem .5rem; font-size: .72rem; }
 .badge.good { border-color: color-mix(in srgb, var(--good) 60%, var(--border)); color: var(--good); }

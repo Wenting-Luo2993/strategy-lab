@@ -62,6 +62,7 @@ class RecordingSegmentExecutor:
         *,
         record_roles: frozenset[SegmentRole] | None = None,
         note: Optional[Callable[[Any, SessionSegment], str]] = None,
+        on_record: Optional[Callable[[Any, SessionSegment, Any], None]] = None,
     ) -> None:
         if not hasattr(inner, "effective_ruleset"):
             raise TypeError(
@@ -77,6 +78,7 @@ class RecordingSegmentExecutor:
             frozenset(SegmentRole) if record_roles is None else frozenset(record_roles)
         )
         self._note = note or _default_note
+        self._on_record = on_record
         self.skipped_roles: dict[str, int] = {}
 
     def __call__(self, candidate: Any, segment: SessionSegment) -> Any:
@@ -89,13 +91,15 @@ class RecordingSegmentExecutor:
                 )
             return result
         try:
-            self._sink.record(
+            outcome = self._sink.record(
                 _backtest_result(result),
                 ruleset=self._inner.effective_ruleset(candidate),
                 parameters=_parameters(candidate),
                 segment_role=role,
                 notes=self._note(candidate, segment),
             )
+            if outcome is not None and self._on_record is not None:
+                self._on_record(candidate, segment, outcome)
         except Exception as exc:  # noqa: BLE001 - see module docstring
             logger.warning(
                 "Recording a %s segment failed (%s: %s); the walk-forward "

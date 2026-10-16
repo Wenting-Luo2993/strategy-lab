@@ -1,16 +1,21 @@
 import { mountPerformanceCharts } from "./run-charts.mjs";
+import { experimentList, experimentDetail } from "./experiment-view.mjs";
 
 const state = {
   runs: { page: 1, pageSize: 25 },
   registry: { page: 1, pageSize: 25 },
+  experiments: { page: 1, pageSize: 10 },
 };
 let detailRequest = 0;
+let experimentRequest = 0;
+let selectedExperiment;
 let disposeRunCharts;
 
 const elements = Object.fromEntries(
   [
     "app", "loading", "error", "overview", "runs", "run-pagination", "registry",
     "registry-pagination", "publications", "db-path", "detail", "detail-content",
+    "experiments", "experiment-pagination", "experiment-detail",
   ]
     .map((id) => [id, document.getElementById(id)]),
 );
@@ -61,12 +66,63 @@ async function loadAll() {
       loadPublications(false),
       initializeAnalysisWorkspace(),
     ]);
+    await loadExperiments();
+    if (selectedExperiment) await showExperiment(selectedExperiment, false);
     showError(null);
     elements.app.classList.remove("hidden");
   } catch (error) {
     showError(error);
   } finally {
     showLoading(false);
+  }
+}
+
+async function loadExperiments() {
+  try {
+    const result = await api("/api/experiments", state.experiments);
+    document.querySelector("#overview-experiments strong").textContent = result.total.toLocaleString();
+    elements.experiments.innerHTML = result.items.length
+      ? experimentList(result.items)
+      : emptyState("No explicitly recorded experiments yet. Existing segment runs remain below; the viewer does not guess study membership from notes. New nested walk-forwards with --record-runs record the full experiment.");
+    document.getElementById("ungrouped-runs").textContent =
+      `${result.ungroupedRuns.toLocaleString()} runs have no explicit experiment membership. They remain inspectable, not silently regrouped.`;
+    elements.experiments.querySelectorAll("[data-experiment]").forEach((button) => {
+      button.addEventListener("click", () => showExperiment(button.dataset.experiment));
+    });
+    renderPagination(elements["experiment-pagination"], result, (page) => {
+      state.experiments.page = page;
+      loadExperiments();
+    });
+  } catch (error) {
+    elements.experiments.innerHTML = errorState(error);
+  }
+}
+
+async function showExperiment(experimentId, focus = true) {
+  const request = ++experimentRequest;
+  selectedExperiment = experimentId;
+  const host = elements["experiment-detail"];
+  host.classList.remove("hidden");
+  host.innerHTML = loadingState();
+  try {
+    const experiment = await api(`/api/experiments/${encodeURIComponent(experimentId)}`);
+    if (request !== experimentRequest) return;
+    host.innerHTML = experimentDetail(experiment);
+    host.querySelectorAll("[data-run]").forEach((button) => {
+      button.addEventListener("click", () => showRun(button.dataset.run));
+    });
+    host.querySelectorAll('a[href^="#experiment-fold-"]').forEach((link) => {
+      link.addEventListener("click", () => {
+        const fold = document.getElementById(link.hash.slice(1));
+        if (fold) fold.open = true;
+      });
+    });
+    if (focus) {
+      host.scrollIntoView({ block: "start" });
+      host.querySelector("h2")?.focus({ preventScroll: true });
+    }
+  } catch (error) {
+    if (request === experimentRequest) host.innerHTML = errorState(error);
   }
 }
 
@@ -113,13 +169,16 @@ async function loadPublications(showBusy = true) {
 function renderOverview(data) {
   const totalRuns = sumValues(data.runs);
   const totalRegistry = sumValues(data.registry);
+  const experimentCard = metricCard("Experiments", "—");
+  experimentCard.id = "overview-experiments";
   // `validating` is where the recorder deliberately leaves a finished run:
   // promoting it to `completed` requires a real leakage report and a
   // bar-measured integrity summary. Without its own card these runs vanish
   // from the summary entirely, so a store holding 40 of them reads as
   // "0 completed, 0 needing attention" -- as though nothing had been run.
   elements.overview.replaceChildren(
-    metricCard("Runs", totalRuns),
+    experimentCard,
+    metricCard("Segment runs", totalRuns),
     metricCard("Awaiting validation", data.runs.validating || 0),
     metricCard("Completed", data.runs.completed || 0),
     metricCard("Validation attention", (data.runs.review_required || 0) + (data.runs.validation_failed || 0), true),

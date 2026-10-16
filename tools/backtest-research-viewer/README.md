@@ -38,6 +38,49 @@ node tools\backtest-research-viewer\server.mjs --db C:\local\research.sqlite3
 Open `http://127.0.0.1:4178`. `--port` may select another local port.
 `--host` accepts loopback values only.
 
+## Experiment-first review
+
+The primary explorer lists **controlled experiments**, not unrelated segment
+runs. A nested walk-forward experiment declares its parameter axes and candidate
+values, objective, fixed reference configuration and complete split plan.
+Opening it shows a fold overview, then aligned training/validation candidate
+comparisons, the validation selection rationale and the one frozen test result.
+Every linked segment opens the existing chart/trade dialog; closing it leaves
+the experiment in place.
+
+```powershell
+python scripts\run_nested_walk_forward.py `
+  --symbol QQQ --dev-start 2023-01-03 --dev-end 2023-12-29 `
+  --oos-start 2024-01-02 --oos-end 2024-06-28 `
+  --axis orb_minutes=strategy.orb_duration_minutes:5,15,30 `
+  --record-runs --experiment-title "ORB duration comparison"
+```
+
+Schema v11 adds `research_experiments` and explicit many-to-many
+`research_experiment_runs` membership. Each invocation has a distinct study ID;
+deduplicated segment runs may belong to multiple experiments. Membership is
+recorded during evaluation, before a final report exists. Interrupted studies,
+inconclusive folds, failed candidates and recording gaps remain visible.
+Finalized study definitions/results are immutable. The driver stays free of I/O.
+
+**Training is not a hidden performance shortlist:** it evaluates and checks all
+declared candidates. Validation uses the connected-plateau medoid and freezes
+the chosen setting before test. Experiment check outcomes and stored segment-run
+lifecycle states are distinct and labelled separately. A missing run validation
+report is shown as **Not validated**, never a reassuring green pass.
+
+`--record-test-only` retains the experiment's candidate comparison summaries but
+omits training/validation trade/equity drill-downs. Missing summaries, untested
+settings, reserved final holdout and display bounds are explicit; no partial
+fold set is presented as a stitched OOS result.
+
+Older runs have no experiment identity. They remain in **Individual segment
+runs & ungrouped history**, without guessing membership from dates, notes or
+parameter similarity. Schema v10 databases remain readable, with an explicit
+empty experiment view until migrated by a writer. Viewing never migrates or
+rewrites a database. Synthetic demo studies use `synthetic_demo/v1` and are
+visibly labelled as UI fixtures, not research evidence.
+
 ## Run detail
 
 Open a run alias in the explorer for a wide, performance-first dialog inspired

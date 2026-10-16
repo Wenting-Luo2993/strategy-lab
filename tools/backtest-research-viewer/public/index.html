@@ -15,7 +15,7 @@
       <div>
         <p class="eyebrow">LOCAL SQLITE · READ ONLY</p>
         <h1>Backtest Research</h1>
-        <p class="lede">Runs, validation evidence, registry records, and publication health from this device only.</p>
+        <p class="lede">Controlled experiments, their train → validation → test evidence, and individual run details.</p>
       </div>
       <button id="refresh" type="button">Refresh local data</button>
     </header>
@@ -29,12 +29,22 @@
       <div id="loading" class="loading">Loading local research data…</div>
       <div id="app" class="hidden">
         <section id="overview" class="overview" aria-label="Research overview"></section>
-        <research-analysis-workspace id="analysis-workspace" storage-key="local-research-analysis-v2"></research-analysis-workspace>
+        <section class="panel" aria-label="Experiment explorer">
+          <div class="panel-heading"><div><h2>Experiments</h2>
+            <p>One controlled question, all candidates and folds. Open an experiment to follow training → validation selection → frozen test.</p>
+          </div></div>
+          <div id="experiments"></div>
+          <div id="experiment-pagination" class="pagination"></div>
+        </section>
+        <section id="experiment-detail" class="panel hidden" aria-label="Selected experiment"></section>
+        <details class="panel" id="individual-runs">
+          <summary>Individual segment runs & ungrouped history</summary>
+          <p id="ungrouped-runs" class="chart-note"></p>
         <section class="panel">
           <div class="panel-heading">
             <div>
-              <h2>Run explorer</h2>
-              <p>Deterministic newest-first review with trust and publication states.</p>
+              <h2>Segment run explorer</h2>
+              <p>Low-level evaluations, including ungrouped older runs. Shared dates or notes do not establish experiment membership.</p>
             </div>
             <form id="run-filters" class="filters">
               <label>Search <input name="search" maxlength="100" placeholder="alias, id, or note"></label>
@@ -71,6 +81,8 @@
           <div id="runs"></div>
           <div id="run-pagination" class="pagination"></div>
         </section>
+        </details>
+        <research-analysis-workspace id="analysis-workspace" storage-key="local-research-analysis-v2"></research-analysis-workspace>
         <section class="panel">
           <div class="panel-heading">
             <div>

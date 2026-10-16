@@ -825,6 +825,7 @@ test("exposes finding evidence with recursive redaction and tolerates legacy pay
       sharpe_without_largest_session: 0.1,
       api_key: "[redacted]",
     });
+
     assert.equal("payloadJson" in finding, false);
     assert.equal("privateField" in finding, false);
     for (const code of ["LEGACY", "MALFORMED"]) {
@@ -833,6 +834,68 @@ test("exposes finding evidence with recursive redaction and tolerates legacy pay
       assert.equal(legacy.expected, null);
       assert.deepEqual(legacy.context, {});
     }
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("experiment endpoints preserve explicit membership and gracefully support v10 history", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const before = await rawRequest(fixture.origin, "/api/experiments");
+    assert.equal(before.status, 200);
+    assert.equal(before.json.available, false);
+    assert.equal(before.json.total, 0);
+    assert.ok(before.json.ungroupedRuns > 0);
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.exec(`
+      INSERT INTO schema_migrations VALUES (11, '2026-10-16');
+      CREATE TABLE research_experiments (
+        experiment_id TEXT PRIMARY KEY, title TEXT, state TEXT, definition_json TEXT,
+        result_json TEXT, created_at TEXT, updated_at TEXT
+      );
+      CREATE TABLE research_experiment_runs (
+        experiment_id TEXT, fold_index INTEGER, candidate_id TEXT, segment_role TEXT, run_id TEXT
+      );
+    `);
+    const insert = writer.prepare("INSERT INTO research_experiments VALUES (?, ?, ?, ?, ?, ?, ?)");
+    insert.run(
+      "study-1", "Controlled ORB comparison", "completed",
+      JSON.stringify({
+        symbol: "QQQ", axes: [{ name: "orb_minutes", values: [5, 15, 30] }],
+        plan: { folds: [{}] }, reference_configuration: { api_key: "do-not-leak" },
+      }),
+      JSON.stringify({ n_folds_completed: 1, recording_errors: [] }),
+      "2026-10-16", "2026-10-16",
+    );
+    insert.run("study-large", "Too many candidates for a complete preview", "running",
+      JSON.stringify({ candidates: Array.from({ length: 501 }, (_, id) => ({ id })) }),
+      null, "2026-10-15", "2026-10-15");
+    writer.prepare("INSERT INTO research_experiment_runs VALUES (?, ?, ?, ?, ?)").run(
+      "study-1", 0, "candidate-15", "test", "00000000-0000-7000-8000-000000000004",
+    );
+    writer.prepare("DELETE FROM validation_reports WHERE run_id = ?")
+      .run("00000000-0000-7000-8000-000000000004");
+    writer.close();
+    const list = await rawRequest(fixture.origin, "/api/experiments");
+    assert.equal(list.json.available, true);
+    assert.equal(list.json.items[0].linkedRuns, 1);
+    assert.equal(list.json.items[0].expectedFolds, 1);
+    assert.equal(list.json.ungroupedRuns, before.json.ungroupedRuns - 1);
+    assert.equal(list.json.items[1].payloadUnavailable, true);
+    assert.equal(list.json.items[1].expectedFolds, null);
+    const detail = await rawRequest(fixture.origin, "/api/experiments/study-1");
+    assert.equal(detail.status, 200);
+    assert.equal(detail.json.runs.items[0].displayAlias, "RUN-000004");
+    assert.equal(detail.json.runs.items[0].foldIndex, 0);
+    assert.equal(detail.json.runs.items[0].segmentRole, "test");
+    assert.equal(detail.json.definition.reference_configuration.api_key, "[redacted]");
+    const large = await rawRequest(fixture.origin, "/api/experiments/study-large");
+    assert.equal(large.json.payloadUnavailable, true);
+    assert.equal((await rawRequest(fixture.origin, "/api/experiments/missing")).status, 404);
+    assert.equal((await rawRequest(fixture.origin, "/api/experiments?pageSize=101")).status, 400);
+    const run = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-000000000004");
+    assert.ok(run.json.badges.some((item) => item.label === "Not validated"));
   } finally {
     await fixture.cleanupAll();
   }

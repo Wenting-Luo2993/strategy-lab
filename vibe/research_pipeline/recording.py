@@ -543,6 +543,10 @@ class BacktestRunSink:
     def code_dirty(self) -> bool:
         return self._code_dirty
 
+    @property
+    def store(self) -> Any:
+        return self._store
+
     def record(
         self,
         result: Any,
