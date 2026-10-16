@@ -54,6 +54,7 @@ const STATIC_FILES = new Map([
   ["/", [join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8"]],
   ["/index.html", [join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8"]],
   ["/app.mjs", [join(PUBLIC_DIR, "app.mjs"), "text/javascript; charset=utf-8"]],
+  ["/run-charts.mjs", [join(PUBLIC_DIR, "run-charts.mjs"), "text/javascript; charset=utf-8"]],
   ["/styles.css", [join(PUBLIC_DIR, "styles.css"), "text/css; charset=utf-8"]],
   [
     "/research-analysis-workspace.mjs",
@@ -725,7 +726,11 @@ function getRunEquity(database, runId) {
     FROM run_equity_points WHERE run_id = ? ORDER BY sequence
   `).all(runId);
 
-  let peak = null;
+  const evidence = database.prepare(
+    "SELECT payload_json FROM run_evidence WHERE run_id = ? ORDER BY id DESC LIMIT 1",
+  ).get(runId);
+  const startingCapital = numberOrNull(safeJsonParse(evidence?.payload_json, {}).starting_equity);
+  let peak = startingCapital > 0 ? startingCapital : null;
   let maxDrawdown = 0;
   let maxDrawdownAt = null;
   const points = [];
@@ -753,9 +758,11 @@ function getRunEquity(database, runId) {
     }
   }
 
-  let sessionPeak = null;
+  let sessionPeak = startingCapital > 0 ? startingCapital : null;
   let maxSessionDrawdown = 0;
   let maxSessionDrawdownAt = null;
+  let previousClose = startingCapital;
+  const sessionReturns = [];
   for (const close of sessionCloses.values()) {
     sessionPeak = sessionPeak === null ? close.equity : Math.max(sessionPeak, close.equity);
     const drawdown = sessionPeak > 0 ? (close.equity - sessionPeak) / sessionPeak : 0;
@@ -763,6 +770,11 @@ function getRunEquity(database, runId) {
       maxSessionDrawdown = drawdown;
       maxSessionDrawdownAt = close.observedAt;
     }
+    sessionReturns.push({
+      observedAt: close.observedAt,
+      return: previousClose > 0 ? (close.equity - previousClose) / previousClose : null,
+    });
+    previousClose = close.equity;
   }
 
   return {
@@ -776,6 +788,8 @@ function getRunEquity(database, runId) {
     sessionCount: sessionCloses.size,
     maxSessionDrawdown,
     maxSessionDrawdownAt,
+    startingCapital,
+    sessionReturns,
     startingEquity: rows.length ? Number(rows[0].equity) : null,
     endingEquity: rows.length ? Number(rows[rows.length - 1].equity) : null,
     points,

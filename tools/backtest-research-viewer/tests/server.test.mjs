@@ -821,12 +821,85 @@ test("serves the equity curve with drawdown derived from the full series", async
     assert.equal(response.json.downsampled, false);
     assert.equal(response.json.startingEquity, 100000);
     assert.equal(response.json.endingEquity, 102000);
+    assert.equal(response.json.startingCapital, 100000);
+    assert.equal(response.json.sessionReturns.length, 4);
+    assert.equal(response.json.sessionReturns[0].return, 0);
+    assert.ok(Math.abs(response.json.sessionReturns[1].return + 0.05) < 1e-9);
     // Peak 100000 -> trough 95000 is a 5% drawdown.
     assert.ok(Math.abs(response.json.maxDrawdown + 0.05) < 1e-9);
     assert.equal(response.json.maxDrawdownAt, "2026-01-02T00:00:00+00:00");
 
     const missing = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-00000000009f/equity");
     assert.equal(missing.status, 404);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("session returns use full-curve closes, even when a close is skipped by the display stride", async () => {
+  const fixture = await startFixtureServer();
+  const runId = "00000000-0000-7000-8000-000000000004";
+  try {
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.prepare("DELETE FROM run_equity_points WHERE run_id = ?").run(runId);
+    const insert = writer.prepare(`
+      INSERT INTO run_equity_points (run_id, sequence, observed_at, equity, recorded_at)
+      VALUES (?, ?, ?, ?, '2026-01-01')
+    `);
+    writer.exec("BEGIN");
+    for (let index = 0; index < 5001; index += 1) {
+      insert.run(runId, index,
+        index < 2500 ? "2026-01-02T16:00:00-05:00" : "2026-01-05T16:00:00-05:00",
+        index === 2499 ? 90000 : 100000);
+    }
+    writer.exec("COMMIT");
+    writer.close();
+    const response = await rawRequest(fixture.origin, `/api/runs/${runId}/equity`);
+    assert.equal(response.status, 200);
+    assert.equal(response.json.downsampled, true);
+    assert.equal(response.json.points.some((point) => point.sequence === 2499), false);
+    assert.equal(response.json.sessionReturns.length, 2);
+    assert.equal(response.json.sessionReturns[0].return, -0.1);
+    assert.ok(Math.abs(response.json.sessionReturns[1].return - 1 / 9) < 1e-9);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("missing starting capital is explicit rather than inferred from the first equity mark", async () => {
+  const fixture = await startFixtureServer();
+  const runId = "00000000-0000-7000-8000-000000000004";
+  try {
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.prepare("UPDATE run_evidence SET payload_json = '{}' WHERE run_id = ?").run(runId);
+    writer.close();
+    const response = await rawRequest(fixture.origin, `/api/runs/${runId}/equity`);
+    assert.equal(response.status, 200);
+    assert.equal(response.json.startingCapital, null);
+    assert.equal(response.json.sessionReturns[0].return, null);
+    assert.equal(response.json.startingEquity, 100000);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("first session return uses recorded capital, not the first equity observation", async () => {
+  const fixture = await startFixtureServer();
+  const runId = "00000000-0000-7000-8000-000000000004";
+  try {
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.prepare("UPDATE run_evidence SET payload_json = ? WHERE run_id = ?").run(
+      JSON.stringify({ starting_equity: 125000 }), runId,
+    );
+    writer.close();
+    const response = await rawRequest(fixture.origin, `/api/runs/${runId}/equity`);
+    assert.equal(response.status, 200);
+    assert.equal(response.json.startingCapital, 125000);
+    assert.equal(response.json.startingEquity, 100000);
+    assert.equal(response.json.sessionReturns[0].return, -0.2);
+    assert.equal(response.json.points[0].drawdown, -0.2);
+    assert.equal(response.json.maxDrawdown, -0.24);
+    assert.equal(response.json.maxSessionDrawdown, -0.24);
   } finally {
     await fixture.cleanupAll();
   }
@@ -1047,6 +1120,13 @@ test("static UI has strict security headers and local-only copy", async () => {
     );
     assert.equal(workspaceStyles.status, 200);
     assert.match(workspaceStyles.body, /\.workspace/);
+    const charts = await rawRequest(fixture.origin, "/run-charts.mjs");
+    assert.equal(charts.status, 200);
+    assert.match(charts.headers["content-type"], /text\/javascript/);
+    assert.match(charts.body, /export function mountPerformanceCharts/);
+    const app = await rawRequest(fixture.origin, "/app.mjs");
+    assert.equal(app.status, 200);
+    assert.match(app.body, /import \{ mountPerformanceCharts \} from "\.\/run-charts\.mjs"/);
     assert.equal((await rawRequest(fixture.origin, "/public/../server.mjs")).status, 404);
   } finally {
     await fixture.cleanupAll();

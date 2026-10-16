@@ -1,7 +1,11 @@
+import { mountPerformanceCharts } from "./run-charts.mjs";
+
 const state = {
   runs: { page: 1, pageSize: 25 },
   registry: { page: 1, pageSize: 25 },
 };
+let detailRequest = 0;
+let disposeRunCharts;
 
 const elements = Object.fromEntries(
   [
@@ -10,6 +14,11 @@ const elements = Object.fromEntries(
   ]
     .map((id) => [id, document.getElementById(id)]),
 );
+elements.detail.addEventListener("close", () => {
+  detailRequest += 1;
+  disposeRunCharts?.();
+  disposeRunCharts = undefined;
+});
 
 document.getElementById("refresh").addEventListener("click", () => loadAll());
 document.getElementById("run-filters").addEventListener("submit", (event) => {
@@ -220,20 +229,74 @@ function renderPublications(result) {
 
 async function showRun(runId) {
   openDetailLoading();
+  const request = detailRequest;
   try {
     const detail = await api(`/api/runs/${encodeURIComponent(runId)}`);
+    if (request !== detailRequest || !elements.detail.open) return;
     const run = detail.run;
+    elements.detail.classList.add("run-dialog");
     elements["detail-content"].innerHTML = `
       <p class="eyebrow">LOCAL RUN · ${escapeHtml(run.state)}</p>
       <h2>${escapeHtml(run.displayAlias)}</h2>
-      <p class="mono">${escapeHtml(run.runId)}</p>
+      <p class="run-subtitle">${escapeHtml(run.strategyId)} · ${escapeHtml(detail.evidence?.first_session || "Unknown start")} to ${escapeHtml(detail.evidence?.last_session || "unknown end")}</p>
       <div class="badge-list">${badges(detail.badges)}</div>
+      <p class="sample-notice">${escapeHtml(sampleExplanation(run.segmentRole))}</p>
+      ${runHeadline(detail)}
+      <div class="run-tabs" role="tablist" aria-label="Run detail">
+        ${[
+          ["performance", "Performance"], ["trades", "Trades"],
+          ["configuration", "Configuration"], ["validation", "Validation"],
+          ["audit", "Provenance & lifecycle"],
+        ].map(([id, label], index) => `<button role="tab" id="tab-${id}" aria-controls="panel-${id}" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}" data-run-tab="${id}">${label}</button>`).join("")}
+      </div>
+      <section role="tabpanel" id="panel-performance" aria-labelledby="tab-performance">
+        <div id="run-equity-charts">${detail.localArtifacts?.equity?.available ? loadingState() : emptyState(detail.localArtifacts?.equity?.reason || "Equity observations were not retained. Summary statistics remain available below.")}</div>
+        <div id="run-risk-summary"></div>
+        <section class="detail-section">
+          <h3>Recorded statistics</h3>
+          <p class="chart-note">Stored metrics, not recalculated from the displayed subset. R = initial risk per trade. Rates below are fractions converted to percentages.</p>
+          ${recordedMetrics(detail.metrics)}
+        </section>
+        <p class="empty">Benchmark, exposure, portfolio margin and turnover series are not recorded for this run. No substitute or zero-valued series is shown.</p>
+      </section>
+      <section role="tabpanel" id="panel-trades" aria-labelledby="tab-trades" hidden>
+        <div id="run-trades">${detail.localArtifacts?.trades?.available ? loadingState() : emptyState(detail.localArtifacts?.trades?.reason || "Trade rows were not retained. Counts and checksums are available in Provenance.")}</div>
+      </section>
+      <section role="tabpanel" id="panel-configuration" aria-labelledby="tab-configuration" hidden>
+        ${detailGrid("Parameters", detail.identity.parameters || {})}
+        ${detailGrid("Execution and data", {
+          "Strategy": run.strategyId,
+          "Methodology": run.methodologyVersion,
+          "Sample role": run.segmentRole || "unlabelled",
+          "Dataset": detail.identity.data_snapshot_id,
+          "Split manifest": detail.identity.split_manifest_hash,
+          "Feature set": detail.identity.feature_set_version,
+          "Execution model": detail.identity.execution_model_version,
+          "Metric calculation": detail.identity.metric_calculation_version,
+          "Notes": run.notes,
+        })}
+      </section>
+      <section role="tabpanel" id="panel-validation" aria-labelledby="tab-validation" hidden>
+        ${detailGrid("Validation", {
+          "Profile / scope": detail.validation ? `${detail.validation.profileName} / ${detail.validation.scope}` : "No report",
+          "Target state": detail.validation?.targetState,
+          "Leakage passed": detail.validation ? String(detail.validation.leakagePassed) : "—",
+          "Registry hash at execution": detail.validation?.registryHashAtExecution,
+          "Current registry hash": detail.validation?.currentRegistryHash,
+          "Finding counts": formatJson(detail.findingCounts),
+        })}
+        ${cards("Validation findings", detail.findings, (finding) => `
+          <article class="finding ${escapeAttribute(finding.severity)}"><strong>${escapeHtml(finding.code)} · ${escapeHtml(finding.severity)}</strong><p>${escapeHtml(finding.message)}</p><small>${escapeHtml(finding.category)}${finding.metricKey ? ` · ${escapeHtml(finding.metricKey)}` : ""}</small></article>
+        `, "No validation findings recorded. This alone is not proof of validation; check the report above.")}
+      </section>
+      <section role="tabpanel" id="panel-audit" aria-labelledby="tab-audit" hidden>
       ${detailGrid("Run identity", {
+        "Run ID": run.runId,
         "Strategy": run.strategyId,
         "Methodology": run.methodologyVersion,
         "Sample role": run.segmentRole
           ? run.segmentRole
-          : "unlabelled (recorded before roles were tracked)",
+          : "unlabelled (sample role was not persisted)",
         "Lineage": run.lineageId,
         "Code commit": run.codeCommit,
         "Origin device": run.originDeviceId,
@@ -259,20 +322,6 @@ async function showRun(runId) {
         "Net P&L": detail.evidence?.net_pnl,
         "Total costs": detail.evidence?.total_costs,
       })}
-      ${detailGrid("Validation", {
-        "Profile / scope": detail.validation ? `${detail.validation.profileName} / ${detail.validation.scope}` : "No report",
-        "Target state": detail.validation?.targetState,
-        "Leakage passed": detail.validation ? String(detail.validation.leakagePassed) : "—",
-        "Registry hash at execution": detail.validation?.registryHashAtExecution,
-        "Current registry hash": detail.validation?.currentRegistryHash,
-        "Finding counts": formatJson(detail.findingCounts),
-      })}
-      ${cards("Metrics", detail.metrics, (metric) => `
-        <article class="detail-card"><span>${escapeHtml(metric.key)}</span><strong>${escapeHtml(formatValue(metric.value))}</strong><small>calculation v${metric.calculationVersion}</small></article>
-      `, "No metrics stored.")}
-      ${cards("Validation findings", detail.findings, (finding) => `
-        <article class="finding ${escapeAttribute(finding.severity)}"><strong>${escapeHtml(finding.code)} · ${escapeHtml(finding.severity)}</strong><p>${escapeHtml(finding.message)}</p><small>${escapeHtml(finding.category)}${finding.metricKey ? ` · ${escapeHtml(finding.metricKey)}` : ""}</small></article>
-      `, "No validation findings.")}
       ${cards("Lifecycle", detail.transitions, (transition) => `
         <article class="detail-card"><strong>${escapeHtml(transition.fromState || "created")} → ${escapeHtml(transition.toState)}</strong><p>${escapeHtml(transition.reason || "—")}</p><small>${formatDate(transition.occurredAt)}</small></article>
       `, "No transitions stored.")}
@@ -286,43 +335,122 @@ async function showRun(runId) {
         "Published": formatDate(detail.publication.publishedAt),
       })}
       ${localArtifactSection(detail.localArtifacts)}
-      <div id="run-detail-rows"></div>
+      </section>
     `;
-    await renderRetainedRows(runId, detail.localArtifacts);
+    bindRunTabs();
+    await renderRetainedRows(runId, detail, request);
   } catch (error) {
-    elements["detail-content"].innerHTML = errorState(error);
+    if (request === detailRequest && elements.detail.open) elements["detail-content"].innerHTML = errorState(error);
   }
+}
+
+function sampleExplanation(role) {
+  if (role === "test") return "Sample role: test (held-out window). Validation and provenance still matter; this label is not a profitability guarantee.";
+  if (role === "train") return "IN-SAMPLE · Training data used to compare parameters. These results are not out-of-sample evidence.";
+  if (role === "validation") return "IN-SAMPLE · Validation data used for candidate selection or acceptance. Inspect the held-out test runs separately.";
+  return "UNKNOWN SAMPLE ROLE · This run has no persisted role. It may predate role tracking or come from an exploratory caller. Do not treat it as held-out evidence.";
+}
+
+function runHeadline(detail) {
+  const metrics = Object.fromEntries(detail.metrics.items.map((metric) => [metric.key, metric.value]));
+  const evidence = detail.evidence || {};
+  const totalReturn = evidence.starting_equity > 0 && Number.isFinite(evidence.ending_equity)
+    ? (evidence.ending_equity - evidence.starting_equity) / evidence.starting_equity : metrics.total_return;
+  const items = [
+    ["Ending equity", formatMoney(evidence.ending_equity)],
+    ["Net profit", formatMoney(evidence.net_pnl), evidence.net_pnl],
+    ["Return", formatPercent(totalReturn), totalReturn],
+    ["Total costs", formatMoney(evidence.total_costs)],
+    ["Trades", formatValue(evidence.trade_count ?? metrics.n_trades)],
+    ["Win rate", formatPercent(metrics.win_rate)],
+    ["Expectancy", formatR(metrics.expectancy_r), metrics.expectancy_r],
+    ["Sharpe ratio", Number.isFinite(metrics.sharpe_ratio) ? metrics.sharpe_ratio.toFixed(3) : "—"],
+  ];
+  return `<dl class="run-headline">${items.map(([label, value, sign]) => `
+    <div><dt>${escapeHtml(label)}</dt><dd class="${signClass(sign)}">${escapeHtml(value)}</dd></div>
+  `).join("")}</dl>`;
+}
+
+function recordedMetrics(metrics) {
+  const percentages = new Set(["win_rate", "total_return", "annualized_return", "max_drawdown"]);
+  const money = new Set(["total_pnl", "gross_pnl", "net_pnl", "total_costs"]);
+  const rows = metrics.items.map((metric) => `
+    <tr><th scope="row">${escapeHtml(humanize(metric.key))}</th>
+      <td>${escapeHtml(percentages.has(metric.key) ? formatPercent(metric.value)
+        : metric.key === "top10_pct" ? `${Number(metric.value).toFixed(2)}%`
+          : money.has(metric.key) ? formatMoney(metric.value)
+            : metric.key.endsWith("_r") ? formatR(metric.value) : formatValue(metric.value))}</td>
+      <td>v${escapeHtml(metric.calculationVersion)}</td></tr>
+  `).join("");
+  return rows
+    ? `${table(["Metric", "Value", "Calculation"], rows)}${metrics.truncated ? emptyState(`Showing ${metrics.items.length} of ${metrics.total} recorded metrics.`) : ""}`
+    : emptyState("No metrics stored.");
+}
+
+function bindRunTabs() {
+  const tabs = [...elements["detail-content"].querySelectorAll("[data-run-tab]")];
+  function activate(tab) {
+    for (const button of tabs) {
+      const active = button === tab;
+      button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
+      document.getElementById(button.getAttribute("aria-controls")).hidden = !active;
+    }
+  }
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => activate(tab));
+    tab.addEventListener("keydown", (event) => {
+      let target;
+      if (event.key === "ArrowRight") target = tabs[(index + 1) % tabs.length];
+      if (event.key === "ArrowLeft") target = tabs[(index + tabs.length - 1) % tabs.length];
+      if (event.key === "Home") target = tabs[0];
+      if (event.key === "End") target = tabs.at(-1);
+      if (target) {
+        event.preventDefault();
+        activate(target);
+        target.focus();
+      }
+    });
+  });
 }
 
 // Fetched after the summary is painted: the curve can be thousands of points,
 // and a slow or failed detail fetch must not blank the run summary.
-async function renderRetainedRows(runId, localArtifacts) {
-  const host = document.getElementById("run-detail-rows");
-  if (!host) return;
-  const wantsEquity = Boolean(localArtifacts?.equity?.available);
-  const wantsTrades = Boolean(localArtifacts?.trades?.available);
-  if (!wantsEquity && !wantsTrades) return;
-
-  host.innerHTML = `<p class="empty">Loading retained rows…</p>`;
-  try {
-    const encoded = encodeURIComponent(runId);
-    const [equity, trades] = await Promise.all([
-      wantsEquity ? api(`/api/runs/${encoded}/equity`) : Promise.resolve(null),
-      wantsTrades ? api(`/api/runs/${encoded}/trades`) : Promise.resolve(null),
-    ]);
-    host.innerHTML = `
-      ${wantsEquity ? equitySection(equity) : ""}
-      ${wantsTrades ? tradeDistributionSection(trades) : ""}
-    `;
-  } catch (error) {
-    host.innerHTML = errorState(error);
-  }
+async function renderRetainedRows(runId, detail, request) {
+  const encoded = encodeURIComponent(runId);
+  await Promise.all(["equity", "trades"].map(async (kind) => {
+    if (!detail.localArtifacts?.[kind]?.available) return;
+    const host = document.getElementById(kind === "equity" ? "run-equity-charts" : "run-trades");
+    try {
+      const payload = await api(`/api/runs/${encoded}/${kind}`);
+      if (request !== detailRequest || !host?.isConnected) return;
+      if (kind === "equity") {
+        disposeRunCharts = mountPerformanceCharts(host, payload, payload.startingCapital);
+        document.getElementById("run-risk-summary").innerHTML = detailGrid("Risk & curve coverage", {
+          "Starting capital (evidence)": formatMoney(payload.startingCapital),
+          "First retained equity mark": formatMoney(payload.startingEquity),
+          "Max drawdown (intraday)": formatPercent(payload.maxDrawdown),
+          "Intraday trough at": formatMarketTime(payload.maxDrawdownAt),
+          "Max drawdown (session close)": formatPercent(payload.maxSessionDrawdown),
+          "Worst close at": formatMarketTime(payload.maxSessionDrawdownAt),
+          "Sessions retained": payload.sessionCount,
+        });
+      } else {
+        host.innerHTML = tradeDistributionSection(payload);
+        bindTradeTable(host, payload);
+      }
+    } catch (error) {
+      if (request === detailRequest && host?.isConnected) host.innerHTML = errorState(error);
+    }
+  }));
 }
 
 async function showRegistry(recordType, recordId) {
   openDetailLoading();
+  const request = detailRequest;
   try {
     const detail = await api(`/api/registry/${encodeURIComponent(recordType)}/${encodeURIComponent(recordId)}`);
+    if (request !== detailRequest || !elements.detail.open) return;
     const record = detail.record;
     elements["detail-content"].innerHTML = `
       <p class="eyebrow">LOCAL REGISTRY · ${escapeHtml(record.recordType)}</p>
@@ -360,7 +488,7 @@ async function showRegistry(recordType, recordId) {
       button.addEventListener("click", () => showArtifactPreview(button.dataset.artifactEndpoint));
     });
   } catch (error) {
-    elements["detail-content"].innerHTML = errorState(error);
+    if (request === detailRequest && elements.detail.open) elements["detail-content"].innerHTML = errorState(error);
   }
 }
 
@@ -533,68 +661,12 @@ function localArtifactSection(localArtifacts) {
   `;
 }
 
-// Inline SVG keeps the viewer dependency-light: no chart library, no network
-// fetch for assets, and nothing to keep in sync with a package manifest.
-function polylinePath(values, width, height, minimum, maximum) {
-  if (!values.length) return "";
-  const span = maximum - minimum;
-  const step = values.length > 1 ? width / (values.length - 1) : 0;
-  return values
-    .map((value, index) => {
-      const x = (index * step).toFixed(2);
-      const y = (span > 0 ? height - ((value - minimum) / span) * height : height / 2).toFixed(2);
-      return `${x},${y}`;
-    })
-    .join(" ");
-}
-
-function equitySection(equity) {
-  if (!equity || !equity.points?.length) {
-    return `<section class="detail-section"><h3>Equity curve</h3><p class="empty">No retained equity points.</p></section>`;
-  }
-  const values = equity.points.map((point) => point.equity);
-  const drawdowns = equity.points.map((point) => point.drawdown);
-  const minimum = Math.min(...values);
-  const maximum = Math.max(...values);
-  const totalReturn = equity.startingEquity > 0
-    ? (equity.endingEquity - equity.startingEquity) / equity.startingEquity
-    : null;
-  const sampling = equity.downsampled
-    ? `Showing ${equity.returned.toLocaleString()} of ${equity.total.toLocaleString()} points (every ${equity.stride}). Drawdown is computed across all ${equity.total.toLocaleString()} points.`
-    : `Showing all ${equity.total.toLocaleString()} points.`;
-  return `
-    <section class="detail-section">
-      <h3>Equity curve</h3>
-      ${statGrid({
-        "Starting equity": formatMoney(equity.startingEquity),
-        "Ending equity": formatMoney(equity.endingEquity),
-        "Total return": totalReturn === null ? "—" : formatPercent(totalReturn),
-        "Sessions": equity.sessionCount?.toLocaleString(),
-        "Max drawdown (daily close)": formatPercent(equity.maxSessionDrawdown),
-        "Worst close at": formatMarketTime(equity.maxSessionDrawdownAt),
-        "Max drawdown (intraday)": formatPercent(equity.maxDrawdown),
-        "Intraday trough at": formatMarketTime(equity.maxDrawdownAt),
-      })}
-      <svg class="chart" viewBox="0 0 720 200" preserveAspectRatio="none" role="img" aria-label="Equity curve">
-        <polyline fill="none" stroke="#4c8dff" stroke-width="1.5"
-          points="${polylinePath(values, 720, 200, minimum, maximum)}" />
-      </svg>
-      <h4>Drawdown (intraday, mark-to-market)</h4>
-      <svg class="chart" viewBox="0 0 720 120" preserveAspectRatio="none" role="img" aria-label="Drawdown">
-        <polyline fill="none" stroke="#e06c75" stroke-width="1.5"
-          points="${polylinePath(drawdowns, 720, 120, Math.min(...drawdowns), 0)}" />
-      </svg>
-      <small>${escapeHtml(sampling)}</small>
-    </section>
-  `;
-}
-
 function tradeDistributionSection(payload) {
   const trades = payload?.trades || [];
   if (!trades.length) {
     return `<section class="detail-section"><h3>Trades</h3><p class="empty">No retained trade rows.</p></section>`;
   }
-  const pnls = trades.map((trade) => Number(trade.pnl ?? 0));
+  const pnls = trades.map((trade) => trade.pnl).filter(Number.isFinite);
   const wins = pnls.filter((pnl) => pnl > 0);
   const losses = pnls.filter((pnl) => pnl < 0);
   const grossWin = wins.reduce((sum, pnl) => sum + pnl, 0);
@@ -603,8 +675,8 @@ function tradeDistributionSection(payload) {
   // Fixed bucket count over the observed range; a trade exactly at the maximum
   // belongs in the last bucket rather than one past the end.
   const bucketCount = 20;
-  const minimum = Math.min(...pnls);
-  const maximum = Math.max(...pnls);
+  const minimum = pnls.length ? Math.min(...pnls) : 0;
+  const maximum = pnls.length ? Math.max(...pnls) : 0;
   const width = (maximum - minimum) || 1;
   const buckets = new Array(bucketCount).fill(0);
   for (const pnl of pnls) {
@@ -617,49 +689,78 @@ function tradeDistributionSection(payload) {
     const height = (count / tallest) * 140;
     const bucketFloor = minimum + (index / bucketCount) * width;
     const colour = bucketFloor < 0 ? "#e06c75" : "#56b16a";
-    return `<rect x="${(index * barWidth).toFixed(2)}" y="${(140 - height).toFixed(2)}" width="${(barWidth - 1).toFixed(2)}" height="${height.toFixed(2)}" fill="${colour}" />`;
+    return `<rect x="${(index * barWidth).toFixed(2)}" y="${(140 - height).toFixed(2)}" width="${(barWidth - 1).toFixed(2)}" height="${height.toFixed(2)}" fill="${colour}"><title>${escapeHtml(`${formatMoney(bucketFloor)}: ${count} trades`)}</title></rect>`;
   }).join("");
-
-  const rows = trades.slice(0, 200).map((trade) => `
-    <tr>
-      <td>${escapeHtml(trade.sequence)}</td>
-      <td>${escapeHtml(trade.symbol)}</td>
-      <td>${escapeHtml(trade.side)}</td>
-      <td>${escapeHtml(formatValue(trade.quantity))}</td>
-      <td>${escapeHtml(formatValue(trade.entryPrice))}</td>
-      <td>${escapeHtml(formatValue(trade.exitPrice))}</td>
-      <td class="${Number(trade.pnl) < 0 ? "negative" : "positive"}">${escapeHtml(formatMoney(trade.pnl))}</td>
-      <td>${escapeHtml(trade.exitReason || "—")}</td>
-      <td>${escapeHtml(formatMarketTime(trade.entryTime))}</td>
-    </tr>
-  `).join("");
 
   return `
     <section class="detail-section">
       <h3>Trades</h3>
-      ${statGrid({
-        "Trades": payload.total.toLocaleString(),
+      <p class="chart-note">Statistics and distribution use ${pnls.length.toLocaleString()} realized-P&amp;L rows from ${trades.length.toLocaleString()} loaded / ${payload.total.toLocaleString()} retained trades.${payload.truncated ? " This is a capped subset, not full-run statistics; use recorded statistics on Performance for the run totals." : ""} Missing P&amp;L is excluded, not counted as breakeven.</p>
+      ${pnls.length ? statGrid({
+        "Loaded trades": trades.length.toLocaleString(),
         "Win rate": formatPercent(wins.length / pnls.length),
         "Wins / losses": `${wins.length} / ${losses.length}`,
+        "Breakeven": pnls.length - wins.length - losses.length,
         "Average win": wins.length ? formatMoney(grossWin / wins.length) : "—",
         "Average loss": losses.length ? formatMoney(-grossLoss / losses.length) : "—",
-        "Profit factor": grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : "—",
+        "Profit factor": grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : grossWin > 0 ? "No losing trades" : "—",
         "Net P&L": formatMoney(pnls.reduce((sum, pnl) => sum + pnl, 0)),
-      })}
-      <h4>P&amp;L distribution</h4>
+      }) : emptyState("Retained trades have no realized P&L. Win/loss statistics and distribution are unavailable; trade rows remain inspectable below.")}
+      ${pnls.length ? `<h4>P&amp;L distribution</h4>
       <svg class="chart" viewBox="0 0 720 140" preserveAspectRatio="none" role="img" aria-label="Trade P&amp;L distribution">${bars}</svg>
-      <small>${escapeHtml(`${formatMoney(minimum)} to ${formatMoney(maximum)} across ${bucketCount} buckets.`)}</small>
-      ${table(
-        ["#", "Symbol", "Side", "Qty", "Entry", "Exit", "P&L", "Reason", "Entered"],
-        rows,
-      )}
-      <small>${escapeHtml(
-        payload.truncated || trades.length > 200
-          ? `Showing ${Math.min(200, trades.length)} of ${payload.total.toLocaleString()} trades.`
-          : `Showing all ${payload.total.toLocaleString()} trades.`,
-      )}</small>
+      <small>${escapeHtml(`${formatMoney(minimum)} to ${formatMoney(maximum)} across ${bucketCount} buckets.`)}</small>` : ""}
+      <form class="trade-filters">
+        <label>Symbol / exit reason<input name="search" type="search" placeholder="Filter loaded trades"></label>
+        <label>Outcome<select name="outcome"><option value="">All</option><option value="win">Winning</option><option value="loss">Losing</option><option value="flat">Breakeven</option><option value="unknown">Missing P&amp;L</option></select></label>
+      </form>
+      <div class="trade-ledger"></div>
+      <div class="pagination trade-pagination"></div>
     </section>
   `;
+}
+
+function bindTradeTable(host, payload) {
+  const form = host.querySelector(".trade-filters");
+  if (!form) return;
+  let page = 1;
+  const pageSize = 50;
+  function render() {
+    const search = form.elements.search.value.trim().toLowerCase();
+    const outcome = form.elements.outcome.value;
+    const filtered = payload.trades.filter((trade) => {
+      if (!`${trade.symbol} ${trade.exitReason || ""}`.toLowerCase().includes(search)) return false;
+      if (outcome === "unknown") return !Number.isFinite(trade.pnl);
+      if (outcome && !Number.isFinite(trade.pnl)) return false;
+      return !outcome || (outcome === "win" ? trade.pnl > 0 : outcome === "loss" ? trade.pnl < 0 : trade.pnl === 0);
+    });
+    const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+    page = Math.min(page, pageCount);
+    const rows = filtered.slice((page - 1) * pageSize, page * pageSize).map((trade) => `
+      <tr>
+        <td>${escapeHtml(trade.sequence)}</td><td>${escapeHtml(trade.symbol)}</td><td>${escapeHtml(trade.side)}</td>
+        <td>${escapeHtml(formatValue(trade.quantity))}</td>
+        <td>${escapeHtml(formatMoney(trade.entryPrice))}</td><td>${escapeHtml(formatMoney(trade.exitPrice))}</td>
+        <td class="${signClass(trade.pnl)}">${escapeHtml(formatMoney(trade.pnl))}</td>
+        <td>${escapeHtml(trade.exitReason || "—")}</td>
+        <td>${escapeHtml(formatMarketTime(trade.entryTime))}</td><td>${escapeHtml(formatMarketTime(trade.exitTime))}</td>
+      </tr>
+    `).join("");
+    host.querySelector(".trade-ledger").innerHTML = rows
+      ? table(["#", "Symbol", "Side", "Qty", "Entry", "Exit", "P&L", "Reason", "Entered", "Exited"], rows)
+      : emptyState("No loaded trades match these filters.");
+    host.querySelector(".trade-pagination").innerHTML = `
+      <button data-trade-page="-1" ${page === 1 ? "disabled" : ""}>Previous</button>
+      <span>Page ${page} / ${pageCount} · ${filtered.length.toLocaleString()} matching loaded trades</span>
+      <button data-trade-page="1" ${page === pageCount ? "disabled" : ""}>Next</button>
+    `;
+    host.querySelectorAll("[data-trade-page]").forEach((button) => button.addEventListener("click", () => {
+      page += Number(button.dataset.tradePage);
+      render();
+    }));
+  }
+  form.addEventListener("submit", (event) => event.preventDefault());
+  form.addEventListener("input", () => { page = 1; render(); });
+  render();
 }
 
 function formatMoney(value) {
@@ -813,8 +914,12 @@ function publicationTone(value) {
 }
 
 function openDetailLoading() {
+  detailRequest += 1;
+  disposeRunCharts?.();
+  disposeRunCharts = undefined;
+  elements.detail.classList.remove("run-dialog");
   elements["detail-content"].innerHTML = loadingState();
-  elements.detail.showModal();
+  if (!elements.detail.open) elements.detail.showModal();
 }
 
 function showLoading(loading) {

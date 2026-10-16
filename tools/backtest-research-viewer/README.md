@@ -1,6 +1,6 @@
 # Local Backtest Research Viewer
 
-Dependency-light, local-only inspection for the schema v9 research SQLite
+Dependency-light, local-only inspection for the schema v10+ research SQLite
 database. The server uses Node's built-in `node:sqlite`; the browser receives
 only allowlisted JSON views and static HTML/CSS/MJS.
 
@@ -37,6 +37,46 @@ node tools\backtest-research-viewer\server.mjs --db C:\local\research.sqlite3
 
 Open `http://127.0.0.1:4178`. `--port` may select another local port.
 `--host` accepts loopback values only.
+
+## Run detail
+
+Open a run alias in the explorer for a wide, performance-first dialog inspired
+by the supplied QuantConnect reference:
+
+- Headline equity, net profit, return, total costs, trade count, win rate,
+  expectancy in R, and Sharpe. Missing values stay unavailable, not zero.
+- Performance: equity/return toggle, 1m/3m/1y/all windows, timestamp/value
+  inspection with pointer or keyboard-accessible observation sliders,
+  intraday drawdown, session-return bars, and recorded statistics with their
+  calculation versions.
+- Trades: loaded-row P&L distribution and statistics, symbol/exit-reason and
+  outcome filters, and a paginated ledger with entry/exit timestamps in their
+  recorded exchange offsets. Filters operate on the loaded rows; the server's
+  cap and any incomplete coverage are disclosed.
+- Configuration, Validation, and Provenance & lifecycle keep parameters,
+  findings, identities, checksums, retention, transitions, and publication
+  status available without burying the charts. Tabs support arrow/Home/End
+  keyboard navigation.
+
+The role warning remains above every tab. An unlabelled run is **not** inferred
+to be a test run, and a test role does not imply validation has completed.
+No records are quarantined, relabelled, or deleted by opening this dialog.
+
+Equity is a line of retained observations, not fabricated OHLC candles. X
+positions reflect elapsed time, not observation index. Return uses recorded
+starting capital rather than the first returned point and is not rebased when
+zooming. Session returns are computed from the last full-curve observation of
+each recorded session date, before display downsampling; the first session
+uses recorded starting capital. If capital is unavailable that first return
+and the cumulative-return chart remain unavailable. Intraday drawdown also
+keeps its full-run peak when zooming, including starting capital in the peak
+when available so an initial loss cannot disappear. Full-curve risk extrema are shown
+separately because display downsampling can omit a trough.
+
+Benchmark, exposure, margin, turnover, PSR, and capacity are not invented from
+unrelated metrics. Missing trade/equity rows have explicit availability
+messages; independent fetch errors do not blank the run summary or the other
+retained-row panel.
 
 ## Security boundary
 

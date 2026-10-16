@@ -175,6 +175,92 @@ td.negative { color: #e06c75; }
 .finding.blocking { border-color: var(--danger); }
 .finding.review { border-color: var(--warning); }
 .artifact-boundary p:last-child { margin-bottom: 0; color: var(--muted); }
+dialog.run-dialog {
+  width: min(1520px, calc(100% - 2rem));
+  padding: 1.5rem;
+}
+.run-subtitle, .chart-note { color: var(--muted); }
+.sample-notice {
+  margin: 1rem 0;
+  border-left: 3px solid var(--warning);
+  padding: .6rem .9rem;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.run-headline {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: .65rem;
+  overflow: hidden;
+  margin: 1rem 0 1.5rem;
+}
+.run-headline > div { background: var(--surface-2); padding: .85rem; min-width: 0; }
+.run-headline dd { font-size: clamp(1rem, 1.35vw, 1.5rem); font-weight: 700; font-variant-numeric: tabular-nums; }
+.positive { color: var(--good); }
+.negative { color: var(--danger); }
+.run-tabs {
+  display: flex;
+  gap: .3rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+.run-tabs button {
+  white-space: nowrap;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: .3rem .3rem 0 0;
+  background: none;
+  padding: .8rem 1rem;
+  color: var(--muted);
+}
+.run-tabs button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--text); }
+.run-dialog [role="tabpanel"] { min-width: 0; }
+.run-dialog [role="tabpanel"]:not([hidden]) { padding-top: .25rem; }
+.run-dialog .detail-table table { min-width: 0; }
+.run-dialog #panel-performance table { min-width: 0; }
+.run-dialog #panel-performance th { width: 50%; }
+.run-dialog .detail-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.chart-panel { padding: 1rem; border: 1px solid var(--border); border-radius: .65rem; background: var(--bg); min-width: 0; }
+.chart-heading { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+.chart-heading h3 { flex: 1; margin: 0; min-width: 10rem; }
+.chart-controls { display: flex; gap: .2rem; }
+.chart-controls button { font-size: .8rem; padding: .3rem .65rem; background: transparent; }
+.chart-controls button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); background: var(--surface-2); }
+.time-chart { min-width: 0; }
+.time-chart svg { width: 100%; display: block; touch-action: pan-y; }
+.chart-grid { stroke: var(--border); stroke-width: 1; }
+.chart-label { fill: var(--muted); font: 13px system-ui, sans-serif; }
+.chart-line { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.chart-dot, .chart-marker { fill: var(--accent); }
+.chart-loss { stroke: var(--danger); fill: var(--danger); }
+polyline.chart-loss { fill: none; }
+.chart-gain { fill: var(--good); }
+.chart-crosshair { stroke: var(--muted); stroke-dasharray: 4 4; }
+.chart-scrubber { display: block; width: 100%; margin: .3rem 0; padding: 0; accent-color: var(--accent); }
+.chart-readout { display: block; min-height: 1.5em; color: var(--text); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.chart-note { font-size: .8rem; margin: .7rem 0 0; }
+.risk-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.risk-charts h3 { font-size: .95rem; }
+.trade-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
+.trade-filters input { width: 18rem; max-width: 100%; }
+.trade-filters select { display: block; margin-top: .25rem; }
+.trade-ledger { overflow-x: auto; }
+.trade-ledger td { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.trade-ledger .table-wrap { max-height: 32rem; overflow: auto; }
+.trade-ledger thead { position: sticky; top: 0; background: var(--surface); }
+@media (max-width: 1200px) {
+  .run-headline { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  dialog.run-dialog { width: calc(100% - .5rem); padding: .75rem; }
+  .run-headline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .run-dialog .detail-grid, .risk-charts { grid-template-columns: 1fr; }
+  .chart-panel { padding: .65rem; }
+  .chart-heading h3 { flex-basis: 100%; }
+}
 @media (max-width: 1000px) {
   .overview { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .site-header, .panel-heading { align-items: stretch; flex-direction: column; }}
