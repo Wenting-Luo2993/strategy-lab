@@ -4,6 +4,10 @@ Dependency-light, local-only inspection for the schema v10+ research SQLite
 database. The server uses Node's built-in `node:sqlite`; the browser receives
 only allowlisted JSON views and static HTML/CSS/MJS.
 
+For cross-device continuation, see the
+[2026-10-16 backtest handoff](../../docs/backtest-research-summaries/2026-10-16-backtest-handoff.md),
+including current status, remaining work, and a reproducible synthetic preview.
+
 ## Runtime
 
 Use **Node.js 22.13.0 or newer**. `tools/backtest-research-viewer/.node-version`

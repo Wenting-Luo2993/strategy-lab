@@ -1,5 +1,10 @@
 # Target Architecture Gap Audit
 
+> **Current continuation point:** read the
+> [2026-10-16 backtest handoff](2026-10-16-backtest-handoff.md).
+> The opening diagnosis below records the original defects; later sections
+> document fixes. It is not a claim that those defects remain open.
+
 **Date:** 2026-10-14
 **Scope:** Section 3 ("Proposed Target Architecture") of
 `2026-09-09-backtest-pipeline-implementation-plan.md`, audited step by step
