@@ -7,7 +7,6 @@
     <title>Local Backtest Research</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2367a7ff'/%3E%3Cpath d='M8 9h16v4H8zm0 6h16v4H8zm0 6h10v4H8z' fill='%230b1220'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="/styles.css">
-    <script type="module" src="/research-analysis-workspace.mjs"></script>
     <script type="module" src="/app.mjs"></script>
   </head>
   <body>
@@ -36,7 +35,6 @@
           <div id="experiments"></div>
           <div id="experiment-pagination" class="pagination"></div>
         </section>
-        <section id="experiment-detail" class="panel hidden" aria-label="Selected experiment"></section>
         <details class="panel" id="individual-runs">
           <summary>Individual segment runs & ungrouped history</summary>
           <p id="ungrouped-runs" class="chart-note"></p>
@@ -82,7 +80,6 @@
           <div id="run-pagination" class="pagination"></div>
         </section>
         </details>
-        <research-analysis-workspace id="analysis-workspace" storage-key="local-research-analysis-v2"></research-analysis-workspace>
         <section class="panel">
           <div class="panel-heading">
             <div>
@@ -110,6 +107,13 @@
         </section>
       </div>
     </main>
+    <dialog id="experiment-dialog" class="experiment-dialog" aria-labelledby="experiment-dialog-title">
+      <form method="dialog" class="experiment-toolbar">
+        <strong id="experiment-dialog-title">Experiment details</strong>
+        <button aria-label="Close experiment">Close</button>
+      </form>
+      <div id="experiment-detail"></div>
+    </dialog>
     <dialog id="detail" aria-label="Research detail">
       <form method="dialog"><button class="close" aria-label="Close">Close</button></form>
       <div id="detail-content"></div>

@@ -1215,20 +1215,20 @@ test("static UI has strict security headers and local-only copy", async () => {
     assert.equal(response.headers["x-frame-options"], "DENY");
     assert.match(response.body, /LOCAL SQLITE/);
     assert.match(response.body, /never uploads or switches databases/);
-    assert.match(response.body, /<research-analysis-workspace/);
+    assert.match(response.body, /<dialog id="experiment-dialog"[^>]*aria-labelledby="experiment-dialog-title"/);
+    assert.match(response.body, /aria-label="Close experiment"/);
+    assert.doesNotMatch(response.body, /research-analysis-workspace|analysis-workspace/);
     assert.equal(response.body.includes("Screening columns"), false);
     const workspaceScript = await rawRequest(
       fixture.origin,
       "/research-analysis-workspace.mjs",
     );
-    assert.equal(workspaceScript.status, 200);
-    assert.match(workspaceScript.body, /class ResearchAnalysisWorkspace/);
+    assert.equal(workspaceScript.status, 404);
     const workspaceStyles = await rawRequest(
       fixture.origin,
       "/research-analysis-workspace.css",
     );
-    assert.equal(workspaceStyles.status, 200);
-    assert.match(workspaceStyles.body, /\.workspace/);
+    assert.equal(workspaceStyles.status, 404);
     const charts = await rawRequest(fixture.origin, "/run-charts.mjs");
     assert.equal(charts.status, 200);
     assert.match(charts.headers["content-type"], /text\/javascript/);
@@ -1236,6 +1236,9 @@ test("static UI has strict security headers and local-only copy", async () => {
     const app = await rawRequest(fixture.origin, "/app.mjs");
     assert.equal(app.status, 200);
     assert.match(app.body, /import \{ mountPerformanceCharts \} from "\.\/run-charts\.mjs"/);
+    assert.doesNotMatch(app.body, /initializeAnalysisWorkspace|workspace\.adapter/);
+    const styles = await rawRequest(fixture.origin, "/styles.css");
+    assert.match(styles.body, /\.experiment-dialog\s*\{[^}]*width: 90vw;[^}]*height: 90dvh;/);
     assert.equal((await rawRequest(fixture.origin, "/public/../server.mjs")).status, 404);
   } finally {
     await fixture.cleanupAll();

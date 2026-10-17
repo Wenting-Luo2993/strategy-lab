@@ -525,18 +525,19 @@ The browser does not open or upload the SQLite file. `server.mjs` owns database
 access and returns only the requested view data. Pin the minimum Node version
 before implementation so `node:sqlite` behavior is consistent across devices.
 
-Implementation status: the local viewer now includes the same bounded flexible
-analysis workspace as the shared dashboard. Both hosts mount one framework-neutral
-Web Component and provide only adapter methods, so controls, semantic field
-curation, callouts, persistence, result tables, and charts have one implementation.
-A JSON-only Python bridge reuses the canonical read-only `SqliteAnalysisAdapter`
-for local field discovery, cost estimates, typed filters, grouping, and aggregate
-measures. The loopback server keeps legacy populations disabled and enforces
-query-length, subprocess-time, and response-buffer limits.
+Implementation status: the local viewer prioritizes experiment and segment-run
+inspection. The flexible analysis workspace is no longer mounted or loaded
+locally; the shared dashboard component is unchanged. The bounded JSON-only
+Python bridge and canonical read-only `SqliteAnalysisAdapter` remain available
+through the local analysis API, without a workspace UI. The loopback server keeps
+legacy populations disabled and enforces query-length, subprocess-time, and
+response-buffer limits.
 
 **Experiment-first local inspection (schema v11).** A controlled parameter
 experiment is now the primary explorer object, containing its declared axes,
 candidate grid, fixed reference configuration, split plan and fold outcomes.
+Details open in a dialog occupying 90% of the viewport, with independently
+scrolling content and a persistent close control.
 Each fold aligns all training/validation candidates, the validation plateau
 selection and the frozen held-out test; linked segment runs open the existing
 chart/trade dialog. `--record-runs` on the nested walk-forward entry point

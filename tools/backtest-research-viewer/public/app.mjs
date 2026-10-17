@@ -15,7 +15,7 @@ const elements = Object.fromEntries(
   [
     "app", "loading", "error", "overview", "runs", "run-pagination", "registry",
     "registry-pagination", "publications", "db-path", "detail", "detail-content",
-    "experiments", "experiment-pagination", "experiment-detail",
+    "experiments", "experiment-pagination", "experiment-detail", "experiment-dialog",
   ]
     .map((id) => [id, document.getElementById(id)]),
 );
@@ -23,6 +23,10 @@ elements.detail.addEventListener("close", () => {
   detailRequest += 1;
   disposeRunCharts?.();
   disposeRunCharts = undefined;
+});
+elements["experiment-dialog"].addEventListener("close", () => {
+  experimentRequest += 1;
+  selectedExperiment = undefined;
 });
 
 document.getElementById("refresh").addEventListener("click", () => loadAll());
@@ -64,7 +68,6 @@ async function loadAll() {
       loadRuns(false),
       loadRegistry(false),
       loadPublications(false),
-      initializeAnalysisWorkspace(),
     ]);
     await loadExperiments();
     if (selectedExperiment) await showExperiment(selectedExperiment, false);
@@ -102,8 +105,9 @@ async function showExperiment(experimentId, focus = true) {
   const request = ++experimentRequest;
   selectedExperiment = experimentId;
   const host = elements["experiment-detail"];
-  host.classList.remove("hidden");
   host.innerHTML = loadingState();
+  if (!elements["experiment-dialog"].open) elements["experiment-dialog"].showModal();
+  if (focus) host.scrollTop = 0;
   try {
     const experiment = await api(`/api/experiments/${encodeURIComponent(experimentId)}`);
     if (request !== experimentRequest) return;
@@ -112,28 +116,21 @@ async function showExperiment(experimentId, focus = true) {
       button.addEventListener("click", () => showRun(button.dataset.run));
     });
     host.querySelectorAll('a[href^="#experiment-fold-"]').forEach((link) => {
-      link.addEventListener("click", () => {
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
         const fold = document.getElementById(link.hash.slice(1));
-        if (fold) fold.open = true;
+        if (fold) {
+          fold.open = true;
+          fold.scrollIntoView({ block: "start" });
+        }
       });
     });
     if (focus) {
-      host.scrollIntoView({ block: "start" });
       host.querySelector("h2")?.focus({ preventScroll: true });
     }
   } catch (error) {
     if (request === experimentRequest) host.innerHTML = errorState(error);
   }
-}
-
-async function initializeAnalysisWorkspace() {
-  const workspace = document.getElementById("analysis-workspace");
-  if (workspace.adapter) return;
-  workspace.adapter = {
-    getAnalysisFieldCatalog: () => api("/api/analysis/catalog"),
-    estimateAnalysis: (query) => api("/api/analysis/estimate", { query: JSON.stringify(query) }),
-    runAnalysis: (query) => api("/api/analysis/query", { query: JSON.stringify(query) }),
-  };
 }
 
 async function loadRuns(showBusy = true) {

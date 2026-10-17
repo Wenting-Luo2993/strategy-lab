@@ -43,10 +43,14 @@ Open `http://127.0.0.1:4178`. `--port` may select another local port.
 The primary explorer lists **controlled experiments**, not unrelated segment
 runs. A nested walk-forward experiment declares its parameter axes and candidate
 values, objective, fixed reference configuration and complete split plan.
-Opening it shows a fold overview, then aligned training/validation candidate
+Opening it shows a dialog sized to 90% of the viewport, with a fold overview,
+then aligned training/validation candidate
 comparisons, the validation selection rationale and the one frozen test result.
 Every linked segment opens the existing chart/trade dialog; closing it leaves
-the experiment in place.
+the experiment dialog in place, including its scroll position and expanded folds.
+The experiment dialog has its own scroll area and a persistent close button;
+Escape closes the topmost dialog. The flexible analysis workspace is no longer
+mounted or loaded in the local viewer.
 
 ```powershell
 python scripts\run_nested_walk_forward.py `
