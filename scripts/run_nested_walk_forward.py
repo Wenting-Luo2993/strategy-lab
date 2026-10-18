@@ -351,12 +351,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         from vibe.research_pipeline.experiments import ExperimentRecorder
 
+        recorded_validator = validator.for_recorded_segments(
+            segment
+            for fold in plan.folds
+            for segment in fold.segments
+        )
         sink = open_run_sink(
             data_dir=data_dir,
             symbol=args.symbol,
             strategy_id=args.strategy_id,
             starting_equity=args.capital,
             methodology_version=METHODOLOGY_VERSION,
+            validator=recorded_validator,
         )
         roles = (
             frozenset({SegmentRole.TEST})

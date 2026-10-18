@@ -21,6 +21,11 @@ from vibe.research_pipeline.contracts import RetentionProfile, SegmentRole
 from vibe.research_pipeline.lifecycle import RunState
 from vibe.research_pipeline.recording import BacktestRunSink, hash_effective_ruleset
 from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
+from vibe.research_pipeline.validation import (
+    ValidationCategory,
+    ValidationReport,
+    ValidationScope,
+)
 
 STARTING_EQUITY = 100_000.0
 
@@ -140,6 +145,37 @@ def test_an_identical_point_is_reported_not_recorded_twice(tmp_path, stub_metric
     assert sink.recorded_run_ids == [first.run_id]
     assert sink.duplicate_run_ids == [first.run_id]
     assert sink.failures == []
+
+
+def test_a_repeated_validating_run_is_finalized_when_evidence_becomes_available(
+    tmp_path, stub_metrics
+):
+    """A rerun may repair the old no-validator composition without duplication."""
+    first_sink = _sink(tmp_path)
+    args = dict(ruleset=_Ruleset(), parameters={"stop_atr_multiple": 1.5})
+    first = first_sink.record(_result(), **args)
+    assert first is not None
+    assert first_sink.store.get_run(first.run_id).state is RunState.VALIDATING
+
+    report = ValidationReport(
+        profile_name="test",
+        scope=ValidationScope.CANDIDATE,
+        target_state=RunState.COMPLETED,
+        findings=(),
+        checked_categories=tuple(ValidationCategory),
+        registry_hash_at_execution="a" * 64,
+        current_registry_hash="a" * 64,
+        leakage_passed=True,
+    )
+    seen = []
+    second_sink = _sink(tmp_path, validator=lambda result: seen.append(result) or report)
+    repeated_result = _result()
+    second = second_sink.record(repeated_result, **args)
+
+    assert second is not None and not second.recorded
+    assert second.run_id == first.run_id
+    assert seen == [repeated_result]
+    assert second_sink.store.get_run(first.run_id).state is RunState.COMPLETED
 
 
 # -- in-sample must never read as out-of-sample --------------------------

@@ -596,6 +596,12 @@ class BacktestRunSink:
 
             existing = self._store.find_by_fingerprint(fingerprint.fingerprint)
             if existing is not None and existing.state is not RunState.REGISTERED:
+                if (
+                    existing.state is RunState.VALIDATING
+                    and self._validator is not None
+                ):
+                    report = self._validator(result)
+                    self._store.finalize_validation(existing.run_id, report)
                 self.duplicate_run_ids.append(existing.run_id)
                 return SinkOutcome(run_id=existing.run_id, recorded=False)
 

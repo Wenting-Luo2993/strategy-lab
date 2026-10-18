@@ -33,8 +33,8 @@ is absent, so an injected report cannot launder a check that never ran.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
-from typing import Any, Callable, Mapping, Optional
+from datetime import date, datetime
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 import pandas as pd
 
@@ -264,7 +264,15 @@ class SegmentValidator:
         scope: ValidationScope,
     ) -> ValidationReport:
         segment: SessionSegment = segment_result.segment
-        result = segment_result.result
+        return self.validate_result(segment_result.result, segment, scope)
+
+    def validate_result(
+        self,
+        result: Any,
+        segment: SessionSegment,
+        scope: ValidationScope,
+    ) -> ValidationReport:
+        """Validate a bare backtest result against its known segment."""
         bars = self._graded_bars(result, segment)
         return self._validator.validate(
             build_validation_input(
@@ -278,6 +286,44 @@ class SegmentValidator:
             )
         )
 
+    def for_recorded_segments(
+        self,
+        segments: Iterable[SessionSegment],
+        *,
+        scope: ValidationScope = ValidationScope.CANDIDATE,
+    ) -> Callable[[Any], ValidationReport]:
+        """Bind bare recorded results back to their declared split segments.
+
+        ``ResearchRunSink`` intentionally receives only the underlying
+        ``BacktestResult``. Nested walk-forward validation additionally needs
+        the segment role and bounds so it can use the right expected session
+        count, graded bars, and per-fold contamination evidence. The graded
+        result window is a stable, persisted identity for that lookup.
+        """
+        by_window: dict[tuple[date, date], SessionSegment] = {}
+        for segment in segments:
+            key = (segment.start_session, segment.end_session)
+            existing = by_window.get(key)
+            if existing is not None and existing != segment:
+                raise ValueError(
+                    "Cannot bind recorded validation to ambiguous segment "
+                    f"window {key[0]}..{key[1]}"
+                )
+            by_window[key] = segment
+
+        def validate(result: Any) -> ValidationReport:
+            start = _result_session(getattr(result, "start_date", None), "start")
+            end = _result_session(getattr(result, "end_date", None), "end")
+            segment = by_window.get((start, end))
+            if segment is None:
+                raise ValueError(
+                    "Recorded result window is not present in the split plan: "
+                    f"{start}..{end}"
+                )
+            return self.validate_result(result, segment, scope)
+
+        return validate
+
     def _graded_bars(
         self, result: Any, segment: SessionSegment
     ) -> Optional[pd.DataFrame]:
@@ -286,6 +332,21 @@ class SegmentValidator:
         if frame is None:
             return None
         return slice_graded_bars(frame, segment.start_session, segment.end_session)
+
+
+def _result_session(value: Any, which: str) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid recorded result {which} date: {value!r}"
+            ) from exc
+    raise ValueError(f"Recorded result has no usable {which} date: {value!r}")
 
 
 def build_run_validator(

@@ -15,10 +15,13 @@ import pandas as pd
 import pytest
 
 from vibe.research_pipeline.evaluation import (
+    SegmentValidator,
     measure_bar_integrity,
     measure_data_integrity,
     slice_graded_bars,
 )
+from vibe.research_pipeline.contracts import SegmentRole, SessionSegment
+from vibe.research_pipeline.validation import ValidationScope
 
 
 def _bars(start: str, periods: int, freq: str = "5min") -> pd.DataFrame:
@@ -150,9 +153,6 @@ class TestSegmentKey:
         fold's contamination evidence answer for another fold's, which is
         exactly the kind of silent reuse the audit was written about.
         """
-        from vibe.research_pipeline.contracts import SegmentRole, SessionSegment
-        from vibe.research_pipeline.evaluation import SegmentValidator
-
         first = SessionSegment(
             role=SegmentRole.TEST,
             start_session=date(2022, 3, 1),
@@ -168,3 +168,50 @@ class TestSegmentKey:
         assert SegmentValidator.segment_key(first) != SegmentValidator.segment_key(
             second
         )
+
+
+class TestRecordedSegmentValidation:
+    class _Validator(SegmentValidator):
+        def __init__(self) -> None:
+            self.calls = []
+
+        def validate_result(self, result, segment, scope):
+            self.calls.append((result, segment, scope))
+            return segment.role
+
+    def test_binds_a_bare_result_to_its_exact_segment(self):
+        segment = SessionSegment(
+            role=SegmentRole.VALIDATION,
+            start_session=date(2022, 3, 1),
+            end_session=date(2022, 3, 31),
+            session_count=23,
+        )
+        validator = self._Validator()
+        validate = validator.for_recorded_segments([segment])
+        result = type(
+            "Result",
+            (),
+            {"start_date": "2022-03-01", "end_date": datetime(2022, 3, 31)},
+        )()
+
+        assert validate(result) is SegmentRole.VALIDATION
+        assert validator.calls == [
+            (result, segment, ValidationScope.CANDIDATE)
+        ]
+
+    def test_refuses_a_result_window_outside_the_split_plan(self):
+        segment = SessionSegment(
+            role=SegmentRole.TEST,
+            start_session=date(2022, 3, 1),
+            end_session=date(2022, 3, 31),
+            session_count=23,
+        )
+        validate = self._Validator().for_recorded_segments([segment])
+        result = type(
+            "Result",
+            (),
+            {"start_date": date(2022, 4, 1), "end_date": date(2022, 4, 29)},
+        )()
+
+        with pytest.raises(ValueError, match="not present in the split plan"):
+            validate(result)
