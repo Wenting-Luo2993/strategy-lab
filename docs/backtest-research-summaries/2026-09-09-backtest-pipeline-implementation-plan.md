@@ -1,5 +1,10 @@
 # Backtest Pipeline Reliability and Research Storage Plan
 
+> **Current remaining-work plan:** see
+> [2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md](2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md).
+> The document below remains the original implementation plan and execution
+> history.
+
 **Date:** September 9, 2026  
 **Status:** In implementation — see [§18 Execution Status](#18-execution-status)  
 **Scope:** Backtest validation, time-series splitting, look-ahead controls,

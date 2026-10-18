@@ -1,5 +1,8 @@
 # Backtest pipeline and viewer handoff
 
+> **Latest architecture and remaining-work plan:** see
+> [2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md](2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md).
+
 **Updated:** 2026-10-16, after the experiment-dialog change.
 **Branch:** `wenting-luo2993-backtest-implementation-review`
 **Current focus:** trustworthy local inspection of controlled backtest experiments,

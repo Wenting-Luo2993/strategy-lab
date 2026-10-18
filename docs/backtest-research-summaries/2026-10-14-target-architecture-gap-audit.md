@@ -1,5 +1,9 @@
 # Target Architecture Gap Audit
 
+> **Current remaining-work plan:** see
+> [2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md](2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md).
+> This audit remains the historical diagnosis and implementation record.
+
 > **Current continuation point:** read the
 > [2026-10-16 backtest handoff](2026-10-16-backtest-handoff.md).
 > The opening diagnosis below records the original defects; later sections
