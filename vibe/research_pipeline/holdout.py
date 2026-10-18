@@ -189,6 +189,7 @@ class UnlockToken:
     reason: str
     requested_by: str
     run_id: str
+    log_access: bool = True
 
     def __post_init__(self) -> None:
         for name in ("reason", "requested_by", "run_id"):
@@ -298,7 +299,7 @@ class HoldoutLock:
                 f"unlock will be logged. If it is not, end the request on or "
                 f"before {self.dev_end}."
             )
-        if log:
+        if log and token.log_access:
             record_access(
                 lock=self, token=token, symbol=symbol, start=start, end=end
             )

@@ -19,6 +19,10 @@ from typing import Any, Optional
 import pandas as pd
 import pytest
 
+from vibe.backtester.core.integrity import (
+    EngineIntegrityReport,
+    EngineIntegrityStatus,
+)
 from vibe.research_pipeline.contracts import RetentionProfile
 from vibe.research_pipeline.lifecycle import RunState
 from vibe.research_pipeline.recording import (
@@ -29,6 +33,16 @@ from vibe.research_pipeline.recording import (
 )
 
 STARTING_EQUITY = 100_000.0
+
+
+def _integrity_report() -> EngineIntegrityReport:
+    return EngineIntegrityReport(
+        status=EngineIntegrityStatus.PASS,
+        engine_version=1,
+        metric_calculation_version=1,
+        checked_categories=(),
+        findings=(),
+    )
 
 
 @dataclass
@@ -71,6 +85,7 @@ def _result(
             last_date=date(2023, 3, 1),
             calculation_version=1,
         ),
+        engine_integrity_report=_integrity_report(),
     )
 
 
@@ -202,6 +217,7 @@ class _FakeStore:
         self.curve: Any = None
         self.started = False
         self.finalized: list[Any] = []
+        self.integrity: Any = None
 
     def register_run(
         self, *, fingerprint, methodology_version, notes=None, segment_role=None
@@ -221,6 +237,9 @@ class _FakeStore:
 
     def record_evidence(self, run_id, evidence) -> None:
         self.evidence = evidence
+
+    def record_engine_integrity(self, run_id, report) -> None:
+        self.integrity = report
 
     def record_trades(self, run_id, trades) -> None:
         self.trades = list(trades)

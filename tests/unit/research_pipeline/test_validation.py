@@ -12,6 +12,11 @@ from vibe.backtester.analysis.metrics import (
     ConvexityMetrics,
 )
 from vibe.backtester.analysis.performance import PerformanceAnalyzer
+from vibe.backtester.core.integrity import (
+    EngineIntegrityCategory,
+    EngineIntegrityReport,
+    EngineIntegrityStatus,
+)
 from vibe.research_pipeline.contracts import (
     RetentionProfile,
     RunEvidence,
@@ -87,6 +92,13 @@ def _result(**metric_overrides) -> BacktestResult:
             "accounting_failures": 0.0,
             "accounting_checks_applicable": 3.0,
         },
+        engine_integrity_report=EngineIntegrityReport(
+            status=EngineIntegrityStatus.PASS,
+            engine_version=1,
+            metric_calculation_version=2,
+            checked_categories=tuple(EngineIntegrityCategory),
+            findings=(),
+        ),
     )
 
 

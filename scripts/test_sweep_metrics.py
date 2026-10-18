@@ -9,7 +9,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from vibe.backtester.analysis.metrics import BacktestResult, ConvexityMetrics, EquityMetrics
-from vibe.backtester.analysis.parameter_sweep import SweepResult
+from vibe.research_pipeline.parameter_sweep import SweepResult
 from vibe.common.models.trade import Trade
 
 

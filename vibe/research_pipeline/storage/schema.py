@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -841,6 +841,226 @@ BEGIN
 END;
 """
 
+_MIGRATION_12 = """
+CREATE TABLE engine_integrity_reports (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    status TEXT NOT NULL CHECK (status IN ('pass', 'fail')),
+    engine_version INTEGER NOT NULL,
+    metric_calculation_version INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
+CREATE TABLE reliability_policies (
+    policy_hash TEXT PRIMARY KEY,
+    policy_version INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
+CREATE TABLE study_reliability_reports (
+    experiment_id TEXT PRIMARY KEY REFERENCES research_experiments(experiment_id),
+    verdict TEXT NOT NULL CHECK (
+        verdict IN ('reliable', 'rejected', 'inconclusive', 'review_required')
+    ),
+    policy_hash TEXT NOT NULL REFERENCES reliability_policies(policy_hash),
+    payload_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
+CREATE TABLE study_reliability_criteria (
+    experiment_id TEXT NOT NULL REFERENCES research_experiments(experiment_id),
+    criterion_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (experiment_id, criterion_id)
+);
+
+CREATE TABLE robustness_evidence (
+    experiment_id TEXT PRIMARY KEY REFERENCES research_experiments(experiment_id),
+    provenance_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
+CREATE TABLE frozen_study_definitions (
+    experiment_id TEXT PRIMARY KEY REFERENCES research_experiments(experiment_id),
+    definition_hash TEXT NOT NULL UNIQUE,
+    policy_hash TEXT NOT NULL REFERENCES reliability_policies(policy_hash),
+    final_holdout_lock_hash TEXT NOT NULL,
+    frozen_at TEXT NOT NULL,
+    frozen_by TEXT NOT NULL CHECK (frozen_by = 'Bloom'),
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE final_holdout_executions (
+    experiment_id TEXT PRIMARY KEY REFERENCES frozen_study_definitions(experiment_id),
+    authorization_sha256 TEXT NOT NULL,
+    requested_by TEXT NOT NULL CHECK (requested_by = 'Bloom'),
+    executed_at TEXT NOT NULL,
+    verdict TEXT NOT NULL CHECK (verdict IN ('passed', 'failed', 'inconclusive')),
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE retention_metadata (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    detail_disposition TEXT NOT NULL DEFAULT 'retained'
+        CHECK (detail_disposition IN ('retained', 'pruned', 'protected')),
+    protected_reason TEXT,
+    pruned_at TEXT,
+    pruned_by TEXT,
+    payload_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TRIGGER immutable_engine_integrity
+BEFORE UPDATE ON engine_integrity_reports
+BEGIN
+    SELECT RAISE(ABORT, 'engine integrity report is immutable');
+END;
+CREATE TRIGGER immutable_reliability_policy
+BEFORE UPDATE ON reliability_policies
+BEGIN
+    SELECT RAISE(ABORT, 'reliability policy is immutable');
+END;
+CREATE TRIGGER immutable_reliability_report
+BEFORE UPDATE ON study_reliability_reports
+BEGIN
+    SELECT RAISE(ABORT, 'study reliability report is immutable');
+END;
+CREATE TRIGGER immutable_frozen_study
+BEFORE UPDATE ON frozen_study_definitions
+BEGIN
+    SELECT RAISE(ABORT, 'frozen study definition is immutable');
+END;
+CREATE TRIGGER immutable_final_holdout
+BEFORE UPDATE ON final_holdout_executions
+BEGIN
+    SELECT RAISE(ABORT, 'final holdout execution is exactly-once and immutable');
+END;
+"""
+
+_MIGRATION_13 = """
+ALTER TABLE research_experiments ADD COLUMN reliability_policy_hash TEXT
+    REFERENCES reliability_policies(policy_hash);
+
+CREATE TABLE final_holdout_authorizations (
+    experiment_id TEXT PRIMARY KEY REFERENCES frozen_study_definitions(experiment_id),
+    authorization_sha256 TEXT NOT NULL UNIQUE,
+    requested_by TEXT NOT NULL CHECK (requested_by = 'Bloom'),
+    reason TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (
+        state IN ('authorized', 'claimed', 'completed', 'interrupted')
+    ),
+    authorized_at TEXT NOT NULL,
+    claimed_at TEXT,
+    completed_at TEXT,
+    claim_id TEXT UNIQUE,
+    interruption_reason TEXT
+);
+
+ALTER TABLE final_holdout_executions ADD COLUMN run_id TEXT REFERENCES runs(run_id);
+ALTER TABLE final_holdout_executions ADD COLUMN verified_identities_json TEXT;
+
+CREATE TRIGGER immutable_engine_integrity_delete
+BEFORE DELETE ON engine_integrity_reports BEGIN
+    SELECT RAISE(ABORT, 'engine integrity report is immutable');
+END;
+CREATE TRIGGER immutable_reliability_policy_delete
+BEFORE DELETE ON reliability_policies BEGIN
+    SELECT RAISE(ABORT, 'reliability policy is immutable');
+END;
+CREATE TRIGGER immutable_reliability_report_delete
+BEFORE DELETE ON study_reliability_reports BEGIN
+    SELECT RAISE(ABORT, 'study reliability report is immutable');
+END;
+CREATE TRIGGER immutable_reliability_criteria_update
+BEFORE UPDATE ON study_reliability_criteria BEGIN
+    SELECT RAISE(ABORT, 'study reliability criteria are immutable');
+END;
+CREATE TRIGGER immutable_reliability_criteria_delete
+BEFORE DELETE ON study_reliability_criteria BEGIN
+    SELECT RAISE(ABORT, 'study reliability criteria are immutable');
+END;
+CREATE TRIGGER immutable_robustness_update
+BEFORE UPDATE ON robustness_evidence BEGIN
+    SELECT RAISE(ABORT, 'robustness evidence is immutable');
+END;
+CREATE TRIGGER immutable_robustness_delete
+BEFORE DELETE ON robustness_evidence BEGIN
+    SELECT RAISE(ABORT, 'robustness evidence is immutable');
+END;
+CREATE TRIGGER immutable_frozen_study_delete
+BEFORE DELETE ON frozen_study_definitions BEGIN
+    SELECT RAISE(ABORT, 'frozen study definition is immutable');
+END;
+CREATE TRIGGER immutable_final_holdout_delete
+BEFORE DELETE ON final_holdout_executions BEGIN
+    SELECT RAISE(ABORT, 'final holdout execution is exactly-once and immutable');
+END;
+CREATE TRIGGER immutable_final_authorization_delete
+BEFORE DELETE ON final_holdout_authorizations BEGIN
+    SELECT RAISE(ABORT, 'final holdout authorization is immutable');
+END;
+CREATE TRIGGER final_authorization_transition_guard
+BEFORE UPDATE ON final_holdout_authorizations
+WHEN NOT (
+    (OLD.state = 'authorized' AND NEW.state = 'claimed'
+        AND NEW.claim_id IS NOT NULL AND NEW.claimed_at IS NOT NULL
+        AND NEW.experiment_id = OLD.experiment_id
+        AND NEW.authorization_sha256 = OLD.authorization_sha256
+        AND NEW.requested_by = OLD.requested_by
+        AND NEW.reason = OLD.reason
+        AND NEW.authorized_at = OLD.authorized_at)
+    OR
+    (OLD.state = 'claimed' AND NEW.state IN ('completed', 'interrupted')
+        AND NEW.claim_id = OLD.claim_id
+        AND NEW.claimed_at = OLD.claimed_at
+        AND NEW.experiment_id = OLD.experiment_id
+        AND NEW.authorization_sha256 = OLD.authorization_sha256
+        AND NEW.requested_by = OLD.requested_by
+        AND NEW.reason = OLD.reason
+        AND NEW.authorized_at = OLD.authorized_at)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'illegal final holdout authorization transition');
+END;
+
+CREATE TRIGGER protect_frozen_run_trades
+BEFORE DELETE ON run_trades
+WHEN EXISTS (
+    SELECT 1 FROM research_experiment_runs er
+    JOIN frozen_study_definitions fs ON fs.experiment_id = er.experiment_id
+    WHERE er.run_id = OLD.run_id
+)
+OR EXISTS (
+    SELECT 1 FROM final_holdout_executions fh WHERE fh.run_id = OLD.run_id
+)
+OR EXISTS (
+    SELECT 1 FROM retention_metadata rm
+    WHERE rm.run_id = OLD.run_id AND rm.detail_disposition = 'protected'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'protected run detail is retained indefinitely');
+END;
+CREATE TRIGGER protect_frozen_run_equity
+BEFORE DELETE ON run_equity_points
+WHEN EXISTS (
+    SELECT 1 FROM research_experiment_runs er
+    JOIN frozen_study_definitions fs ON fs.experiment_id = er.experiment_id
+    WHERE er.run_id = OLD.run_id
+)
+OR EXISTS (
+    SELECT 1 FROM final_holdout_executions fh WHERE fh.run_id = OLD.run_id
+)
+OR EXISTS (
+    SELECT 1 FROM retention_metadata rm
+    WHERE rm.run_id = OLD.run_id AND rm.detail_disposition = 'protected'
+)
+BEGIN
+    SELECT RAISE(ABORT, 'protected run detail is retained indefinitely');
+END;
+"""
+
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -853,6 +1073,8 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (9, _MIGRATION_9),
     (10, _MIGRATION_10),
     (11, _MIGRATION_11),
+    (12, _MIGRATION_12),
+    (13, _MIGRATION_13),
 ]
 
 

@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from vibe.backtester.integration.experiment_tracker import (
+from vibe.research_journal.integration.experiment_tracker import (
     BacktestExperimentTracker,
     wrap_backtest_engine,
 )

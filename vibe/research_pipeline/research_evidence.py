@@ -6,7 +6,7 @@ correct, and was unit-tested, but nothing supplied it with evidence, so
 nothing ever left the holding state.
 
 This module is the supply side. It lives on the backtester side of the seam
-for the same reason :mod:`vibe.backtester.analysis.research_sink` does --
+for the same reason :mod:`vibe.research_pipeline.research_sink` does --
 gathering the evidence requires the feature engine and the parquet layout, and
 having ``research_pipeline`` reach back for those would invert the dependency.
 
@@ -46,12 +46,13 @@ def load_session_bars(
     start: date,
     end: date,
     timeframe: str = "5min",
+    holdout_token: Any = None,
 ) -> Any:
     """Load and resample the bars a study consumed, on exchange-local bounds."""
     from vibe.backtester.core.engine import _resample
-    from vibe.backtester.data.parquet_loader import ParquetLoader
+    from vibe.research_pipeline.data_loader import GuardedParquetLoader as ParquetLoader
 
-    loader = ParquetLoader(data_dir, [symbol])
+    loader = ParquetLoader(data_dir, [symbol], holdout_token=holdout_token)
     bars_1m = asyncio.run(
         loader.get_bars(
             symbol,
@@ -74,7 +75,7 @@ def build_leakage_report(bars) -> Any:
     engine. The engine is downstream of any contamination, so pointing the
     suite at it produces a green report that means nothing.
     """
-    from vibe.backtester.analysis.regime_research.features import FeatureEngine
+    from vibe.research_pipeline.regime_research.features import FeatureEngine
     from vibe.research_pipeline.features.leakage import run_leakage_suite
     from vibe.research_pipeline.features.registry import SWEEP_PRECOMPUTED_FEATURES
 
@@ -163,6 +164,7 @@ def build_study_leakage_report(
     train_sessions: Optional[Any] = None,
     test_sessions: Optional[Any] = None,
     selection_sessions: Optional[Any] = None,
+    holdout_token: Any = None,
 ) -> Tuple[Any, Any]:
     """Gather every leakage check a :class:`ValidationProfile` requires.
 
@@ -186,7 +188,9 @@ def build_study_leakage_report(
         check_split_contamination,
     )
 
-    bars = load_session_bars(symbol, data_dir, start, end)
+    bars = load_session_bars(
+        symbol, data_dir, start, end, holdout_token=holdout_token
+    )
 
     suite = build_leakage_report(bars)
     boundary = build_orb_boundary_report(bars, ruleset_config)
@@ -213,6 +217,7 @@ def build_study_validator(
     profile: Any = None,
     calendar_name: str = "XNYS",
     scope: Any = None,
+    holdout_token: Any = None,
 ) -> Callable[[Any], Any]:
     """Build the ``validator`` a :class:`BacktestRunSink` accepts for a study.
 
@@ -239,7 +244,12 @@ def build_study_validator(
     from vibe.research_pipeline.validation import ValidationProfile, ValidationScope
 
     report, bars = build_study_leakage_report(
-        symbol, data_dir, start, end, ruleset_config
+        symbol,
+        data_dir,
+        start,
+        end,
+        ruleset_config,
+        holdout_token=holdout_token,
     )
 
     calendar = SessionCalendar(calendar_name)

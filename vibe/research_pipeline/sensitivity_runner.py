@@ -4,14 +4,14 @@ Parameter sensitivity testing for trading strategies.
 
 Usage:
     # Test ORB strategy with default parameter ranges
-    python -m vibe.backtester.analysis.sensitivity_runner --strategy orb
+    python -m vibe.research_pipeline.sensitivity_runner --strategy orb
     
     # Test with custom date range and symbol
-    python -m vibe.backtester.analysis.sensitivity_runner --strategy orb --symbol SPY \
+    python -m vibe.research_pipeline.sensitivity_runner --strategy orb --symbol SPY \
         --start 2022-01-01 --end 2023-12-31
     
     # Test with custom output path
-    python -m vibe.backtester.analysis.sensitivity_runner --strategy orb \
+    python -m vibe.research_pipeline.sensitivity_runner --strategy orb \
         --output reports/orb_sensitivity.csv
 """
 import argparse
@@ -32,7 +32,7 @@ try:
 except ImportError:
     pass
 
-from vibe.backtester.analysis.parameter_sweep import ParameterDefinition, ParameterSweep
+from vibe.research_pipeline.parameter_sweep import ParameterDefinition, ParameterSweep
 from vibe.backtester.data.paths import (
     MarketDataNotFoundError,
     resolve_market_data_dir,
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # Re-exported so existing callers and tests keep importing them from here;
 # the canonical definition lives in windows.py because four runners need it.
-from vibe.backtester.analysis.windows import (  # noqa: E402
+from vibe.research_pipeline.windows import (  # noqa: E402
     parse_window_end,
     parse_window_start,
 )
@@ -382,7 +382,7 @@ def main() -> None:
     )
     
     # Always show progress from the parameter sweep module
-    logging.getLogger("vibe.backtester.analysis.parameter_sweep").setLevel(logging.INFO)
+    logging.getLogger("vibe.research_pipeline.parameter_sweep").setLevel(logging.INFO)
     
     # Resolve data directory (BACKTEST__DATA_DIR, repo default, main worktree)
     try:
@@ -414,8 +414,8 @@ def main() -> None:
     # Create sweep
     run_sink = None
     if args.record_runs:
-        from vibe.backtester.analysis.research_evidence import build_study_validator
-        from vibe.backtester.analysis.research_sink import open_run_sink
+        from vibe.research_pipeline.research_evidence import build_study_validator
+        from vibe.research_pipeline.research_sink import open_run_sink
 
         validator = None
         if not args.skip_validation:

@@ -341,6 +341,28 @@ function RunDetail({ publication }: { publication: ResearchRunSummary }) {
         <DetailStat label="Findings" value={`${publication.validation.findings.blocking} blocking · ${publication.validation.findings.review} review · ${publication.validation.findings.advisory} advisory`} />
         <DetailStat label="Registry hash at execution" value={publication.validation.registryHashAtExecution ?? "--"} mono />
       </DetailSection>
+      <DetailSection title="Decision boundaries">
+        <DetailStat label="Engine integrity" value={statusLabel(publication.engineIntegrity.status)} />
+        <DetailStat label="Procedure execution" value={statusLabel(publication.procedureExecution ?? "not_assessed")} />
+        <DetailStat label="Research reliability" value={statusLabel(publication.researchReliability)} />
+      </DetailSection>
+      {publication.engineIntegrity.findings.length > 0 && (
+        <section className="mt-6">
+          <h3 className="font-bold">Engine integrity findings</h3>
+          <div className="mt-3 space-y-2">
+            {publication.engineIntegrity.findings.map((finding) => (
+              <div className="rounded-md border border-[var(--border)] p-3 text-sm" key={finding.checkId}>
+                <strong>{finding.checkId} · {finding.category}</strong>
+                <div className="mt-1">{finding.passed ? "Passed" : "Failed"}</div>
+                <div className="mt-1 text-xs text-[var(--muted)]">
+                  Observed {JSON.stringify(finding.observed)} · expected {JSON.stringify(finding.expected)}
+                  {finding.residual === null ? "" : ` · residual ${finding.residual}`}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       <DetailSection title="Aggregate evidence">
         <DetailStat label="Trade count" value={formatNumber(publication.evidence.aggregateTradeCount)} />
         <DetailStat label="Equity point count" value={formatNumber(publication.evidence.equityPointCount)} />
@@ -365,6 +387,12 @@ function RunDetail({ publication }: { publication: ResearchRunSummary }) {
       </section>
     </>
   );
+}
+
+function statusLabel(value: string): string {
+  return value === "not_assessed"
+    ? "Not assessed"
+    : value.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function RegistryDetail({ publication }: { publication: ResearchRegistryRecord }) {

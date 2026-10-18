@@ -20,8 +20,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yaml
 
-from vibe.backtester.analysis.parameter_sweep import ParameterDefinition, ParameterSweep
-from vibe.backtester.analysis.windows import parse_window_end, parse_window_start
+from vibe.research_pipeline.parameter_sweep import ParameterDefinition, ParameterSweep
+from vibe.research_pipeline.windows import parse_window_end, parse_window_start
 from vibe.backtester.core.engine import BacktestEngine
 from vibe.common.ruleset.models import StrategyRuleSet
 

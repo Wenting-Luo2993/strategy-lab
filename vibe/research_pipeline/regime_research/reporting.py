@@ -19,7 +19,7 @@ from typing import Any
 
 import pandas as pd
 
-from vibe.backtester.analysis.regime_research.filter_evaluator import (
+from vibe.research_pipeline.regime_research.filter_evaluator import (
     FilterReport,
     MetricsSnapshot,
 )

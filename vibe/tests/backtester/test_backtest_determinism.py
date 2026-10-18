@@ -93,7 +93,7 @@ def test_backtest_determinism_with_precomputed_features():
     This is critical for optimization framework where features are computed
     once and reused across parameter sweeps.
     """
-    from vibe.backtester.analysis.regime_research.features import FeatureEngine
+    from vibe.research_pipeline.regime_research.features import FeatureEngine
     from vibe.backtester.data.parquet_loader import ParquetLoader
     
     # Load ruleset

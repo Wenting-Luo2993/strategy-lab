@@ -23,6 +23,12 @@ from vibe.research_pipeline.optimization import (
 from vibe.research_pipeline.splits.calendar import SessionCalendar
 from vibe.research_pipeline.splits.planner import SplitPlan
 from vibe.research_pipeline.validation import ValidationReport, ValidationScope
+from vibe.research_pipeline.reliability import (
+    ReliabilityPolicy,
+    RobustnessEvidence,
+    StudyReliabilityReport,
+    evaluate_study_reliability,
+)
 
 __all__ = [
     "FoldResult",
@@ -92,6 +98,8 @@ class NestedWalkForwardResult:
     state: RunState
     stitched_oos: StitchedOOSMetrics | None
     reason: str | None = None
+    reliability_report: StudyReliabilityReport | None = None
+    robustness_evidence: RobustnessEvidence | None = None
 
 
 class NestedWalkForwardDriver:
@@ -103,12 +111,20 @@ class NestedWalkForwardDriver:
         validator: CandidateValidator,
         *,
         calendar: SessionCalendar | None = None,
+        reliability_policy: ReliabilityPolicy | None = None,
+        robustness_evidence: RobustnessEvidence | None = None,
+        symbols: Sequence[str] = (),
+        shared_capital_portfolio: bool = False,
     ) -> None:
         self._optimizer = optimizer
         self._selector = selector
         self._executor = executor
         self._validator = validator
         self._calendar = calendar
+        self._reliability_policy = reliability_policy
+        self._robustness_evidence = robustness_evidence
+        self._symbols = tuple(symbols)
+        self._shared_capital_portfolio = shared_capital_portfolio
 
     def run(
         self,
@@ -198,13 +214,46 @@ class NestedWalkForwardDriver:
                 plan, folds, "Not every expected fold completed"
             )
         stitched = self._stitch(folds, plan)
-        return NestedWalkForwardResult(
+        completed = NestedWalkForwardResult(
             plan_hash=plan.plan_hash,
             folds=tuple(folds),
             n_folds_expected=len(plan.folds),
             n_folds_completed=len(folds),
             state=RunState.COMPLETED,
             stitched_oos=stitched,
+        )
+        if self._reliability_policy is None:
+            return completed
+        reliability = evaluate_study_reliability(
+            completed,
+            self._reliability_policy,
+            robustness=self._robustness_evidence,
+            symbols=self._symbols,
+            shared_capital_portfolio=self._shared_capital_portfolio,
+            data_integrity_passed=all(
+                not any(
+                    finding.category.value == "data_integrity"
+                    for finding in (fold.test_validation.findings if fold.test_validation else ())
+                )
+                for fold in folds
+            ),
+            leakage_passed=all(
+                fold.test_validation is not None
+                and fold.test_validation.leakage_passed
+                for fold in folds
+            ),
+            plausibility_review_required=any(
+                finding.category.value == "plausibility"
+                for fold in folds
+                for finding in (fold.test_validation.findings if fold.test_validation else ())
+            ),
+        )
+        return NestedWalkForwardResult(
+            **{
+                **completed.__dict__,
+                "reliability_report": reliability,
+                "robustness_evidence": self._robustness_evidence,
+            }
         )
 
     @staticmethod

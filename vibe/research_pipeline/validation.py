@@ -17,6 +17,10 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vibe.backtester.analysis.metrics import BacktestResult
+from vibe.backtester.core.integrity import (
+    EngineIntegrityCategory,
+    EngineIntegrityStatus,
+)
 from vibe.research_pipeline.contracts import (
     RunEvidence,
     Severity,
@@ -352,6 +356,10 @@ class MetricValidator:
 
     def validate(self, validation_input: ValidationInput) -> ValidationReport:
         findings: list[ValidationFinding] = []
+        session_returns = self._check_engine_integrity(validation_input, findings)
+        # Persistence-boundary cross-checks remain here as defence in depth:
+        # they compare the engine report/result with independently built
+        # RunEvidence. The simulator-owned verdict itself is never rebuilt.
         self._check_mathematics(validation_input, findings)
         self._check_cross_metrics(validation_input, findings)
         session_returns = self._check_equity_metrics(validation_input, findings)
@@ -400,6 +408,65 @@ class MetricValidator:
                 == validation_input.current_registry_hash
             ),
         )
+
+    def _check_engine_integrity(
+        self,
+        value: ValidationInput,
+        findings: list[ValidationFinding],
+    ) -> Optional[pd.Series]:
+        """Require the engine's immutable report instead of rebuilding it here."""
+        report = getattr(value.result, "engine_integrity_report", None)
+        if report is None:
+            findings.append(
+                _finding(
+                    "ENGINE-001",
+                    ValidationCategory.HARD_INVARIANT,
+                    Severity.BLOCKING,
+                    "Engine-integrity evidence is absent; research execution fails closed.",
+                    expected="EngineIntegrityReport with status PASS",
+                )
+            )
+            return None
+        if report.status is not EngineIntegrityStatus.PASS:
+            for item in report.findings:
+                if not item.applicable or item.passed:
+                    continue
+                category = (
+                    ValidationCategory.ACCOUNTING
+                    if item.category is EngineIntegrityCategory.ACCOUNTING
+                    else ValidationCategory.EXECUTION_REALISM
+                    if item.category in {
+                        EngineIntegrityCategory.EXECUTION_MECHANICS,
+                        EngineIntegrityCategory.CASH_LEVERAGE_POSITION,
+                        EngineIntegrityCategory.SESSION_END_STATE,
+                        EngineIntegrityCategory.EXECUTION_MODEL_IDENTITY,
+                    }
+                    else ValidationCategory.HARD_INVARIANT
+                )
+                findings.append(
+                    _finding(
+                        item.check_id,
+                        category,
+                        Severity.BLOCKING,
+                        "Engine-integrity check failed.",
+                        observed=item.observed,
+                        expected=str(item.expected),
+                        context={
+                            "residual": item.residual,
+                            "engine_category": item.category.value,
+                            **dict(item.context),
+                        },
+                    )
+                )
+        curve = value.result.equity.equity_curve
+        if (
+            isinstance(curve, pd.Series)
+            and isinstance(curve.index, pd.DatetimeIndex)
+            and not curve.empty
+        ):
+            closes = curve.groupby(curve.index.normalize()).last()
+            return (closes / closes.shift(1) - 1).iloc[1:]
+        return pd.Series(dtype=float)
 
     def _check_mathematics(
         self, value: ValidationInput, findings: list[ValidationFinding]

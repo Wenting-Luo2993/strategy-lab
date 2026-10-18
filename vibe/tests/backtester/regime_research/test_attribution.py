@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from vibe.backtester.analysis.regime_research.attribution import TradeAttributor
+from vibe.research_pipeline.regime_research.attribution import TradeAttributor
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import type {
   ResearchMetric,
   ResearchPublication,
   ResearchPublicationRow,
+  ResearchRunSummary,
   ResearchValidation,
 } from "./researchTypes.ts";
 
@@ -114,6 +115,39 @@ export function decodeResearchPublication(row: ResearchPublicationRow): Research
     metrics: decodeMetrics(safePayload?.metrics),
     evidence: decodeEvidence(record(safePayload?.evidence)),
     validation: decodeValidation(record(safePayload?.validation)),
+    engineIntegrity: decodeEngineIntegrity(record(safePayload?.engine_integrity)),
+    procedureExecution: string(safePayload?.procedure_execution),
+    researchReliability: decodeReliability(safePayload?.research_reliability),
+  };
+}
+
+function decodeReliability(value: unknown): ResearchRunSummary["researchReliability"] {
+  return ["reliable", "rejected", "inconclusive", "review_required"].includes(String(value))
+    ? value as ResearchRunSummary["researchReliability"] : "not_assessed";
+}
+
+function decodeEngineIntegrity(value: Record<string, unknown> | null): ResearchRunSummary["engineIntegrity"] {
+  const status = value?.status === "pass" || value?.status === "fail"
+    ? value.status : "not_assessed";
+  const report = record(value?.report);
+  const rawFindings = Array.isArray(report?.findings) ? report.findings : [];
+  return {
+    status,
+    findings: rawFindings.flatMap((item) => {
+      const finding = record(item);
+      const checkId = string(finding?.check_id);
+      if (!checkId) return [];
+      return [{
+        checkId,
+        category: string(finding?.category) ?? "unknown",
+        passed: Boolean(finding?.passed),
+        observed: finding?.observed ?? null,
+        expected: finding?.expected ?? null,
+        residual: number(finding?.residual),
+        applicable: finding?.applicable !== false,
+        context: record(finding?.context) ?? {},
+      }];
+    }),
   };
 }
 

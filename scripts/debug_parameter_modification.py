@@ -9,7 +9,7 @@ from copy import deepcopy
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from vibe.backtester.analysis.parameter_sweep import ParameterDefinition, ParameterSweep
+from vibe.research_pipeline.parameter_sweep import ParameterDefinition, ParameterSweep
 
 
 def test_parameter_modification():

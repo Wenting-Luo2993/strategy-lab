@@ -71,6 +71,36 @@ test("decoder preserves published trust, evidence, validation, and lineage field
   }]);
 });
 
+test("decoder keeps integrity, procedure, and reliability as separate statuses", () => {
+  const row = structuredClone(researchFixtureRows[0]);
+  row.payload.engine_integrity = {
+    status: "pass",
+    report: {
+      findings: [{
+        check_id: "ENG-CROSS-001",
+        category: "cross_metric_consistency",
+        passed: true,
+        observed: 12,
+        expected: 12,
+        residual: 0,
+        applicable: true,
+        context: { ledger: "aggregate" },
+      }],
+    },
+  };
+  row.payload.procedure_execution = "completed";
+  row.payload.research_reliability = "rejected";
+
+  const decoded = decodeResearchPublication(row);
+
+  assert.equal(decoded.kind, "run_summary");
+  assert.equal(decoded.engineIntegrity.status, "pass");
+  assert.equal(decoded.engineIntegrity.findings[0].checkId, "ENG-CROSS-001");
+  assert.deepEqual(decoded.engineIntegrity.findings[0].context, { ledger: "aggregate" });
+  assert.equal(decoded.procedureExecution, "completed");
+  assert.equal(decoded.researchReliability, "rejected");
+});
+
 test("decoder refuses prohibited event-level aliases instead of exposing raw data", () => {
   const row = structuredClone(researchFixtureRows[0]);
   row.payload.evidence.raw_bars = [{ close: 1 }];

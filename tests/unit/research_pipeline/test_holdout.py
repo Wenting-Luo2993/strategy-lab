@@ -321,9 +321,9 @@ class TestLoaderIntegration:
         return path
 
     def _loader(self, parquet_dir, **kw):
-        from vibe.backtester.data.parquet_loader import ParquetLoader
+        from vibe.research_pipeline.data_loader import GuardedParquetLoader
 
-        return ParquetLoader(parquet_dir, ["QQQ"], **kw)
+        return GuardedParquetLoader(parquet_dir, ["QQQ"], **kw)
 
     @pytest.mark.asyncio
     async def test_explicit_holdout_request_refused(

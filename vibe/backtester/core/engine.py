@@ -14,6 +14,7 @@ from vibe.backtester.core.execution_realism import (
     EXECUTION_MODEL_VERSION,
 )
 from vibe.backtester.core.reconciliation import reconcile_portfolio
+from vibe.backtester.core.integrity import build_engine_integrity_report
 from vibe.common.risk.position_sizer import PositionSizer
 from vibe.backtester.core.execution.config import ExecutionConfig
 from vibe.backtester.core.execution.simulator import ExecutionSimulator
@@ -544,7 +545,7 @@ class BacktestEngine:
             if graded_start is not None
             else start_date
         )
-        return PerformanceAnalyzer.analyze(
+        result = PerformanceAnalyzer.analyze(
             trades=portfolio.trade_history,
             equity_curve=portfolio.equity_curve,
             initial_capital=self.initial_capital,
@@ -587,6 +588,15 @@ class BacktestEngine:
                 "warmup_sessions_excluded": float(len(warmup_sessions_seen)),
             },
         )
+        result.engine_integrity_report = build_engine_integrity_report(
+            result,
+            reconciliation,
+            max_gross_leverage=self.execution_realism.max_gross_leverage,
+            enforce_buying_power=self.execution_realism.enforce_buying_power,
+            open_position_count=len(portfolio.positions),
+            pending_order_count=len(self.pending_orders),
+        )
+        return result
 
     def _clamp_fill_to_buying_power(
         self,

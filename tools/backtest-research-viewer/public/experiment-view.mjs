@@ -5,17 +5,26 @@ const number = (value) => Number.isFinite(value) ? value.toFixed(3) : "Not recor
 const riskMultiple = (value) => Number.isFinite(value) ? `${number(value)}R` : "Unavailable";
 const parameters = (value) => Object.entries(value || {})
   .map(([key, item]) => `${key} = ${JSON.stringify(item)}`).join(" · ");
-const status = (value) => `<span class="badge ${value === "completed" ? "good" : ["execution_failed", "validation_failed"].includes(value) ? "danger" : "warning"}">${escape(value || "Not evaluated")}</span>`;
+const status = (value) => {
+  const normalized = value || "not_assessed";
+  const tone = ["completed", "reliable", "pass", "passed"].includes(normalized)
+    ? "good"
+    : ["execution_failed", "validation_failed", "rejected", "fail", "failed"].includes(normalized)
+      ? "danger" : "warning";
+  return `<span class="badge ${tone}">${escape(normalized === "not_assessed" ? "Not assessed" : normalized)}</span>`;
+};
 const table = (headings, rows) => `<div class="table-wrap"><table><thead><tr>${headings.map((heading) => `<th scope="col">${escape(heading)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 
 export function experimentList(items) {
-  return table(["Experiment", "Controlled settings", "Folds", "Execution"], items.map((item) => `
+  return table(["Experiment", "Controlled settings", "Folds", "Procedure / reliability"], items.map((item) => `
     <tr><td><button class="link" data-experiment="${escape(item.experimentId)}">${escape(item.title)}</button>
       <small>${escape(item.symbol)} · ${escape(item.createdAt)}</small></td>
       <td>${(item.axes || []).map((axis) => `${escape(axis.name)}: ${escape(axis.values.join(" / "))}`).join("<br>") || "Definition unavailable"}</td>
       <td>${escape(item.completedFolds ?? "—")} / ${escape(item.expectedFolds ?? "—")} completed
         <small>${escape(item.linkedRuns)} linked segment runs</small></td>
-      <td>${status(item.state)}${item.recordingErrors ? "<small>Recording errors — inspect coverage</small>" : ""}</td></tr>`));
+      <td><small>Procedure</small>${status(item.state)}
+        <small>Research reliability</small>${status(item.reliabilityVerdict)}
+        ${item.recordingErrors ? "<small>Recording errors — inspect coverage</small>" : ""}</td></tr>`));
 }
 
 function runLink(runs, foldIndex, role, candidateId) {
@@ -96,9 +105,13 @@ export function experimentDetail(experiment) {
     </details>`;
   }).join("");
   const stitched = result?.stitched_oos;
+  const reliability = experiment.reliability;
+  const reliabilityCriteria = reliability?.criteria || [];
   return `
     <header class="experiment-heading"><p class="eyebrow">CONTROLLED PARAMETER EXPERIMENT · ${escape(definition.symbol)}</p>
-      <h2 tabindex="-1">${escape(experiment.title)}</h2>${status(experiment.state)}
+      <h2 tabindex="-1">${escape(experiment.title)}</h2>
+      <div><small>Procedure execution</small>${status(experiment.state)}
+      <small>Research reliability</small>${status(reliability?.verdict || "not_assessed")}</div>
       <p>${(definition.axes || []).map((axis) => `<strong>${escape(axis.name)}:</strong> ${escape(axis.values.join(" / "))} <small>(${escape(axis.path)})</small>`).join("<br>")}</p></header>
     ${definition.methodology_version === "synthetic_demo/v1" ? '<p class="notice"><strong>SYNTHETIC UI DEMO.</strong> Generated test data, not market backtest results or evidence of strategy performance.</p>' : ""}
     <div class="notice"><strong>How selection works:</strong> ${escape(definition.training_policy)}
@@ -109,7 +122,16 @@ export function experimentDetail(experiment) {
       <div><dt>Completed folds</dt><dd>${escape(result?.n_folds_completed ?? "Not recorded")} / ${planned.length}</dd></div>
       <div><dt>Stitched held-out expectancy</dt><dd>${stitched ? `${riskMultiple(stitched.expectancy_r)} · ${escape(stitched.n_trades)} trades` : "Unavailable — no completed all-fold OOS aggregate"}</dd></div>
       <div><dt>Test-fold net P&L sum (capital resets per fold)</dt><dd>${stitched ? escape(stitched.fold_net_pnl.reduce((sum, value) => sum + value, 0).toLocaleString(undefined, { style: "currency", currency: "USD" })) : "Unavailable"}</dd></div>
+      <div><dt>Reliability policy</dt><dd>${escape(reliability?.policyHash || "Not assessed")}</dd></div>
+      <div><dt>Methodology freeze</dt><dd>${experiment.frozen ? `${escape(experiment.frozen.frozenBy)} · ${escape(experiment.frozen.frozenAt)}` : "Not frozen"}</dd></div>
     </dl>
+    ${reliabilityCriteria.length ? `<h3>Reliability criteria</h3>${table(
+      ["Criterion", "Outcome", "Observed", "Expected"],
+      reliabilityCriteria.map((item) => `<tr><td>${escape(item.criterion_id || item.criterionId)}</td>
+        <td>${status(item.outcome)}</td><td>${escape(JSON.stringify(item.observed ?? null))}</td>
+        <td>${escape(item.expected)}</td></tr>`),
+    )}` : '<p class="notice">Research reliability: Not assessed. Historical experiments are not retroactively classified.</p>'}
+    ${experiment.finalHoldout ? `<p class="notice"><strong>Final holdout:</strong> ${escape(experiment.finalHoldout.verdict)} · attributed to ${escape(experiment.finalHoldout.requestedBy)} at ${escape(experiment.finalHoldout.executedAt)}</p>` : ""}
     ${result?.reason ? `<p class="error">${escape(result.reason)}</p>` : ""}
     ${definition.record_test_only ? '<p class="notice">Test-only recording: candidate evaluation summaries are retained, but training/validation trade and equity drill-downs were not requested.</p>' : ""}
     ${result?.recording_errors?.length ? `<p class="error">Recording coverage is incomplete: ${escape(result.recording_errors.join("; "))}</p>` : ""}

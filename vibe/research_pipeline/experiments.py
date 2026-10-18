@@ -49,6 +49,7 @@ class ExperimentRecorder:
         axes: list[dict[str, Any]], symbol: str, strategy_id: str,
         methodology_version: str, record_test_only: bool = False,
         reference_configuration: dict[str, Any] | None = None,
+        reliability_policy: Any | None = None,
     ) -> None:
         self.store = store
         self.plan = plan
@@ -76,8 +77,13 @@ class ExperimentRecorder:
             "selection_policy": "Validation plateau medoid (selector v1, tolerance 0.10). Freeze before test.",
             "record_test_only": record_test_only,
             "reference_configuration": reference_configuration,
-        })
+        }, reliability_policy=reliability_policy)
         self.recording_errors: list[str] = []
+        self.reliability_policy = (
+            store.get_reliability_policy(reliability_policy.policy_hash)
+            if reliability_policy is not None
+            else None
+        )
 
     def record_run(self, candidate: Any, segment: Any, outcome: Any) -> None:
         try:
@@ -137,6 +143,16 @@ class ExperimentRecorder:
                     **_metrics(fold.test_result.result),
                 } if fold.test_result is not None and fold.test_validation is not None else None,
             })
+        if (
+            result.reliability_report is not None
+            and self.reliability_policy is not None
+        ):
+            self.store.record_study_reliability(
+                self.experiment_id,
+                self.reliability_policy,
+                result.reliability_report,
+                robustness=result.robustness_evidence,
+            )
         self.store.finish_experiment(self.experiment_id, result.state.value, {
             "folds": folds,
             "n_folds_expected": result.n_folds_expected,
@@ -148,4 +164,8 @@ class ExperimentRecorder:
                 "expectancy_r": result.stitched_oos.expectancy_r,
                 "fold_net_pnl": list(result.stitched_oos.fold_net_pnl),
             } if result.stitched_oos else None,
+            "reliability": (
+                result.reliability_report.model_dump(mode="json")
+                if result.reliability_report is not None else None
+            ),
         })

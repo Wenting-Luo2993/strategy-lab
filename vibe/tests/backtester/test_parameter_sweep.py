@@ -4,7 +4,7 @@ Unit tests for parameter sensitivity testing framework.
 import pytest
 from pathlib import Path
 
-from vibe.backtester.analysis.parameter_sweep import ParameterDefinition, ParameterSweep
+from vibe.research_pipeline.parameter_sweep import ParameterDefinition, ParameterSweep
 
 
 def test_parameter_definition():
@@ -189,8 +189,8 @@ def test_generate_combinations():
 
 import yaml as _yaml
 
-from vibe.backtester.analysis.parameter_sweep import ParameterDefinition
-from vibe.backtester.analysis.sensitivity_runner import (
+from vibe.research_pipeline.parameter_sweep import ParameterDefinition
+from vibe.research_pipeline.sensitivity_runner import (
     drop_inert_parameters,
     get_base_ruleset_for_strategy,
     get_parameters_for_strategy,
@@ -260,7 +260,7 @@ def test_shipped_orb_sweep_drops_volume_threshold_today():
 # ---------------------------------------------------------------------------
 
 def test_window_end_covers_the_whole_final_session():
-    from vibe.backtester.analysis.sensitivity_runner import parse_window_end
+    from vibe.research_pipeline.sensitivity_runner import parse_window_end
 
     end = parse_window_end("2022-03-31")
     assert end.date().isoformat() == "2022-03-31"
@@ -278,7 +278,7 @@ def test_the_run_window_agrees_with_the_exchange_calendar():
     """
     from datetime import date
 
-    from vibe.backtester.analysis.sensitivity_runner import (
+    from vibe.research_pipeline.sensitivity_runner import (
         parse_window_end,
         parse_window_start,
     )

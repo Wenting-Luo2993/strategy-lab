@@ -206,6 +206,8 @@ function renderRuns(result) {
         <td>
           ${escapeHtml(run.symbol || "—")}
           <small>${escapeHtml(formatSessionRange(run))}</small>
+          <small>Engine integrity: ${escapeHtml(run.engineIntegrity === "not_assessed" ? "Not assessed" : run.engineIntegrity)}</small>
+          <small>Procedure: ${escapeHtml(run.procedureExecution)}</small>
         </td>
         <td class="${signClass(run.netReturnPct)}">
           ${escapeHtml(run.netReturnPct === null || run.netReturnPct === undefined
@@ -333,6 +335,16 @@ async function showRun(runId) {
         })}
       </section>
       <section role="tabpanel" id="panel-validation" aria-labelledby="tab-validation" hidden>
+        ${detailGrid("Decision boundaries", {
+          "Engine integrity": detail.engineIntegrity?.status || "Not assessed",
+          "Procedure execution": run.state,
+          "Research reliability": "Study-level only; open the owning experiment",
+        })}
+        ${cards("Engine-integrity findings", detail.engineIntegrity?.report?.findings || [], (finding) => `
+          <article class="finding ${finding.passed ? "" : "blocking"}"><strong>${escapeHtml(finding.check_id)} · ${escapeHtml(finding.category)}</strong>
+          <p>${finding.passed ? "Passed" : "Failed"}</p>
+          <small>Observed ${escapeHtml(formatValue(finding.observed))} · expected ${escapeHtml(formatValue(finding.expected))} · residual ${escapeHtml(formatValue(finding.residual))}</small></article>
+        `, "Engine integrity: Not assessed. Historical runs are not retroactively classified.")}
         ${detailGrid("Validation", {
           "Profile / scope": detail.validation ? `${detail.validation.profileName} / ${detail.validation.scope}` : "No report",
           "Target state": detail.validation?.targetState,

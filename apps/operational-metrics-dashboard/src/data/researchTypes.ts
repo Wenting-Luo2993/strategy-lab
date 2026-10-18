@@ -40,6 +40,22 @@ export type ResearchValidation = {
   };
 };
 
+export type EngineIntegrityFinding = {
+  checkId: string;
+  category: string;
+  passed: boolean;
+  observed: unknown;
+  expected: unknown;
+  residual: number | null;
+  applicable: boolean;
+  context: Record<string, unknown>;
+};
+
+export type ResearchEngineIntegrity = {
+  status: "pass" | "fail" | "not_assessed";
+  findings: EngineIntegrityFinding[];
+};
+
 export type ResearchExecutionIdentity = {
   executionModelVersion: number | null;
   intrabarExitResolution: string | null;
@@ -94,6 +110,9 @@ export type ResearchRunSummary = ResearchPublicationBase & {
   metrics: ResearchMetric[];
   evidence: ResearchEvidence;
   validation: ResearchValidation;
+  engineIntegrity: ResearchEngineIntegrity;
+  procedureExecution: string | null;
+  researchReliability: "reliable" | "rejected" | "inconclusive" | "review_required" | "not_assessed";
 };
 
 export type ResearchRegistryRecord = ResearchPublicationBase & {

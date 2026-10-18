@@ -504,6 +504,60 @@ async function startFixtureServer() {
   };
 }
 
+async function startIntegrityFixtureServer() {
+  const fixture = createFixture();
+  const database = new DatabaseSync(fixture.dbPath);
+  database.exec(`
+    INSERT INTO schema_migrations VALUES
+      (11, '2026-10-17'), (12, '2026-10-18');
+    CREATE TABLE engine_integrity_reports (
+      run_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      engine_version INTEGER NOT NULL,
+      metric_calculation_version INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      recorded_at TEXT NOT NULL
+    );
+  `);
+  database.prepare(`
+    INSERT INTO engine_integrity_reports VALUES (?, 'pass', 1, 2, ?, ?)
+  `).run(
+    "00000000-0000-7000-8000-000000000001",
+    JSON.stringify({
+      status: "pass",
+      findings: [{
+        check_id: "ENG-CROSS-001",
+        category: "cross_metric_consistency",
+        passed: true,
+        observed: 12,
+        expected: 12,
+        residual: 0,
+        applicable: true,
+        context: { source: "ledger" },
+      }],
+    }),
+    "2026-10-18T00:00:00Z",
+  );
+  database.close();
+  const viewer = createViewerServer({
+    dbPath: fixture.dbPath,
+    host: "127.0.0.1",
+    port: 0,
+    repositoryRoot: fixture.directory,
+    artifactStagingRoot: fixture.artifactStagingRoot,
+  });
+  const address = await viewer.listen();
+  return {
+    ...fixture,
+    viewer,
+    origin: `http://127.0.0.1:${address.port}`,
+    async cleanupAll() {
+      await viewer.close();
+      fixture.cleanup();
+    },
+  };
+}
+
 function rawRequest(origin, path, options = {}) {
   const target = new URL(path, origin);
   return new Promise((resolvePromise, rejectPromise) => {
@@ -730,6 +784,33 @@ test("surfaces the sample role on each run so it cannot be mistaken", async () =
       "/api/runs/00000000-0000-7000-8000-000000000001",
     );
     assert.equal(detail.json.run.segmentRole, "test");
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("surfaces engine integrity while historical decisions remain not assessed", async () => {
+  const fixture = await startIntegrityFixtureServer();
+  try {
+    const list = await rawRequest(fixture.origin, "/api/runs?page=1&pageSize=10");
+    const assessed = list.json.items.find((item) => item.displayAlias === "RUN-000001");
+    const historical = list.json.items.find((item) => item.displayAlias === "RUN-000002");
+    assert.equal(assessed.engineIntegrity, "pass");
+    assert.equal(historical.engineIntegrity, "not_assessed");
+
+    const detail = await rawRequest(
+      fixture.origin,
+      "/api/runs/00000000-0000-7000-8000-000000000001",
+    );
+    assert.equal(detail.json.engineIntegrity.status, "pass");
+    assert.equal(
+      detail.json.engineIntegrity.report.findings[0].check_id,
+      "ENG-CROSS-001",
+    );
+    assert.deepEqual(
+      detail.json.engineIntegrity.report.findings[0].context,
+      { source: "ledger" },
+    );
   } finally {
     await fixture.cleanupAll();
   }

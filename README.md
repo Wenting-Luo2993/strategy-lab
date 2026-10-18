@@ -188,6 +188,9 @@ adapter.close()
 ### Backtester (`vibe/backtester/`)
 
 - **Event-driven engine** — processes data bar-by-bar, matches live trading execution flow
+- **Engine integrity evidence** — single-symbol and shared-capital portfolio
+  results carry an immutable, versioned PASS/FAIL report for simulator-owned
+  arithmetic, accounting, execution, leverage, and session-end invariants.
 - **Realistic fills** — stop-market model: fills at trigger price on bar high/low, not bar close
 - **Configurable slippage** — `--slippage-ticks` CLI flag; defaults to 2 ticks
 - **Performance analytics** — Sharpe ratio, max drawdown, win rate, expectancy, R-multiples
@@ -206,8 +209,19 @@ adapter.close()
   incomparable. After import, reads come from SQLite only.
 - **Execution identity** — new experiments retain the complete realistic
   execution-model identity and version.
-- **Final-holdout enforcement** — promotion validation fails when the same
-  research lineage touches the locked final holdout more than once.
+- **Reliability Policy v1** — nested studies separately report procedure state
+  and deterministic `RELIABLE`, `REJECTED`, `INCONCLUSIVE`, or
+  `REVIEW_REQUIRED` research reliability. A completed simulation is not an
+  economic-certainty claim.
+- **Methodology freeze and final-holdout enforcement** — frozen definitions are
+  immutable, attributed to `Bloom`, and require a pre-authorized token that is
+  atomically claimed before any ruleset or holdout-data read. Authorization
+  follows `AUTHORIZED -> CLAIMED -> COMPLETED/INTERRUPTED`; consumed claims
+  cannot be retried or recreated.
+- **Explicit retention** — summaries are retained indefinitely. Detailed
+  evidence for frozen/final-holdout studies is protected; ordinary exploratory
+  trade/equity detail can be pruned only through the explicit CLI, never
+  automatically.
 - **Durable remote publication** — terminal summaries and registry identity
   records enter a same-file SQLite outbox atomically, then publish to Supabase
   in deterministic order with idempotent upserts, bounded retry, dead letters,
@@ -221,7 +235,8 @@ The database path defaults outside the repository. Override it with
 `RESEARCH__DB_PATH`; do not place an active SQLite file in Git or a synced
 working tree.
 
-Review the current device's schema v8 database with the dependency-light local
+Review current and historical schema v10+ databases (the current writer schema
+is v12) with the dependency-light local
 viewer (Node.js 22.13.0+):
 
 ```powershell
@@ -234,6 +249,26 @@ be selected only at process startup with `--db C:\local\research.sqlite3`.
 The server is read-only/query-only, rejects non-loopback binds and Host headers,
 and exposes only allowlisted, parameterized, paginated views. See
 `tools/backtest-research-viewer/README.md`.
+
+Research governance commands:
+
+```powershell
+# Freeze a predeclared study definition (defaults/validates authority as Bloom)
+python scripts\manage_research_study.py freeze --help
+
+# Pre-authorize, then execute the dedicated exactly-once final-holdout path.
+# The execution verifies the frozen ruleset, universe, datasets, candidate
+# axes, engine/metric versions, and lock hash, and records a full FINAL_OOS run.
+python scripts\manage_research_study.py authorize-final-holdout --help
+python scripts\manage_research_study.py final-holdout --help
+
+# Preview or explicitly confirm pruning of ordinary local detail
+python scripts\manage_research_retention.py --help
+```
+
+The final holdout remains governed by `config/final_holdout.yaml`. No command
+contacts Supabase or uploads market data unless separately configured and
+authorized.
 
 To enable trusted local publication, apply
 `docs/backtest-research-summaries/supabase-research-schema.sql`, then set

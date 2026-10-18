@@ -43,13 +43,22 @@ from vibe.backtester.core.execution_realism import (
 from vibe.backtester.core.fill_simulator import FillResult, FillSimulator
 from vibe.backtester.core.portfolio import PortfolioManager, parse_hhmm
 from vibe.backtester.core.reconciliation import reconcile_portfolio
+from vibe.backtester.core.integrity import build_engine_integrity_report
 from vibe.backtester.data.parquet_loader import ParquetLoader
 from vibe.backtester.runner import RuleSetRunner
 from vibe.common.models.bar import Bar
 from vibe.common.ruleset.models import StrategyRuleSet
-from vibe.research_pipeline.hashing import hash_object
+import hashlib
+import json
 
 _ET = ZoneInfo("America/New_York")
+
+
+def hash_object(value: object) -> str:
+    payload = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 PORTFOLIO_SIMULATION_VERSION = 1
 
 
@@ -529,6 +538,14 @@ class PortfolioBacktestEngine(BacktestEngine):
             ruleset_name=self.ruleset.name,
             ruleset_version=self.ruleset.version,
             execution_diagnostics=evidence,
+        )
+        aggregate.engine_integrity_report = build_engine_integrity_report(
+            aggregate,
+            reconciliation,
+            max_gross_leverage=self.execution_realism.max_gross_leverage,
+            enforce_buying_power=self.execution_realism.enforce_buying_power,
+            open_position_count=len(portfolio.positions),
+            pending_order_count=len(pending),
         )
         identity = {
             **self.portfolio_config.identity(),

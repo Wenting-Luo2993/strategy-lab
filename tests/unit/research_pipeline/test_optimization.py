@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from vibe.backtester.core.portfolio_engine import PortfolioSimulationConfig
 from vibe.research_pipeline.contracts import (
     SegmentRole,
     SessionSegment,
@@ -14,8 +15,10 @@ from vibe.research_pipeline.contracts import (
 )
 from vibe.research_pipeline.lifecycle import RunState
 from vibe.research_pipeline.optimization import (
+    CandidateSpec,
     Optimizer,
     ParameterAxis,
+    PortfolioRulesetSegmentExecutor,
     RulesetSegmentExecutor,
     SelectionIncompleteError,
     Selector,
@@ -203,6 +206,42 @@ def test_ruleset_executor_verifies_fingerprinted_dataset_once(
     executor(candidate, segment)
 
     assert checks == [(tmp_path, "QQQ")]
+
+
+def test_portfolio_executor_produces_shared_capital_evidence(monkeypatch):
+    base = RuleSetLoader.from_name("orb_production").model_dump(mode="python")
+    base["instruments"]["symbols"] = ["QQQ", "SPY"]
+    observed = {}
+    aggregate = SimpleNamespace(execution_diagnostics={})
+
+    class _PortfolioEngine:
+        def __init__(self, **kwargs):
+            observed["constructor"] = kwargs
+
+        def run(self, **kwargs):
+            observed["run"] = kwargs
+            return SimpleNamespace(aggregate=aggregate)
+
+    monkeypatch.setattr(
+        "vibe.research_pipeline.optimization.PortfolioBacktestEngine",
+        _PortfolioEngine,
+    )
+    monkeypatch.setattr(
+        "vibe.research_pipeline.optimization.load_lock",
+        lambda: SimpleNamespace(assert_within_dev=lambda **_kwargs: None),
+    )
+    executor = PortfolioRulesetSegmentExecutor(
+        base,
+        {},
+        portfolio_config=PortfolioSimulationConfig(max_symbol_exposure_pct=0.5),
+    )
+
+    outcome = executor(CandidateSpec.create({}, ()), _segment(SegmentRole.TRAIN))
+
+    assert observed["run"]["symbols"] == ("QQQ", "SPY")
+    assert outcome.result is aggregate
+    assert aggregate.execution_diagnostics["shared_capital_portfolio"] == 1.0
+    assert aggregate.execution_diagnostics["portfolio_symbol_count"] == 2.0
 
 
 def test_optimizer_uses_train_scope_and_reconciles_candidate_counts():

@@ -21,7 +21,8 @@ import socket
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from enum import Enum
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -63,8 +64,48 @@ from vibe.research_pipeline.validation import (
     ValidationReport,
     ValidationScope,
 )
+from vibe.backtester.core.integrity import EngineIntegrityReport
+from vibe.research_pipeline.methodology import (
+    ClaimedFinalHoldoutAuthorization,
+    FinalHoldoutAuthorization,
+    FinalHoldoutAuthorizationState,
+    FrozenStudyDefinition,
+)
+from vibe.research_pipeline.reliability import (
+    ReliabilityPolicy,
+    RobustnessEvidence,
+    StudyReliabilityReport,
+)
 
 __all__ = ["SqliteResearchStore", "SqliteRunRecord"]
+
+
+def _dataclass_json(value: Any) -> Any:
+    def convert(item: Any) -> Any:
+        if isinstance(item, Enum):
+            return item.value
+        if isinstance(item, tuple):
+            return [convert(child) for child in item]
+        if isinstance(item, list):
+            return [convert(child) for child in item]
+        if isinstance(item, dict):
+            converted: dict[str, Any] = {}
+            for key, child in item.items():
+                if (
+                    key == "context"
+                    and isinstance(child, tuple)
+                    and all(isinstance(pair, tuple) and len(pair) == 2 for pair in child)
+                ):
+                    converted[str(key)] = {
+                        str(pair_key): convert(pair_value)
+                        for pair_key, pair_value in child
+                    }
+                else:
+                    converted[str(key)] = convert(child)
+            return converted
+        return item
+
+    return convert(asdict(value))
 
 def _uuid7() -> str:
     """Return a time-ordered UUIDv7 string using only the stdlib.
@@ -183,16 +224,43 @@ class SqliteResearchStore:
     def close(self) -> None:
         self._conn.close()
 
-    def start_experiment(self, title: str, definition: dict[str, Any]) -> str:
+    def start_experiment(
+        self,
+        title: str,
+        definition: dict[str, Any],
+        *,
+        reliability_policy: ReliabilityPolicy | None = None,
+    ) -> str:
         """Create a study execution, separate from reusable segment-run identity."""
         if not title.strip():
             raise ValueError("Experiment title must not be empty")
         experiment_id = _uuid7()
         now = schema.utc_now_iso()
         with self._conn:
+            if reliability_policy is not None:
+                self._conn.execute(
+                    """INSERT OR IGNORE INTO reliability_policies
+                       VALUES (?, ?, ?, ?)""",
+                    (
+                        reliability_policy.policy_hash,
+                        reliability_policy.version,
+                        reliability_policy.model_dump_json(),
+                        now,
+                    ),
+                )
             self._conn.execute(
-                "INSERT INTO research_experiments VALUES (?, ?, 'running', ?, NULL, ?, ?)",
-                (experiment_id, title, json.dumps(definition, allow_nan=False), now, now),
+                """INSERT INTO research_experiments
+                   (experiment_id, title, state, definition_json, result_json,
+                    created_at, updated_at, reliability_policy_hash)
+                   VALUES (?, ?, 'running', ?, NULL, ?, ?, ?)""",
+                (
+                    experiment_id,
+                    title,
+                    json.dumps(definition, allow_nan=False),
+                    now,
+                    now,
+                    reliability_policy.policy_hash if reliability_policy else None,
+                ),
             )
         return experiment_id
 
@@ -220,6 +288,432 @@ class SqliteResearchStore:
             ).rowcount
             if changed != 1:
                 raise ImmutableRecordError("Experiment is absent or already finished")
+
+    def record_engine_integrity(
+        self, run_id: str, report: EngineIntegrityReport
+    ) -> None:
+        self._assert_not_terminal(run_id)
+        with self._conn:
+            self._conn.execute(
+                """INSERT INTO engine_integrity_reports
+                   (run_id, status, engine_version, metric_calculation_version,
+                    payload_json, recorded_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    report.status.value,
+                    report.engine_version,
+                    report.metric_calculation_version,
+                    json.dumps(_dataclass_json(report), allow_nan=False),
+                    schema.utc_now_iso(),
+                ),
+            )
+
+    def record_study_reliability(
+        self,
+        experiment_id: str,
+        policy: ReliabilityPolicy,
+        report: StudyReliabilityReport,
+        robustness: RobustnessEvidence | None = None,
+    ) -> None:
+        if report.policy_hash != policy.policy_hash:
+            raise ValueError("Reliability report does not match supplied policy")
+        now = schema.utc_now_iso()
+        with self._conn:
+            experiment = self._conn.execute(
+                """SELECT reliability_policy_hash FROM research_experiments
+                   WHERE experiment_id = ?""",
+                (experiment_id,),
+            ).fetchone()
+            if experiment is None:
+                raise StoreError(f"Unknown experiment {experiment_id!r}")
+            registered_hash = experiment["reliability_policy_hash"]
+            if registered_hash is None:
+                raise ValidationRequiredError(
+                    "Reliability policy must be registered before candidate execution"
+                )
+            if registered_hash != policy.policy_hash:
+                raise ImmutableRecordError(
+                    "Reliability policy hash differs from the pre-registered policy"
+                )
+            self._conn.execute(
+                """INSERT OR IGNORE INTO reliability_policies
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    policy.policy_hash,
+                    policy.version,
+                    policy.model_dump_json(),
+                    now,
+                ),
+            )
+            self._conn.execute(
+                """INSERT INTO study_reliability_reports
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    experiment_id,
+                    report.verdict.value,
+                    report.policy_hash,
+                    report.model_dump_json(),
+                    now,
+                ),
+            )
+            self._conn.executemany(
+                """INSERT INTO study_reliability_criteria
+                   VALUES (?, ?, ?, ?)""",
+                [
+                    (
+                        experiment_id,
+                        criterion.criterion_id,
+                        criterion.outcome.value,
+                        criterion.model_dump_json(),
+                    )
+                    for criterion in report.criteria
+                ],
+            )
+            if robustness is not None:
+                if (
+                    report.robustness_summary.get("provenance_hash")
+                    != robustness.provenance_hash
+                ):
+                    raise ValueError(
+                        "Reliability report robustness provenance does not match "
+                        "the supplied evidence"
+                    )
+                self._conn.execute(
+                    """INSERT INTO robustness_evidence VALUES (?, ?, ?, ?)""",
+                    (
+                        experiment_id,
+                        robustness.provenance_hash,
+                        robustness.model_dump_json(),
+                        now,
+                    ),
+                )
+
+    def get_reliability_policy(self, policy_hash: str) -> ReliabilityPolicy:
+        row = self._conn.execute(
+            """SELECT payload_json FROM reliability_policies
+               WHERE policy_hash = ?""",
+            (policy_hash,),
+        ).fetchone()
+        if row is None:
+            raise StoreError(f"Unknown reliability policy {policy_hash!r}")
+        policy = ReliabilityPolicy.model_validate_json(row["payload_json"])
+        if policy.policy_hash != policy_hash:
+            raise StoreError("Stored reliability policy payload does not match its hash")
+        return policy
+
+    def freeze_study(
+        self, experiment_id: str, definition: FrozenStudyDefinition
+    ) -> str:
+        try:
+            with self._conn:
+                experiment = self._conn.execute(
+                    """SELECT reliability_policy_hash FROM research_experiments
+                       WHERE experiment_id = ?""",
+                    (experiment_id,),
+                ).fetchone()
+                if experiment is None:
+                    raise StoreError(f"Unknown experiment {experiment_id!r}")
+                registered_hash = experiment["reliability_policy_hash"]
+                if registered_hash is None:
+                    raise ValidationRequiredError(
+                        "Study must pre-register its reliability policy before execution"
+                    )
+                if registered_hash != definition.reliability_policy.policy_hash:
+                    raise ImmutableRecordError(
+                        "Frozen reliability policy differs from the policy registered "
+                        "before candidate execution"
+                    )
+                self._conn.execute(
+                    """INSERT OR IGNORE INTO reliability_policies
+                       VALUES (?, ?, ?, ?)""",
+                    (
+                        definition.reliability_policy.policy_hash,
+                        definition.reliability_policy.version,
+                        definition.reliability_policy.model_dump_json(),
+                        schema.utc_now_iso(),
+                    ),
+                )
+                self._conn.execute(
+                    """INSERT INTO frozen_study_definitions
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        experiment_id,
+                        definition.definition_hash,
+                        definition.reliability_policy.policy_hash,
+                        definition.final_holdout_lock_hash,
+                        definition.frozen_at.isoformat(),
+                        definition.frozen_by,
+                        definition.model_dump_json(),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ImmutableRecordError(
+                f"Study {experiment_id!r} is already frozen and immutable"
+            ) from exc
+        return definition.definition_hash
+
+    def authorize_final_holdout(
+        self,
+        experiment_id: str,
+        authorization: FinalHoldoutAuthorization,
+    ) -> str:
+        """Persist a one-use authorization before the runner is invoked."""
+        if self.get_frozen_study(experiment_id) is None:
+            raise ValidationRequiredError(
+                "Final holdout authorization requires an explicitly frozen study"
+            )
+        digest = sha256_hex(authorization.token)
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """INSERT INTO final_holdout_authorizations
+                       (experiment_id, authorization_sha256, requested_by, reason,
+                        state, authorized_at)
+                       VALUES (?, ?, ?, ?, 'authorized', ?)""",
+                    (
+                        experiment_id,
+                        digest,
+                        authorization.requested_by,
+                        authorization.reason,
+                        schema.utc_now_iso(),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ImmutableRecordError(
+                f"Final holdout authorization for {experiment_id!r} already exists"
+            ) from exc
+        return digest
+
+    def claim_final_holdout(
+        self,
+        experiment_id: str,
+        token: str,
+    ) -> ClaimedFinalHoldoutAuthorization:
+        """Atomically consume the pre-authorized token before any external I/O."""
+        digest = sha256_hex(token)
+        claim_id = _uuid7()
+        claimed_at = schema.utc_now_iso()
+        schema.begin_immediate(self._conn)
+        try:
+            changed = self._conn.execute(
+                """UPDATE final_holdout_authorizations
+                   SET state = 'claimed', claimed_at = ?, claim_id = ?
+                   WHERE experiment_id = ? AND authorization_sha256 = ?
+                     AND state = 'authorized'""",
+                (claimed_at, claim_id, experiment_id, digest),
+            ).rowcount
+            if changed != 1:
+                raise ImmutableRecordError(
+                    "Final holdout authorization is absent, invalid, or already consumed"
+                )
+            row = self._conn.execute(
+                """SELECT requested_by, reason FROM final_holdout_authorizations
+                   WHERE experiment_id = ?""",
+                (experiment_id,),
+            ).fetchone()
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return ClaimedFinalHoldoutAuthorization(
+            experiment_id=experiment_id,
+            authorization_sha256=digest,
+            claim_id=claim_id,
+            requested_by=row["requested_by"],
+            reason=row["reason"],
+            claimed_at=datetime.fromisoformat(claimed_at),
+        )
+
+    def interrupt_final_holdout(
+        self,
+        claim: ClaimedFinalHoldoutAuthorization,
+        reason: str,
+    ) -> None:
+        with self._conn:
+            changed = self._conn.execute(
+                """UPDATE final_holdout_authorizations
+                   SET state = 'interrupted', completed_at = ?,
+                       interruption_reason = ?
+                   WHERE experiment_id = ? AND claim_id = ? AND state = 'claimed'""",
+                (
+                    schema.utc_now_iso(),
+                    reason[:500],
+                    claim.experiment_id,
+                    claim.claim_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ImmutableRecordError("Final holdout claim is not active")
+
+    def get_frozen_study(
+        self, experiment_id: str
+    ) -> FrozenStudyDefinition | None:
+        row = self._conn.execute(
+            "SELECT payload_json FROM frozen_study_definitions WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()
+        return (
+            FrozenStudyDefinition.model_validate_json(row["payload_json"])
+            if row else None
+        )
+
+    def record_final_holdout(
+        self,
+        experiment_id: str,
+        authorization: ClaimedFinalHoldoutAuthorization,
+        *,
+        verdict: str,
+        payload: dict[str, Any],
+        run_id: str,
+        verified_identities: dict[str, Any],
+    ) -> None:
+        if self.get_frozen_study(experiment_id) is None:
+            raise ValidationRequiredError(
+                "Final holdout execution requires an explicitly frozen study"
+            )
+        if authorization.experiment_id != experiment_id:
+            raise ValueError("Claim belongs to a different experiment")
+        schema.begin_immediate(self._conn)
+        try:
+            row = self._conn.execute(
+                """SELECT state, authorization_sha256 FROM final_holdout_authorizations
+                   WHERE experiment_id = ? AND claim_id = ?""",
+                (experiment_id, authorization.claim_id),
+            ).fetchone()
+            if (
+                row is None
+                or row["state"] != FinalHoldoutAuthorizationState.CLAIMED.value
+                or row["authorization_sha256"] != authorization.authorization_sha256
+            ):
+                raise ImmutableRecordError("Final holdout claim is not active")
+            self._conn.execute(
+                """INSERT INTO final_holdout_executions
+                   (experiment_id, authorization_sha256, requested_by, executed_at,
+                    verdict, payload_json, run_id, verified_identities_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    experiment_id,
+                    authorization.authorization_sha256,
+                    authorization.requested_by,
+                    schema.utc_now_iso(),
+                    verdict,
+                    json.dumps(payload, allow_nan=False),
+                    run_id,
+                    json.dumps(verified_identities, sort_keys=True, allow_nan=False),
+                ),
+            )
+            changed = self._conn.execute(
+                """UPDATE final_holdout_authorizations
+                   SET state = 'completed', completed_at = ?
+                   WHERE experiment_id = ? AND claim_id = ? AND state = 'claimed'""",
+                (schema.utc_now_iso(), experiment_id, authorization.claim_id),
+            ).rowcount
+            if changed != 1:
+                raise ImmutableRecordError("Final holdout claim changed during completion")
+            self._conn.execute(
+                """INSERT INTO retention_metadata
+                   (run_id, detail_disposition, protected_reason, payload_json)
+                   VALUES (?, 'protected', ?, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                     detail_disposition='protected',
+                     protected_reason=excluded.protected_reason,
+                     payload_json=excluded.payload_json""",
+                (
+                    run_id,
+                    "final holdout evidence is retained indefinitely",
+                    json.dumps({"experiment_id": experiment_id}),
+                ),
+            )
+            self._conn.commit()
+        except sqlite3.IntegrityError as exc:
+            self._conn.rollback()
+            raise ImmutableRecordError(
+                f"Final holdout verdict for {experiment_id!r} already exists"
+            ) from exc
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def protect_run_detail(self, run_id: str, *, reason: str) -> None:
+        """Mark detail immutable before a frozen/final run writes any rows."""
+        if len(reason.strip()) < 10:
+            raise ValueError("Protection reason must explain the retention decision")
+        with self._conn:
+            self._conn.execute(
+                """INSERT INTO retention_metadata
+                   (run_id, detail_disposition, protected_reason, payload_json)
+                   VALUES (?, 'protected', ?, '{}')
+                   ON CONFLICT(run_id) DO UPDATE SET
+                     detail_disposition='protected',
+                     protected_reason=excluded.protected_reason""",
+                (run_id, reason),
+            )
+
+    def prune_run_detail(
+        self,
+        run_id: str,
+        *,
+        requested_by: str,
+        reason: str,
+    ) -> dict[str, int]:
+        """Explicitly remove ordinary local detail; summaries are never deleted."""
+        if not requested_by.strip() or len(reason.strip()) < 10:
+            raise ValueError("Pruning requires attributed requester and reason")
+        schema.begin_immediate(self._conn)
+        try:
+            evidence = self._conn.execute(
+                """SELECT retention_profile FROM run_evidence
+                   WHERE run_id = ? ORDER BY id DESC LIMIT 1""",
+                (run_id,),
+            ).fetchone()
+            if evidence is None:
+                raise StoreError(f"Run {run_id!r} has no summary evidence")
+            protected = self._conn.execute(
+                """SELECT 1
+               FROM research_experiment_runs er
+               LEFT JOIN frozen_study_definitions fs
+                 ON fs.experiment_id = er.experiment_id
+               LEFT JOIN final_holdout_executions fh
+                 ON fh.experiment_id = er.experiment_id
+               WHERE er.run_id = ? AND (fs.experiment_id IS NOT NULL
+                    OR fh.experiment_id IS NOT NULL)
+               UNION ALL
+               SELECT 1 FROM retention_metadata rm
+               WHERE rm.run_id = ? AND rm.detail_disposition = 'protected'
+               LIMIT 1""",
+                (run_id, run_id),
+            ).fetchone()
+            if protected:
+                raise ImmutableRecordError(
+                    "Detailed evidence for frozen/promoted/final-holdout studies "
+                    "is retained indefinitely"
+                )
+            trades = self._conn.execute(
+                "DELETE FROM run_trades WHERE run_id = ?", (run_id,)
+            ).rowcount
+            equity = self._conn.execute(
+                "DELETE FROM run_equity_points WHERE run_id = ?", (run_id,)
+            ).rowcount
+            self._conn.execute(
+                """INSERT INTO retention_metadata
+                   (run_id, detail_disposition, pruned_at, pruned_by, payload_json)
+                   VALUES (?, 'pruned', ?, ?, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                     detail_disposition='pruned', pruned_at=excluded.pruned_at,
+                     pruned_by=excluded.pruned_by, payload_json=excluded.payload_json""",
+                (
+                    run_id,
+                    schema.utc_now_iso(),
+                    requested_by,
+                    json.dumps({"reason": reason}, allow_nan=False),
+                ),
+            )
+            self._conn.commit()
+            return {"trades": trades, "equity_points": equity}
+        except Exception:
+            self._conn.rollback()
+            raise
 
     # -- lifecycle -------------------------------------------------------
 
@@ -1128,6 +1622,18 @@ class SqliteResearchStore:
             if report
             else {"finding_counts": finding_counts}
         )
+        integrity_row = self._conn.execute(
+            """SELECT status, payload_json
+               FROM engine_integrity_reports WHERE run_id = ?""",
+            (run_id,),
+        ).fetchone()
+        engine_integrity = (
+            {
+                "status": integrity_row["status"],
+                "report": json.loads(integrity_row["payload_json"]),
+            }
+            if integrity_row else {"status": "not_assessed"}
+        )
         payload = {
             "identity": {
                 "run_id": row["run_id"],
@@ -1164,6 +1670,11 @@ class SqliteResearchStore:
             "metrics": metrics,
             "evidence": evidence,
             "validation": validation,
+            "engine_integrity": engine_integrity,
+            "procedure_execution": row["state"],
+            # Study reliability belongs to the experiment aggregate. Run
+            # summaries must not manufacture a study-level verdict.
+            "research_reliability": "not_assessed",
         }
         self._insert_publication_tx(
             idempotency_key=f"run:{run_id}",

@@ -47,7 +47,7 @@ class TestRegistryCoversFeatureEngine:
     """Every computable feature must carry a declaration."""
 
     def test_every_feature_engine_feature_is_declared(self):
-        from vibe.backtester.analysis.regime_research.features import (
+        from vibe.research_pipeline.regime_research.features import (
             _FEATURE_REGISTRY as ENGINE_FEATURES,
         )
 
@@ -59,7 +59,7 @@ class TestRegistryCoversFeatureEngine:
         )
 
     def test_registry_declares_nothing_that_cannot_be_computed(self):
-        from vibe.backtester.analysis.regime_research.features import (
+        from vibe.research_pipeline.regime_research.features import (
             _FEATURE_REGISTRY as ENGINE_FEATURES,
         )
 
@@ -133,7 +133,7 @@ class TestSweepPrecomputeIsContaminated:
         # rather than the registry silently drifting out of sync with it.
         import inspect
 
-        from vibe.backtester.analysis.parameter_sweep import ParameterSweep
+        from vibe.research_pipeline.parameter_sweep import ParameterSweep
 
         src = inspect.getsource(ParameterSweep._precompute_features)
         for name in SWEEP_PRECOMPUTED_FEATURES:

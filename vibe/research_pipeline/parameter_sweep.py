@@ -19,9 +19,9 @@ import yaml
 from vibe.backtester.core.engine import BacktestEngine, _resample
 from vibe.backtester.core.execution_realism import ExecutionRealismConfig
 from vibe.backtester.analysis.metrics import BacktestResult
-from vibe.backtester.analysis.regime_research.features import FeatureEngine
-from vibe.backtester.analysis.scoring import composite_score, calculate_tail_ratio
-from vibe.backtester.data.parquet_loader import ParquetLoader
+from vibe.research_pipeline.regime_research.features import FeatureEngine
+from vibe.research_pipeline.scoring import composite_score, calculate_tail_ratio
+from vibe.research_pipeline.data_loader import GuardedParquetLoader as ParquetLoader
 from vibe.backtester.data.paths import resolve_market_data_dir
 from vibe.common.ruleset.models import StrategyRuleSet
 

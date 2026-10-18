@@ -1,7 +1,7 @@
 # Backtest decision boundaries and package cleanup plan
 
 **Date:** 2026-10-17  
-**Status:** Plan only; no implementation is authorized by this document  
+**Status:** Implemented locally on 2026-10-17; external activation gates remain
 **Scope:** Engine-integrity ownership, research-reliability ownership, package
 boundaries, and reconciliation of remaining work from the September 9 plan and
 October 14 architecture audit
@@ -440,29 +440,24 @@ The following original gaps are implemented in the current branch:
 - artifact staging, fenced outbox, reconciliation, and safe preview contracts;
 - legacy YAML archival and active-tree removal.
 
-### Still open in code or composition
+### Status after implementation
 
-1. The two decision reports and their ownership boundary.
-2. Study-level reliability evaluation.
-3. Explicit methodology freeze.
-4. Supported final-holdout execution and persisted acceptance verdict.
-5. Full robustness composition and missing perturbation/subsample methods.
-6. Portfolio research entry point and nested reliability integration.
-7. Removal or truthful renaming of the deprecated fixed-parameter
-   walk-forward path.
-8. Package relocation and one-way dependency enforcement.
-9. Detailed engine-integrity persistence and dashboard presentation.
-10. A typed study/run request remains absent. This is low priority and should
-    be introduced as part of the frozen study-definition contract rather than
-    as a cosmetic wrapper.
-11. The local retention pruning policy for diagnostic/full trade and equity
-    rows remains a product-policy decision.
-12. Point-in-time universe membership, delistings, and corporate-action
-    history remain incomplete. Static declared universes must retain their
-    survivorship-bias badge.
-13. Slippage calibration against live fills remains a data limitation.
-14. Repeatable checked-in browser coverage for the nested experiment/run
-    dialog remains desirable.
+Items 1 through 11 from the original open-code list are resolved by this
+implementation: the decision reports, reliability evaluator, methodology
+freeze, exactly-once final holdout, robustness composition, portfolio research
+entry point, legacy deletion, package relocation, persistence/dashboard
+presentation, typed frozen study definition, and retention policy are now
+implemented.
+
+The remaining limitations require additional source data or external
+activation rather than more deterministic decision-boundary composition:
+
+1. Point-in-time universe membership, delistings, and complete
+   corporate-action history remain incomplete. Static declared universes
+   retain their survivorship-bias badge.
+2. Slippage calibration against live fills remains a data limitation.
+3. Browser-level E2E coverage beyond the checked-in server, adapter, route,
+   and production-build checks remains desirable.
 
 ### External activation gates
 
@@ -493,12 +488,12 @@ gates pass.
 | Audit item | Current status |
 | --- | --- |
 | G1 genuine nested walk-forward unreachable | Resolved |
-| G2 legacy walk-forward presented as OOS | Labels corrected and deprecated; deletion/renaming remains |
+| G2 legacy walk-forward presented as OOS | Resolved; legacy implementation and wrappers deleted |
 | G3 legacy rows asserted TEST provenance | New writes fixed; historical data remains historical |
-| G4 unstable degradation ratio | Guarded in legacy path; disappears when legacy path is removed |
-| G5 approximate calendar windows | Genuine path resolved; remains only in deprecated path |
-| G6 methodology freeze | Still open |
-| G7 typed run request | Still open, low priority; fold into frozen study definition |
+| G4 unstable degradation ratio | Resolved; deterministic validation-to-TEST degradation is evaluated in the genuine path |
+| G5 approximate calendar windows | Resolved; the deprecated path was deleted and reliability sums declared TEST sessions |
+| G6 methodology freeze | Resolved with immutable hash, timestamp, and Bloom attribution |
+| G7 typed run request | Resolved for the decision boundary through the typed frozen study definition |
 | G8 inert sweep axes | Resolved for known gated axes |
 | Validator reachability | Resolved, including persisted nested segment finalization |
 | Queryable/analysable segment role | Resolved |
@@ -507,7 +502,7 @@ gates pass.
 | Experiment-first local viewer | Resolved |
 | Analysis adapter was test-only | Resolved; local and remote analyzer surfaces use it |
 | Universe capability awaiting use | Core capability implemented; broader point-in-time universe remains open |
-| Portfolio engine awaiting use | Engine implemented; supported research entry point remains open |
+| Portfolio engine awaiting use | Resolved; supported shared-capital research executor implemented |
 | Journal duplication concern | Resolved as a false alarm; retain the facade |
 
 ## 12. Implementation sequence
@@ -582,3 +577,70 @@ gates pass.
 - Uploading licensed market data before entitlement and security approval.
 - Deleting `vibe/backtester`; it remains the execution kernel.
 
+## 15. Implementation record
+
+The approved implementation is now present in the worktree:
+
+- `vibe/backtester/core/integrity.py` owns the immutable engine-integrity
+  contract and both engine types attach it to results.
+- `vibe/research_pipeline/reliability.py`, `robustness.py`, and
+  `methodology.py` own policy, study reliability, deterministic robustness,
+  freeze identity, and Bloom-attributed final-holdout authorization.
+- New research execution fails closed when engine-integrity evidence is absent.
+- Nested walk-forward uses stitched TEST evidence, exact TEST session counts,
+  fold stability, validation degradation, parameter movement/neighborhoods,
+  cost stress, predeclared regimes, and seeded bootstrap provenance.
+- Multi-symbol reliability requires evidence produced by the shared-capital
+  `PortfolioBacktestEngine` research executor.
+- SQLite migrations v12 and v13 add integrity, reliability, robustness,
+  frozen-study, final-holdout authorization/claim, and retention records.
+  Historical v10/v11 databases remain readable and display the new decisions
+  as `Not assessed`.
+- Research-specific analysis modules live under `vibe/research_pipeline`.
+  The deprecated fixed-parameter walk-forward and `OptimizationPipeline` path
+  were deleted; an AST dependency test prohibits `vibe/backtester` from
+  importing either `vibe.research_pipeline` or `vibe.research_journal`.
+- The local viewer and remote dashboard show engine integrity, procedure
+  execution, and research reliability as separate concepts.
+
+### Reliability Policy v1 defaults and rationale
+
+Policy v1 is immutable after freeze and may be explicitly overridden with
+typed values before freeze. Its defaults are deliberately conservative:
+
+| Criterion | Default | Rationale |
+|---|---:|---|
+| Stitched held-out trades | 100 minimum | Avoid promoting a result dominated by a very small trade sample. |
+| Declared TEST sessions | 120 minimum | Require temporal coverage measured from exchange-session evidence, not calendar-span guesses. |
+| Stitched held-out expectancy | at least `0.0R` | Negative held-out expectancy rejects the hypothesis; this is not a profitability guarantee. |
+| Positive TEST folds | 60% minimum | Discourage promotion based on one exceptional fold. |
+| Mean validation-to-TEST degradation | `0.25R` maximum | Bound selection decay without claiming it can be eliminated. |
+| Mean parameter movement | 1.5 Manhattan grid steps maximum | Detect unstable fold-to-fold selections. |
+| Plateau width | 2 candidates minimum | Require support beyond a single isolated optimum. |
+| Cost stress | required; expectancy at least `0.0R` | Ensure declared adverse execution costs do not reverse the result. |
+| Profitable parameter neighbors | 50% minimum | Detect cliffs around the selected point. |
+| Predeclared regimes | at least 2; concentration at most 80% | Avoid an undeclared or single-regime explanation of the result. |
+| Seeded subsampling/bootstrap | required, advisory | Preserve reproducible diagnostics without fabricating an unsupported p-value. |
+| Shared capital for multi-symbol claims | required | Independent symbol runs cannot establish portfolio-capital behavior. |
+
+Verdict precedence is deterministic: a dispositive failed criterion produces
+`REJECTED`; missing required evidence produces `INCONCLUSIVE`; suspicious
+non-dispositive evidence produces `REVIEW_REQUIRED`; only all registered
+criteria passing produces `RELIABLE`. The approximately `-0.0245R`, 80-trade
+ORB reference is therefore `REJECTED`, even though it is also below the
+sufficiency target.
+
+### Retention behavior
+
+Run summaries and decision evidence are retained indefinitely. Frozen,
+promoted, and final-holdout study detail is protected indefinitely. Ordinary
+exploratory trade/equity detail is configurable and can be pruned only through
+an explicit attributed API/CLI call with a reason; no scheduled or automatic
+destructive pruning is enabled.
+
+### External activation gates
+
+Local code, migration, viewer, dashboard, and tests require no external
+activation. Supabase deployment/reconciliation, licensed-data upload, provider
+credentials, and Databento entitlement remain separate operator-controlled
+gates. This implementation does not claim those gates have been completed.

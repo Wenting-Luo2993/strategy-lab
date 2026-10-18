@@ -2,12 +2,11 @@
 """Run a nested walk-forward: optimize on train, select on validation, test once.
 
 This script exists because the capability it exposes had no caller. Every
-component of plan section 3 was implemented and unit-tested --
+component of the nested procedure is composed here --
 ``TemporalSplitPlanner``, ``Optimizer``, ``Selector``, ``RulesetSegmentExecutor``,
-``MetricValidator``, ``NestedWalkForwardDriver`` -- but nothing composed them,
-so the only runnable walk-forward was
-``vibe/backtester/analysis/walk_forward.py``, which does not optimize anything
-and labels its halves "train" and "test" anyway.
+``MetricValidator``, and ``NestedWalkForwardDriver``. The former fixed-parameter
+walk-forward path was deleted because it was not a valid replacement for this
+procedure.
 
 What this does differently, per fold:
 
@@ -90,10 +89,10 @@ def _as_date(raw: str) -> date:
 
 
 # The leakage suite and the ORB boundary check live in
-# vibe.backtester.analysis.research_evidence so that this script and the
+# vibe.research_pipeline.research_evidence so that this script and the
 # sweep runner cannot drift into measuring different things. Two copies of a
 # leakage check that disagree are worse than one.
-from vibe.backtester.analysis.research_evidence import (  # noqa: E402
+from vibe.research_pipeline.research_evidence import (  # noqa: E402
     build_orb_boundary_report,
 )
 
@@ -104,7 +103,7 @@ def build_leakage_report(symbol: str, data_dir: Path, spec) -> Any:
     Only the plan-specific part stays here: which window to measure. The
     measurement itself is shared.
     """
-    from vibe.backtester.analysis.research_evidence import (
+    from vibe.research_pipeline.research_evidence import (
         build_leakage_report as run_suite,
         load_session_bars,
     )
@@ -215,6 +214,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--experiment-title", help="Human-readable controlled-experiment name.")
+    parser.add_argument(
+        "--reliability-policy",
+        type=Path,
+        help="Optional JSON policy overrides applied to immutable Reliability Policy v1.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -244,6 +248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     from vibe.research_pipeline.validation import ValidationProfile
     from vibe.research_pipeline.walk_forward import NestedWalkForwardDriver
+    from vibe.research_pipeline.reliability import ReliabilityPolicy
 
     if not args.axis:
         parser.error(
@@ -342,10 +347,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         # as an AttributeError rather than silently scoring the wrong object.
         return float(backtest_result.overall.expectancy_r)
 
+    policy_overrides = {}
+    if args.reliability_policy:
+        import json
+        policy_overrides = json.loads(args.reliability_policy.read_text(encoding="utf-8"))
+    reliability_policy = ReliabilityPolicy(**policy_overrides)
+
     sink = None
     experiment = None
     if args.record_runs:
-        from vibe.backtester.analysis.research_sink import open_run_sink
+        from vibe.research_pipeline.research_sink import open_run_sink
         from vibe.research_pipeline.recording_executor import (
             RecordingSegmentExecutor,
         )
@@ -381,7 +392,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             methodology_version=METHODOLOGY_VERSION,
             record_test_only=args.record_test_only,
             reference_configuration=executor.effective_ruleset(candidates[0]).model_dump(mode="json"),
+            reliability_policy=reliability_policy,
         )
+        reliability_policy = experiment.reliability_policy
         executor = RecordingSegmentExecutor(
             executor, sink, record_roles=roles, on_record=experiment.record_run,
         )
@@ -395,6 +408,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         Selector(executor, validator, score),
         executor,
         validator,
+        reliability_policy=reliability_policy,
+        symbols=(args.symbol,),
     )
 
     try:
@@ -424,6 +439,12 @@ def _report(result, RunState) -> None:
     print(f"Folds completed: {result.n_folds_completed}/{result.n_folds_expected}")
     if result.reason:
         print(f"Reason: {result.reason}")
+    if result.reliability_report is not None:
+        print(
+            "Research reliability: "
+            f"{result.reliability_report.verdict.value} "
+            f"(policy {result.reliability_report.policy_hash[:12]})"
+        )
 
     for fold in result.folds:
         print(f"\n-- Fold {fold.fold_index} [{fold.state.value}]")

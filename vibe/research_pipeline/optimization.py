@@ -18,15 +18,21 @@ import yaml
 
 from vibe.backtester.analysis.metrics import BacktestResult
 from vibe.backtester.core.engine import BacktestEngine
+from vibe.backtester.core.portfolio_engine import (
+    PortfolioBacktestEngine,
+    PortfolioSimulationConfig,
+)
 from vibe.backtester.core.execution_realism import ExecutionRealismConfig
 from vibe.backtester.data.paths import resolve_market_data_dir
 from vibe.common.ruleset.models import StrategyRuleSet
-from vibe.research_pipeline.contracts import SessionSegment
+from vibe.research_pipeline.contracts import SegmentRole, SessionSegment
+from vibe.research_pipeline.methodology import ClaimedFinalHoldoutAuthorization
 from vibe.research_pipeline.hashing import canonical_json, hash_object
 from vibe.research_pipeline.identity import RunFingerprint
 from vibe.research_pipeline.lifecycle import RunState
 from vibe.research_pipeline.segment_runner import SegmentResult, run_segment
 from vibe.research_pipeline.validation import ValidationReport, ValidationScope
+from vibe.research_pipeline.holdout import UnlockToken, load_lock
 
 __all__ = [
     "CandidateExecutor",
@@ -38,6 +44,7 @@ __all__ = [
     "Optimizer",
     "ParameterAxis",
     "RulesetSegmentExecutor",
+    "PortfolioRulesetSegmentExecutor",
     "SelectionIncompleteError",
     "SelectionResult",
     "Selector",
@@ -77,6 +84,7 @@ class RulesetSegmentExecutor:
         warmup_sessions: int = 0,
         engine_kwargs: Mapping[str, Any] | None = None,
         engine_factory: Callable[[StrategyRuleSet], BacktestEngine] | None = None,
+        holdout_token: UnlockToken | ClaimedFinalHoldoutAuthorization | None = None,
     ) -> None:
         if warmup_sessions < 0:
             raise ValueError("warmup_sessions must be non-negative")
@@ -85,6 +93,7 @@ class RulesetSegmentExecutor:
         self._warmup_sessions = warmup_sessions
         self._engine_kwargs = dict(engine_kwargs or {})
         self._fingerprint = fingerprint
+        self._holdout_token = holdout_token
         self._verified_dataset_symbols: set[str] = set()
         # P9 selects and evaluates candidates out-of-sample, so it must not
         # inherit BacktestEngine's optimistic legacy() default by omission.
@@ -146,9 +155,32 @@ class RulesetSegmentExecutor:
     def __call__(
         self, candidate: "CandidateSpec", segment: SessionSegment
     ) -> SegmentResult:
+        if (
+            segment.role is SegmentRole.FINAL_OOS
+            and not isinstance(
+                self._holdout_token, ClaimedFinalHoldoutAuthorization
+            )
+        ):
+            raise PermissionError(
+                "FINAL_OOS execution requires a durable claimed authorization"
+            )
         ruleset = self.effective_ruleset(candidate)
         engine = self._engine_factory(ruleset)
         symbol = ruleset.instruments.symbols[0]
+        token = self._holdout_token
+        if isinstance(token, ClaimedFinalHoldoutAuthorization):
+            token = UnlockToken(
+                reason=token.reason,
+                requested_by=token.requested_by,
+                run_id=token.claim_id,
+                log_access=False,
+            )
+        load_lock().assert_within_dev(
+            symbol=symbol,
+            start=segment.start_session,
+            end=segment.end_session,
+            token=token,
+        )
         if (
             self._fingerprint is not None
             and symbol not in self._verified_dataset_symbols
@@ -183,6 +215,88 @@ class RulesetSegmentExecutor:
                 f"Parameter path {path!r} does not exist in the base ruleset"
             )
         current[keys[-1]] = value
+
+
+class PortfolioRulesetSegmentExecutor(RulesetSegmentExecutor):
+    """Run a candidate over one shared-capital multi-symbol portfolio."""
+
+    def __init__(
+        self,
+        base_ruleset: Mapping[str, Any],
+        parameter_paths: Mapping[str, str],
+        *,
+        portfolio_config: PortfolioSimulationConfig,
+        data_dir: Path | str | None = None,
+        warmup_sessions: int = 0,
+        engine_kwargs: Mapping[str, Any] | None = None,
+        holdout_token: UnlockToken | None = None,
+    ) -> None:
+        self._portfolio_config = portfolio_config
+        super().__init__(
+            base_ruleset,
+            parameter_paths,
+            data_dir=data_dir,
+            warmup_sessions=warmup_sessions,
+            engine_kwargs=engine_kwargs,
+            holdout_token=holdout_token,
+        )
+
+    def __call__(
+        self, candidate: "CandidateSpec", segment: SessionSegment
+    ) -> SegmentResult:
+        from datetime import datetime, time
+        from zoneinfo import ZoneInfo
+
+        from vibe.research_pipeline.splits.calendar import SessionCalendar
+
+        ruleset = self.effective_ruleset(candidate)
+        symbols = tuple(ruleset.instruments.symbols)
+        lock = load_lock()
+        for symbol in symbols:
+            lock.assert_within_dev(
+                symbol=symbol,
+                start=segment.start_session,
+                end=segment.end_session,
+                token=self._holdout_token,
+            )
+        calendar = SessionCalendar()
+        warmup = (
+            calendar.sessions_before(segment.start_session, self._warmup_sessions)
+            if self._warmup_sessions else ()
+        )
+        if len(warmup) < self._warmup_sessions:
+            raise ValueError(
+                f"Portfolio segment requires {self._warmup_sessions} warmup "
+                f"sessions but only {len(warmup)} are available"
+            )
+        load_start = warmup[0] if warmup else segment.start_session
+        zone = ZoneInfo("America/New_York")
+        engine = PortfolioBacktestEngine(
+            ruleset=ruleset,
+            portfolio_config=self._portfolio_config,
+            data_dir=self._data_dir,
+            **self._engine_kwargs,
+        )
+        portfolio_result = engine.run(
+            symbols=symbols,
+            start_date=datetime.combine(load_start, time.min, tzinfo=zone),
+            end_date=datetime.combine(segment.end_session, time.max, tzinfo=zone),
+            graded_start=segment.start_session,
+        )
+        aggregate = portfolio_result.aggregate
+        aggregate.execution_diagnostics["shared_capital_portfolio"] = 1.0
+        aggregate.execution_diagnostics["portfolio_symbol_count"] = float(
+            len(symbols)
+        )
+        return SegmentResult(
+            segment=segment,
+            result=aggregate,
+            warmup_sessions_requested=self._warmup_sessions,
+            warmup_sessions_supplied=len(warmup),
+            warmup_start=warmup[0] if warmup else None,
+            graded_start=segment.start_session,
+            graded_end=segment.end_session,
+        )
 
 
 def _value_key(value: Any) -> tuple[str, Any]:

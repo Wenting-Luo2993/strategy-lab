@@ -49,6 +49,9 @@ _ALLOWED_TOP_LEVEL_KEYS = {
             "metrics",
             "evidence",
             "validation",
+            "engine_integrity",
+            "procedure_execution",
+            "research_reliability",
         }
     ),
     PublicationKind.REGISTRY_RECORD: frozenset(
@@ -282,6 +285,37 @@ def _validate_approved_shape(
                 _require_scalar(value, f"validation.{key}")
         for key, value in finding_counts.items():
             _require_scalar(value, f"validation.finding_counts.{key}")
+        engine_integrity = _approved_keys(
+            payload.get("engine_integrity", {}),
+            frozenset({"status", "report"}),
+            "engine_integrity",
+        )
+        _require_scalar(engine_integrity.get("status"), "engine_integrity.status")
+        report = engine_integrity.get("report")
+        if report is not None:
+            report = _approved_keys(
+                report,
+                frozenset({
+                    "status", "engine_version", "metric_calculation_version",
+                    "checked_categories", "findings",
+                }),
+                "engine_integrity.report",
+            )
+            _require_scalar(report.get("status"), "engine_integrity.report.status")
+            findings = report.get("findings", [])
+            if not isinstance(findings, list):
+                raise StoreError("Publication field 'engine_integrity.report.findings' must be a list")
+            for index, finding in enumerate(findings):
+                _approved_keys(
+                    finding,
+                    frozenset({
+                        "check_id", "category", "passed", "observed", "expected",
+                        "residual", "applicable", "context",
+                    }),
+                    f"engine_integrity.report.findings[{index}]",
+                )
+        _require_scalar(payload.get("procedure_execution"), "procedure_execution")
+        _require_scalar(payload.get("research_reliability"), "research_reliability")
         metrics = payload.get("metrics", [])
         if not isinstance(metrics, list):
             raise StoreError("Publication field 'metrics' must be a list")

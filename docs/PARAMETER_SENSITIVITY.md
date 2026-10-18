@@ -33,7 +33,7 @@ A generic, reusable framework for testing parameter combinations across any trad
 Test ORB strategy with one-at-a-time sweep (7 tests):
 
 ```bash
-python -m vibe.backtester.analysis.sensitivity_runner --strategy orb --mode quick
+python -m vibe.research_pipeline.sensitivity_runner --strategy orb --mode quick
 
 # Or use the convenience wrapper
 python scripts/run_parameter_sensitivity.py --strategy orb
@@ -42,13 +42,13 @@ python scripts/run_parameter_sensitivity.py --strategy orb
 Test with grid search (27 tests):
 
 ```bash
-python -m vibe.backtester.analysis.sensitivity_runner --strategy orb --mode full
+python -m vibe.research_pipeline.sensitivity_runner --strategy orb --mode full
 ```
 
 Test with custom date range:
 
 ```bash
-python -m vibe.backtester.analysis.sensitivity_runner --strategy orb \
+python -m vibe.research_pipeline.sensitivity_runner --strategy orb \
     --symbol QQQ \
     --start 2023-01-01 \
     --end 2024-12-31
@@ -57,7 +57,7 @@ python -m vibe.backtester.analysis.sensitivity_runner --strategy orb \
 Enable verbose logging (see all INFO messages):
 
 ```bash
-python -m vibe.backtester.analysis.sensitivity_runner --strategy orb --verbose
+python -m vibe.research_pipeline.sensitivity_runner --strategy orb --verbose
 ```
 
 **Note:** By default, only WARNING and ERROR messages are shown (plus progress updates). Use `--verbose` to see all INFO-level logs from strategy calculations.
@@ -170,7 +170,7 @@ parser.add_argument(
 ```
 
 ### 4. Run Tests
--m vibe.backtester.analysis.sensitivity_runner
+-m vibe.research_pipeline.sensitivity_runner
 ```bash
 python scripts/parameter_sensitivity.py --strategy momentum --mode quick
 ```

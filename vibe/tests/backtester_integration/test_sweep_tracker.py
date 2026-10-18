@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 import pandas as pd
-from vibe.backtester.integration.sweep_tracker import (
+from vibe.research_journal.integration.sweep_tracker import (
     ParameterSweepExperimentTracker,
     SweepResultExperimentLinker,
 )

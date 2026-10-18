@@ -79,7 +79,7 @@ def _resolve_data_dir():
 
 @pytest.fixture(scope="module")
 def sweep():
-    from vibe.backtester.analysis.parameter_sweep import ParameterSweep
+    from vibe.research_pipeline.parameter_sweep import ParameterSweep
     from vibe.common.ruleset.loader import RuleSetLoader
 
     ruleset_path = Path(RuleSetLoader.RULESETS_DIR) / "orb_production.yaml"
@@ -134,7 +134,7 @@ def research_compute():
     handed a truncated frame directly. This reproduces its exact feature list
     and engine so the check measures what the sweep actually produces.
     """
-    from vibe.backtester.analysis.regime_research.features import FeatureEngine
+    from vibe.research_pipeline.regime_research.features import FeatureEngine
 
     engine = FeatureEngine()
 
@@ -157,7 +157,7 @@ def leaky_compute():
     that every registered feature is causal. Without it, the checks in this
     file could pass forever while measuring nothing.
     """
-    from vibe.backtester.analysis.regime_research.features import FeatureEngine
+    from vibe.research_pipeline.regime_research.features import FeatureEngine
 
     engine = FeatureEngine()
 
@@ -294,7 +294,7 @@ class TestF2TruncationEquivalenceThroughResearchPath:
         so assert exactly that: a bar of session D must carry the daily value
         computed through session D-1's close.
         """
-        from vibe.backtester.analysis.regime_research.features import FeatureEngine
+        from vibe.research_pipeline.regime_research.features import FeatureEngine
 
         full = research_compute(bars)
         daily = (

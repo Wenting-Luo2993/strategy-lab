@@ -1,7 +1,10 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Mapping
+from typing import TYPE_CHECKING, Dict, List, Mapping, Optional
 import pandas as pd
 from vibe.common.models.trade import Trade
+
+if TYPE_CHECKING:
+    from vibe.backtester.core.integrity import EngineIntegrityReport
 
 # Bump when any metric definition below changes meaning. Stored alongside
 # results so numbers computed under different rules are never silently
@@ -115,6 +118,7 @@ class BacktestResult:
     ruleset_name: str
     ruleset_version: str
     execution_diagnostics: Dict[str, float] = field(default_factory=dict)
+    engine_integrity_report: Optional["EngineIntegrityReport"] = None
     """Always-recorded execution honesty counters.
 
     Populated regardless of whether realism behaviour is enabled, so a legacy
@@ -138,3 +142,7 @@ class PortfolioBacktestResult:
     symbols: tuple[str, ...]
     portfolio_identity: Mapping[str, object]
     validation_identity: str
+
+    @property
+    def engine_integrity_report(self) -> Optional["EngineIntegrityReport"]:
+        return self.aggregate.engine_integrity_report

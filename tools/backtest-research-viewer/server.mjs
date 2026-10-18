@@ -466,6 +466,7 @@ function listRuns(database, searchParams) {
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const total = database.prepare(`SELECT COUNT(*) AS count FROM runs r ${where}`).get(...params).count;
+  const hasIntegrity = hasTable(database, "engine_integrity_reports");
   const rows = database.prepare(`
     SELECT r.run_id, r.display_alias, r.strategy_id, r.methodology_version,
            r.state, r.notes, r.code_commit, r.code_dirty, r.created_at, r.updated_at,
@@ -485,13 +486,15 @@ function listRuns(database, searchParams) {
             WHERE rf.run_id = r.run_id AND rf.severity = 'blocking') AS blocking_findings,
            (SELECT COUNT(*) FROM run_findings rf
             WHERE rf.run_id = r.run_id AND rf.severity = 'review') AS review_findings,
-           po.status AS publication_status, po.attempts, po.last_error
+           po.status AS publication_status, po.attempts, po.last_error,
+           ${hasIntegrity ? "eir.status" : "NULL"} AS engine_integrity_status
     FROM runs r
     LEFT JOIN run_evidence e ON e.id = (
       SELECT e2.id FROM run_evidence e2 WHERE e2.run_id = r.run_id ORDER BY e2.id DESC LIMIT 1
     )
     LEFT JOIN validation_reports vr ON vr.run_id = r.run_id
     LEFT JOIN publication_outbox po ON po.idempotency_key = 'run:' || r.run_id
+    ${hasIntegrity ? "LEFT JOIN engine_integrity_reports eir ON eir.run_id = r.run_id" : ""}
     ${where}
     ORDER BY ${order.column} ${order.direction}, r.display_seq DESC
     LIMIT ? OFFSET ?
@@ -539,6 +542,8 @@ function listRuns(database, searchParams) {
       publicationState: publicationState(row.publication_status),
       publicationAttempts: Number(row.attempts || 0),
       publicationError: row.last_error ? redactSecrets(row.last_error) : null,
+      engineIntegrity: row.engine_integrity_status || "not_assessed",
+      procedureExecution: row.state,
       badges: trustBadges(row, identity, evidence, validation, findingCounts),
     };
   });
@@ -565,6 +570,10 @@ function getRun(database, runId) {
   const validationRow = database.prepare(
     "SELECT * FROM validation_reports WHERE run_id = ?",
   ).get(runId);
+  const engineIntegrityRow = hasTable(database, "engine_integrity_reports")
+    ? database.prepare(
+      "SELECT status, payload_json AS payloadJson, recorded_at AS recordedAt FROM engine_integrity_reports WHERE run_id = ?",
+    ).get(runId) : null;
   const findings = boundedRows(database, {
     countSql: "SELECT COUNT(*) AS count FROM run_findings WHERE run_id = ?",
     listSql: `
@@ -644,6 +653,11 @@ function getRun(database, runId) {
     metrics,
     evidence,
     validation,
+    engineIntegrity: engineIntegrityRow ? {
+      status: engineIntegrityRow.status,
+      report: redactSecrets(safeJsonParse(engineIntegrityRow.payloadJson, {})),
+      recordedAt: engineIntegrityRow.recordedAt,
+    } : null,
     findings,
     findingCounts,
     transitions,
@@ -663,6 +677,12 @@ function hasExperiments(database) {
   return Boolean(database.prepare(
     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'research_experiments'",
   ).get());
+}
+
+function hasTable(database, name) {
+  return Boolean(database.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+  ).get(name));
 }
 
 function experimentRow(row) {
@@ -695,7 +715,10 @@ function listExperiments(database, searchParams) {
   const total = database.prepare("SELECT COUNT(*) AS count FROM research_experiments").get().count;
   const rows = database.prepare(`
     SELECT e.*,
-      (SELECT COUNT(*) FROM research_experiment_runs r WHERE r.experiment_id = e.experiment_id) AS linked_runs
+      (SELECT COUNT(*) FROM research_experiment_runs r WHERE r.experiment_id = e.experiment_id) AS linked_runs,
+      ${hasTable(database, "study_reliability_reports")
+        ? "(SELECT verdict FROM study_reliability_reports sr WHERE sr.experiment_id = e.experiment_id) AS reliability_verdict"
+        : "NULL AS reliability_verdict"}
     FROM research_experiments e ORDER BY e.created_at DESC, e.experiment_id DESC LIMIT ? OFFSET ?
   `).all(pageSize, offset).map((row) => {
     const experiment = experimentRow(row);
@@ -708,6 +731,7 @@ function listExperiments(database, searchParams) {
       completedFolds: experiment.payloadUnavailable ? null : experiment.result?.n_folds_completed,
       linkedRuns: row.linked_runs,
       recordingErrors: experiment.result?.recording_errors?.length || 0,
+      reliabilityVerdict: row.reliability_verdict || "not_assessed",
       payloadUnavailable: experiment.payloadUnavailable,
     };
   });
@@ -729,7 +753,44 @@ function getExperiment(database, experimentId) {
       WHERE e.experiment_id = ? ORDER BY e.fold_index, e.segment_role, e.candidate_id LIMIT ?`,
     params: [experimentId], limit: MAX_DETAIL_ROWS,
   });
-  return { ...experimentRow(row), runs };
+  const reliabilityRow = hasTable(database, "study_reliability_reports") ? database.prepare(
+    "SELECT verdict, policy_hash AS policyHash, payload_json AS payloadJson, recorded_at AS recordedAt FROM study_reliability_reports WHERE experiment_id = ?",
+  ).get(experimentId) : null;
+  const criteria = hasTable(database, "study_reliability_criteria") ? database.prepare(
+    "SELECT criterion_id AS criterionId, outcome, payload_json AS payloadJson FROM study_reliability_criteria WHERE experiment_id = ? ORDER BY criterion_id",
+  ).all(experimentId).map(({ payloadJson, ...item }) => ({
+    ...item, ...redactSecrets(safeJsonParse(payloadJson, {})),
+  })) : [];
+  const robustness = hasTable(database, "robustness_evidence") ? database.prepare(
+    "SELECT provenance_hash AS provenanceHash, payload_json AS payloadJson FROM robustness_evidence WHERE experiment_id = ?",
+  ).get(experimentId) : null;
+  const frozen = hasTable(database, "frozen_study_definitions") ? database.prepare(
+    "SELECT definition_hash AS definitionHash, frozen_at AS frozenAt, frozen_by AS frozenBy FROM frozen_study_definitions WHERE experiment_id = ?",
+  ).get(experimentId) : null;
+  const holdout = hasTable(database, "final_holdout_executions") ? database.prepare(
+    "SELECT requested_by AS requestedBy, executed_at AS executedAt, verdict, payload_json AS payloadJson FROM final_holdout_executions WHERE experiment_id = ?",
+  ).get(experimentId) : null;
+  return {
+    ...experimentRow(row), runs,
+    reliability: reliabilityRow ? {
+      verdict: reliabilityRow.verdict,
+      policyHash: reliabilityRow.policyHash,
+      recordedAt: reliabilityRow.recordedAt,
+      report: redactSecrets(safeJsonParse(reliabilityRow.payloadJson, {})),
+      criteria,
+    } : null,
+    robustness: robustness ? {
+      provenanceHash: robustness.provenanceHash,
+      evidence: redactSecrets(safeJsonParse(robustness.payloadJson, {})),
+    } : null,
+    frozen: frozen || null,
+    finalHoldout: holdout ? {
+      requestedBy: holdout.requestedBy,
+      executedAt: holdout.executedAt,
+      verdict: holdout.verdict,
+      result: redactSecrets(safeJsonParse(holdout.payloadJson, {})),
+    } : null,
+  };
 }
 
 function getRunTrades(database, runId) {

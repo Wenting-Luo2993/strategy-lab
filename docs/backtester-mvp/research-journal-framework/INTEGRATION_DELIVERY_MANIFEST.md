@@ -367,7 +367,7 @@ result = engine.run(symbol="QQQ", start_date=..., end_date=...,
 
 ### 1. Single Backtest with Tracking
 ```python
-from vibe.backtester.integration import wrap_backtest_engine
+from vibe.research_journal.integration import wrap_backtest_engine
 registry = ResearchRegistry()
 exp = registry.create_experiment(...)
 tracked_engine = wrap_backtest_engine(engine, registry)
@@ -376,7 +376,7 @@ result = tracked_engine.run(..., experiment_id=exp.id)
 
 ### 2. Parameter Sweep with Lineage
 ```python
-from vibe.backtester.integration import ParameterSweepExperimentTracker
+from vibe.research_journal.integration import ParameterSweepExperimentTracker
 tracker = ParameterSweepExperimentTracker(registry, hyp_id)
 parent = tracker.create_parent_experiment(...)
 for params in variations:

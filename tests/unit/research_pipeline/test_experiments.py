@@ -10,6 +10,11 @@ import pytest
 from pydantic import BaseModel
 
 from vibe.backtester.analysis.performance import PerformanceAnalyzer
+from vibe.backtester.core.integrity import (
+    EngineIntegrityCategory,
+    EngineIntegrityReport,
+    EngineIntegrityStatus,
+)
 from vibe.common.models.trade import Trade
 from vibe.research_pipeline.contracts import RetentionProfile, SegmentRole
 from vibe.research_pipeline.experiments import ExperimentRecorder, _evaluation
@@ -76,6 +81,13 @@ def build_experiment_fixture(db_path, *, record_test_only=False, fail_role=None)
                 trades, curve, 100_000, "SYNTHETIC", first, last,
                 "viewer_demo", "1",
                 execution_diagnostics={"min_cash": 99_000, "max_gross_exposure_ratio": 0.01},
+            )
+            result.engine_integrity_report = EngineIntegrityReport(
+                status=EngineIntegrityStatus.PASS,
+                engine_version=1,
+                metric_calculation_version=2,
+                checked_categories=tuple(EngineIntegrityCategory),
+                findings=(),
             )
             return SimpleNamespace(segment=segment, result=result)
 
@@ -197,9 +209,9 @@ def test_additive_migration_keeps_v10_runs_unassigned(tmp_path, monkeypatch):
             patch.setattr(schema, "_MIGRATIONS", schema._MIGRATIONS[:10])
             patch.setattr(schema, "SCHEMA_VERSION", 10)
             schema.migrate(conn)
-        assert schema.migrate(conn) == 11
+        assert schema.migrate(conn) == 13
         assert conn.execute("SELECT COUNT(*) FROM research_experiments").fetchone()[0] == 0
-        assert schema.migrate(conn) == 11
+        assert schema.migrate(conn) == 13
 
 
 def test_nonfinite_metrics_are_retained_as_explicit_invalid_evidence():

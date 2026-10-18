@@ -178,3 +178,21 @@ class BacktestResultAdapter:
             "largest_win": largest_win,
             "largest_loss": largest_loss,
         }
+
+
+from vibe.research_journal.integration.experiment_tracker import (  # noqa: E402
+    BacktestExperimentTracker,
+    wrap_backtest_engine,
+)
+from vibe.research_journal.integration.sweep_tracker import (  # noqa: E402
+    ParameterSweepExperimentTracker,
+    SweepResultExperimentLinker,
+)
+
+__all__ = [
+    "BacktestResultAdapter",
+    "BacktestExperimentTracker",
+    "wrap_backtest_engine",
+    "ParameterSweepExperimentTracker",
+    "SweepResultExperimentLinker",
+]

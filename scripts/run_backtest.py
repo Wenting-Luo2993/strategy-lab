@@ -25,7 +25,7 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from vibe.backtester.analysis.windows import parse_window_end, parse_window_start
+from vibe.research_pipeline.windows import parse_window_end, parse_window_start
 from vibe.backtester.core.engine import BacktestEngine
 from vibe.backtester.data.paths import (
     MarketDataNotFoundError,
@@ -47,7 +47,7 @@ def _dataset_snapshot_id(data_dir: Path, symbol: str) -> str:
     apart would make runs over identical bars look like runs over different
     data, and vice versa.
     """
-    from vibe.backtester.analysis.research_sink import dataset_snapshot_id
+    from vibe.research_pipeline.research_sink import dataset_snapshot_id
 
     return dataset_snapshot_id(data_dir, symbol)
 

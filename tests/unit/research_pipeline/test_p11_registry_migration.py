@@ -15,7 +15,7 @@ from vibe.backtester.core.execution_realism import (
     EXECUTION_MODEL_VERSION,
     ExecutionRealismConfig,
 )
-from vibe.backtester.integration.sweep_tracker import (
+from vibe.research_journal.integration.sweep_tracker import (
     ParameterSweepExperimentTracker,
     SweepResultExperimentLinker,
 )

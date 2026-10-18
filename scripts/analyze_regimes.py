@@ -40,11 +40,11 @@ _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
-from vibe.backtester.analysis.regime_research.attribution import TradeAttributor
-from vibe.backtester.analysis.regime_research.features import FeatureEngine
-from vibe.backtester.analysis.regime_research.filter_evaluator import FilterEvaluator
-from vibe.backtester.analysis.regime_research.labeler import DayRegimeLabeler, LabelerConfig
-from vibe.backtester.analysis.regime_research.reporting import ReportGenerator
+from vibe.research_pipeline.regime_research.attribution import TradeAttributor
+from vibe.research_pipeline.regime_research.features import FeatureEngine
+from vibe.research_pipeline.regime_research.filter_evaluator import FilterEvaluator
+from vibe.research_pipeline.regime_research.labeler import DayRegimeLabeler, LabelerConfig
+from vibe.research_pipeline.regime_research.reporting import ReportGenerator
 
 logging.basicConfig(
     level=logging.INFO,

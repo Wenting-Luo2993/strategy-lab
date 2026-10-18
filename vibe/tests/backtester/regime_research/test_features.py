@@ -16,7 +16,7 @@ from vibe.common.indicators.batch import (
     sma_series,
 )
 from vibe.common.indicators.engine import IncrementalIndicatorEngine
-from vibe.backtester.analysis.regime_research.features import FeatureEngine
+from vibe.research_pipeline.regime_research.features import FeatureEngine
 
 
 # ---------------------------------------------------------------------------

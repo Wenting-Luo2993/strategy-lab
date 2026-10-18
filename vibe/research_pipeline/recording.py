@@ -415,6 +415,20 @@ class RunRecorder:
             pass
         return False
 
+    def set_validator(self, validator: Callable[[Any], Any]) -> None:
+        """Attach measured validation evidence before recording the result.
+
+        Final-holdout execution needs the registered run identity before its
+        first guarded data read so the exactly-once access log can reference
+        the actual run. The validator itself reads those same guarded bars,
+        so it is built only after entering the recorder.
+        """
+        if self.run_id is None or self._recorded:
+            raise RecordingError(
+                "Validator may only be attached to an active, unrecorded run"
+            )
+        self._validator = validator
+
     def record(self, result: Any, *, starting_equity: float) -> str:
         """Persist metrics, evidence, and -- if retained -- row-level detail."""
         if self.run_id is None:
@@ -442,6 +456,12 @@ class RunRecorder:
             result, starting_equity=starting_equity, retention=self._retention
         )
         self._store.record_evidence(self.run_id, evidence)
+        integrity = getattr(result, "engine_integrity_report", None)
+        if integrity is None:
+            raise RecordingError(
+                "New research runs require EngineIntegrityReport evidence"
+            )
+        self._store.record_engine_integrity(self.run_id, integrity)
 
         if self._retention in (RetentionProfile.DIAGNOSTIC, RetentionProfile.FULL):
             self._store.record_trades(self.run_id, result.trades)

@@ -64,7 +64,7 @@ def open_run_sink(
 
     Args:
         validator: Optional callable built by
-            :func:`vibe.backtester.analysis.research_evidence.build_study_validator`.
+            :func:`vibe.research_pipeline.research_evidence.build_study_validator`.
             Without it, recorded runs stop at ``VALIDATING`` and never reach
             the publish outbox -- correct, but it means the study produced no
             validated evidence. It is optional rather than required because

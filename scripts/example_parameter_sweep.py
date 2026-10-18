@@ -238,9 +238,9 @@ def main():
         print("=" * 80)
         print("\nTo run actual backtests with parameter sweep:")
         print("  # One-at-a-time (quick)")
-        print("  python -m vibe.backtester.analysis.sensitivity_runner --strategy orb --mode quick")
+        print("  python -m vibe.research_pipeline.sensitivity_runner --strategy orb --mode quick")
         print("\n  # Grid search (comprehensive)")
-        print("  python -m vibe.backtester.analysis.sensitivity_runner --strategy orb --mode full")
+        print("  python -m vibe.research_pipeline.sensitivity_runner --strategy orb --mode full")
         print()
         
     except Exception as e:
