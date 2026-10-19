@@ -1,11 +1,8 @@
 """Open a research-store sink for a backtest study.
 
-This is the seam between the backtester's analysis runners and the research
-pipeline. It lives on the backtester side on purpose: the sink needs
-``EXECUTION_MODEL_VERSION`` and the on-disk layout of the parquet data
-directory, and having ``research_pipeline`` reach back into ``backtester`` for
-those would invert the dependency -- the store is meant to be readable by
-tools that have no simulator at all.
+This is the seam between research orchestration and the deterministic
+backtester. The research pipeline may depend on backtester execution identity
+and checkout-location helpers; the reverse dependency is prohibited.
 """
 from __future__ import annotations
 
@@ -16,6 +13,12 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 __all__ = ["dataset_snapshot_id", "open_run_sink"]
+
+
+def _repository_root() -> Path:
+    from vibe.backtester.data.paths import repo_root
+
+    return repo_root()
 
 
 def dataset_snapshot_id(data_dir: Path, symbol: str) -> str:
@@ -89,7 +92,7 @@ def open_run_sink(
         data_snapshot_id=dataset_snapshot_id(Path(data_dir), symbol),
         execution_model_version=EXECUTION_MODEL_VERSION,
         methodology_version=methodology_version,
-        repo_root=Path(__file__).resolve().parents[3],
+        repo_root=_repository_root(),
         starting_equity=starting_equity,
         retention=RetentionProfile(retention),
         owner=owner,
