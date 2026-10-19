@@ -34,7 +34,27 @@ const reliabilityCriterionHelp = {
   "REL-MULTIPLE-TESTING": ["Multiple-testing disclosure", "Retains how many candidates were evaluated so the search burden is visible. Policy v1 does not fabricate a deflated statistic unless its assumptions and interpretation are separately adopted."],
   "REL-PORTFOLIO-001": ["Shared-capital evidence", "A claim covering multiple symbols must use one portfolio simulation with shared cash, buying power, and contention. Independent capital resets cannot establish portfolio behavior."],
 };
+const reliabilityCriterionNames = Object.fromEntries(
+  Object.entries(reliabilityCriterionHelp).map(([criterionId, [name]]) => [criterionId, name.toLowerCase()]),
+);
 const fluentInfoIcon = `<svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8.5 7.5a.5.5 0 1 0-1 0v3a.5.5 0 0 0 1 0zm.25-2a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1M2 8a6 6 0 1 1 12 0A6 6 0 0 1 2 8"/></svg>`;
+
+function verdictReason(report, criteria) {
+  let reason = report.verdict_reason || "";
+  for (const [criterionId, name] of Object.entries(reliabilityCriterionNames)) {
+    reason = reason.replaceAll(criterionId, name);
+  }
+  const confidenceIncomplete = criteria.some((item) =>
+    (item.criterion_id || item.criterionId) === "REL-OOS-CONFIDENCE"
+      && item.outcome === "inconclusive");
+  if (confidenceIncomplete && reason.includes("Additional required evidence remains incomplete.")) {
+    reason = reason.replace(
+      "Additional required evidence remains incomplete.",
+      "In addition, the expectancy confidence interval remains inconclusive.",
+    );
+  }
+  return reason;
+}
 
 function criterionWithCallout(item) {
   const criterionId = item.criterion_id || item.criterionId || "Unknown criterion";
@@ -171,6 +191,7 @@ export function experimentDetail(experiment) {
   const reliability = experiment.reliability;
   const reliabilityCriteria = reliability?.criteria || [];
   const report = reliability?.report || {};
+  const displayedVerdictReason = verdictReason(report, reliabilityCriteria);
   const summaryRows = [
     ["Objective", definition.objective],
     ["Completed folds", `${result?.n_folds_completed ?? "Not recorded"} / ${planned.length}`],
@@ -192,7 +213,7 @@ export function experimentDetail(experiment) {
     ${table(["Study summary", "Value"], summaryRows.map(([label, value]) =>
       `<tr><th scope="row">${escape(label)}</th><td>${escape(value)}
         ${label === "Diagnostic cash total" ? "<small>Positive or negative cash sum across capital-reset folds; diagnostic only, not the R-based promotion metric.</small>" : ""}</td></tr>`))}
-    ${report.verdict_reason ? `<p class="verdict-reason"><strong>Verdict reasoning:</strong> ${escape(report.verdict_reason)}</p>` : ""}
+    ${displayedVerdictReason ? `<p class="verdict-reason"><strong>Verdict reasoning:</strong> ${escape(displayedVerdictReason)}</p>` : ""}
     ${confidenceTable(report.statistical_confidence)}
     ${reliabilityCriteria.length ? `<h3>Reliability criteria</h3>${table(
       ["Criterion", "Outcome", "Observed", "Expected"],

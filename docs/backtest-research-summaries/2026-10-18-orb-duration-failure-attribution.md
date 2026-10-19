@@ -217,3 +217,8 @@ Before execution:
 If that registered study remains unstable, the next conclusion should be that
 the simple duration-only ORB hypothesis lacks enough structure—not that another
 duration should be selected from the current TEST sample.
+
+The registered follow-up was completed as experiment
+`01a151f2-d815-7f0f-86b0-cba0f586413e`. See
+`2026-10-18-orb-direction-statistical-reliability-v2.md` for its result and
+Reliability Policy v2 interpretation.

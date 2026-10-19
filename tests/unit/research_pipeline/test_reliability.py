@@ -125,6 +125,29 @@ def test_v2_confidence_interval_makes_imprecise_negative_result_inconclusive():
     assert "confidence interval" in report.verdict_reason
 
 
+def test_rejected_reason_uses_human_names_and_preserves_inconclusive_context():
+    values = [-1.0] * 100 + [1.2] * 100
+    study = _study(
+        sum(values) / len(values),
+        trades=len(values),
+        folds=(0.1, 0.1, 0.1),
+        r_multiples=values,
+    )
+    for fold in study.folds:
+        fold.selection.selected.score = 0.5
+    report = evaluate_study_reliability(
+        study,
+        ReliabilityPolicy(),
+        robustness=_robust(),
+        symbols=("QQQ",),
+    )
+
+    assert report.verdict is ReliabilityVerdict.REJECTED
+    assert "validation-to-TEST degradation" in report.verdict_reason
+    assert "REL-FOLD-002" not in report.verdict_reason
+    assert "expectancy confidence interval remains inconclusive" in report.verdict_reason
+
+
 def test_v2_confidence_interval_passes_or_rejects_only_when_wholly_one_sided():
     passing = evaluate_study_reliability(
         _study(0.2, r_multiples=[0.1, 0.2, 0.3] * 70),

@@ -356,13 +356,24 @@ def _verdict_reason(
     criteria: Sequence[ReliabilityCriterion],
 ) -> str:
     names = {
+        "REL-ENGINE-001": "engine integrity",
+        "REL-PROCEDURE-001": "procedure completion",
         "REL-OOS-CONFIDENCE": "the expectancy confidence interval",
         "REL-OOS-TRADES": "held-out trade sufficiency",
         "REL-OOS-SESSIONS": "held-out session sufficiency",
         "REL-FOLD-001": "fold consistency",
+        "REL-FOLD-002": "validation-to-TEST degradation",
+        "REL-SELECTION-001": "parameter-selection stability",
+        "REL-SELECTION-002": "candidate-selection plateau quality",
+        "REL-DATA-001": "data integrity",
+        "REL-LEAKAGE-001": "leakage controls",
+        "REL-PLAUSIBILITY-001": "candidate plausibility",
         "REL-ROBUST-COST": "cost stress",
         "REL-ROBUST-NEIGHBORHOOD": "parameter-neighborhood stability",
         "REL-ROBUST-REGIME": "predeclared regime evidence",
+        "REL-ROBUST-SUBSAMPLE": "subsample robustness",
+        "REL-MULTIPLE-TESTING": "multiple-testing diagnostics",
+        "REL-PORTFOLIO-001": "portfolio evidence",
     }
     failed = [
         names.get(item.criterion_id, item.criterion_id)
@@ -379,7 +390,12 @@ def _verdict_reason(
     if verdict is ReliabilityVerdict.REJECTED:
         reason = "Rejected because " + ", ".join(failed[:3]) + " failed."
         if incomplete:
-            reason += " Additional required evidence remains incomplete."
+            reason += (
+                " In addition, "
+                + ", ".join(incomplete[:3])
+                + (" remains" if len(incomplete) == 1 else " remain")
+                + " inconclusive."
+            )
         return reason
     if verdict is ReliabilityVerdict.INCONCLUSIVE:
         return "Inconclusive because " + ", ".join(incomplete[:3]) + (

@@ -203,7 +203,7 @@ class ORBCalculator:
 
         # Check cache
         if self._current_date == current_date_str and self._current_levels:
-            logger.info(
+            logger.debug(
                 f"ORB Calculate: cache HIT for {current_date_str}, "
                 f"returning cached high=${self._current_levels.high:.2f}, low=${self._current_levels.low:.2f}"
             )
@@ -232,13 +232,12 @@ class ORBCalculator:
             logger.warning(f"ORB Calculate: date filter failed ({e}), falling back to direct comparison")
             current_day_df = df[df["timestamp"].dt.date == current_date].copy()
 
-        # DEBUG: Log filtering details
-        logger.info(
+        logger.debug(
             f"ORB Calculate: trading_date={current_date}, total_bars={len(df)}, "
             f"current_day_bars={len(current_day_df)}"
         )
         if not current_day_df.empty:
-            logger.info(
+            logger.debug(
                 f"ORB Calculate: current_day bars timestamps: "
                 f"{current_day_df['timestamp'].tolist()}"
             )
@@ -268,14 +267,13 @@ class ORBCalculator:
                 # Stop once we exit the opening window
                 break
 
-        # DEBUG: Log opening window filtering
-        logger.info(
+        logger.debug(
             f"ORB Calculate: opening_window={self.start_time}-{self.start_time.hour}:{self.start_time.minute + self.duration_minutes:02d}, "
             f"bars_in_window={len(opening_bars)}"
         )
         if opening_bars:
             opening_timestamps = [row['timestamp'] for row in opening_bars]
-            logger.info(f"ORB Calculate: opening_bars timestamps: {opening_timestamps}")
+            logger.debug(f"ORB Calculate: opening_bars timestamps: {opening_timestamps}")
 
         if not opening_bars:
             return ORBLevels(
@@ -294,7 +292,7 @@ class ORBCalculator:
         orb_low = min(lows)
         orb_range = orb_high - orb_low
 
-        logger.info(
+        logger.debug(
             f"ORB Calculate: RESULT high=${orb_high:.2f}, low=${orb_low:.2f}, "
             f"range=${orb_range:.2f} (from {len(opening_bars)} opening bar(s))"
         )
@@ -331,10 +329,10 @@ class ORBCalculator:
             # Window is complete, safe to cache
             self._current_date = current_date_str
             self._current_levels = levels
-            logger.info(f"ORB Calculate: Window complete, caching result for {current_date_str}")
+            logger.debug(f"ORB Calculate: Window complete, caching result for {current_date_str}")
         else:
             # Window still in progress, don't cache (will recalculate on next bar)
-            logger.info(f"ORB Calculate: Window in progress (current={current_bar_time}, end={end_time}), not caching")
+            logger.debug(f"ORB Calculate: Window in progress (current={current_bar_time}, end={end_time}), not caching")
 
         return levels
 

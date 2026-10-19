@@ -193,6 +193,30 @@ test("shows a compact statistical confidence table and stored verdict reasoning"
   assert.doesNotMatch(html, /<dl class="detail-grid">/);
 });
 
+test("humanizes persisted criterion IDs and names inconclusive confidence evidence", () => {
+  const value = fixture();
+  value.reliability = {
+    verdict: "rejected",
+    policyHash: "policy-2",
+    report: {
+      verdict_reason: "Rejected because fold consistency, REL-FOLD-002 failed. Additional required evidence remains incomplete.",
+    },
+    criteria: [{
+      criterion_id: "REL-OOS-CONFIDENCE",
+      outcome: "inconclusive",
+      observed: {},
+      expected: "95% interval above 0R",
+    }],
+  };
+
+  const html = experimentDetail(value);
+
+  assert.match(html, /validation-to-test degradation failed/);
+  assert.match(html, /expectancy confidence interval remains inconclusive/);
+  assert.doesNotMatch(html, /REL-FOLD-002 failed/);
+  assert.doesNotMatch(html, /Additional required evidence remains incomplete/);
+});
+
 test("experiment names are explicitly left aligned", () => {
   const html = experimentList([{
     experimentId: "study-1",

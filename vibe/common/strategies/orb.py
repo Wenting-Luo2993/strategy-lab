@@ -241,8 +241,7 @@ class ORBStrategy(StrategyBase):
         current_time_local = current_time.astimezone(market_tz)
         bar_time = current_time_local.time()
 
-        # DEBUG: Log timestamp comparison details (using INFO level to ensure visibility)
-        logger.info(
+        logger.debug(
             f"[TIMESTAMP CHECK] {symbol}: "
             f"current_time={current_time} → market_time={current_time_local}, "
             f"bar_time={bar_time}, "
@@ -259,9 +258,9 @@ class ORBStrategy(StrategyBase):
         # orb_levels.py uses trading_date.date() to filter bars by date, and df["timestamp"].dt.date
         # returns dates in the stored timezone (Eastern for yfinance/Finnhub bars). Passing UTC here
         # causes a mismatch when pd.concat does NOT convert to UTC (e.g., same-tz concat stays Eastern).
-        logger.info(f"[ORB CALC] {symbol}: calling calculate() with {len(df_context)} bars, trading_date={current_time_local}")
+        logger.debug(f"[ORB CALC] {symbol}: calling calculate() with {len(df_context)} bars, trading_date={current_time_local}")
         levels = orb_calc.calculate(df_context, trading_date=current_time_local)
-        logger.info(f"[ORB CALC] {symbol}: result valid={levels.valid}, high=${levels.high:.2f}, low=${levels.low:.2f}")
+        logger.debug(f"[ORB CALC] {symbol}: result valid={levels.valid}, high=${levels.high:.2f}, low=${levels.low:.2f}")
 
         if not levels.valid:
             return 0, {"reason": "invalid_orb_levels", "reason_detail": levels.reason}
