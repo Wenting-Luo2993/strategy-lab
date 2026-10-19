@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from vibe.research_pipeline.optimization import CandidateSpec
@@ -69,3 +71,50 @@ def test_orchestration_records_cost_cliff_regime_and_seed_provenance():
     assert evidence.subsample_seed == 11
     assert len(evidence.bootstrap_expectancies_r) == 5
     assert evidence.multiple_testing_diagnostic is None
+
+
+def test_nested_orchestration_uses_frozen_fold_tests_for_stresses():
+    selected = _candidate("selected", (1,))
+    neighbor = _candidate("neighbor", (2,))
+    fold = SimpleNamespace(
+        fold_index=0,
+        selection=SimpleNamespace(
+            selected=SimpleNamespace(candidate=selected, score=0.3)
+        ),
+        test_result=SimpleNamespace(
+            segment=object(),
+            result=SimpleNamespace(
+                overall=SimpleNamespace(
+                    expectancy_r=0.2,
+                    r_multiples=[0.4, 0.0],
+                )
+            ),
+        ),
+    )
+
+    evidence = RobustnessOrchestrator(
+        seed=7, bootstrap_replicates=4, cliff_threshold_r=0.25
+    ).build_nested_walk_forward(
+        SimpleNamespace(folds=(fold,)),
+        (selected, neighbor),
+        cost_scenarios=({"stop_ticks": 4.0},),
+        cost_runner=lambda _fold, _candidate, _scenario: SimpleNamespace(
+            result=SimpleNamespace(
+                overall=SimpleNamespace(r_multiples=[0.1, 0.0])
+            )
+        ),
+        neighborhood_runner=lambda _fold, _candidate: SimpleNamespace(
+            result=SimpleNamespace(
+                overall=SimpleNamespace(expectancy_r=-0.1)
+            )
+        ),
+    )
+
+    assert evidence.cost_stress_expectancy_r == pytest.approx(0.05)
+    assert evidence.neighbor_expectancies_r == (-0.1,)
+    assert evidence.neighbor_candidate_ids == ("fold-0:neighbor",)
+    assert evidence.sign_change_detected is True
+    assert evidence.cliff_detected is True
+    assert evidence.subsample_seed == 7
+    assert len(evidence.bootstrap_expectancies_r) == 4
+    assert evidence.n_candidates_evaluated == 2

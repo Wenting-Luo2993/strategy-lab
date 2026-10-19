@@ -113,6 +113,9 @@ class NestedWalkForwardDriver:
         calendar: SessionCalendar | None = None,
         reliability_policy: ReliabilityPolicy | None = None,
         robustness_evidence: RobustnessEvidence | None = None,
+        robustness_builder: (
+            Callable[[NestedWalkForwardResult], RobustnessEvidence] | None
+        ) = None,
         symbols: Sequence[str] = (),
         shared_capital_portfolio: bool = False,
     ) -> None:
@@ -123,6 +126,7 @@ class NestedWalkForwardDriver:
         self._calendar = calendar
         self._reliability_policy = reliability_policy
         self._robustness_evidence = robustness_evidence
+        self._robustness_builder = robustness_builder
         self._symbols = tuple(symbols)
         self._shared_capital_portfolio = shared_capital_portfolio
 
@@ -224,10 +228,15 @@ class NestedWalkForwardDriver:
         )
         if self._reliability_policy is None:
             return completed
+        robustness = (
+            self._robustness_builder(completed)
+            if self._robustness_builder is not None
+            else self._robustness_evidence
+        )
         reliability = evaluate_study_reliability(
             completed,
             self._reliability_policy,
-            robustness=self._robustness_evidence,
+            robustness=robustness,
             symbols=self._symbols,
             shared_capital_portfolio=self._shared_capital_portfolio,
             data_integrity_passed=all(
@@ -252,7 +261,7 @@ class NestedWalkForwardDriver:
             **{
                 **completed.__dict__,
                 "reliability_report": reliability,
-                "robustness_evidence": self._robustness_evidence,
+                "robustness_evidence": robustness,
             }
         )
 

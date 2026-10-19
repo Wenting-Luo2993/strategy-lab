@@ -329,6 +329,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         warmup_sessions=args.warmup_sessions,
         engine_kwargs={"initial_capital": args.capital},
     )
+    baseline_executor = executor
     validator = SegmentValidator(
         ValidationProfile(
             name="nested_walk_forward",
@@ -352,6 +353,51 @@ def main(argv: Sequence[str] | None = None) -> int:
         import json
         policy_overrides = json.loads(args.reliability_policy.read_text(encoding="utf-8"))
     reliability_policy = ReliabilityPolicy(**policy_overrides)
+
+    from vibe.backtester.core.execution_realism import ExecutionRealismConfig
+    from vibe.backtester.core.exit_slippage import FixedTickExitSlippage
+    from vibe.research_pipeline.robustness import RobustnessOrchestrator
+
+    cost_stress_scenarios = (
+        {"stop_ticks": 4.0, "eod_ticks": 2.0},
+        {"stop_ticks": 6.0, "eod_ticks": 3.0},
+    )
+    stressed_executors: dict[tuple[int, int], RulesetSegmentExecutor] = {}
+
+    def build_robustness(study: Any):
+        def run_cost(fold: Any, candidate: Any, scenario: Any):
+            key = (int(scenario["stop_ticks"]), int(scenario["eod_ticks"]))
+            stressed = stressed_executors.get(key)
+            if stressed is None:
+                stressed = RulesetSegmentExecutor.from_yaml(
+                    args.ruleset,
+                    parameter_paths,
+                    data_dir=data_dir,
+                    warmup_sessions=args.warmup_sessions,
+                    engine_kwargs={
+                        "initial_capital": args.capital,
+                        "execution_realism": ExecutionRealismConfig.realistic(
+                            exit_slippage=FixedTickExitSlippage.liquid_equity(
+                                stop_ticks=key[0],
+                                eod_ticks=key[1],
+                            )
+                        ),
+                    },
+                )
+                stressed_executors[key] = stressed
+            return stressed(candidate, fold.test_result.segment)
+
+        return RobustnessOrchestrator().build_nested_walk_forward(
+            study,
+            candidates,
+            cost_scenarios=cost_stress_scenarios,
+            cost_runner=run_cost,
+            neighborhood_runner=lambda fold, candidate: baseline_executor(
+                candidate, fold.test_result.segment
+            ),
+            regime_returns={},
+            regimes_predeclared=False,
+        )
 
     sink = None
     experiment = None
@@ -409,6 +455,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         executor,
         validator,
         reliability_policy=reliability_policy,
+        robustness_builder=build_robustness,
         symbols=(args.symbol,),
     )
 
