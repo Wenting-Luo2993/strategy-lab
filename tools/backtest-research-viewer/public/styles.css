@@ -95,6 +95,37 @@ td small { display: block; margin-top: .3rem; color: var(--muted); }
 .experiment-fold table { min-width: 850px; }
 .experiment-fold th[scope="row"] { text-transform: none; color: var(--text); font-size: .85rem; }
 .selection-explanation { color: var(--muted); margin: 1rem 0 0; }
+.criterion-name { display: flex; align-items: center; gap: .35rem; min-width: 10rem; }
+.criterion-info-button {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
+}
+.criterion-info-button:hover,
+.criterion-info-button:focus-visible {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 1px;
+}
+.criterion-callout[popover] {
+  width: min(30rem, calc(100vw - 2rem));
+  border: 1px solid var(--accent);
+  border-radius: .65rem;
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, .5);
+  padding: 1rem 1.1rem;
+}
+.criterion-callout::backdrop { background: transparent; }
+.criterion-callout p { margin: .45rem 0; color: var(--muted); }
+.criterion-callout small { display: block; color: var(--text); }
 .evaluation-findings { margin-top: .75rem; max-width: 22rem; }
 .evaluation-findings p { font-size: .8rem; }
 #experiment-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; }

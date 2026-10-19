@@ -117,3 +117,36 @@ test("experiment list preserves the question, axis and fold completion", () => {
   assert.match(html, /5 \/ 15 \/ 30/);
   assert.match(html, /inconclusive/);
 });
+
+test("reliability criteria use Fluent UI info icons with explanatory callouts", () => {
+  const value = fixture();
+  value.reliability = {
+    verdict: "rejected",
+    policyHash: "policy-1",
+    criteria: [{
+      criterion_id: "REL-OOS-TRADES",
+      outcome: "inconclusive",
+      observed: 80,
+      expected: ">= 100 held-out trades",
+    }, {
+      criterion_id: '<img src=x onerror="alert(1)">',
+      outcome: "review_required",
+      observed: null,
+      expected: "<script>future rule</script>",
+    }],
+  };
+
+  const html = experimentDetail(value);
+
+  assert.match(html, /popovertarget="criterion-help-REL-OOS-TRADES"/);
+  assert.match(html, /aria-label="Explain REL-OOS-TRADES"/);
+  assert.match(html, /M8\.5 7\.5a\.5\.5/);
+  assert.match(html, /Held-out trade sufficiency/);
+  assert.match(html, /estimate performance with useful precision/);
+  assert.match(html, /Current rule: &gt;= 100 held-out trades/);
+  assert.match(html, /A pre-registered deterministic check/);
+  assert.doesNotMatch(html, /<img/);
+  assert.doesNotMatch(html, /<script/);
+  assert.match(html, /&lt;img/);
+  assert.match(html, /&lt;script&gt;future rule&lt;\/script&gt;/);
+});

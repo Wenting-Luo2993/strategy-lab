@@ -14,6 +14,44 @@ const status = (value) => {
   return `<span class="badge ${tone}">${escape(normalized === "not_assessed" ? "Not assessed" : normalized)}</span>`;
 };
 const table = (headings, rows) => `<div class="table-wrap"><table><thead><tr>${headings.map((heading) => `<th scope="col">${escape(heading)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+const reliabilityCriterionHelp = {
+  "REL-ENGINE-001": ["Engine integrity", "Every frozen TEST run must carry a passing engine-integrity report. This proves the simulator's accounting, execution mechanics, positions, equity series, and published metrics reconciled; it does not prove the strategy is profitable."],
+  "REL-PROCEDURE-001": ["Procedure completion", "Every declared nested fold must complete and contribute to the stitched held-out result. Omitting a failed fold would introduce survivorship selection."],
+  "REL-OOS-EXPECTANCY": ["Held-out expectancy", "The mean net R per trade across every non-overlapping TEST window. A negative value rejects promotion under Policy v1 even when the confidence interval is wide."],
+  "REL-OOS-TRADES": ["Held-out trade sufficiency", "The stitched TEST sample must contain enough trades to estimate performance with useful precision. Policy v1 requires at least 100; fewer trades are marked inconclusive, not silently treated as adequate."],
+  "REL-OOS-SESSIONS": ["Held-out session sufficiency", "The TEST evidence must cover enough declared exchange sessions to reduce dependence on a short market period. Policy v1 requires at least 120 sessions."],
+  "REL-FOLD-001": ["Fold consistency", "Measures the fraction of genuinely held-out folds with positive expectancy. Policy v1 requires at least 60% so one exceptional period cannot carry the claim."],
+  "REL-FOLD-002": ["Validation-to-TEST degradation", "Compares the validation score used for selection with the later frozen TEST result. Large degradation suggests selection noise or overfitting; Policy v1 allows an average decline of at most 0.25R."],
+  "REL-SELECTION-001": ["Parameter movement", "Measures how far the selected parameter coordinates move between adjacent folds. Large movement indicates the claimed optimum is unstable across time."],
+  "REL-SELECTION-002": ["Plateau support", "Checks whether the selected setting belongs to a connected region of similarly acceptable candidates. A one-candidate plateau is an isolated optimum and requires review."],
+  "REL-DATA-001": ["Data integrity", "Required dataset identity, coverage, ordering, and quality evidence must pass. A failure means the research inputs cannot support the claimed result."],
+  "REL-LEAKAGE-001": ["Leakage protection", "Checks temporal splits and feature availability so future information cannot influence training, selection, or entry decisions."],
+  "REL-ROBUST-COST": ["Execution-cost stress", "Reruns the frozen TEST selections under predeclared wider slippage assumptions. The result must remain non-negative after conservative costs."],
+  "REL-ROBUST-NEIGHBORHOOD": ["Parameter-neighborhood robustness", "Evaluates adjacent parameter settings without reselecting the winner. Sign changes or sharp cliffs indicate that performance depends on a fragile point estimate."],
+  "REL-ROBUST-REGIME": ["Regime coverage", "Requires predeclared market regimes, adequate coverage, and bounded return concentration. Regimes must be defined before reading their outcomes."],
+  "REL-ROBUST-SUBSAMPLE": ["Seeded subsampling", "Uses a recorded random seed to resample TEST trades and show sampling uncertainty reproducibly. Policy v1 treats this as advisory rather than inventing an unsupported significance claim."],
+  "REL-MULTIPLE-TESTING": ["Multiple-testing disclosure", "Retains how many candidates were evaluated so the search burden is visible. Policy v1 does not fabricate a deflated statistic unless its assumptions and interpretation are separately adopted."],
+  "REL-PORTFOLIO-001": ["Shared-capital evidence", "A claim covering multiple symbols must use one portfolio simulation with shared cash, buying power, and contention. Independent capital resets cannot establish portfolio behavior."],
+};
+const fluentInfoIcon = `<svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8.5 7.5a.5.5 0 1 0-1 0v3a.5.5 0 0 0 1 0zm.25-2a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1M2 8a6 6 0 1 1 12 0A6 6 0 0 1 2 8"/></svg>`;
+
+function criterionWithCallout(item) {
+  const criterionId = item.criterion_id || item.criterionId || "Unknown criterion";
+  const popupId = `criterion-help-${String(criterionId).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const [title, description] = reliabilityCriterionHelp[criterionId] || [
+    "Reliability criterion",
+    "A pre-registered deterministic check used by the study reliability policy. Compare the observed value with the expected condition shown in this row.",
+  ];
+  return `<div class="criterion-name"><span>${escape(criterionId)}</span>
+    <button class="criterion-info-button" type="button" popovertarget="${escape(popupId)}"
+      aria-label="Explain ${escape(criterionId)}">${fluentInfoIcon}</button>
+    <div class="criterion-callout" id="${escape(popupId)}" popover>
+      <strong>${escape(title)}</strong>
+      <p>${escape(description)}</p>
+      <small>Current rule: ${escape(item.expected)}</small>
+    </div>
+  </div>`;
+}
 
 export function experimentList(items) {
   return table(["Experiment", "Controlled settings", "Folds", "Procedure / reliability"], items.map((item) => `
@@ -127,7 +165,7 @@ export function experimentDetail(experiment) {
     </dl>
     ${reliabilityCriteria.length ? `<h3>Reliability criteria</h3>${table(
       ["Criterion", "Outcome", "Observed", "Expected"],
-      reliabilityCriteria.map((item) => `<tr><td>${escape(item.criterion_id || item.criterionId)}</td>
+      reliabilityCriteria.map((item) => `<tr><td>${criterionWithCallout(item)}</td>
         <td>${status(item.outcome)}</td><td>${escape(JSON.stringify(item.observed ?? null))}</td>
         <td>${escape(item.expected)}</td></tr>`),
     )}` : '<p class="notice">Research reliability: Not assessed. Historical experiments are not retroactively classified.</p>'}
