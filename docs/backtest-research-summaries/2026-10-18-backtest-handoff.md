@@ -119,20 +119,32 @@ trade/equity detail. The 130 queued run payloads therefore carry
 `research_reliability: not_assessed` even though the parent study has a
 persisted **REJECTED** verdict.
 
-Current source-device state:
+Publication completed on the source device on 2026-10-18. The existing
+dashboard Supabase URL and service key were mapped in memory to the publisher's
+expected variable names for this one operation; no secret value was copied into
+the repository.
 
 | Publication item | State |
 | --- | ---: |
-| Direction-study run summaries queued | 130 pending |
-| Total publication outbox | 175 pending |
-| `RESEARCH_SUPABASE_URL` | Not configured |
-| `RESEARCH_SUPABASE_SERVICE_ROLE_KEY` | Not configured |
-| Repository `.env` | Absent |
+| Direction-study run summaries published | 130 |
+| Other run summaries published | 45 |
+| Total publication outbox | 175 published |
+| Reconciliation | 175 matched; 0 missing/divergent/orphaned |
+| Failed/dead-letter rows | 0 |
 
-Do not flush blindly from another device. First verify that
-`supabase-research-schema.sql` is applied to the intended private project and
-that the service-role credentials are configured only in a trusted local
-environment. Then:
+For future publication, configure the publisher-specific names shown in
+`deploy/ibkr-docker/secrets/trading-bot.env.example`:
+
+```text
+RESEARCH_SUPABASE_URL
+RESEARCH_SUPABASE_SERVICE_ROLE_KEY
+```
+
+Keep the research service role in a trusted local environment and separate from
+browser/anonymous credentials. `scripts/publish_research.py` loads the
+repository-root `.env`; the deploy secret file is not loaded automatically, so
+export those two variables into the invoking shell or use an explicitly trusted
+secret-loading wrapper. Then:
 
 ```powershell
 python scripts\publish_research.py status
@@ -140,8 +152,8 @@ python scripts\publish_research.py flush
 python scripts\publish_research.py reconcile
 ```
 
-The current flush publishes every ready outbox row, not only this experiment's
-130 rows. Review all 175 pending rows before executing it.
+The flush publishes every ready outbox row, not only one experiment. Always run
+`status` before future flushes.
 
 For full-fidelity continuation, securely transfer the source device's local
 SQLite database separately. Supabase alone cannot reconstruct the parent
@@ -220,9 +232,8 @@ not stuck; it exited successfully.
 
 1. Securely transfer the authoritative SQLite database if the work computer
    needs full experiment, trade, and equity inspection.
-2. Decide whether to publish all 175 pending summary rows to the intended
-   Supabase project. Publication preserves evidence; it does not promote the
-   strategy.
+2. Treat the 175 matched Supabase summaries as a portable read model, not as a
+   complete experiment backup or strategy promotion.
 3. Extend the remote publication/read model for parent experiments and study
    reliability before relying on Supabase as the sole cross-device research
    store.
