@@ -17,7 +17,8 @@ const table = (headings, rows) => `<div class="table-wrap"><table><thead><tr>${h
 const reliabilityCriterionHelp = {
   "REL-ENGINE-001": ["Engine integrity", "Every frozen TEST run must carry a passing engine-integrity report. This proves the simulator's accounting, execution mechanics, positions, equity series, and published metrics reconciled; it does not prove the strategy is profitable."],
   "REL-PROCEDURE-001": ["Procedure completion", "Every declared nested fold must complete and contribute to the stitched held-out result. Omitting a failed fold would introduce survivorship selection."],
-  "REL-OOS-EXPECTANCY": ["Held-out expectancy", "The mean net R per trade across every non-overlapping TEST window. A negative value rejects promotion under Policy v1 even when the confidence interval is wide."],
+  "REL-OOS-EXPECTANCY": ["Held-out expectancy", "The mean net R per trade across every non-overlapping TEST window. Policy v2 treats this point estimate as descriptive and uses its confidence interval for the statistical decision."],
+  "REL-OOS-CONFIDENCE": ["Expectancy confidence interval", "Policy v2 passes only when the entire predeclared Student-t interval is above the promotion threshold, rejects only when the entire interval is below it, and otherwise remains inconclusive."],
   "REL-OOS-TRADES": ["Held-out trade sufficiency", "The stitched TEST sample must contain enough trades to estimate performance with useful precision. Policy v1 requires at least 100; fewer trades are marked inconclusive, not silently treated as adequate."],
   "REL-OOS-SESSIONS": ["Held-out session sufficiency", "The TEST evidence must cover enough declared exchange sessions to reduce dependence on a short market period. Policy v1 requires at least 120 sessions."],
   "REL-FOLD-001": ["Fold consistency", "Measures the fraction of genuinely held-out folds with positive expectancy. Policy v1 requires at least 60% so one exceptional period cannot carry the claim."],
@@ -55,7 +56,7 @@ function criterionWithCallout(item) {
 
 export function experimentList(items) {
   return table(["Experiment", "Controlled settings", "Folds", "Procedure / reliability"], items.map((item) => `
-    <tr><td><button class="link" data-experiment="${escape(item.experimentId)}">${escape(item.title)}</button>
+    <tr><td class="experiment-name"><button class="link" data-experiment="${escape(item.experimentId)}">${escape(item.title)}</button>
       <small>${escape(item.symbol)} · ${escape(item.createdAt)}</small></td>
       <td>${(item.axes || []).map((axis) => `${escape(axis.name)}: ${escape(axis.values.join(" / "))}`).join("<br>") || "Definition unavailable"}</td>
       <td>${escape(item.completedFolds ?? "—")} / ${escape(item.expectedFolds ?? "—")} completed
@@ -82,6 +83,30 @@ function evaluationCell(evaluation, link) {
 function findings(evaluation) {
   const items = evaluation?.findings || [];
   return items.length ? `<details class="evaluation-findings"><summary>${escape(items.length)} check finding(s)</summary>${items.map((item) => `<p><strong>${escape(item.code)} · ${escape(item.severity)}</strong> ${escape(item.message)}</p>`).join("")}</details>` : "";
+}
+
+function confidenceTable(profile) {
+  if (!profile || !profile.sample_size) return "";
+  const percent = (value) => Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "Unavailable";
+  const decimal = (value) => Number.isFinite(value) ? Number(value).toFixed(3) : "Unavailable";
+  const interval = (lower, upper) => Number.isFinite(lower) && Number.isFinite(upper)
+    ? `[${riskMultiple(lower)}, ${riskMultiple(upper)}]` : "Unavailable";
+  const rows = [
+    ["Mean expectancy", riskMultiple(profile.mean_r), "Observed stitched TEST mean"],
+    ["Sample size", profile.sample_size, "Trades with a valid R denominator"],
+    ["Standard deviation", riskMultiple(profile.sample_std_r), "Observed dispersion of trade R"],
+    ["Standard error", riskMultiple(profile.standard_error_r), "Estimated uncertainty of the sample mean"],
+    ["t-statistic versus threshold", decimal(profile.t_statistic), "0 means no measured separation; the sign shows direction and magnitude is measured in standard errors"],
+    ["Evidence confidence above threshold", percent(profile.evidence_confidence_above_threshold), "Student-t CDF at the observed statistic; an evidence score, not a posterior probability"],
+    ["Confidence level", percent(profile.confidence_level), "Predeclared coverage used to construct the interval"],
+    ["Student-t confidence interval", interval(profile.t_interval_lower_r, profile.t_interval_upper_r), `${escape(profile.degrees_of_freedom)} degrees of freedom`],
+    ["Seeded bootstrap interval", interval(profile.bootstrap_interval_lower_r, profile.bootstrap_interval_upper_r), `${escape(profile.bootstrap_replicates)} reproducible replicates`],
+  ];
+  return `<h3>Statistical confidence profile</h3>${table(
+    ["Measure", "Value", "Interpretation"],
+    rows.map(([label, value, explanation]) => `<tr><th scope="row">${escape(label)}</th>
+      <td>${escape(value)}</td><td>${escape(explanation)}</td></tr>`),
+  )}`;
 }
 
 export function experimentDetail(experiment) {
@@ -145,6 +170,15 @@ export function experimentDetail(experiment) {
   const stitched = result?.stitched_oos;
   const reliability = experiment.reliability;
   const reliabilityCriteria = reliability?.criteria || [];
+  const report = reliability?.report || {};
+  const summaryRows = [
+    ["Objective", definition.objective],
+    ["Completed folds", `${result?.n_folds_completed ?? "Not recorded"} / ${planned.length}`],
+    ["Stitched held-out expectancy", stitched ? `${riskMultiple(stitched.expectancy_r)} · ${stitched.n_trades} trades` : "Unavailable — no completed all-fold OOS aggregate"],
+    ["Diagnostic cash total", stitched ? stitched.fold_net_pnl.reduce((sum, value) => sum + value, 0).toLocaleString(undefined, { style: "currency", currency: "USD" }) : "Unavailable"],
+    ["Reliability policy", reliability?.policyHash || "Not assessed"],
+    ["Methodology freeze", experiment.frozen ? `${experiment.frozen.frozenBy} · ${experiment.frozen.frozenAt}` : "Not frozen"],
+  ];
   return `
     <header class="experiment-heading"><p class="eyebrow">CONTROLLED PARAMETER EXPERIMENT · ${escape(definition.symbol)}</p>
       <h2 tabindex="-1">${escape(experiment.title)}</h2>
@@ -155,14 +189,11 @@ export function experimentDetail(experiment) {
     <div class="notice"><strong>How selection works:</strong> ${escape(definition.training_policy)}
       ${escape(definition.selection_policy)} The test window never chooses the parameters.
       Experiment outcomes describe driver evaluation checks; linked segment-run lifecycle states are shown separately.</div>
-    <dl class="detail-grid">
-      <div><dt>Objective</dt><dd>${escape(definition.objective)}</dd></div>
-      <div><dt>Completed folds</dt><dd>${escape(result?.n_folds_completed ?? "Not recorded")} / ${planned.length}</dd></div>
-      <div><dt>Stitched held-out expectancy</dt><dd>${stitched ? `${riskMultiple(stitched.expectancy_r)} · ${escape(stitched.n_trades)} trades` : "Unavailable — no completed all-fold OOS aggregate"}</dd></div>
-      <div><dt>Test-fold net P&L sum (capital resets per fold)</dt><dd>${stitched ? escape(stitched.fold_net_pnl.reduce((sum, value) => sum + value, 0).toLocaleString(undefined, { style: "currency", currency: "USD" })) : "Unavailable"}</dd></div>
-      <div><dt>Reliability policy</dt><dd>${escape(reliability?.policyHash || "Not assessed")}</dd></div>
-      <div><dt>Methodology freeze</dt><dd>${experiment.frozen ? `${escape(experiment.frozen.frozenBy)} · ${escape(experiment.frozen.frozenAt)}` : "Not frozen"}</dd></div>
-    </dl>
+    ${table(["Study summary", "Value"], summaryRows.map(([label, value]) =>
+      `<tr><th scope="row">${escape(label)}</th><td>${escape(value)}
+        ${label === "Diagnostic cash total" ? "<small>Positive or negative cash sum across capital-reset folds; diagnostic only, not the R-based promotion metric.</small>" : ""}</td></tr>`))}
+    ${report.verdict_reason ? `<p class="verdict-reason"><strong>Verdict reasoning:</strong> ${escape(report.verdict_reason)}</p>` : ""}
+    ${confidenceTable(report.statistical_confidence)}
     ${reliabilityCriteria.length ? `<h3>Reliability criteria</h3>${table(
       ["Criterion", "Outcome", "Observed", "Expected"],
       reliabilityCriteria.map((item) => `<tr><td>${criterionWithCallout(item)}</td>

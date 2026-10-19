@@ -162,6 +162,9 @@ class RobustnessOrchestrator:
         neighborhood_runner: Callable[[Any, CandidateSpec], Any],
         regime_returns: Mapping[str, float] | None = None,
         regimes_predeclared: bool = False,
+        regime_definitions: Sequence[Mapping[str, Any]] = (),
+        regime_observations: Sequence[Mapping[str, Any]] = (),
+        regime_unclassified_trades: int = 0,
     ) -> RobustnessEvidence:
         """Build study-level evidence from predeclared post-selection stresses.
 
@@ -267,6 +270,9 @@ class RobustnessOrchestrator:
             regime_count=len(returns) if returns else None,
             max_single_regime_return_concentration=concentration,
             regimes_predeclared=regimes_predeclared,
+            regime_definitions=tuple(dict(item) for item in regime_definitions),
+            regime_observations=tuple(dict(item) for item in regime_observations),
+            regime_unclassified_trades=regime_unclassified_trades,
             subsample_seed=self.seed,
             subsample_identity=hash_object({
                 "seed": self.seed,

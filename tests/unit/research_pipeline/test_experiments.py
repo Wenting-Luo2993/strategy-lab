@@ -202,6 +202,42 @@ def test_finished_experiments_cannot_be_rewritten_or_relinked(tmp_path):
         store.close()
 
 
+def test_finished_calibration_experiment_can_be_archived_without_deleting_evidence(
+    tmp_path,
+):
+    path = tmp_path / "demo.sqlite3"
+    experiment_id, _ = build_experiment_fixture(path)
+    store = SqliteResearchStore(path)
+    try:
+        before = store._conn.execute(
+            "SELECT COUNT(*) FROM research_experiment_runs WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()[0]
+        store.archive_experiment(
+            experiment_id,
+            archived_by="Bloom",
+            reason="Superseded calibration study",
+        )
+        archive = store._conn.execute(
+            """SELECT archived_by, reason FROM archived_research_experiments
+               WHERE experiment_id = ?""",
+            (experiment_id,),
+        ).fetchone()
+        assert tuple(archive) == ("Bloom", "Superseded calibration study")
+        assert store._conn.execute(
+            "SELECT COUNT(*) FROM research_experiment_runs WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()[0] == before
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            store._conn.execute(
+                """UPDATE archived_research_experiments SET reason = 'changed'
+                   WHERE experiment_id = ?""",
+                (experiment_id,),
+            )
+    finally:
+        store.close()
+
+
 def test_additive_migration_keeps_v10_runs_unassigned(tmp_path, monkeypatch):
     path = tmp_path / "old.sqlite3"
     with sqlite3.connect(path) as conn:
@@ -209,9 +245,9 @@ def test_additive_migration_keeps_v10_runs_unassigned(tmp_path, monkeypatch):
             patch.setattr(schema, "_MIGRATIONS", schema._MIGRATIONS[:10])
             patch.setattr(schema, "SCHEMA_VERSION", 10)
             schema.migrate(conn)
-        assert schema.migrate(conn) == 13
+        assert schema.migrate(conn) == 14
         assert conn.execute("SELECT COUNT(*) FROM research_experiments").fetchone()[0] == 0
-        assert schema.migrate(conn) == 13
+        assert schema.migrate(conn) == 14
 
 
 def test_nonfinite_metrics_are_retained_as_explicit_invalid_evidence():

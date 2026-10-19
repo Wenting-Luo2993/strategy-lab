@@ -82,6 +82,7 @@ th, td { padding: .8rem; border-bottom: 1px solid var(--border); text-align: lef
 th { color: var(--muted); font-size: .72rem; text-transform: uppercase; }
 td small { display: block; margin-top: .3rem; color: var(--muted); }
 .link { border: 0; background: none; color: var(--accent); padding: 0; font-weight: 800; }
+.experiment-name, .experiment-name .link { text-align: left; }
 .experiment-heading h2 { margin-bottom: .5rem; }
 .experiment-heading p:last-child { margin-top: 1rem; }
 .experiment-fold { border: 1px solid var(--border); border-radius: .65rem; margin: 1rem 0; padding: 1rem; }
@@ -126,6 +127,12 @@ td small { display: block; margin-top: .3rem; color: var(--muted); }
 .criterion-callout::backdrop { background: transparent; }
 .criterion-callout p { margin: .45rem 0; color: var(--muted); }
 .criterion-callout small { display: block; color: var(--text); }
+.verdict-reason {
+  margin: 1rem 0;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  padding: .7rem .85rem;
+}
 .evaluation-findings { margin-top: .75rem; max-width: 22rem; }
 .evaluation-findings p { font-size: .8rem; }
 #experiment-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; }

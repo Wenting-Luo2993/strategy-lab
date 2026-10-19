@@ -8,6 +8,7 @@ decision boundary; it is not a claim of future profit or economic certainty.
 from __future__ import annotations
 
 import math
+import statistics
 from enum import Enum
 from typing import Any, Mapping, Sequence
 
@@ -16,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from vibe.backtester.core.integrity import EngineIntegrityStatus
 from vibe.research_pipeline.hashing import hash_object
 
-RELIABILITY_POLICY_VERSION = 1
+RELIABILITY_POLICY_VERSION = 2
 
 
 class _Frozen(BaseModel):
@@ -39,7 +40,7 @@ class CriterionOutcome(str, Enum):
 
 
 class ReliabilityPolicy(_Frozen):
-    """Conservative policy v1 with explicit, typed pre-freeze overrides."""
+    """Conservative policy with explicit, typed pre-freeze overrides."""
 
     version: int = Field(RELIABILITY_POLICY_VERSION, frozen=True)
     min_stitched_oos_trades: int = Field(100, ge=1)
@@ -61,19 +62,30 @@ class ReliabilityPolicy(_Frozen):
     subsampling_is_advisory: bool = True
     require_shared_capital_for_multi_symbol: bool = True
     plausibility_findings_require_review: bool = True
+    expectancy_confidence_level: float = Field(0.95, gt=0.0, lt=1.0)
+    use_expectancy_confidence_interval: bool = True
 
     @model_validator(mode="after")
-    def _version_is_v1(self) -> "ReliabilityPolicy":
-        if self.version != RELIABILITY_POLICY_VERSION:
+    def _supported_version(self) -> "ReliabilityPolicy":
+        if self.version not in {1, RELIABILITY_POLICY_VERSION}:
             raise ValueError(
                 f"Unsupported reliability policy version {self.version}; "
-                f"this binary implements immutable v{RELIABILITY_POLICY_VERSION}."
+                f"this binary implements immutable v1 and v{RELIABILITY_POLICY_VERSION}."
             )
+        if self.version == 1 and (
+            self.expectancy_confidence_level != 0.95
+            or self.use_expectancy_confidence_interval is not True
+        ):
+            raise ValueError("Policy v1 cannot override Policy v2 confidence fields")
         return self
 
     @property
     def policy_hash(self) -> str:
-        return hash_object(self)
+        payload = self.model_dump(mode="python")
+        if self.version == 1:
+            payload.pop("expectancy_confidence_level")
+            payload.pop("use_expectancy_confidence_interval")
+        return hash_object(payload)
 
 
 class ReliabilityCriterion(_Frozen):
@@ -94,6 +106,8 @@ class StudyReliabilityReport(_Frozen):
     fold_stability_summary: Mapping[str, Any]
     robustness_summary: Mapping[str, Any]
     holdout_summary: Mapping[str, Any]
+    statistical_confidence: Mapping[str, Any]
+    verdict_reason: str
     criteria: tuple[ReliabilityCriterion, ...]
 
 
@@ -113,6 +127,9 @@ class RobustnessEvidence(_Frozen):
     regime_count: int | None = None
     max_single_regime_return_concentration: float | None = None
     regimes_predeclared: bool | None = None
+    regime_definitions: tuple[Mapping[str, Any], ...] = ()
+    regime_observations: tuple[Mapping[str, Any], ...] = ()
+    regime_unclassified_trades: int = 0
     subsample_seed: int | None = None
     subsample_identity: str | None = None
     bootstrap_expectancies_r: tuple[float, ...] = ()
@@ -156,6 +173,225 @@ def _validation_scores(study: Any) -> list[float]:
         for fold in getattr(study, "folds", ())
         if getattr(fold, "selection", None) is not None
     ]
+
+
+def _stitched_r_multiples(study: Any) -> list[float]:
+    values: list[float] = []
+    for fold in getattr(study, "folds", ()):
+        result = getattr(getattr(fold, "test_result", None), "result", None)
+        overall = getattr(result, "overall", None)
+        for value in getattr(overall, "r_multiples", ()) if overall is not None else ():
+            numeric = float(value)
+            if math.isfinite(numeric):
+                values.append(numeric)
+    return values
+
+
+def _beta_continued_fraction(a: float, b: float, x: float) -> float:
+    maximum_iterations = 200
+    epsilon = 3e-14
+    floor = 1e-300
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < floor:
+        d = floor
+    d = 1.0 / d
+    result = d
+    for iteration in range(1, maximum_iterations + 1):
+        even = 2 * iteration
+        numerator = iteration * (b - iteration) * x / (
+            (qam + even) * (a + even)
+        )
+        d = 1.0 + numerator * d
+        if abs(d) < floor:
+            d = floor
+        c = 1.0 + numerator / c
+        if abs(c) < floor:
+            c = floor
+        d = 1.0 / d
+        result *= d * c
+
+        numerator = -(a + iteration) * (qab + iteration) * x / (
+            (a + even) * (qap + even)
+        )
+        d = 1.0 + numerator * d
+        if abs(d) < floor:
+            d = floor
+        c = 1.0 + numerator / c
+        if abs(c) < floor:
+            c = floor
+        d = 1.0 / d
+        delta = d * c
+        result *= delta
+        if abs(delta - 1.0) <= epsilon:
+            return result
+    raise ArithmeticError("Incomplete beta continued fraction did not converge")
+
+
+def _regularized_incomplete_beta(x: float, a: float, b: float) -> float:
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    front = math.exp(
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log1p(-x)
+    )
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * _beta_continued_fraction(a, b, x) / a
+    return 1.0 - front * _beta_continued_fraction(b, a, 1.0 - x) / b
+
+
+def _student_t_cdf(value: float, degrees_of_freedom: int) -> float:
+    if degrees_of_freedom <= 0:
+        raise ValueError("degrees_of_freedom must be positive")
+    if value == 0.0:
+        return 0.5
+    ratio = degrees_of_freedom / (degrees_of_freedom + value * value)
+    tail = 0.5 * _regularized_incomplete_beta(
+        ratio, degrees_of_freedom / 2.0, 0.5
+    )
+    return 1.0 - tail if value > 0 else tail
+
+
+def _student_t_quantile(probability: float, degrees_of_freedom: int) -> float:
+    if not 0.5 < probability < 1.0:
+        raise ValueError("probability must be between 0.5 and 1")
+    lower, upper = 0.0, 1.0
+    while _student_t_cdf(upper, degrees_of_freedom) < probability:
+        upper *= 2.0
+    for _ in range(100):
+        middle = (lower + upper) / 2.0
+        if _student_t_cdf(middle, degrees_of_freedom) < probability:
+            lower = middle
+        else:
+            upper = middle
+    return (lower + upper) / 2.0
+
+
+def _percentile(values: Sequence[float], probability: float) -> float | None:
+    clean = sorted(float(value) for value in values if math.isfinite(float(value)))
+    if not clean:
+        return None
+    position = probability * (len(clean) - 1)
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return clean[lower]
+    fraction = position - lower
+    return clean[lower] * (1.0 - fraction) + clean[upper] * fraction
+
+
+def _statistical_confidence(
+    values: Sequence[float],
+    *,
+    threshold_r: float,
+    confidence_level: float,
+    bootstrap_values: Sequence[float] = (),
+) -> dict[str, Any]:
+    sample = [float(value) for value in values if math.isfinite(float(value))]
+    profile: dict[str, Any] = {
+        "sample_size": len(sample),
+        "threshold_r": threshold_r,
+        "confidence_level": confidence_level,
+        "mean_r": statistics.fmean(sample) if sample else None,
+        "sample_std_r": None,
+        "standard_error_r": None,
+        "t_statistic": None,
+        "degrees_of_freedom": max(0, len(sample) - 1),
+        "t_interval_lower_r": None,
+        "t_interval_upper_r": None,
+        "one_sided_p_value_above_threshold": None,
+        "evidence_confidence_above_threshold": None,
+        "bootstrap_interval_lower_r": _percentile(
+            bootstrap_values, (1.0 - confidence_level) / 2.0
+        ),
+        "bootstrap_interval_upper_r": _percentile(
+            bootstrap_values, 1.0 - (1.0 - confidence_level) / 2.0
+        ),
+        "bootstrap_replicates": len(bootstrap_values),
+    }
+    if len(sample) < 2:
+        return profile
+    deviation = statistics.stdev(sample)
+    standard_error = deviation / math.sqrt(len(sample))
+    profile["sample_std_r"] = deviation
+    profile["standard_error_r"] = standard_error
+    if standard_error == 0.0:
+        mean = profile["mean_r"]
+        profile["t_interval_lower_r"] = mean
+        profile["t_interval_upper_r"] = mean
+        profile["one_sided_p_value_above_threshold"] = (
+            0.0 if mean > threshold_r else 1.0 if mean < threshold_r else 0.5
+        )
+        profile["evidence_confidence_above_threshold"] = (
+            1.0 - profile["one_sided_p_value_above_threshold"]
+        )
+        return profile
+    degrees = len(sample) - 1
+    statistic = (profile["mean_r"] - threshold_r) / standard_error
+    critical = _student_t_quantile(
+        1.0 - (1.0 - confidence_level) / 2.0, degrees
+    )
+    profile["t_statistic"] = statistic
+    profile["t_interval_lower_r"] = profile["mean_r"] - critical * standard_error
+    profile["t_interval_upper_r"] = profile["mean_r"] + critical * standard_error
+    profile["one_sided_p_value_above_threshold"] = 1.0 - _student_t_cdf(
+        statistic, degrees
+    )
+    profile["evidence_confidence_above_threshold"] = _student_t_cdf(
+        statistic, degrees
+    )
+    return profile
+
+
+def _verdict_reason(
+    verdict: ReliabilityVerdict,
+    criteria: Sequence[ReliabilityCriterion],
+) -> str:
+    names = {
+        "REL-OOS-CONFIDENCE": "the expectancy confidence interval",
+        "REL-OOS-TRADES": "held-out trade sufficiency",
+        "REL-OOS-SESSIONS": "held-out session sufficiency",
+        "REL-FOLD-001": "fold consistency",
+        "REL-ROBUST-COST": "cost stress",
+        "REL-ROBUST-NEIGHBORHOOD": "parameter-neighborhood stability",
+        "REL-ROBUST-REGIME": "predeclared regime evidence",
+    }
+    failed = [
+        names.get(item.criterion_id, item.criterion_id)
+        for item in criteria if item.outcome is CriterionOutcome.FAIL
+    ]
+    incomplete = [
+        names.get(item.criterion_id, item.criterion_id)
+        for item in criteria if item.outcome is CriterionOutcome.INCONCLUSIVE
+    ]
+    reviewed = [
+        names.get(item.criterion_id, item.criterion_id)
+        for item in criteria if item.outcome is CriterionOutcome.REVIEW
+    ]
+    if verdict is ReliabilityVerdict.REJECTED:
+        reason = "Rejected because " + ", ".join(failed[:3]) + " failed."
+        if incomplete:
+            reason += " Additional required evidence remains incomplete."
+        return reason
+    if verdict is ReliabilityVerdict.INCONCLUSIVE:
+        return "Inconclusive because " + ", ".join(incomplete[:3]) + (
+            " lack sufficient evidence." if len(incomplete) == 1
+            else " lack sufficient evidence."
+        )
+    if verdict is ReliabilityVerdict.REVIEW_REQUIRED:
+        return "Review required because " + ", ".join(reviewed[:3]) + (
+            " needs human assessment." if len(reviewed) == 1
+            else " need human assessment."
+        )
+    return "Reliable because every required engine, statistical, stability, and robustness criterion passed."
 
 
 def _parameter_movement(study: Any) -> float | None:
@@ -248,17 +484,52 @@ def evaluate_study_reliability(
         if session_counts and all(count is not None for count in session_counts)
         else 0
     )
-    criteria.append(_criterion(
-        "REL-OOS-EXPECTANCY",
-        (
+    robustness = robustness or RobustnessEvidence()
+    statistical_confidence = _statistical_confidence(
+        _stitched_r_multiples(study),
+        threshold_r=policy.min_stitched_expectancy_r,
+        confidence_level=policy.expectancy_confidence_level,
+        bootstrap_values=robustness.bootstrap_expectancies_r,
+    )
+    if policy.version == 1 or not policy.use_expectancy_confidence_interval:
+        criteria.append(_criterion(
+            "REL-OOS-EXPECTANCY",
+            (
+                CriterionOutcome.PASS
+                if expectancy is not None
+                and expectancy >= policy.min_stitched_expectancy_r
+                else CriterionOutcome.FAIL
+            ),
+            expectancy,
+            f">= {policy.min_stitched_expectancy_r}R stitched held-out expectancy",
+            "stitched_oos.expectancy_r",
+        ))
+    else:
+        criteria.append(_criterion(
+            "REL-OOS-EXPECTANCY",
+            CriterionOutcome.ADVISORY,
+            expectancy,
+            "descriptive stitched held-out point estimate",
+            "stitched_oos.expectancy_r",
+        ))
+        lower = statistical_confidence["t_interval_lower_r"]
+        upper = statistical_confidence["t_interval_upper_r"]
+        confidence_outcome = (
             CriterionOutcome.PASS
-            if expectancy is not None and expectancy >= policy.min_stitched_expectancy_r
+            if lower is not None and lower >= policy.min_stitched_expectancy_r
             else CriterionOutcome.FAIL
-        ),
-        expectancy,
-        f">= {policy.min_stitched_expectancy_r}R stitched held-out expectancy",
-        "stitched_oos.expectancy_r",
-    ))
+            if upper is not None and upper < policy.min_stitched_expectancy_r
+            else CriterionOutcome.INCONCLUSIVE
+        )
+        criteria.append(_criterion(
+            "REL-OOS-CONFIDENCE",
+            confidence_outcome,
+            statistical_confidence,
+            f"{policy.expectancy_confidence_level:.0%} Student-t interval is "
+            f"entirely above {policy.min_stitched_expectancy_r}R to pass or "
+            "entirely below it to reject",
+            "stitched TEST trade R-multiples",
+        ))
     criteria.append(_criterion(
         "REL-OOS-TRADES",
         CriterionOutcome.PASS if n_trades >= policy.min_stitched_oos_trades
@@ -361,7 +632,6 @@ def evaluate_study_reliability(
             "candidate validation findings",
         ))
 
-    robustness = robustness or RobustnessEvidence()
     cost = robustness.cost_stress_expectancy_r
     criteria.append(_criterion(
         "REL-ROBUST-COST",
@@ -485,6 +755,7 @@ def evaluate_study_reliability(
         verdict = ReliabilityVerdict.REVIEW_REQUIRED
     else:
         verdict = ReliabilityVerdict.RELIABLE
+    verdict_reason = _verdict_reason(verdict, criteria)
 
     return StudyReliabilityReport(
         verdict=verdict,
@@ -508,5 +779,7 @@ def evaluate_study_reliability(
             "provenance_hash": robustness.provenance_hash,
         },
         holdout_summary=dict(holdout_summary or {}),
+        statistical_confidence=statistical_confidence,
+        verdict_reason=verdict_reason,
         criteria=tuple(criteria),
     )

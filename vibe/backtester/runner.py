@@ -47,6 +47,7 @@ class RuleSetRunner:
             orb_start_time=s.orb_start_time,
             orb_duration_minutes=s.orb_duration_minutes,
             orb_body_pct_filter=getattr(s, "orb_body_pct_filter", 0.0),
+            direction_mode=getattr(s, "direction_mode", "symmetric"),
             breakout_evaluation=getattr(s, "breakout_evaluation", "wick"),
             entry_cutoff_time=s.entry_cutoff_time,
             take_profit_multiplier=tp_multiplier,

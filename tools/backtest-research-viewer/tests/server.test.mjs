@@ -977,6 +977,18 @@ test("experiment endpoints preserve explicit membership and gracefully support v
     assert.equal((await rawRequest(fixture.origin, "/api/experiments?pageSize=101")).status, 400);
     const run = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-000000000004");
     assert.ok(run.json.badges.some((item) => item.label === "Not validated"));
+    const archiveWriter = new DatabaseSync(fixture.dbPath);
+    archiveWriter.exec(`
+      CREATE TABLE archived_research_experiments (
+        experiment_id TEXT PRIMARY KEY, archived_at TEXT, archived_by TEXT, reason TEXT
+      );
+      INSERT INTO archived_research_experiments VALUES
+        ('study-large', '2026-10-18', 'Bloom', 'Superseded calibration study');
+    `);
+    archiveWriter.close();
+    const afterArchive = await rawRequest(fixture.origin, "/api/experiments");
+    assert.equal(afterArchive.json.total, 1);
+    assert.equal(afterArchive.json.items[0].experimentId, "study-1");
   } finally {
     await fixture.cleanupAll();
   }

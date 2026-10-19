@@ -29,6 +29,10 @@ class ORBStrategyConfig(StrategyConfig):
         default=0.5,
         description="Minimum body percentage for valid breakout candle",
     )
+    direction_mode: Literal["symmetric", "long_only", "short_only"] = Field(
+        default="symmetric",
+        description="Which breakout directions may produce entry signals",
+    )
     breakout_evaluation: Literal["wick", "body"] = Field(
         default="wick",
         description="Breakout evaluation mode: wick or body",
@@ -141,6 +145,9 @@ class ORBStrategy(StrategyBase):
                     bar_low=float(row["low"]),
                     current_price=float(row["close"]),
                 )
+                long_broke, short_broke = self._apply_direction_mode(
+                    long_broke, short_broke
+                )
 
                 # Long breakout
                 if long_broke:
@@ -178,6 +185,17 @@ class ORBStrategy(StrategyBase):
         if symbol not in self._orb_calculators:
             self._orb_calculators[symbol] = ORBCalculator(**self._orb_calculator_config)
         return self._orb_calculators[symbol]
+
+    def _apply_direction_mode(
+        self,
+        long_broke: bool,
+        short_broke: bool,
+    ) -> Tuple[bool, bool]:
+        if self.config.direction_mode == "long_only":
+            return long_broke, False
+        if self.config.direction_mode == "short_only":
+            return False, short_broke
+        return long_broke, short_broke
 
     def generate_signal_incremental(
         self,
@@ -307,6 +325,21 @@ class ORBStrategy(StrategyBase):
             bar_low=bar_low,
             current_price=current_price,
         )
+        unfiltered_long, unfiltered_short = long_broke, short_broke
+        long_broke, short_broke = self._apply_direction_mode(
+            long_broke, short_broke
+        )
+        if (
+            (unfiltered_long or unfiltered_short)
+            and not (long_broke or short_broke)
+        ):
+            metadata.update({
+                "reason": "direction_not_allowed",
+                "reason_detail": (
+                    f"Breakout suppressed by direction_mode="
+                    f"{self.config.direction_mode}"
+                ),
+            })
 
         # Live execution enters at the completed-bar market price, unlike the
         # backtester which models an intrabar resting stop fill at the ORB level.

@@ -150,3 +150,62 @@ test("reliability criteria use Fluent UI info icons with explanatory callouts", 
   assert.match(html, /&lt;img/);
   assert.match(html, /&lt;script&gt;future rule&lt;\/script&gt;/);
 });
+
+test("shows a compact statistical confidence table and stored verdict reasoning", () => {
+  const value = fixture();
+  value.result.stitched_oos.fold_net_pnl = [3931.43];
+  value.reliability = {
+    verdict: "inconclusive",
+    policyHash: "policy-2",
+    report: {
+      verdict_reason: "Inconclusive because the expectancy confidence interval crosses 0R.",
+      statistical_confidence: {
+        sample_size: 80,
+        mean_r: -0.0245,
+        sample_std_r: 1.477,
+        standard_error_r: 0.165,
+        t_statistic: -0.15,
+        degrees_of_freedom: 79,
+        confidence_level: 0.95,
+        evidence_confidence_above_threshold: 0.441,
+        t_interval_lower_r: -0.353,
+        t_interval_upper_r: 0.304,
+        bootstrap_interval_lower_r: -0.331,
+        bootstrap_interval_upper_r: 0.312,
+        bootstrap_replicates: 200,
+      },
+    },
+    criteria: [],
+  };
+
+  const html = experimentDetail(value);
+
+  assert.match(html, /Statistical confidence profile/);
+  assert.match(html, /t-statistic versus threshold/);
+  assert.match(html, /-0\.150/);
+  assert.match(html, /Evidence confidence above threshold/);
+  assert.match(html, /44\.1%/);
+  assert.match(html, /Confidence level/);
+  assert.match(html, /95\.0%/);
+  assert.match(html, /Verdict reasoning/);
+  assert.match(html, /Diagnostic cash total/);
+  assert.match(html, /diagnostic only, not the R-based promotion metric/);
+  assert.doesNotMatch(html, /<dl class="detail-grid">/);
+});
+
+test("experiment names are explicitly left aligned", () => {
+  const html = experimentList([{
+    experimentId: "study-1",
+    title: "ORB duration comparison - full decision evidence",
+    state: "completed",
+    createdAt: "2026-10-18",
+    symbol: "QQQ",
+    axes: [],
+    expectedFolds: 2,
+    completedFolds: 2,
+    linkedRuns: 14,
+    reliabilityVerdict: "rejected",
+  }]);
+
+  assert.match(html, /<td class="experiment-name">/);
+});

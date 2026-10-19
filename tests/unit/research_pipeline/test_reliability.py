@@ -31,11 +31,23 @@ def _integrity():
     )
 
 
-def _study(expectancy: float, trades: int = 200, folds=(0.1, 0.1, 0.1)):
+def _study(
+    expectancy: float,
+    trades: int = 200,
+    folds=(0.1, 0.1, 0.1),
+    r_multiples=None,
+):
+    samples = tuple(r_multiples or [expectancy] * trades)
+    per_fold = len(samples) // len(folds)
     fold_rows = []
     for index, value in enumerate(folds):
+        start = index * per_fold
+        end = len(samples) if index == len(folds) - 1 else start + per_fold
         result = SimpleNamespace(
-            overall=SimpleNamespace(expectancy_r=value),
+            overall=SimpleNamespace(
+                expectancy_r=value,
+                r_multiples=samples[start:end],
+            ),
             equity=SimpleNamespace(n_sessions=50),
             engine_integrity_report=_integrity(),
         )
@@ -80,11 +92,61 @@ def _robust():
 def test_negative_orb_reference_is_rejected_not_reliable():
     report = evaluate_study_reliability(
         _study(-0.0245, trades=80),
-        ReliabilityPolicy(),
+        ReliabilityPolicy(version=1),
         robustness=_robust(),
         symbols=("QQQ",),
     )
     assert report.verdict is ReliabilityVerdict.REJECTED
+
+
+def test_v2_confidence_interval_makes_imprecise_negative_result_inconclusive():
+    values = [-1.0] * 40 + [0.951] * 40
+    report = evaluate_study_reliability(
+        _study(
+            sum(values) / len(values),
+            trades=len(values),
+            folds=(0.01, 0.01, 0.01),
+            r_multiples=values,
+        ),
+        ReliabilityPolicy(),
+        robustness=_robust(),
+        symbols=("QQQ",),
+    )
+
+    confidence = next(
+        item for item in report.criteria
+        if item.criterion_id == "REL-OOS-CONFIDENCE"
+    )
+    assert confidence.outcome.value == "inconclusive"
+    assert report.statistical_confidence["t_statistic"] == pytest.approx(-0.223, abs=0.01)
+    assert report.statistical_confidence[
+        "evidence_confidence_above_threshold"
+    ] == pytest.approx(0.412, abs=0.01)
+    assert "confidence interval" in report.verdict_reason
+
+
+def test_v2_confidence_interval_passes_or_rejects_only_when_wholly_one_sided():
+    passing = evaluate_study_reliability(
+        _study(0.2, r_multiples=[0.1, 0.2, 0.3] * 70),
+        ReliabilityPolicy(),
+        robustness=_robust(),
+        symbols=("QQQ",),
+    )
+    rejected = evaluate_study_reliability(
+        _study(-0.2, r_multiples=[-0.1, -0.2, -0.3] * 70),
+        ReliabilityPolicy(),
+        robustness=_robust(),
+        symbols=("QQQ",),
+    )
+
+    assert next(
+        item.outcome.value for item in passing.criteria
+        if item.criterion_id == "REL-OOS-CONFIDENCE"
+    ) == "pass"
+    assert next(
+        item.outcome.value for item in rejected.criteria
+        if item.criterion_id == "REL-OOS-CONFIDENCE"
+    ) == "fail"
 
 
 def test_too_little_otherwise_positive_evidence_is_inconclusive():
@@ -141,6 +203,17 @@ def test_policy_is_immutable_and_has_stable_identity():
         assert "frozen" in str(exc).lower()
     else:  # pragma: no cover - pydantic must enforce the contract
         raise AssertionError("ReliabilityPolicy must be immutable")
+
+
+def test_policy_v1_hash_excludes_v2_confidence_fields():
+    legacy = ReliabilityPolicy(version=1)
+    payload = legacy.model_dump(mode="python")
+    payload.pop("expectancy_confidence_level")
+    payload.pop("use_expectancy_confidence_interval")
+
+    from vibe.research_pipeline.hashing import hash_object
+
+    assert legacy.policy_hash == hash_object(payload)
 
 
 @pytest.mark.parametrize(

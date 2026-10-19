@@ -712,14 +712,20 @@ function listExperiments(database, searchParams) {
   if (!hasExperiments(database)) {
     return { ...pageResponse([], 0, page, pageSize), ungroupedRuns, available: false };
   }
-  const total = database.prepare("SELECT COUNT(*) AS count FROM research_experiments").get().count;
+  const archiveFilter = hasTable(database, "archived_research_experiments")
+    ? "WHERE NOT EXISTS (SELECT 1 FROM archived_research_experiments a WHERE a.experiment_id = e.experiment_id)"
+    : "";
+  const total = database.prepare(
+    `SELECT COUNT(*) AS count FROM research_experiments e ${archiveFilter}`,
+  ).get().count;
   const rows = database.prepare(`
     SELECT e.*,
       (SELECT COUNT(*) FROM research_experiment_runs r WHERE r.experiment_id = e.experiment_id) AS linked_runs,
       ${hasTable(database, "study_reliability_reports")
         ? "(SELECT verdict FROM study_reliability_reports sr WHERE sr.experiment_id = e.experiment_id) AS reliability_verdict"
         : "NULL AS reliability_verdict"}
-    FROM research_experiments e ORDER BY e.created_at DESC, e.experiment_id DESC LIMIT ? OFFSET ?
+    FROM research_experiments e ${archiveFilter}
+    ORDER BY e.created_at DESC, e.experiment_id DESC LIMIT ? OFFSET ?
   `).all(pageSize, offset).map((row) => {
     const experiment = experimentRow(row);
     return {

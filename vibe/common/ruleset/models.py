@@ -262,6 +262,10 @@ class ORBStrategyParams(BaseModel):
         default=0.0,
         description="Minimum body percentage for valid breakout candle (0.0 = no filter)",
     )
+    direction_mode: Literal["symmetric", "long_only", "short_only"] = Field(
+        default="symmetric",
+        description="Which breakout directions are eligible to open a position",
+    )
     breakout_evaluation: Literal["wick", "body"] = Field(
         default="wick",
         description="Use candle wicks or body extremes to evaluate breakout levels",

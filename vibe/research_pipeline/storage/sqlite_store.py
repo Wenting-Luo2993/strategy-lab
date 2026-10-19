@@ -289,6 +289,48 @@ class SqliteResearchStore:
             if changed != 1:
                 raise ImmutableRecordError("Experiment is absent or already finished")
 
+    def archive_experiment(
+        self,
+        experiment_id: str,
+        *,
+        archived_by: str,
+        reason: str,
+    ) -> None:
+        if not archived_by.strip() or not reason.strip():
+            raise ValueError("archived_by and reason are required")
+        with self._conn:
+            experiment = self._conn.execute(
+                "SELECT state FROM research_experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+            if experiment is None:
+                raise StoreError(f"Unknown experiment {experiment_id!r}")
+            if experiment["state"] == "running":
+                raise ImmutableRecordError("A running experiment cannot be archived")
+            protected = self._conn.execute(
+                """SELECT EXISTS(
+                       SELECT 1 FROM frozen_study_definitions WHERE experiment_id = ?
+                   ) OR EXISTS(
+                       SELECT 1 FROM final_holdout_executions WHERE experiment_id = ?
+                   ) AS protected""",
+                (experiment_id, experiment_id),
+            ).fetchone()["protected"]
+            if protected:
+                raise ImmutableRecordError(
+                    "Frozen or final-holdout experiments cannot be archived"
+                )
+            self._conn.execute(
+                """INSERT INTO archived_research_experiments
+                   (experiment_id, archived_at, archived_by, reason)
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    experiment_id,
+                    schema.utc_now_iso(),
+                    archived_by.strip(),
+                    reason.strip(),
+                ),
+            )
+
     def record_engine_integrity(
         self, run_id: str, report: EngineIntegrityReport
     ) -> None:

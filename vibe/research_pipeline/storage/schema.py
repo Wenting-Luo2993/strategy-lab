@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -1061,6 +1061,27 @@ BEGIN
 END;
 """
 
+_MIGRATION_14 = """
+CREATE TABLE archived_research_experiments (
+    experiment_id TEXT PRIMARY KEY REFERENCES research_experiments(experiment_id),
+    archived_at TEXT NOT NULL,
+    archived_by TEXT NOT NULL,
+    reason TEXT NOT NULL
+);
+
+CREATE TRIGGER immutable_experiment_archive_update
+BEFORE UPDATE ON archived_research_experiments
+BEGIN
+    SELECT RAISE(ABORT, 'experiment archive record is immutable');
+END;
+
+CREATE TRIGGER immutable_experiment_archive_delete
+BEFORE DELETE ON archived_research_experiments
+BEGIN
+    SELECT RAISE(ABORT, 'experiment archive record is immutable');
+END;
+"""
+
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -1075,6 +1096,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (11, _MIGRATION_11),
     (12, _MIGRATION_12),
     (13, _MIGRATION_13),
+    (14, _MIGRATION_14),
 ]
 
 

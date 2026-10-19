@@ -365,6 +365,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     stressed_executors: dict[tuple[int, int], RulesetSegmentExecutor] = {}
 
     def build_robustness(study: Any):
+        from vibe.research_pipeline.regimes import build_orb_regime_breakdown
+
+        regimes = (
+            build_orb_regime_breakdown(study, plan, bars)
+            if bars is not None
+            else None
+        )
+
         def run_cost(fold: Any, candidate: Any, scenario: Any):
             key = (int(scenario["stop_ticks"]), int(scenario["eod_ticks"]))
             stressed = stressed_executors.get(key)
@@ -395,8 +403,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             neighborhood_runner=lambda fold, candidate: baseline_executor(
                 candidate, fold.test_result.segment
             ),
-            regime_returns={},
-            regimes_predeclared=False,
+            regime_returns=(
+                regimes.return_contributions_r if regimes is not None else {}
+            ),
+            regimes_predeclared=regimes is not None,
+            regime_definitions=regimes.definitions if regimes is not None else (),
+            regime_observations=regimes.observations if regimes is not None else (),
+            regime_unclassified_trades=(
+                regimes.unclassified_trades if regimes is not None else 0
+            ),
         )
 
     sink = None
