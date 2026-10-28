@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -1082,6 +1082,98 @@ BEGIN
 END;
 """
 
+_MIGRATION_15 = """
+ALTER TABLE final_holdout_authorizations
+    ADD COLUMN reliability_policy_hash TEXT;
+ALTER TABLE final_holdout_authorizations
+    ADD COLUMN frozen_definition_hash TEXT;
+ALTER TABLE final_holdout_authorizations
+    ADD COLUMN reliability_report_hash TEXT;
+
+DROP TRIGGER final_authorization_transition_guard;
+CREATE TRIGGER final_authorization_transition_guard
+BEFORE UPDATE ON final_holdout_authorizations
+WHEN NOT (
+    (OLD.state = 'authorized' AND NEW.state = 'claimed'
+        AND NEW.claim_id IS NOT NULL AND NEW.claimed_at IS NOT NULL
+        AND NEW.experiment_id = OLD.experiment_id
+        AND NEW.authorization_sha256 = OLD.authorization_sha256
+        AND NEW.requested_by = OLD.requested_by
+        AND NEW.reason = OLD.reason
+        AND NEW.authorized_at = OLD.authorized_at
+        AND NEW.reliability_policy_hash = OLD.reliability_policy_hash
+        AND NEW.frozen_definition_hash = OLD.frozen_definition_hash
+        AND NEW.reliability_report_hash = OLD.reliability_report_hash)
+    OR
+    (OLD.state = 'claimed' AND NEW.state IN ('completed', 'interrupted')
+        AND NEW.claim_id = OLD.claim_id
+        AND NEW.claimed_at = OLD.claimed_at
+        AND NEW.experiment_id = OLD.experiment_id
+        AND NEW.authorization_sha256 = OLD.authorization_sha256
+        AND NEW.requested_by = OLD.requested_by
+        AND NEW.reason = OLD.reason
+        AND NEW.authorized_at = OLD.authorized_at
+        AND NEW.reliability_policy_hash = OLD.reliability_policy_hash
+        AND NEW.frozen_definition_hash = OLD.frozen_definition_hash
+        AND NEW.reliability_report_hash = OLD.reliability_report_hash)
+)
+BEGIN
+    SELECT RAISE(ABORT, 'illegal final holdout authorization transition');
+END;
+
+CREATE TRIGGER final_holdout_authorization_eligibility
+BEFORE INSERT ON final_holdout_authorizations
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM research_experiments e
+    JOIN frozen_study_definitions f ON f.experiment_id = e.experiment_id
+    JOIN study_reliability_reports r ON r.experiment_id = e.experiment_id
+    WHERE e.experiment_id = NEW.experiment_id
+      AND e.state = 'completed'
+      AND r.verdict = 'reliable'
+      AND json_extract(r.payload_json, '$.engine_integrity_complete') = 1
+      AND json_extract(r.payload_json, '$.procedure_state') = 'completed'
+      AND r.policy_hash = e.reliability_policy_hash
+      AND r.policy_hash = f.policy_hash
+      AND NEW.reliability_policy_hash = r.policy_hash
+      AND NEW.frozen_definition_hash = f.definition_hash
+      AND NEW.reliability_report_hash IS NOT NULL
+)
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'final holdout requires a completed, frozen study with a matching reliable verdict'
+    );
+END;
+
+CREATE TRIGGER final_holdout_claim_eligibility
+BEFORE UPDATE OF state ON final_holdout_authorizations
+WHEN OLD.state = 'authorized'
+ AND NEW.state = 'claimed'
+ AND NOT EXISTS (
+    SELECT 1
+    FROM research_experiments e
+    JOIN frozen_study_definitions f ON f.experiment_id = e.experiment_id
+    JOIN study_reliability_reports r ON r.experiment_id = e.experiment_id
+    WHERE e.experiment_id = NEW.experiment_id
+      AND e.state = 'completed'
+      AND r.verdict = 'reliable'
+      AND json_extract(r.payload_json, '$.engine_integrity_complete') = 1
+      AND json_extract(r.payload_json, '$.procedure_state') = 'completed'
+      AND r.policy_hash = e.reliability_policy_hash
+      AND r.policy_hash = f.policy_hash
+      AND OLD.reliability_policy_hash = r.policy_hash
+      AND OLD.frozen_definition_hash = f.definition_hash
+      AND OLD.reliability_report_hash IS NOT NULL
+)
+BEGIN
+    SELECT RAISE(
+        ABORT,
+        'final holdout claim lost its completed reliable study eligibility'
+    );
+END;
+"""
+
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -1097,6 +1189,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (12, _MIGRATION_12),
     (13, _MIGRATION_13),
     (14, _MIGRATION_14),
+    (15, _MIGRATION_15),
 ]
 
 

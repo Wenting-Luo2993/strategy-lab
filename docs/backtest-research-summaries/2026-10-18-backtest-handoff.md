@@ -425,12 +425,17 @@ the current API.
 
 ### Steps
 
-1. Add one store-level eligibility check used by both authorization and claim:
+1. Add one core development-eligibility check used by both authorization and
+   claim, while keeping authorization-state requirements separate:
    - experiment exists and is terminal;
    - immutable study reliability report exists;
+   - engine-integrity evidence and the reliability procedure are complete;
    - report policy hash matches the experiment and frozen definition;
-   - verdict is exactly `reliable`;
-   - no prior final-holdout authorization/execution exists.
+   - verdict is exactly `reliable`.
+   Authorization additionally requires no prior authorization. Claim requires
+   exactly one matching, unconsumed authorization whose recorded eligibility
+   basis still matches. This preserves the state sequence
+   `INELIGIBLE -> ELIGIBLE -> AUTHORIZED -> CLAIMED -> TERMINAL`.
 2. Enforce the same rule in SQLite where practical so direct SQL or a future
    caller cannot bypass the Python check. Use a forward-only migration after
    schema v14; never edit an applied migration.
@@ -454,6 +459,45 @@ python -m pytest tests\unit\research_pipeline\test_methodology_controls.py tests
 Phase 7 remains prohibited until the store refuses every non-reliable study at
 both authorization and claim time. Existing frozen studies are not
 retroactively promoted.
+
+### Implementation record — 2026-10-19
+
+Implemented schema v15 and the store-level guard on
+`backtest-roadmap-implementation`:
+
+- authorization and claim both fail closed unless the development experiment
+  is `completed`, frozen, backed by a persisted `reliable` report, and that
+  report records complete engine-integrity and procedure prerequisites;
+- experiment, report, and frozen-definition policy hashes must agree;
+- authorization records the policy hash, frozen-definition hash, and exact
+  reliability-report payload hash that made the study eligible;
+- claim re-evaluates research eligibility inside its `BEGIN IMMEDIATE`
+  transaction and rejects missing or stale authorization evidence;
+- SQLite triggers independently reject unsupported direct authorization or
+  claim transitions;
+- historical authorizations receive nullable v15 evidence columns and are not
+  silently promoted into claimable authorizations.
+
+Regression coverage includes every non-reliable verdict, missing reports,
+running experiments, incomplete prerequisites, policy mismatch, stale report
+evidence, direct-SQL authorization bypass, immutable records, and concurrent
+exactly-once claiming.
+
+The research-user consultant approved Phase 0A as the correct first safety
+increment. Its required product distinction is now explicit: `RELIABLE` means
+“eligible for explicit user-authorized final holdout,” not “profitable,”
+“approved,” or already authorized. Phase 1 must publish separate development
+reliability, holdout eligibility, authorization, claim, and result states
+rather than collapsing them into one green status.
+
+After reproducing a direct-SQL mutation of an authorization evidence hash, the
+consultant temporarily rejected the exit gate. Schema v15 now replaces the
+original transition guard and makes all three recorded eligibility-basis
+fields immutable through `AUTHORIZED -> CLAIMED` and
+`CLAIMED -> COMPLETED/INTERRUPTED`. Nine regression cases cover every field and
+legal transition. With 34 focused tests and the complete 895-test
+research-pipeline suite passing, the consultant issued final **APPROVE** with
+no remaining Phase 0A blockers.
 
 ## Phase 1 — publish complete parent-study decision evidence
 

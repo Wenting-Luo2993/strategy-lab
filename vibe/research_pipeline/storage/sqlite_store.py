@@ -501,24 +501,25 @@ class SqliteResearchStore:
         authorization: FinalHoldoutAuthorization,
     ) -> str:
         """Persist a one-use authorization before the runner is invoked."""
-        if self.get_frozen_study(experiment_id) is None:
-            raise ValidationRequiredError(
-                "Final holdout authorization requires an explicitly frozen study"
-            )
         digest = sha256_hex(authorization.token)
         try:
             with self._conn:
+                eligibility = self._assert_final_holdout_eligible(experiment_id)
                 self._conn.execute(
                     """INSERT INTO final_holdout_authorizations
                        (experiment_id, authorization_sha256, requested_by, reason,
-                        state, authorized_at)
-                       VALUES (?, ?, ?, ?, 'authorized', ?)""",
+                        state, authorized_at, reliability_policy_hash,
+                        frozen_definition_hash, reliability_report_hash)
+                       VALUES (?, ?, ?, ?, 'authorized', ?, ?, ?, ?)""",
                     (
                         experiment_id,
                         digest,
                         authorization.requested_by,
                         authorization.reason,
                         schema.utc_now_iso(),
+                        eligibility["policy_hash"],
+                        eligibility["definition_hash"],
+                        eligibility["report_hash"],
                     ),
                 )
         except sqlite3.IntegrityError as exc:
@@ -538,6 +539,30 @@ class SqliteResearchStore:
         claimed_at = schema.utc_now_iso()
         schema.begin_immediate(self._conn)
         try:
+            eligibility = self._assert_final_holdout_eligible(experiment_id)
+            authorization_row = self._conn.execute(
+                """SELECT reliability_policy_hash, frozen_definition_hash,
+                          reliability_report_hash
+                   FROM final_holdout_authorizations
+                   WHERE experiment_id = ? AND authorization_sha256 = ?
+                     AND state = 'authorized'""",
+                (experiment_id, digest),
+            ).fetchone()
+            if authorization_row is None:
+                raise ImmutableRecordError(
+                    "Final holdout authorization is absent, invalid, or already consumed"
+                )
+            if (
+                authorization_row["reliability_policy_hash"]
+                != eligibility["policy_hash"]
+                or authorization_row["frozen_definition_hash"]
+                != eligibility["definition_hash"]
+                or authorization_row["reliability_report_hash"]
+                != eligibility["report_hash"]
+            ):
+                raise ImmutableRecordError(
+                    "Final holdout authorization eligibility basis is missing or stale"
+                )
             changed = self._conn.execute(
                 """UPDATE final_holdout_authorizations
                    SET state = 'claimed', claimed_at = ?, claim_id = ?
@@ -566,6 +591,74 @@ class SqliteResearchStore:
             reason=row["reason"],
             claimed_at=datetime.fromisoformat(claimed_at),
         )
+
+    def _assert_final_holdout_eligible(
+        self, experiment_id: str
+    ) -> dict[str, str]:
+        row = self._conn.execute(
+            """SELECT e.state,
+                      e.reliability_policy_hash AS experiment_policy_hash,
+                      f.policy_hash AS frozen_policy_hash,
+                      f.definition_hash,
+                      r.policy_hash AS report_policy_hash,
+                      r.verdict,
+                      r.payload_json AS report_payload_json
+               FROM research_experiments e
+               LEFT JOIN frozen_study_definitions f
+                 ON f.experiment_id = e.experiment_id
+               LEFT JOIN study_reliability_reports r
+                 ON r.experiment_id = e.experiment_id
+               WHERE e.experiment_id = ?""",
+            (experiment_id,),
+        ).fetchone()
+        if row is None:
+            raise StoreError(f"Unknown experiment {experiment_id!r}")
+        if row["frozen_policy_hash"] is None:
+            raise ValidationRequiredError(
+                "Final holdout authorization requires an explicitly frozen study"
+            )
+        if row["state"] != "completed":
+            raise ValidationRequiredError(
+                "Final holdout requires a completed development experiment"
+            )
+        if row["report_policy_hash"] is None:
+            raise ValidationRequiredError(
+                "Final holdout requires a persisted study reliability report"
+            )
+        try:
+            report_payload = json.loads(row["report_payload_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ImmutableRecordError(
+                "Final holdout reliability report payload is corrupt"
+            ) from exc
+        if not report_payload.get("engine_integrity_complete"):
+            raise ValidationRequiredError(
+                "Final holdout requires complete engine-integrity evidence"
+            )
+        if report_payload.get("procedure_state") != "completed":
+            raise ValidationRequiredError(
+                "Final holdout requires a completed reliability procedure"
+            )
+        policy_hashes = {
+            row["experiment_policy_hash"],
+            row["frozen_policy_hash"],
+            row["report_policy_hash"],
+        }
+        if None in policy_hashes or len(policy_hashes) != 1:
+            raise ImmutableRecordError(
+                "Final holdout reliability policy does not match the "
+                "experiment and frozen definition"
+            )
+        if row["verdict"] != "reliable":
+            raise ValidationRequiredError(
+                "Final holdout requires a reliable development verdict; "
+                f"observed {row['verdict']!r}"
+            )
+        return {
+            "policy_hash": row["report_policy_hash"],
+            "definition_hash": row["definition_hash"],
+            "report_hash": sha256_hex(row["report_payload_json"]),
+        }
 
     def interrupt_final_holdout(
         self,

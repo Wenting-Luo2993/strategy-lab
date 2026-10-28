@@ -19,7 +19,7 @@ def test_forward_migration_from_v11_adds_decision_boundary_tables():
         )
     connection.commit()
 
-    assert schema.migrate(connection) == 14
+    assert schema.migrate(connection) == 15
     tables = {
         row[0]
         for row in connection.execute(
@@ -37,3 +37,24 @@ def test_forward_migration_from_v11_adds_decision_boundary_tables():
         "retention_metadata",
         "final_holdout_authorizations",
     } <= tables
+    authorization_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(final_holdout_authorizations)"
+        )
+    }
+    assert {
+        "reliability_policy_hash",
+        "frozen_definition_hash",
+        "reliability_report_hash",
+    } <= authorization_columns
+    triggers = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+        )
+    }
+    assert {
+        "final_holdout_authorization_eligibility",
+        "final_holdout_claim_eligibility",
+    } <= triggers
