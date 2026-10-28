@@ -256,6 +256,28 @@ results.
 This is the active execution plan. It supersedes the short recommendation list
 above without changing the recorded facts about the October 18 study.
 
+### Plan review record — 2026-10-28
+
+The roadmap was reviewed once against the current schema, publishing allowlist,
+study-management CLI, reliability contracts, artifact sanitizer, and Git state.
+The review corrected these issues:
+
+- final-holdout reliability eligibility was described as architectural fact but
+  is currently only an operator rule; Phase 0A now closes it in code;
+- the publication phase referenced historical schema v12 even though the
+  current schema is v14; migration ownership is now v15 for Phase 0A and v16
+  (or the next available version) for Phase 1;
+- the nested-study command incorrectly implied a policy JSON file was always
+  required; default Policy v2 is valid and persisted without the flag;
+- private trade/equity portability could not safely reuse the generic artifact
+  sanitizer, which intentionally rejects ledgers and event-level shapes; the
+  plan now requires a dedicated private run-detail contract;
+- the branch-sync gate now records the actual one-commit-ahead/HTTP-403 push
+  blocker instead of claiming the roadmap is already remote.
+
+No change was made to the research conclusion: the adaptive ORB direction study
+remains rejected, and the final holdout remains locked.
+
 ### Governing rules
 
 These rules apply to every phase:
@@ -285,12 +307,16 @@ These rules apply to every phase:
    private storage, and access-control gates are approved.
 7. **Every phase has a stop condition.** Do not proceed merely because the
    command exited successfully.
+8. **Final-holdout eligibility must be code-enforced.** The roadmap requires a
+   `RELIABLE` development verdict before authorization, but the current store
+   checks only that a study is frozen. Phase 0A closes that safety gap before
+   any final-holdout authorization can be considered.
 
 ### Roadmap status
 
 | Lane | Current state | Meaning |
 | --- | --- | --- |
-| Deterministic engine and research architecture | **Implemented** | The simulator, integrity contract, split/selection procedure, reliability policy, robustness composition, methodology freeze, final-holdout controls, persistence, and package boundaries exist and are tested. |
+| Deterministic engine and research architecture | **Implemented with one holdout-eligibility hardening gap** | The simulator, integrity contract, split/selection procedure, reliability policy, robustness composition, methodology freeze, exactly-once token consumption, persistence, and package boundaries exist and are tested. However, authorization does not yet enforce a persisted `RELIABLE` development verdict. |
 | ORB research hypothesis | **Rejected under current adaptive design** | The ten-fold direction study had a positive mean but failed confidence/stability criteria. It is not eligible for final holdout. |
 | Local inspection | **Operational** | SQLite remains authoritative; the local viewer can inspect parent experiments, criteria, retained trades, and equity where locally available. |
 | Portable remote summaries | **Operational but incomplete** | 175 run summaries were published and reconciled, but the remote model cannot reconstruct parent studies or row-level evidence. |
@@ -302,6 +328,7 @@ These rules apply to every phase:
 
 ```text
 Phase 0: establish an authoritative working environment
+  ├─> Phase 0A: enforce reliability eligibility for final holdout
   ├─> Phase 1: publish the parent-study/reliability read model
   │     └─> Phase 2: activate and validate remote experiment inspection
   └─> Phase 3: pre-register the next ORB question
@@ -309,6 +336,7 @@ Phase 0: establish an authoritative working environment
               └─> Phase 5: execute development-only evidence
                     ├─> rejected/inconclusive -> Phase 6A: stop or form a new hypothesis
                     └─> reliable -> Phase 6B: freeze and request holdout authorization
+                          └─> Phase 7: authorized exactly-once final holdout
 
 Phase 8 (artifact portability), Phase 9 (slippage/data calibration), and
 Phase 10 (browser E2E) can proceed after Phase 0 without changing research
@@ -331,9 +359,14 @@ action will use.
    git status --short
    ```
 
-   Expected: branch `wenting-luo2993-backtest-implementation-review`, divergence
-   `0 0`, and no source/document changes. Generated `.pyc` changes are not
-   evidence of source work and must not be committed.
+   Expected after publication: branch
+   `wenting-luo2993-backtest-implementation-review`, divergence `0 0`, and no
+   source/document changes. At the 2026-10-28 review, roadmap commit `dfaad59`
+   is intentionally one commit ahead because the active GitHub credential is
+   `wentingluo_microsoft`, which received HTTP 403 when pushing to
+   `Wenting-Luo2993/strategy-lab`. Resolve the GitHub account/permission issue
+   and push; do not rewrite or duplicate the commit. Generated `.pyc` changes
+   are not evidence of source work and must not be committed.
 
 2. Decide which SQLite database is authoritative on this device:
    - If the source-device database was securely transferred, set
@@ -376,6 +409,52 @@ session. If the authoritative database is unavailable, Phases 1-2 may proceed
 against an isolated fixture or new database, but they must not claim to migrate
 or republish the October study.
 
+## Phase 0A — enforce final-holdout eligibility in code
+
+**Goal:** make the documented “reliable before holdout” rule a deterministic
+store invariant rather than an operator convention.
+
+### Current defect
+
+`freeze_study()` verifies study identity and the pre-registered policy hash.
+`authorize_final_holdout()` verifies only that a frozen definition exists.
+Neither currently requires the experiment's persisted
+`StudyReliabilityReport.verdict` to be `RELIABLE`. Exactly-once token claiming
+works, but a rejected or inconclusive frozen study could still be authorized by
+the current API.
+
+### Steps
+
+1. Add one store-level eligibility check used by both authorization and claim:
+   - experiment exists and is terminal;
+   - immutable study reliability report exists;
+   - report policy hash matches the experiment and frozen definition;
+   - verdict is exactly `reliable`;
+   - no prior final-holdout authorization/execution exists.
+2. Enforce the same rule in SQLite where practical so direct SQL or a future
+   caller cannot bypass the Python check. Use a forward-only migration after
+   schema v14; never edit an applied migration.
+3. Make failure messages distinguish absent report, policy mismatch,
+   non-reliable verdict, and already-authorized state.
+4. Add regression tests proving `rejected`, `inconclusive`,
+   `review_required`, missing-report, and policy-mismatch studies cannot be
+   authorized or claimed. Preserve the existing concurrent exactly-once claim
+   test for a reliable fixture.
+5. Keep explicit user authorization as a second gate. A `RELIABLE` verdict
+   makes a study eligible; it does not authorize access.
+
+### Validation
+
+```powershell
+python -m pytest tests\unit\research_pipeline\test_methodology_controls.py tests\unit\research_pipeline\test_reliability.py tests\unit\research_pipeline\test_p11_registry_migration.py -q
+```
+
+### Exit gate
+
+Phase 7 remains prohibited until the store refuses every non-reliable study at
+both authorization and claim time. Existing frozen studies are not
+retroactively promoted.
+
 ## Phase 1 — publish complete parent-study decision evidence
 
 **Goal:** make the remote read model capable of representing what the local
@@ -400,9 +479,11 @@ paths, or authorization tokens in these payloads.
 
 ### Steps
 
-1. Write the remote schema/RLS migration and typed publication payload
-   contract. Use new event types and idempotency keys; do not overload
-   `run_summary`.
+1. Add local schema v16 (Phase 0A owns v15) and the corresponding remote
+   schema/RLS migration plus typed publication payload contract. Use new event
+   types and idempotency keys; do not overload `run_summary`. If another
+   migration lands first, use the next available version; never reuse a
+   version or edit schema v12-v15 migrations that may already be applied.
 2. Add payload construction from immutable SQLite records.
 3. Extend the recursive prohibited-key tests so the new payloads cannot contain
    event-level data or secrets.
@@ -422,13 +503,15 @@ paths, or authorization tokens in these payloads.
 At minimum:
 
 ```powershell
-python -m pytest tests\unit\research_pipeline\test_schema_v12.py tests\unit\research_pipeline\test_reliability.py tests\unit\research_pipeline\test_robustness_v1.py -q
+python -m pytest tests\unit\research_pipeline\test_p12_publishing.py tests\unit\research_pipeline\test_p11_registry_migration.py tests\unit\research_pipeline\test_reliability.py tests\unit\research_pipeline\test_robustness_v1.py -q
 npm --prefix apps\operational-metrics-dashboard test
 npm --prefix apps\operational-metrics-dashboard run build
 ```
 
 Also test a rejected, reliable, inconclusive, interrupted, archived, and legacy
-`Not assessed` fixture.
+`Not assessed` fixture. Add a dedicated publication-migration test for the
+version allocated above rather than extending the historical schema-v12
+fixture.
 
 ### Exit gate
 
@@ -548,8 +631,9 @@ Do not silently promote option three into “confirmation.”
 ### Artifacts to create before execution
 
 1. A concise hypothesis statement and economic rationale.
-2. A Reliability Policy v2 JSON file only if explicitly pinning defaults; no
-   outcome-driven overrides.
+2. An optional Reliability Policy v2 JSON file only when explicitly pinning or
+   overriding defaults; no outcome-driven overrides. The experiment persists
+   the effective policy and hash even when the CLI flag is omitted.
 3. A ruleset with fixed `strategy.direction_mode`.
 4. The exact candidate axis and split dates.
 5. A data-reuse inventory identifying previously exposed sessions.
@@ -620,12 +704,20 @@ python scripts\run_nested_walk_forward.py `
   --warmup-sessions 50 `
   --axis orb_minutes=strategy.orb_duration_minutes:5,15,30 `
   --record-runs `
-  --experiment-title '<registered title>' `
-  --reliability-policy '<registered policy-v2.json>'
+  --experiment-title '<registered title>'
 ```
 
 `--oos-start`/`--oos-end` declare the reserved final holdout to the planner;
 this command must not evaluate that segment.
+
+If the approved registration uses an explicit policy file, append:
+
+```powershell
+  --reliability-policy '<registered policy-v2.json>'
+```
+
+Otherwise omit the flag and record the effective default Policy v2 hash emitted
+by the experiment. Do not create a nominal policy file after seeing outcomes.
 
 ### During execution
 
@@ -709,7 +801,9 @@ recommendation is to stop ORB parameter research rather than continue mining.
 
 3. Present the frozen definition, reliability report, and one-time acceptance
    rule to the user.
-4. Stop and request explicit authorization. Reliability does not itself grant
+4. Verify Phase 0A is deployed and the store independently reports the study
+   eligible for authorization.
+5. Stop and request explicit authorization. Reliability does not itself grant
    permission to read the final holdout.
 
 ## Phase 7 — final holdout, only after explicit authorization
@@ -754,17 +848,23 @@ summary allowlist.
 
 1. Confirm that derived trades/equity may be privately stored under the intended
    entitlement and organizational policy.
-2. Deploy the private `research-artifacts` bucket and signed-preview function.
-3. Keep anonymous access denied.
-4. Publish one compressed, versioned object per run containing retained trade
+2. Define a **dedicated private run-detail artifact contract and destination**.
+   The existing generic artifact sanitizer deliberately rejects trade/ledger
+   names and event-level keys; do not weaken it or the summary publication
+   allowlist. The new contract must accept only the canonical retained trade
+   and equity shape and must reject raw bars, fills, orders, credentials, and
+   arbitrary files.
+3. Deploy the private `research-artifacts` bucket and signed-preview function.
+4. Keep anonymous access denied.
+5. Publish one compressed, versioned object per run containing retained trade
    and equity detail—never raw market bars.
-5. Bind the object to run identity and existing
+6. Bind the object to run identity and existing
    `trade_ledger_sha256`/`equity_curve_sha256`.
-6. On download, verify size, content type, run identity, sequence completeness,
+7. On download, verify size, content type, run identity, sequence completeness,
    and both hashes before rendering.
-7. Add interrupted upload, stale claim, duplicate delivery, corrupted object,
+8. Add interrupted upload, stale claim, duplicate delivery, corrupted object,
    expired signed URL, and unauthorized access tests.
-8. Add retention and explicit deletion policy without deleting the immutable
+9. Add retention and explicit deletion policy without deleting the immutable
    run summary or decision history.
 
 ### Exit gate
@@ -833,9 +933,12 @@ For every completed phase:
 
 ### Immediate next action
 
-The immediate operational step is **Phase 0**. The next coding increment is
-**Phase 1: parent-study and reliability publication**, because it closes the
-largest cross-device architecture gap without consuming research evidence. In
-parallel, the next user decision is the fixed direction and honest evidence
-classification in **Phase 3**. No new ORB study and no final-holdout action
-should occur before that decision is recorded.
+The immediate operational step is **Phase 0**, including resolving the push
+credential. The first safety coding increment is **Phase 0A**, because the
+currently documented holdout-eligibility rule is not yet enforced by the store.
+The next product increment is **Phase 1: parent-study and reliability
+publication**, which closes the largest cross-device architecture gap without
+consuming research evidence. In parallel, the next user decision is the fixed
+direction and honest evidence classification in **Phase 3**. No new ORB study
+should occur before that decision is recorded, and no final-holdout action may
+occur before Phase 0A is complete.
