@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import date
+import hashlib
+import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 
@@ -9,10 +12,12 @@ import pytest
 
 from vibe.research_pipeline.registration import (
     RegistrationError,
+    _split_binding,
     load_registration,
     validate_registration_execution,
 )
 from vibe.research_pipeline.reliability import ReliabilityPolicy
+from vibe.research_pipeline.storage.schema import migrate
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -103,7 +108,7 @@ def test_recorded_cli_requires_registration() -> None:
 def test_ready_gate_requires_bound_dataset_and_calendar() -> None:
     registration = load_registration(REGISTRATION)
     registration["execution_gate"] = {"state": "ready", "reasons": []}
-    with pytest.raises(RegistrationError, match="exact calendar boundaries"):
+    with pytest.raises(RegistrationError, match="fold boundaries differ"):
         validate_registration_execution(
             registration,
             repository_root=ROOT,
@@ -131,15 +136,20 @@ def test_ready_gate_requires_bound_dataset_and_calendar() -> None:
 def test_ready_gate_requires_bound_dataset_identity() -> None:
     registration = load_registration(REGISTRATION)
     registration["execution_gate"] = {"state": "ready", "reasons": []}
-    registration["split_policy"]["exact_calendar_boundaries"] = [
-        {
-            "fold": 1,
-            "train": ["2021-01-04", "2021-12-31"],
-            "validation": ["2022-01-03", "2022-03-31"],
-            "test": ["2022-04-01", "2022-06-30"],
-        }
-    ]
-    registration["split_policy"]["fold_count"] = 1
+    split = _split_binding(
+        dev_start=date(2021, 1, 4),
+        dev_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 1),
+        oos_end=date(2026, 4, 27),
+        train_sessions=252,
+        validation_sessions=63,
+        test_sessions=63,
+        step_sessions=63,
+        warmup_sessions=50,
+    )
+    registration["split_policy"]["exact_calendar_boundaries"] = split["boundaries"]
+    registration["split_policy"]["fold_count"] = split["fold_count"]
+    registration["split_policy"]["plan_hash"] = split["plan_hash"]
     with pytest.raises(RegistrationError, match="data_binding"):
         validate_registration_execution(
             registration,
@@ -163,3 +173,76 @@ def test_ready_gate_requires_bound_dataset_identity() -> None:
             data_dir_path=None,
             research_db_path=None,
         )
+
+
+def test_ready_registration_validates_bound_files_and_database(tmp_path: Path) -> None:
+    registration = load_registration(REGISTRATION)
+    registration["execution_gate"] = {"state": "ready", "reasons": []}
+    split = _split_binding(
+        dev_start=date(2021, 1, 4),
+        dev_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 1),
+        oos_end=date(2026, 4, 27),
+        train_sessions=252,
+        validation_sessions=63,
+        test_sessions=63,
+        step_sessions=63,
+        warmup_sessions=50,
+    )
+    registration["split_policy"].update(
+        exact_calendar_boundaries=split["boundaries"],
+        fold_count=split["fold_count"],
+        plan_hash=split["plan_hash"],
+    )
+
+    data_dir = tmp_path / "parquet"
+    data_dir.mkdir()
+    data_file = data_dir / "QQQ.parquet"
+    data_file.write_bytes(b"registered-qql-data")
+    data_hash = hashlib.sha256(data_file.read_bytes()).hexdigest()
+    manifest = {
+        "manifest_id": "manifest-1",
+        "session_sequence_sha256": "session-sequence",
+        "symbols": ["QQQ"],
+        "files": {"QQQ": {"path": "QQQ.parquet", "sha256": data_hash}},
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    registration["data_binding"] = {
+        "manifest_id": "manifest-1",
+        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "session_sequence_sha256": "session-sequence",
+    }
+
+    database_path = tmp_path / "research.sqlite3"
+    connection = sqlite3.connect(database_path)
+    migrate(connection)
+    connection.close()
+    registration["research_database"] = {"path": str(database_path)}
+
+    arguments = {
+        "repository_root": ROOT,
+        "symbol": "QQQ",
+        "ruleset_path": ROOT / "vibe/rulesets/orb_production.yaml",
+        "axes": [("orb_minutes", "strategy.orb_duration_minutes", (5, 15, 30))],
+        "dev_start": date(2021, 1, 4),
+        "dev_end": date(2024, 12, 31),
+        "oos_start": date(2025, 1, 1),
+        "oos_end": date(2026, 4, 27),
+        "train_sessions": 252,
+        "validation_sessions": 63,
+        "test_sessions": 63,
+        "step_sessions": 63,
+        "warmup_sessions": 50,
+        "record_runs": True,
+        "record_test_only": False,
+        "reliability_policy": ReliabilityPolicy(),
+        "dataset_manifest_path": manifest_path,
+        "data_dir_path": data_dir,
+        "research_db_path": database_path,
+    }
+    validate_registration_execution(registration, **arguments)
+
+    data_file.write_bytes(b"changed")
+    with pytest.raises(RegistrationError, match="Dataset file hash"):
+        validate_registration_execution(registration, **arguments)

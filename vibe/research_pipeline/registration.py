@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -14,6 +15,8 @@ from vibe.backtester.analysis.metrics import METRIC_CALCULATION_VERSION
 from vibe.backtester.core.execution_realism import EXECUTION_MODEL_VERSION
 from vibe.research_pipeline.holdout import load_lock
 from vibe.research_pipeline.reliability import ReliabilityPolicy
+from vibe.research_pipeline.splits.planner import SplitSpec, TemporalSplitPlanner
+from vibe.research_pipeline.storage.schema import SCHEMA_VERSION
 
 
 class RegistrationError(ValueError):
@@ -143,6 +146,17 @@ def validate_registration_execution(
             dataset_manifest_path=dataset_manifest_path,
             data_dir_path=data_dir_path,
             research_db_path=research_db_path,
+            expected_split=_split_binding(
+                dev_start=dev_start,
+                dev_end=dev_end,
+                oos_start=oos_start,
+                oos_end=oos_end,
+                train_sessions=train_sessions,
+                validation_sessions=validation_sessions,
+                test_sessions=test_sessions,
+                step_sessions=step_sessions,
+                warmup_sessions=warmup_sessions,
+            ),
         )
     else:
         reasons = gate.get("reasons")
@@ -157,14 +171,15 @@ def _validate_ready_bindings(
     dataset_manifest_path: Path | None,
     data_dir_path: Path | None,
     research_db_path: Path | None,
+    expected_split: Mapping[str, Any],
 ) -> None:
     split = _mapping(registration, "split_policy")
-    boundaries = split.get("exact_calendar_boundaries")
-    if not isinstance(boundaries, list) or not boundaries:
-        raise RegistrationError("Ready registration requires exact calendar boundaries")
-    fold_count = split.get("fold_count")
-    if not isinstance(fold_count, int) or fold_count < 1:
-        raise RegistrationError("Ready registration requires a positive fold count")
+    if split.get("exact_calendar_boundaries") != expected_split["boundaries"]:
+        raise RegistrationError("Registered fold boundaries differ from generated plan")
+    if split.get("fold_count") != expected_split["fold_count"]:
+        raise RegistrationError("Registered fold count differs from generated plan")
+    if split.get("plan_hash") != expected_split["plan_hash"]:
+        raise RegistrationError("Registered split-plan hash differs from generated plan")
 
     binding = _mapping(registration, "data_binding")
     if dataset_manifest_path is None:
@@ -213,6 +228,62 @@ def _validate_ready_bindings(
         raise RegistrationError("Research database path differs from registration")
     if not research_db_path.is_file():
         raise RegistrationError("Registered research database does not exist")
+    _validate_research_database(research_db_path)
+
+
+def _split_binding(
+    *,
+    dev_start: date,
+    dev_end: date,
+    oos_start: date,
+    oos_end: date,
+    train_sessions: int,
+    validation_sessions: int,
+    test_sessions: int,
+    step_sessions: int,
+    warmup_sessions: int,
+) -> dict[str, Any]:
+    plan = TemporalSplitPlanner().plan(
+        SplitSpec(
+            dev_start=dev_start,
+            dev_end=dev_end,
+            final_oos_start=oos_start,
+            final_oos_end=oos_end,
+            train_sessions=train_sessions,
+            validation_sessions=validation_sessions,
+            test_sessions=test_sessions,
+            step_sessions=step_sessions,
+            indicator_lookback_sessions=warmup_sessions,
+        )
+    )
+    return {
+        "plan_hash": plan.plan_hash,
+        "fold_count": len(plan.folds),
+        "boundaries": [
+            fold.model_dump(mode="json")
+            for fold in plan.folds
+        ],
+    }
+
+
+def _validate_research_database(path: Path) -> None:
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        if integrity is None or integrity[0] != "ok":
+            raise RegistrationError("Research database integrity check failed")
+        row = connection.execute(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+        ).fetchone()
+        if row is None or int(row[0]) != SCHEMA_VERSION:
+            raise RegistrationError(
+                "Research database schema version differs from this binary"
+            )
+    except sqlite3.Error as exc:
+        raise RegistrationError(f"Cannot validate research database: {exc}") from exc
+    finally:
+        if "connection" in locals():
+            connection.close()
 
 
 def _mapping(

@@ -859,6 +859,13 @@ manifest and session sequence, the actual symbol parquet hash, and an explicit
 authoritative SQLite path. The CLI requires those manifest, data-directory, and
 database inputs and passes the bound database path to the run sink. Merely
 changing the registration state string to `ready` is therefore insufficient.
+For a ready registration, the validator recomputes the split plan and requires
+an exact match for every fold manifest, fold count, and plan hash. It also
+opens the bound SQLite database read-only, requires `PRAGMA integrity_check`
+to return `ok`, and requires the applied schema version to match the running
+binary before the sink can open it for writes. Ready-path tests exercise a
+temporary manifest, symbol file, and schema-v16 database and reject subsequent
+dataset-file drift.
 
 After the bypass and binding corrections, the complete research-pipeline suite
 passes **907 tests**. The research-user consultant issued **APPROVE** for this
