@@ -2,6 +2,7 @@ import { FixtureAnalysisAdapter } from "./researchAnalysis.ts";
 import { analysisFixtureRows, clonedResearchFixtures } from "./researchFixtures.ts";
 import type {
   ResearchDataAdapter,
+  ResearchExperimentEvent,
   ResearchListQuery,
   ResearchOverview,
   ResearchPage,
@@ -20,10 +21,12 @@ export class FixtureResearchDataAdapter implements ResearchDataAdapter {
 
   async getOverview(): Promise<ResearchOverview> {
     const runs = this.#items.filter((item) => item.kind === "run_summary");
+    const registry = this.#items.filter((item) => item.kind === "registry_record");
     return {
       total: this.#items.length,
       runSummaries: runs.length,
-      registryRecords: this.#items.length - runs.length,
+      registryRecords: registry.length,
+      experimentEvents: this.#items.length - runs.length - registry.length,
       completedRuns: runs.filter((item) => item.status === "completed").length,
       validationAttention: runs.filter((item) =>
         item.validation.findings.blocking > 0 || item.validation.leakagePassed === false
@@ -43,8 +46,16 @@ export class FixtureResearchDataAdapter implements ResearchDataAdapter {
         item.idempotencyKey,
         item.methodologyVersion,
         item.originDeviceId,
-        item.kind === "run_summary" ? item.strategyId : item.recordType,
-        item.kind === "run_summary" ? item.displayAlias : item.recordId,
+        item.kind === "run_summary"
+          ? item.strategyId
+          : item.kind === "registry_record"
+            ? item.recordType
+            : item.experimentId,
+        item.kind === "run_summary"
+          ? item.displayAlias
+          : item.kind === "registry_record"
+            ? item.recordId
+            : item.experimentId,
       ].some((value) => value?.toLowerCase().includes(search)))
       .sort((left, right) => comparePublications(left, right, query));
     const start = (page - 1) * pageSize;
@@ -59,6 +70,14 @@ export class FixtureResearchDataAdapter implements ResearchDataAdapter {
 
   async getPublication(idempotencyKey: string): Promise<ResearchPublication | null> {
     return this.#items.find((item) => item.idempotencyKey === idempotencyKey) ?? null;
+  }
+
+  async getExperimentPublications(experimentId: string) {
+    return this.#items.filter((item): item is ResearchExperimentEvent =>
+      item.kind !== "run_summary"
+      && item.kind !== "registry_record"
+      && item.experimentId === experimentId
+    );
   }
 
   getAnalysisFieldCatalog() {

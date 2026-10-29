@@ -8,6 +8,7 @@ import type {
 } from "./researchAnalysis.ts";
 import type {
   ResearchDataAdapter,
+  ResearchExperimentEvent,
   ResearchListQuery,
   ResearchOverview,
   ResearchPage,
@@ -35,14 +36,15 @@ export class SupabaseResearchDataAdapter implements ResearchDataAdapter {
   }
 
   async getOverview(): Promise<ResearchOverview> {
-    const [total, runSummaries, registryRecords, completedRuns, validationAttention] = await Promise.all([
+    const [total, runSummaries, registryRecords, experimentEvents, completedRuns, validationAttention] = await Promise.all([
       this.#count(""),
       this.#count("aggregate_type=eq.run_summary"),
       this.#count("aggregate_type=eq.registry_record"),
+      this.#count("aggregate_type=not.in.(run_summary,registry_record)"),
       this.#count("aggregate_type=eq.run_summary&payload->>state=eq.completed"),
       this.#count("aggregate_type=eq.run_summary&or=(payload->validation->finding_counts->>blocking.gt.0,payload->validation->>leakage_passed.eq.false)"),
     ]);
-    return { total, runSummaries, registryRecords, completedRuns, validationAttention };
+    return { total, runSummaries, registryRecords, experimentEvents, completedRuns, validationAttention };
   }
 
   async listPublications(query: ResearchListQuery): Promise<ResearchPage> {
@@ -75,6 +77,36 @@ export class SupabaseResearchDataAdapter implements ResearchDataAdapter {
     const response = await this.#requestPublications(parameters);
     const rows = await response.json() as ResearchPublicationRow[];
     return rows[0] ? decodeResearchPublication(rows[0]) : null;
+  }
+
+  async getExperimentPublications(
+    experimentId: string,
+  ): Promise<ResearchExperimentEvent[]> {
+    const parameters = new URLSearchParams({
+      select: "*",
+      aggregate_id: `eq.${experimentId}`,
+      aggregate_type: "not.in.(run_summary,registry_record)",
+      order: "acknowledged_at.asc,idempotency_key.asc",
+    });
+    const rows: ResearchPublicationRow[] = [];
+    const pageSize = 1000;
+    for (let start = 0; ; start += pageSize) {
+      const response = await this.#requestPublications(parameters, {
+        Range: `${start}-${start + pageSize - 1}`,
+        "Range-Unit": "items",
+      });
+      const page = await response.json() as ResearchPublicationRow[];
+      rows.push(...page);
+      if (page.length < pageSize) break;
+    }
+    return rows.map(decodeResearchPublication).filter(
+      (item): item is ResearchExperimentEvent =>
+        item.kind !== "run_summary" && item.kind !== "registry_record",
+    ).sort((left, right) =>
+      String(left.recordedAt ?? left.acknowledgedAt).localeCompare(
+        String(right.recordedAt ?? right.acknowledgedAt),
+      ),
+    );
   }
 
   async getAnalysisFieldCatalog(): Promise<AnalysisField[]> {
@@ -172,10 +204,32 @@ export function researchQueryParameters(query: ResearchListQuery): URLSearchPara
   }
   if (query.status) {
     if (!query.kind || query.kind === "all") {
-      parameters.set("or", `(payload->>state.eq.${query.status},payload->>status.eq.${query.status})`);
+      parameters.set("or", [
+        `payload->>state.eq.${query.status}`,
+        `payload->>status.eq.${query.status}`,
+        `payload->definition->>state.eq.${query.status}`,
+        `payload->membership->>segment_role.eq.${query.status}`,
+        `payload->outcome->>state.eq.${query.status}`,
+        `payload->reliability->>verdict.eq.${query.status}`,
+        `payload->methodology->>state.eq.${query.status}`,
+        `payload->authorization->>state.eq.${query.status}`,
+        `payload->claim->>state.eq.${query.status}`,
+        `payload->terminal->>state.eq.${query.status}`,
+        `payload->archive->>state.eq.${query.status}`,
+      ].join(",").replace(/^/, "(").concat(")"));
     } else {
-      const path = query.kind === "registry_record" ? "payload->>status" : "payload->>state";
+      const path = researchStatusPath(query.kind);
       parameters.set(path, `eq.${query.status}`);
+    }
+
+    function researchStatusPath(kind: Exclude<ResearchListQuery["kind"], "all" | undefined>): string {
+      if (kind === "registry_record") return "payload->>status";
+      if (kind === "run_summary") return "payload->>state";
+      if (kind === "study_reliability") return "payload->reliability->>verdict";
+      if (kind === "methodology_freeze") return "payload->methodology->>state";
+      if (kind === "experiment_membership") return "payload->membership->>segment_role";
+      const section = kind.replace("experiment_", "").replace("holdout_", "");
+      return `payload->${section}->>state`;
     }
   }
   if (query.search?.trim()) {

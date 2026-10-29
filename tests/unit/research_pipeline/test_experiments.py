@@ -245,9 +245,9 @@ def test_additive_migration_keeps_v10_runs_unassigned(tmp_path, monkeypatch):
             patch.setattr(schema, "_MIGRATIONS", schema._MIGRATIONS[:10])
             patch.setattr(schema, "SCHEMA_VERSION", 10)
             schema.migrate(conn)
-        assert schema.migrate(conn) == 15
+        assert schema.migrate(conn) == 16
         assert conn.execute("SELECT COUNT(*) FROM research_experiments").fetchone()[0] == 0
-        assert schema.migrate(conn) == 15
+        assert schema.migrate(conn) == 16
 
 
 def test_nonfinite_metrics_are_retained_as_explicit_invalid_evidence():

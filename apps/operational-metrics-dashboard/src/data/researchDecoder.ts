@@ -1,5 +1,6 @@
 import type {
   ResearchEvidence,
+  ResearchExperimentEventKind,
   ResearchExecutionIdentity,
   ResearchLineage,
   ResearchMetric,
@@ -10,6 +11,17 @@ import type {
 } from "./researchTypes.ts";
 
 const supportedSchemaVersion = 1;
+const experimentEventKinds = new Set<ResearchExperimentEventKind>([
+  "experiment_definition",
+  "experiment_membership",
+  "experiment_outcome",
+  "study_reliability",
+  "methodology_freeze",
+  "holdout_authorization",
+  "holdout_claim",
+  "holdout_terminal",
+  "experiment_archive",
+]);
 const forbiddenPayloadKeys = new Set([
   "trade",
   "trades",
@@ -43,8 +55,17 @@ const approvedChecksumKeys = new Set([
 
 export function decodeResearchPublication(row: ResearchPublicationRow): ResearchPublication {
   const messages: string[] = [];
-  const kind = row.aggregate_type === "registry_record" ? "registry_record" : "run_summary";
-  if (row.aggregate_type !== "run_summary" && row.aggregate_type !== "registry_record") {
+  const rawKind = string(row.aggregate_type);
+  const kind = rawKind === "registry_record"
+    ? "registry_record"
+    : experimentEventKinds.has(rawKind as ResearchExperimentEventKind)
+      ? rawKind as ResearchExperimentEventKind
+      : "run_summary";
+  if (
+    rawKind !== "run_summary"
+    && rawKind !== "registry_record"
+    && !experimentEventKinds.has(rawKind as ResearchExperimentEventKind)
+  ) {
     messages.push("Unknown aggregate type.");
   }
   const schemaVersion = integer(row.schema_version) ?? 0;
@@ -61,7 +82,15 @@ export function decodeResearchPublication(row: ResearchPublicationRow): Research
   }
   const safePayload = forbiddenPath ? null : payload;
   const identity = record(safePayload?.identity);
-  const badges = strings(kind === "run_summary" ? identity?.badges : safePayload?.badges);
+  const badges = kind === "run_summary"
+    ? strings(identity?.badges)
+    : kind === "registry_record"
+      ? strings(safePayload?.badges)
+      : [kind.replaceAll("_", " ")];
+  const eventSection = kind !== "run_summary" && kind !== "registry_record"
+    ? experimentEventSection(kind, safePayload)
+    : null;
+  const eventData = experimentEventData(safePayload);
   const base = {
     idempotencyKey: string(row.idempotency_key) ?? "invalid",
     aggregateId: string(row.aggregate_id) ?? "invalid",
@@ -77,9 +106,36 @@ export function decodeResearchPublication(row: ResearchPublicationRow): Research
     methodologyVersion: string(identity?.methodology_version),
     executionModelVersion: integer(identity?.execution_model_version),
     originDeviceId: string(identity?.origin_device_id),
-    status: string(kind === "run_summary" ? safePayload?.state : safePayload?.status),
+    status: kind === "run_summary"
+      ? string(safePayload?.state)
+      : kind === "registry_record"
+        ? string(safePayload?.status)
+        : eventStatus(kind, eventSection),
     publishedIdentity: `${string(row.aggregate_id) ?? "invalid"} · v${integer(row.publication_version) ?? 0}`,
   };
+
+  if (kind !== "run_summary" && kind !== "registry_record") {
+    return {
+      ...base,
+      kind,
+      experimentId: string(identity?.experiment_id),
+      recordedAt: string(record(safePayload?.timestamps)?.recorded_at)
+        ?? string(record(safePayload?.timestamps)?.created_at)
+        ?? string(record(safePayload?.timestamps)?.executed_at),
+      eventData,
+    };
+  }
+
+  function experimentEventData(
+    payload: Record<string, unknown> | null,
+  ): Record<string, unknown> {
+    if (!payload) return {};
+    return Object.fromEntries(
+      Object.entries(payload).filter(
+        ([key]) => key !== "identity" && key !== "timestamps",
+      ),
+    );
+  }
 
   if (kind === "registry_record") {
     return {
@@ -93,6 +149,38 @@ export function decodeResearchPublication(row: ResearchPublicationRow): Research
       executionIdentity: decodeExecutionIdentity(record(identity?.execution_identity)),
       lineage: decodeLineage(safePayload?.lineage),
     };
+  }
+
+  function experimentEventSection(
+    kind: ResearchExperimentEventKind,
+    payload: Record<string, unknown> | null,
+  ): Record<string, unknown> | unknown[] | null {
+    const key = ({
+      experiment_definition: "definition",
+      experiment_membership: "membership",
+      experiment_outcome: "outcome",
+      study_reliability: "reliability",
+      methodology_freeze: "methodology",
+      holdout_authorization: "authorization",
+      holdout_claim: "claim",
+      holdout_terminal: "terminal",
+      experiment_archive: "archive",
+    } as const)[kind];
+    const section = payload?.[key];
+    if (Array.isArray(section)) return section;
+    return record(section);
+  }
+
+  function eventStatus(
+    kind: ResearchExperimentEventKind,
+    section: Record<string, unknown> | unknown[] | null,
+  ): string | null {
+    const data = Array.isArray(section) ? null : section;
+    if (kind === "study_reliability") return string(data?.verdict) ?? "not_assessed";
+    if (kind === "methodology_freeze") return "frozen";
+    if (kind === "experiment_archive") return "archived";
+    if (kind === "experiment_membership") return string(data?.segment_role);
+    return string(data?.state);
   }
 
   return {

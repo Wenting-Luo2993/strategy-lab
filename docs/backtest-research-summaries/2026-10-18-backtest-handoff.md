@@ -564,6 +564,64 @@ local parent experiment's identity, fold membership, policy hash, reliability
 verdict, failed criteria, and robustness/regime summaries without prohibited
 rows or secrets.
 
+### Implementation record — 2026-10-28
+
+Implemented local schema v16 and immutable study-level publication events for
+experiment definition, fold/candidate/segment membership, terminal procedure
+outcome, reliability decision and criteria, robustness/regime evidence,
+methodology freeze, holdout authorization, holdout claim, holdout terminal
+result/interruption, and archive state.
+
+Each event has its own idempotency identity and is enqueued in the same SQLite
+transaction as the immutable source record. Holdout publications deliberately
+exclude the authorization token and its digest. Recursive validation rejects
+row-level market/execution data, secret-key aliases, and secret-looking string
+values before an event can enter the outbox.
+
+Existing studies are not mutated at startup. Operators must explicitly run:
+
+```powershell
+python scripts\publish_research.py backfill-experiments
+python scripts\publish_research.py backfill-experiments --experiment-id <id>
+```
+
+The Supabase schema now accepts the new aggregate types for both fresh and
+existing tables. The TypeScript contract and decoder keep unsupported schema
+versions visible, decode absent historical reliability as `Not assessed`, and
+keep development reliability, eligibility, authorization, claim, and terminal
+holdout evidence separate. Selecting any experiment event loads the complete
+paginated experiment timeline rather than presenting an isolated child row.
+The decoder retains the complete approved decision-evidence payload, including
+reliability criteria, robustness/regime summaries, and the holdout eligibility
+hash basis. Mixed-kind status filtering searches each supported nested
+experiment state, and timeline chronology uses the event's semantic timestamp
+rather than remote acknowledgement time.
+The status control exposes these decision states to end users and narrows its
+choices by publication kind so incompatible state/type combinations are not
+presented.
+The viewer labels `RELIABLE` as “eligible for user-authorized holdout,” not as
+profitability or approval.
+
+Validation completed:
+
+- complete Python research-pipeline suite: 899 passed;
+- focused publication/security suite: 42 passed;
+- dashboard tests: 55 passed;
+- production dashboard build: passed;
+- source diff whitespace check: passed.
+
+Remote activation and a second-device comparison remain Phase 2 external
+deployment work; Phase 1 does not claim that the Supabase migration has already
+been applied.
+
+The research-user consultant initially rejected the Phase 1 exit gate because
+the remote decoder discarded sibling decision evidence and the viewer could
+not reliably query or select nested experiment states. The final implementation
+preserves the complete approved event payload, searches nested state paths,
+exposes kind-aware decision-state choices in the UI, and orders the timeline by
+research chronology. After the corrected test/build evidence above, the
+consultant issued final **APPROVE** with no remaining blockers.
+
 ## Phase 2 — deploy and validate remote experiment inspection
 
 **Goal:** make cross-device experiment review operational, not merely coded.

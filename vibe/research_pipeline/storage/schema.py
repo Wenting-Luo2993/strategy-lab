@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -1174,6 +1174,41 @@ BEGIN
 END;
 """
 
+_MIGRATION_16 = """
+CREATE TABLE research_publication_contracts (
+    aggregate_type TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL CHECK (schema_version >= 1),
+    introduced_schema_version INTEGER NOT NULL CHECK (
+        introduced_schema_version = 16
+    )
+);
+
+INSERT INTO research_publication_contracts
+    (aggregate_type, schema_version, introduced_schema_version)
+VALUES
+    ('experiment_definition', 1, 16),
+    ('experiment_membership', 1, 16),
+    ('experiment_outcome', 1, 16),
+    ('study_reliability', 1, 16),
+    ('methodology_freeze', 1, 16),
+    ('holdout_authorization', 1, 16),
+    ('holdout_claim', 1, 16),
+    ('holdout_terminal', 1, 16),
+    ('experiment_archive', 1, 16);
+
+CREATE TRIGGER immutable_research_publication_contract_update
+BEFORE UPDATE ON research_publication_contracts
+BEGIN
+    SELECT RAISE(ABORT, 'research publication contract is immutable');
+END;
+
+CREATE TRIGGER immutable_research_publication_contract_delete
+BEFORE DELETE ON research_publication_contracts
+BEGIN
+    SELECT RAISE(ABORT, 'research publication contract is immutable');
+END;
+"""
+
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -1190,6 +1225,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (13, _MIGRATION_13),
     (14, _MIGRATION_14),
     (15, _MIGRATION_15),
+    (16, _MIGRATION_16),
 ]
 
 

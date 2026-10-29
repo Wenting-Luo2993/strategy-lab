@@ -262,6 +262,29 @@ class SqliteResearchStore:
                     reliability_policy.policy_hash if reliability_policy else None,
                 ),
             )
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:definition",
+                kind=PublicationKind.EXPERIMENT_DEFINITION,
+                aggregate_id=experiment_id,
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "definition": {
+                        "title": title,
+                        "state": "running",
+                        "reliability_policy_hash": (
+                            reliability_policy.policy_hash
+                            if reliability_policy
+                            else None
+                        ),
+                        "study": definition,
+                    },
+                    "timestamps": {"created_at": now},
+                },
+                now=now,
+            )
         return experiment_id
 
     def link_experiment_run(
@@ -273,6 +296,32 @@ class SqliteResearchStore:
                 "INSERT INTO research_experiment_runs VALUES (?, ?, ?, ?, ?)",
                 (experiment_id, fold_index, candidate_id, segment_role.value, run_id),
             )
+            now = schema.utc_now_iso()
+            self._insert_publication_tx(
+                idempotency_key=(
+                    f"experiment:{experiment_id}:membership:"
+                    f"{fold_index}:{candidate_id}:{segment_role.value}"
+                ),
+                kind=PublicationKind.EXPERIMENT_MEMBERSHIP,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{experiment_id}:definition"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "membership": {
+                        "fold_index": fold_index,
+                        "candidate_id": candidate_id,
+                        "segment_role": segment_role.value,
+                        "run_id": run_id,
+                    },
+                    "timestamps": {"recorded_at": now},
+                },
+                now=now,
+            )
 
     def finish_experiment(
         self, experiment_id: str, state: str, result: dict[str, Any],
@@ -280,14 +329,32 @@ class SqliteResearchStore:
         if state not in {"completed", "inconclusive", "execution_failed"}:
             raise ValueError(f"Invalid experiment terminal state: {state}")
         with self._conn:
+            now = schema.utc_now_iso()
             changed = self._conn.execute(
                 """UPDATE research_experiments
                    SET state = ?, result_json = ?, updated_at = ?
                    WHERE experiment_id = ? AND state = 'running'""",
-                (state, json.dumps(result, allow_nan=False), schema.utc_now_iso(), experiment_id),
+                (state, json.dumps(result, allow_nan=False), now, experiment_id),
             ).rowcount
             if changed != 1:
                 raise ImmutableRecordError("Experiment is absent or already finished")
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:outcome",
+                kind=PublicationKind.EXPERIMENT_OUTCOME,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{experiment_id}:definition"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "outcome": {"state": state, "result": result},
+                    "timestamps": {"recorded_at": now},
+                },
+                now=now,
+            )
 
     def archive_experiment(
         self,
@@ -329,6 +396,35 @@ class SqliteResearchStore:
                     archived_by.strip(),
                     reason.strip(),
                 ),
+            )
+            archive_row = self._conn.execute(
+                """SELECT archived_at, archived_by, reason
+                   FROM archived_research_experiments
+                   WHERE experiment_id = ?""",
+                (experiment_id,),
+            ).fetchone()
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:archive",
+                kind=PublicationKind.EXPERIMENT_ARCHIVE,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{experiment_id}:definition"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "archive": {
+                        "state": "archived",
+                        "archived_by": archive_row["archived_by"],
+                        "reason": archive_row["reason"],
+                    },
+                    "timestamps": {
+                        "recorded_at": archive_row["archived_at"]
+                    },
+                },
+                now=archive_row["archived_at"],
             )
 
     def record_engine_integrity(
@@ -430,6 +526,37 @@ class SqliteResearchStore:
                         now,
                     ),
                 )
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:reliability",
+                kind=PublicationKind.STUDY_RELIABILITY,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{experiment_id}:definition"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "reliability": {
+                        "verdict": report.verdict.value,
+                        "policy_version": policy.version,
+                        "policy_hash": policy.policy_hash,
+                        "report": report.model_dump(mode="json"),
+                    },
+                    "criteria": [
+                        criterion.model_dump(mode="json")
+                        for criterion in report.criteria
+                    ],
+                    "robustness": (
+                        robustness.model_dump(mode="json")
+                        if robustness is not None
+                        else None
+                    ),
+                    "timestamps": {"recorded_at": now},
+                },
+                now=now,
+            )
 
     def get_reliability_policy(self, policy_hash: str) -> ReliabilityPolicy:
         row = self._conn.execute(
@@ -489,6 +616,36 @@ class SqliteResearchStore:
                         definition.model_dump_json(),
                     ),
                 )
+                self._insert_publication_tx(
+                    idempotency_key=f"experiment:{experiment_id}:freeze",
+                    kind=PublicationKind.METHODOLOGY_FREEZE,
+                    aggregate_id=experiment_id,
+                    parent_idempotency_key=self._existing_publication_key(
+                        f"experiment:{experiment_id}:definition"
+                    ),
+                    payload={
+                        "identity": {
+                            "experiment_id": experiment_id,
+                            "origin_device_id": self._origin_device_id,
+                        },
+                        "methodology": {
+                            "state": "frozen",
+                            "definition_hash": definition.definition_hash,
+                            "policy_hash": (
+                                definition.reliability_policy.policy_hash
+                            ),
+                            "final_holdout_lock_hash": (
+                                definition.final_holdout_lock_hash
+                            ),
+                            "frozen_by": definition.frozen_by,
+                            "definition": definition.model_dump(mode="json"),
+                        },
+                        "timestamps": {
+                            "recorded_at": definition.frozen_at.isoformat()
+                        },
+                    },
+                    now=schema.utc_now_iso(),
+                )
         except sqlite3.IntegrityError as exc:
             raise ImmutableRecordError(
                 f"Study {experiment_id!r} is already frozen and immutable"
@@ -505,6 +662,7 @@ class SqliteResearchStore:
         try:
             with self._conn:
                 eligibility = self._assert_final_holdout_eligible(experiment_id)
+                authorized_at = schema.utc_now_iso()
                 self._conn.execute(
                     """INSERT INTO final_holdout_authorizations
                        (experiment_id, authorization_sha256, requested_by, reason,
@@ -516,11 +674,33 @@ class SqliteResearchStore:
                         digest,
                         authorization.requested_by,
                         authorization.reason,
-                        schema.utc_now_iso(),
+                        authorized_at,
                         eligibility["policy_hash"],
                         eligibility["definition_hash"],
                         eligibility["report_hash"],
                     ),
+                )
+                self._insert_publication_tx(
+                    idempotency_key=f"experiment:{experiment_id}:holdout:authorized",
+                    kind=PublicationKind.HOLDOUT_AUTHORIZATION,
+                    aggregate_id=experiment_id,
+                    parent_idempotency_key=self._existing_publication_key(
+                        f"experiment:{experiment_id}:freeze"
+                    ),
+                    payload={
+                        "identity": {
+                            "experiment_id": experiment_id,
+                            "origin_device_id": self._origin_device_id,
+                        },
+                        "eligibility": eligibility,
+                        "authorization": {
+                            "state": "authorized",
+                            "requested_by": authorization.requested_by,
+                            "reason": authorization.reason,
+                        },
+                        "timestamps": {"recorded_at": authorized_at},
+                    },
+                    now=authorized_at,
                 )
         except sqlite3.IntegrityError as exc:
             raise ImmutableRecordError(
@@ -579,6 +759,28 @@ class SqliteResearchStore:
                    WHERE experiment_id = ?""",
                 (experiment_id,),
             ).fetchone()
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:holdout:claimed",
+                kind=PublicationKind.HOLDOUT_CLAIM,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{experiment_id}:holdout:authorized"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "claim": {
+                        "state": "claimed",
+                        "claim_id": claim_id,
+                        "requested_by": row["requested_by"],
+                        "reason": row["reason"],
+                    },
+                    "timestamps": {"recorded_at": claimed_at},
+                },
+                now=claimed_at,
+            )
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -666,13 +868,14 @@ class SqliteResearchStore:
         reason: str,
     ) -> None:
         with self._conn:
+            completed_at = schema.utc_now_iso()
             changed = self._conn.execute(
                 """UPDATE final_holdout_authorizations
                    SET state = 'interrupted', completed_at = ?,
                        interruption_reason = ?
                    WHERE experiment_id = ? AND claim_id = ? AND state = 'claimed'""",
                 (
-                    schema.utc_now_iso(),
+                    completed_at,
                     reason[:500],
                     claim.experiment_id,
                     claim.claim_id,
@@ -680,6 +883,29 @@ class SqliteResearchStore:
             ).rowcount
             if changed != 1:
                 raise ImmutableRecordError("Final holdout claim is not active")
+            self._insert_publication_tx(
+                idempotency_key=(
+                    f"experiment:{claim.experiment_id}:holdout:terminal"
+                ),
+                kind=PublicationKind.HOLDOUT_TERMINAL,
+                aggregate_id=claim.experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{claim.experiment_id}:holdout:claimed"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": claim.experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "terminal": {
+                        "state": "interrupted",
+                        "reason": reason[:500],
+                        "claim_id": claim.claim_id,
+                    },
+                    "timestamps": {"recorded_at": completed_at},
+                },
+                now=completed_at,
+            )
 
     def get_frozen_study(
         self, experiment_id: str
@@ -722,6 +948,7 @@ class SqliteResearchStore:
                 or row["authorization_sha256"] != authorization.authorization_sha256
             ):
                 raise ImmutableRecordError("Final holdout claim is not active")
+            executed_at = schema.utc_now_iso()
             self._conn.execute(
                 """INSERT INTO final_holdout_executions
                    (experiment_id, authorization_sha256, requested_by, executed_at,
@@ -731,18 +958,19 @@ class SqliteResearchStore:
                     experiment_id,
                     authorization.authorization_sha256,
                     authorization.requested_by,
-                    schema.utc_now_iso(),
+                    executed_at,
                     verdict,
                     json.dumps(payload, allow_nan=False),
                     run_id,
                     json.dumps(verified_identities, sort_keys=True, allow_nan=False),
                 ),
             )
+            completed_at = schema.utc_now_iso()
             changed = self._conn.execute(
                 """UPDATE final_holdout_authorizations
                    SET state = 'completed', completed_at = ?
                    WHERE experiment_id = ? AND claim_id = ? AND state = 'claimed'""",
-                (schema.utc_now_iso(), experiment_id, authorization.claim_id),
+                (completed_at, experiment_id, authorization.claim_id),
             ).rowcount
             if changed != 1:
                 raise ImmutableRecordError("Final holdout claim changed during completion")
@@ -759,6 +987,33 @@ class SqliteResearchStore:
                     "final holdout evidence is retained indefinitely",
                     json.dumps({"experiment_id": experiment_id}),
                 ),
+            )
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:holdout:terminal",
+                kind=PublicationKind.HOLDOUT_TERMINAL,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{experiment_id}:holdout:claimed"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "terminal": {
+                        "state": "completed",
+                        "verdict": verdict,
+                        "run_id": run_id,
+                        "claim_id": authorization.claim_id,
+                        "result": payload,
+                        "verified_identities": verified_identities,
+                    },
+                    "timestamps": {
+                        "executed_at": executed_at,
+                        "recorded_at": completed_at,
+                    },
+                },
+                now=completed_at,
             )
             self._conn.commit()
         except sqlite3.IntegrityError as exc:
@@ -1617,6 +1872,352 @@ class SqliteResearchStore:
                 )
         return self._conn.total_changes - before
 
+    def backfill_experiment_publications(
+        self, experiment_id: Optional[str] = None
+    ) -> int:
+        """Explicitly queue immutable study-level records predating schema v16."""
+        before = self._conn.total_changes
+        now = schema.utc_now_iso()
+        query = """
+            SELECT experiment_id, title, state, definition_json, result_json,
+                   created_at, updated_at, reliability_policy_hash
+            FROM research_experiments
+        """
+        parameters: tuple[Any, ...] = ()
+        if experiment_id is not None:
+            query += " WHERE experiment_id = ?"
+            parameters = (experiment_id,)
+        query += " ORDER BY created_at, experiment_id"
+        with self._conn:
+            experiments = self._conn.execute(query, parameters).fetchall()
+            if experiment_id is not None and not experiments:
+                raise StoreError(f"Unknown experiment {experiment_id!r}")
+            for experiment in experiments:
+                self._backfill_experiment_publications_tx(experiment, now=now)
+        return self._conn.total_changes - before
+
+    def _backfill_experiment_publications_tx(
+        self, experiment: sqlite3.Row, *, now: str
+    ) -> None:
+        experiment_id = experiment["experiment_id"]
+        definition_key = f"experiment:{experiment_id}:definition"
+        self._insert_publication_tx(
+            idempotency_key=definition_key,
+            kind=PublicationKind.EXPERIMENT_DEFINITION,
+            aggregate_id=experiment_id,
+            payload={
+                "identity": {
+                    "experiment_id": experiment_id,
+                    "origin_device_id": self._origin_device_id,
+                },
+                "definition": {
+                    "title": experiment["title"],
+                    "state": "running",
+                    "reliability_policy_hash": experiment[
+                        "reliability_policy_hash"
+                    ],
+                    "study": json.loads(experiment["definition_json"]),
+                },
+                "timestamps": {"created_at": experiment["created_at"]},
+            },
+            now=now,
+        )
+        memberships = self._conn.execute(
+            """SELECT fold_index, candidate_id, segment_role, run_id
+               FROM research_experiment_runs
+               WHERE experiment_id = ?
+               ORDER BY fold_index, candidate_id, segment_role""",
+            (experiment_id,),
+        ).fetchall()
+        for membership in memberships:
+            self._insert_publication_tx(
+                idempotency_key=(
+                    f"experiment:{experiment_id}:membership:"
+                    f"{membership['fold_index']}:{membership['candidate_id']}:"
+                    f"{membership['segment_role']}"
+                ),
+                kind=PublicationKind.EXPERIMENT_MEMBERSHIP,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=definition_key,
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "membership": dict(membership),
+                    "timestamps": {"recorded_at": experiment["updated_at"]},
+                },
+                now=now,
+            )
+        if experiment["state"] != "running":
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:outcome",
+                kind=PublicationKind.EXPERIMENT_OUTCOME,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=definition_key,
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "outcome": {
+                        "state": experiment["state"],
+                        "result": (
+                            json.loads(experiment["result_json"])
+                            if experiment["result_json"]
+                            else None
+                        ),
+                    },
+                    "timestamps": {"recorded_at": experiment["updated_at"]},
+                },
+                now=now,
+            )
+        reliability = self._conn.execute(
+            """SELECT verdict, policy_hash, payload_json, recorded_at
+               FROM study_reliability_reports WHERE experiment_id = ?""",
+            (experiment_id,),
+        ).fetchone()
+        if reliability is not None:
+            criteria = self._conn.execute(
+                """SELECT payload_json FROM study_reliability_criteria
+                   WHERE experiment_id = ? ORDER BY criterion_id""",
+                (experiment_id,),
+            ).fetchall()
+            robustness = self._conn.execute(
+                """SELECT payload_json FROM robustness_evidence
+                   WHERE experiment_id = ?""",
+                (experiment_id,),
+            ).fetchone()
+            report = json.loads(reliability["payload_json"])
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:reliability",
+                kind=PublicationKind.STUDY_RELIABILITY,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=definition_key,
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "reliability": {
+                        "verdict": reliability["verdict"],
+                        "policy_version": report.get("policy_version"),
+                        "policy_hash": reliability["policy_hash"],
+                        "report": report,
+                    },
+                    "criteria": [
+                        json.loads(row["payload_json"]) for row in criteria
+                    ],
+                    "robustness": (
+                        json.loads(robustness["payload_json"])
+                        if robustness is not None
+                        else None
+                    ),
+                    "timestamps": {
+                        "recorded_at": reliability["recorded_at"]
+                    },
+                },
+                now=now,
+            )
+        frozen = self._conn.execute(
+            """SELECT definition_hash, policy_hash, final_holdout_lock_hash,
+                      frozen_at, frozen_by, payload_json
+               FROM frozen_study_definitions WHERE experiment_id = ?""",
+            (experiment_id,),
+        ).fetchone()
+        if frozen is not None:
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:freeze",
+                kind=PublicationKind.METHODOLOGY_FREEZE,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=definition_key,
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "methodology": {
+                        "state": "frozen",
+                        "definition_hash": frozen["definition_hash"],
+                        "policy_hash": frozen["policy_hash"],
+                        "final_holdout_lock_hash": frozen[
+                            "final_holdout_lock_hash"
+                        ],
+                        "frozen_by": frozen["frozen_by"],
+                        "definition": json.loads(frozen["payload_json"]),
+                    },
+                    "timestamps": {"recorded_at": frozen["frozen_at"]},
+                },
+                now=now,
+            )
+        authorization = self._conn.execute(
+            """SELECT requested_by, reason, state, authorized_at, claimed_at,
+                      completed_at, claim_id, interruption_reason,
+                      reliability_policy_hash, frozen_definition_hash,
+                      reliability_report_hash
+               FROM final_holdout_authorizations WHERE experiment_id = ?""",
+            (experiment_id,),
+        ).fetchone()
+        if authorization is not None:
+            authorization_key = (
+                f"experiment:{experiment_id}:holdout:authorized"
+            )
+            self._insert_publication_tx(
+                idempotency_key=authorization_key,
+                kind=PublicationKind.HOLDOUT_AUTHORIZATION,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{experiment_id}:freeze"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "eligibility": {
+                        "policy_hash": authorization[
+                            "reliability_policy_hash"
+                        ],
+                        "definition_hash": authorization[
+                            "frozen_definition_hash"
+                        ],
+                        "report_hash": authorization[
+                            "reliability_report_hash"
+                        ],
+                    },
+                    "authorization": {
+                        "state": "authorized",
+                        "requested_by": authorization["requested_by"],
+                        "reason": authorization["reason"],
+                    },
+                    "timestamps": {
+                        "recorded_at": authorization["authorized_at"]
+                    },
+                },
+                now=now,
+            )
+            if authorization["claimed_at"] is not None:
+                self._insert_publication_tx(
+                    idempotency_key=(
+                        f"experiment:{experiment_id}:holdout:claimed"
+                    ),
+                    kind=PublicationKind.HOLDOUT_CLAIM,
+                    aggregate_id=experiment_id,
+                    parent_idempotency_key=authorization_key,
+                    payload={
+                        "identity": {
+                            "experiment_id": experiment_id,
+                            "origin_device_id": self._origin_device_id,
+                        },
+                        "claim": {
+                            "state": "claimed",
+                            "claim_id": authorization["claim_id"],
+                            "requested_by": authorization["requested_by"],
+                            "reason": authorization["reason"],
+                        },
+                        "timestamps": {
+                            "recorded_at": authorization["claimed_at"]
+                        },
+                    },
+                    now=now,
+                )
+        execution = self._conn.execute(
+            """SELECT executed_at, verdict, payload_json, run_id,
+                      verified_identities_json
+               FROM final_holdout_executions WHERE experiment_id = ?""",
+            (experiment_id,),
+        ).fetchone()
+        if execution is not None:
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:holdout:terminal",
+                kind=PublicationKind.HOLDOUT_TERMINAL,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{experiment_id}:holdout:claimed"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "terminal": {
+                        "state": "completed",
+                        "verdict": execution["verdict"],
+                        "run_id": execution["run_id"],
+                        "claim_id": (
+                            authorization["claim_id"]
+                            if authorization is not None
+                            else None
+                        ),
+                        "result": json.loads(execution["payload_json"]),
+                        "verified_identities": json.loads(
+                            execution["verified_identities_json"]
+                        ),
+                    },
+                    "timestamps": {
+                        "executed_at": execution["executed_at"],
+                        "recorded_at": (
+                            authorization["completed_at"]
+                            if authorization is not None
+                            else execution["executed_at"]
+                        ),
+                    },
+                },
+                now=now,
+            )
+        elif (
+            authorization is not None
+            and authorization["state"] == "interrupted"
+        ):
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:holdout:terminal",
+                kind=PublicationKind.HOLDOUT_TERMINAL,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=self._existing_publication_key(
+                    f"experiment:{experiment_id}:holdout:claimed"
+                ),
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "terminal": {
+                        "state": "interrupted",
+                        "reason": authorization["interruption_reason"],
+                        "claim_id": authorization["claim_id"],
+                    },
+                    "timestamps": {
+                        "recorded_at": authorization["completed_at"]
+                    },
+                },
+                now=now,
+            )
+        archive = self._conn.execute(
+            """SELECT archived_at, archived_by, reason
+               FROM archived_research_experiments WHERE experiment_id = ?""",
+            (experiment_id,),
+        ).fetchone()
+        if archive is not None:
+            self._insert_publication_tx(
+                idempotency_key=f"experiment:{experiment_id}:archive",
+                kind=PublicationKind.EXPERIMENT_ARCHIVE,
+                aggregate_id=experiment_id,
+                parent_idempotency_key=definition_key,
+                payload={
+                    "identity": {
+                        "experiment_id": experiment_id,
+                        "origin_device_id": self._origin_device_id,
+                    },
+                    "archive": {
+                        "state": "archived",
+                        "archived_by": archive["archived_by"],
+                        "reason": archive["reason"],
+                    },
+                    "timestamps": {"recorded_at": archive["archived_at"]},
+                },
+                now=now,
+            )
+
     def _insert_publication_tx(
         self,
         *,
@@ -1651,6 +2252,14 @@ class SqliteResearchStore:
                 now,
             ),
         )
+
+    def _existing_publication_key(self, idempotency_key: str) -> Optional[str]:
+        row = self._conn.execute(
+            """SELECT idempotency_key FROM publication_outbox
+               WHERE idempotency_key = ?""",
+            (idempotency_key,),
+        ).fetchone()
+        return row["idempotency_key"] if row is not None else None
 
     def _enqueue_run_publication_tx(self, run_id: str, *, now: str) -> None:
         row = self._conn.execute(

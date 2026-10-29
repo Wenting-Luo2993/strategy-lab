@@ -30,6 +30,15 @@ PUBLICATION_SCHEMA_VERSION = 1
 class PublicationKind(str, Enum):
     RUN_SUMMARY = "run_summary"
     REGISTRY_RECORD = "registry_record"
+    EXPERIMENT_DEFINITION = "experiment_definition"
+    EXPERIMENT_MEMBERSHIP = "experiment_membership"
+    EXPERIMENT_OUTCOME = "experiment_outcome"
+    STUDY_RELIABILITY = "study_reliability"
+    METHODOLOGY_FREEZE = "methodology_freeze"
+    HOLDOUT_AUTHORIZATION = "holdout_authorization"
+    HOLDOUT_CLAIM = "holdout_claim"
+    HOLDOUT_TERMINAL = "holdout_terminal"
+    EXPERIMENT_ARCHIVE = "experiment_archive"
 
 
 class PublicationStatus(str, Enum):
@@ -64,6 +73,33 @@ _ALLOWED_TOP_LEVEL_KEYS = {
             "timestamps",
         }
     ),
+    PublicationKind.EXPERIMENT_DEFINITION: frozenset(
+        {"identity", "definition", "timestamps"}
+    ),
+    PublicationKind.EXPERIMENT_MEMBERSHIP: frozenset(
+        {"identity", "membership", "timestamps"}
+    ),
+    PublicationKind.EXPERIMENT_OUTCOME: frozenset(
+        {"identity", "outcome", "timestamps"}
+    ),
+    PublicationKind.STUDY_RELIABILITY: frozenset(
+        {"identity", "reliability", "criteria", "robustness", "timestamps"}
+    ),
+    PublicationKind.METHODOLOGY_FREEZE: frozenset(
+        {"identity", "methodology", "timestamps"}
+    ),
+    PublicationKind.HOLDOUT_AUTHORIZATION: frozenset(
+        {"identity", "eligibility", "authorization", "timestamps"}
+    ),
+    PublicationKind.HOLDOUT_CLAIM: frozenset(
+        {"identity", "claim", "timestamps"}
+    ),
+    PublicationKind.HOLDOUT_TERMINAL: frozenset(
+        {"identity", "terminal", "timestamps"}
+    ),
+    PublicationKind.EXPERIMENT_ARCHIVE: frozenset(
+        {"identity", "archive", "timestamps"}
+    ),
 }
 
 _FORBIDDEN_KEY_ALIASES = frozenset(
@@ -94,6 +130,19 @@ _FORBIDDEN_KEY_ALIASES = frozenset(
 )
 _APPROVED_CHECKSUM_KEYS = frozenset(
     {"tradeledgersha256", "equitycurvesha256", "payloadsha256", "canonicalsha256"}
+)
+_FORBIDDEN_SECRET_KEYS = frozenset(
+    {
+        "token",
+        "authorizationtoken",
+        "authorizationsha256",
+        "password",
+        "secret",
+        "apikey",
+        "servicerolekey",
+        "credential",
+        "credentials",
+    }
 )
 _RUN_IDENTITY_KEYS = frozenset(
     {
@@ -199,6 +248,8 @@ def forbidden_payload_path(payload: Any, trail: str = "") -> Optional[str]:
                 and normalized not in _APPROVED_CHECKSUM_KEYS
             ):
                 return current
+            if normalized in _FORBIDDEN_SECRET_KEYS:
+                return current
             nested = forbidden_payload_path(value, current)
             if nested:
                 return nested
@@ -225,6 +276,11 @@ def validate_publication_payload(
             "Research publication refused event-level data at "
             f"{offending!r}; trades, fills, equity points, and bars remain local."
         )
+    secret_path = secret_value_path(payload)
+    if secret_path:
+        raise StoreError(
+            f"Research publication refused a possible secret at {secret_path!r}"
+        )
     _validate_approved_shape(kind, payload)
 
 
@@ -232,6 +288,24 @@ def _mapping(value: Any, path: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise StoreError(f"Publication field {path!r} must be an object")
     return value
+
+
+def secret_value_path(value: Any, trail: str = "") -> Optional[str]:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            current = f"{trail}.{key}" if trail else str(key)
+            found = secret_value_path(nested, current)
+            if found:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for index, nested in enumerate(value):
+            found = secret_value_path(nested, f"{trail}[{index}]")
+            if found:
+                return found
+    elif isinstance(value, str):
+        if any(pattern.search(value) for pattern in _SECRET_PATTERNS):
+            return trail
+    return None
 
 
 def _approved_keys(
@@ -252,7 +326,14 @@ def _validate_approved_shape(
 ) -> None:
     timestamps = _approved_keys(
         payload.get("timestamps", {}),
-        frozenset({"created_at", "updated_at", "recorded_at"}),
+        frozenset(
+            {
+                "created_at",
+                "updated_at",
+                "recorded_at",
+                "executed_at",
+            }
+        ),
         "timestamps",
     )
     for key, value in timestamps.items():
@@ -330,6 +411,15 @@ def _validate_approved_shape(
         _require_scalar(payload.get("state"), "state")
         return
 
+    if kind is not PublicationKind.REGISTRY_RECORD:
+        identity = _mapping(payload.get("identity", {}), "identity")
+        for key, value in identity.items():
+            _require_scalar(value, f"identity.{key}")
+        for key, value in payload.items():
+            if key not in {"identity", "timestamps"}:
+                _require_json_value(value, key)
+        return
+
     identity = _approved_keys(
         payload.get("identity", {}), _REGISTRY_IDENTITY_KEYS, "identity"
     )
@@ -402,6 +492,20 @@ def _require_scalar_list(value: Any, path: str) -> None:
         raise StoreError(f"Publication field {path!r} must be a list")
     for index, item in enumerate(value):
         _require_scalar(item, f"{path}[{index}]")
+
+
+def _require_json_value(value: Any, path: str) -> None:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            _require_json_value(nested, f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, nested in enumerate(value):
+            _require_json_value(nested, f"{path}[{index}]")
+        return
+    if isinstance(value, float) and not math.isfinite(value):
+        raise StoreError(f"Publication field {path!r} must be finite")
+    _require_scalar(value, path)
 
 
 def redact_secrets(message: Any, secrets: Sequence[str] = ()) -> str:
