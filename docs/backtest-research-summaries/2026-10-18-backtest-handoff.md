@@ -1029,6 +1029,39 @@ The study result is accepted as recorded evidence only after persistence,
 membership, integrity, and decision reports reconcile. This gate says the
 evidence is trustworthy—not that the strategy passed.
 
+### Authoritative reproduction record — 2026-10-29
+
+Phase 5 ran from clean commit
+`de89c30b2cd70e895bec6e94fdce6c281d932ea3`, with Python bytecode writes
+disabled, against only the bound development snapshot. The authoritative
+experiment is `01a188c5-4d7b-7a24-b237-23aedfa5c6d7`.
+
+Reconciliation passed:
+
+- SQLite integrity `ok`, schema 16;
+- 10/10 folds and 70 distinct linked runs;
+- 30 TRAIN + 30 VALIDATION + 10 TEST memberships;
+- all 70 runs recorded commit `de89c30` with `code_dirty=0`;
+- all 70 engine-integrity reports passed;
+- all 70 validation reports are present;
+- robustness evidence and all 18 reliability criteria are present;
+- zero recording errors;
+- zero final-holdout executions and zero final-holdout authorizations;
+- the local read-only viewer shows the experiment as completed with 70 linked
+  runs, 625 stitched TEST trades, and reliability `rejected`.
+
+The authoritative result reproduces the earlier exploratory observation:
+stitched TEST expectancy `+0.1083R`, but deterministic Policy v2 verdict
+**REJECTED** because parameter-neighborhood stability failed and the 95%
+expectancy interval crossed zero. The point estimate is descriptive and does
+not establish profitability.
+
+The run enqueued 143 immutable summary-only publication events. Remote
+publication is not configured on this machine:
+`RESEARCH_SUPABASE_URL` and
+`RESEARCH_SUPABASE_SERVICE_ROLE_KEY` are absent. The rows remain pending in the
+durable local outbox; no publication attempt failed and no row is dead-lettered.
+
 ## Phase 6 — act on the deterministic verdict
 
 ### 6A — `REJECTED`
@@ -1038,6 +1071,14 @@ evidence is trustworthy—not that the strategy passed.
 3. Do not run the final holdout.
 4. Decide whether the underlying economic hypothesis is rejected or whether a
    genuinely new hypothesis exists.
+
+**Recorded decision:** the fixed symmetric ORB-duration stability claim is
+rejected on the reused development evidence. The dispositive failure is
+parameter-neighborhood instability; statistical confidence is additionally
+inconclusive. The negative study is preserved in authoritative SQLite and its
+publication events are queued. The final holdout remains prohibited. Any next
+study must register a genuinely new economic hypothesis rather than tuning
+duration or direction in response to this result.
 5. Any new hypothesis must start a new pre-registration cycle. It may not add
    filters solely because they explain this study's TEST losses.
 
