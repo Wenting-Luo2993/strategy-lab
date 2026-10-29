@@ -1,0 +1,90 @@
+{
+  "registration_version": 1,
+  "title": "QQQ symmetric ORB duration stability - exploratory reused evidence",
+  "research_question": "Is ORB duration selection locally and temporally stable after costs when direction is fixed to the symmetric production control?",
+  "evidence_label": "exploratory_reused_development_evidence",
+  "confirmation_claim_permitted": false,
+  "strategy": {
+    "strategy_id": "orb",
+    "symbol": "QQQ",
+    "ruleset_path": "vibe/rulesets/orb_production.yaml",
+    "ruleset_sha256": "c789a429882d6d20c965a44487653c72cc246ea20a49cd95a4e8c72231ad47a5",
+    "direction_mode": "symmetric"
+  },
+  "candidate_axes": [
+    {
+      "name": "orb_minutes",
+      "path": "strategy.orb_duration_minutes",
+      "values": [5, 15, 30]
+    }
+  ],
+  "split_policy": {
+    "train_sessions": 252,
+    "validation_sessions": 63,
+    "test_sessions": 63,
+    "step_sessions": 63,
+    "warmup_sessions": 50,
+    "exact_calendar_boundaries": "pending_phase_4_data_snapshot"
+  },
+  "reliability_policy": {
+    "version": 2,
+    "policy_hash": "036d90e6b6292ca10680f7c9a22236d71511a82f3833938da8ee6881288de836",
+    "overrides": {}
+  },
+  "execution_identity": {
+    "execution_model_version": 6,
+    "metric_calculation_version": 2
+  },
+  "recording": {
+    "record_all_roles": true,
+    "record_test_only": false
+  },
+  "regimes": {
+    "usage": "causal_reporting_only",
+    "candidate_axis": false,
+    "entry_filter": false
+  },
+  "final_holdout": {
+    "config_path": "config/final_holdout.yaml",
+    "lock_hash": "71b39411cd2612cd87fe5ec3ddbb2d476c6ff88efa85970a9262fcd50df38482",
+    "start": "2025-01-01",
+    "end": "2026-04-27",
+    "must_remain_unread": true
+  },
+  "data_reuse_inventory": [
+    {
+      "range": "through 2024-12-31",
+      "classification": "previously_exposed",
+      "permitted_use": "exploratory_development_only",
+      "basis": "The committed final-holdout lock records that all research data through 2024-12-31 influenced prior parameter, metric, or execution-model decisions."
+    },
+    {
+      "range": "through 2024-10-10",
+      "classification": "previously_inspected_test",
+      "permitted_use": "exploratory_development_only",
+      "basis": "The rejected October direction study inspected ten frozen TEST folds through this date."
+    },
+    {
+      "range": "2025-01-01 through 2026-04-27",
+      "classification": "locked_final_holdout",
+      "permitted_use": "prohibited",
+      "basis": "Reserved by config/final_holdout.yaml."
+    },
+    {
+      "range": "2026-09-02 through 2026-09-23",
+      "classification": "new_forward_but_insufficient",
+      "permitted_use": "setup_validation_only",
+      "observed_sessions": 15,
+      "basis": "The worktree QQQ cache contains only 15 distinct sessions, which cannot support the registered 252/63/63 multi-fold design."
+    }
+  ],
+  "execution_gate": {
+    "state": "blocked",
+    "reasons": [
+      "No authoritative research database path is configured in this worktree.",
+      "No approved full historical parquet directory is configured in this worktree.",
+      "The available post-holdout QQQ cache has only 15 sessions.",
+      "Phase 4 must persist the exact dataset identity and generated calendar boundaries before any evidentiary run."
+    ]
+  }
+}

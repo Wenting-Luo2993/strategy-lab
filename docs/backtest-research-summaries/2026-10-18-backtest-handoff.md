@@ -746,6 +746,54 @@ Do not silently promote option three into “confirmation.”
 No research run starts until the user has approved the fixed direction and the
 study is labelled honestly as confirmatory or exploratory based on data reuse.
 
+### Registration record — 2026-10-28
+
+The delegated research-user representative selected **symmetric control** and
+classified the study as **exploratory reused development evidence**. This
+preserves the production baseline and avoids adopting long-only after observing
+its selection frequency and small, statistically imprecise advantage in the
+rejected October TEST results.
+
+The narrow registered claim is:
+
+> Is ORB duration selection locally and temporally stable after costs when
+> direction is fixed to the symmetric production control?
+
+The machine-readable registration is
+`config/research/orb_duration_symmetric_exploratory_v1.json`. It fixes:
+
+- `strategy.direction_mode=symmetric`;
+- the `5 / 15 / 30` minute duration axis and no other candidate dimension;
+- Policy v2 defaults and their immutable hash;
+- execution model v6 and metric calculation v2;
+- `252 / 63 / 63` TRAIN/VALIDATION/TEST windows, 63-session step, and
+  50-session warmup;
+- all-role recording;
+- causal regimes as reporting only;
+- the committed final-holdout lock and hash.
+
+The data-reuse inventory is deliberately stricter than the earlier proposal.
+The committed holdout declaration states that every session through
+2024-12-31 already influenced prior research, so the interval after the
+October study is not treated as untouched confirmation evidence. The local
+worktree contains only 15 distinct post-holdout QQQ sessions
+(`2026-09-02..2026-09-23`), which is insufficient for the registered
+multi-fold design.
+
+The Phase 3 direction and evidence-label decisions are therefore complete, but
+execution remains blocked until Phase 4 can bind an approved full data snapshot,
+generate exact calendar boundaries, and persist those identities. No final
+holdout evidence was consumed.
+
+The research-user consultant independently verified the registered ruleset,
+Policy v2, and final-holdout hashes and issued **APPROVE** for the Phase 3 exit
+gate. Phase 4 must fail closed if direction changes, another candidate axis is
+added, recording becomes TEST-only, regimes become filters, or the effective
+policy differs from the registered hash. A future `RELIABLE` verdict under this
+registration would establish procedural stability only within reused
+development evidence; it would not become independent confirmation or a
+profitability claim.
+
 ## Phase 4 — prove the study setup without consuming evidence
 
 **Goal:** catch configuration and persistence defects before a long run.
@@ -778,6 +826,22 @@ study is labelled honestly as confirmatory or exploratory based on data reuse.
 
 Candidate count, fold count, role count, effective rulesets, and persisted
 membership must reconcile exactly before using real development data.
+
+### Setup record — 2026-10-28
+
+The non-evidentiary setup suite passed **87 tests** covering fixed-direction
+behavior, parameter-axis mutation, split planning, engine-realism wiring,
+experiment recording, reliability, and robustness. The registration JSON and
+source diff also pass syntax/whitespace validation.
+
+The Phase 4 exit gate is not yet closed because this worktree has neither
+`RESEARCH__DB_PATH` nor `BACKTEST__DATA_DIR` configured, and its local QQQ cache
+contains only 15 sessions. Before a dry run can reconcile folds, candidates,
+roles, and memberships, an operator must provide the approved authoritative
+research database and full development parquet snapshot. Phase 4 must then
+persist the dataset/manifest identity and hashes, exact exchange-session
+boundaries, generated fold count, and proof that no development window
+intersects the locked final holdout.
 
 ## Phase 5 — execute the development-only study
 
