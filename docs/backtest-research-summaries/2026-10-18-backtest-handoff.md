@@ -834,23 +834,35 @@ behavior, parameter-axis mutation, split planning, engine-realism wiring,
 experiment recording, reliability, and robustness. The registration JSON and
 source diff also pass syntax/whitespace validation.
 
-The Phase 4 exit gate is not yet closed because this worktree has neither
-`RESEARCH__DB_PATH` nor `BACKTEST__DATA_DIR` configured, and its local QQQ cache
-contains only 15 sessions. Before a dry run can reconcile folds, candidates,
-roles, and memberships, an operator must provide the approved authoritative
-research database and full development parquet snapshot. Phase 4 must then
-persist the dataset/manifest identity and hashes, exact exchange-session
-boundaries, generated fold count, and proof that no development window
-intersects the locked final holdout.
+On 2026-10-29 the approved historical data was copied into this worktree. The
+durable execution paths are:
+
+- development-only parquet directory:
+  `vibe\data\research\orb-duration-symmetric-exploratory-v1`;
+- development-only QQQ file:
+  `vibe\data\research\orb-duration-symmetric-exploratory-v1\QQQ.parquet`;
+- dataset manifest:
+  `config\research\manifests\qqq-development-through-2024.json`;
+- authoritative database:
+  `%LOCALAPPDATA%\strategy-lab\research.sqlite3`.
+
+The bound QQQ snapshot contains 653,339 one-minute rows and 1,679 distinct
+sessions from 2018-05-01 through 2024-12-31. It is physically separate from
+the source file containing the final holdout. Its file and exact
+session-sequence hashes are persisted in the manifest, and ready-registration
+validation rejects any manifest session or parquet row after the registered
+development end. The authoritative database was backed up as
+`%LOCALAPPDATA%\strategy-lab\research.pre-phase4-schema11.sqlite3`, migrated
+from schema 11 to schema 16, and verified with `PRAGMA integrity_check`; all
+151 pre-existing runs were preserved.
 
 The walk-forward entry point now accepts `--registration` and validates the
 requested symbol, ruleset path/hash, fixed direction, complete candidate-axis
 set, split sizes, Policy v2 identity, execution/metric versions, recording
 scope, reporting-only regimes, and final-holdout lock before resolving or
-reading market data. The current registration deliberately fails this
-preflight with its recorded execution-gate reasons. Focused registration,
-optimization, and planner validation passes 37 tests, and a direct CLI probe
-confirms the blocked registration cannot begin execution.
+reading market data. The bound registration now passes this preflight only
+with the persisted manifest, worktree data directory, and authoritative
+database.
 
 Registration is mandatory for recorded or titled controlled experiments; an
 unregistered invocation cannot write study evidence. A ready registration must
@@ -863,16 +875,77 @@ For a ready registration, the validator recomputes the split plan and requires
 an exact match for every fold manifest, fold count, and plan hash. It also
 opens the bound SQLite database read-only, requires `PRAGMA integrity_check`
 to return `ok`, and requires the applied schema version to match the running
-binary before the sink can open it for writes. Ready-path tests exercise a
-temporary manifest, symbol file, and schema-v16 database and reject subsequent
-dataset-file drift.
+binary before the sink can open it for writes. Ready-path tests exercise a temporary manifest, symbol file, and schema-v16
+database and reject subsequent dataset-file drift or any bound final-holdout
+row.
 
-After the bypass and binding corrections, the complete research-pipeline suite
-passes **907 tests**. The research-user consultant issued **APPROVE** for this
-bounded Phase 4 safety increment with no remaining implementation blocker.
-The Phase 4 exit gate and all Phase 5 execution remain explicitly blocked until
-the approved authoritative database, dataset manifest/files, generated fold
-boundaries, and expected membership counts are bound and reconciled.
+After the bypass, binding, and physical holdout-isolation corrections, the
+complete research-pipeline suite passes **909 tests**.
+The approved registration now binds the 2021-01-04 through 2024-12-31
+development window, all ten exact fold manifests, split-plan hash, three
+duration candidates, and 70 expected memberships (30 TRAIN, 30 VALIDATION,
+10 TEST). A full-data non-evidentiary run must reconcile those counts in an
+isolated database before Phase 5 writes to the authoritative store.
+
+### Full-data dry-run record — 2026-10-29
+
+The initial bound command was executed against the full historical QQQ source
+using the isolated database
+`%USERPROFILE%\.copilot\session-state\e9ae1805-f24e-44ac-bd1d-83b055386038\files\phase4-dry-run.sqlite3`.
+The authoritative database was not used by this run.
+
+This run exposed a safety defect: registration validation and the eager
+parquet loader materialized the full file, including reserved 2025-01-01
+through 2026-04-27 rows, before request-level date guards applied. No guarded
+holdout request or access-log entry occurred, but the rows were nevertheless
+read into memory. The result is retained as prior exploratory exposure and
+must not be described as a first execution, confirmation, or new
+profitability evidence. Phase 5 remained blocked while the registration was
+rebound to the physically separate development-only snapshot described above.
+
+The setup reconciled exactly:
+
+- split-plan hash:
+  `da71785e50b60e14fdf5de938a553cbaf09639fe10d149e6eebba997edd296a5`;
+- 10/10 completed folds;
+- three candidates in every TRAIN and VALIDATION fold;
+- 30 TRAIN + 30 VALIDATION + 10 frozen TEST memberships;
+- 70 distinct recorded runs and no reused run identity;
+- database schema 16 and `PRAGMA integrity_check = ok`;
+- authoritative database unchanged at 151 runs, zero experiments, and zero
+  holdout authorizations.
+
+The non-evidentiary study completed with stitched TEST expectancy `+0.1083R`
+over 625 trades but received the deterministic Policy v2 verdict
+**REJECTED**. The favorable point estimate therefore did not bypass the
+registered stability criteria. This is setup and reused exploratory evidence,
+not an independent profitability result.
+
+### Development-only safety rerun — 2026-10-29
+
+After the defect above was found, the registration was rebound to the
+physically separate development-only QQQ snapshot ending 2024-12-31. A fresh
+isolated database rerun completed as experiment
+`01a188af-5764-76f4-aac3-871599b6dee2`.
+
+The rerun reproduced the registered evidence exactly:
+
+- split-plan hash
+  `da71785e50b60e14fdf5de938a553cbaf09639fe10d149e6eebba997edd296a5`;
+- 10/10 completed folds and three evaluated candidates per fold;
+- 30 TRAIN + 30 VALIDATION + 10 TEST memberships;
+- 70 distinct recorded runs, zero reused runs, and database integrity `ok`;
+- 625 stitched TEST trades over 2022-04-08 through 2024-10-10;
+- stitched expectancy `+0.1083R`;
+- deterministic Policy v2 verdict **REJECTED** because parameter-neighborhood
+  stability failed and the 95% expectancy interval remained inconclusive
+  (`-0.0486R` to `+0.2653R`).
+
+The authoritative database remained unchanged at 151 runs, zero experiments,
+and zero final-holdout authorizations. Because the full-source dry run had
+already exposed the same design and result, a later authoritative Phase 5 run
+would persist/reproduce already observed exploratory evidence rather than
+constitute a first execution.
 
 ## Phase 5 — execute the development-only study
 
@@ -880,22 +953,21 @@ boundaries, and expected membership counts are bound and reconciled.
 
 ### Command template
 
-Values in angle brackets must be taken from the approved registration, not
-chosen interactively after results begin:
+The command values below are bound by the approved registration and manifest;
+do not change them interactively after results begin:
 
 ```powershell
-$env:RESEARCH__DB_PATH = '<authoritative research.sqlite3>'
-$env:BACKTEST__DATA_DIR = '<approved parquet directory>'
+$researchDb = Join-Path $env:LOCALAPPDATA 'strategy-lab\research.sqlite3'
 
 python scripts\run_nested_walk_forward.py `
   --registration config\research\orb_duration_symmetric_exploratory_v1.json `
-  --dataset-manifest <approved-dataset-manifest.json> `
-  --data-dir <approved-parquet-directory> `
-  --research-db <authoritative-research.sqlite3> `
+  --dataset-manifest config\research\manifests\qqq-development-through-2024.json `
+  --data-dir vibe\data\research\orb-duration-symmetric-exploratory-v1 `
+  --research-db $researchDb `
   --symbol QQQ `
-  --ruleset '<fixed-direction ruleset.yaml>' `
-  --dev-start <YYYY-MM-DD> `
-  --dev-end <YYYY-MM-DD> `
+  --ruleset vibe\rulesets\orb_production.yaml `
+  --dev-start 2021-01-04 `
+  --dev-end 2024-12-31 `
   --oos-start 2025-01-01 `
   --oos-end 2026-04-27 `
   --train-sessions 252 `
@@ -905,7 +977,7 @@ python scripts\run_nested_walk_forward.py `
   --warmup-sessions 50 `
   --axis orb_minutes=strategy.orb_duration_minutes:5,15,30 `
   --record-runs `
-  --experiment-title '<registered title>'
+  --experiment-title 'QQQ symmetric ORB duration stability - exploratory reused evidence'
 ```
 
 `--oos-start`/`--oos-end` declare the reserved final holdout to the planner;

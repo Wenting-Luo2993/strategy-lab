@@ -88,6 +88,10 @@ def validate_registration_execution(
         raise RegistrationError("Candidate axes differ from registration")
 
     split = _mapping(registration, "split_policy")
+    if split.get("dev_start") != dev_start.isoformat():
+        raise RegistrationError("Development start differs from registration")
+    if split.get("dev_end") != dev_end.isoformat():
+        raise RegistrationError("Development end differs from registration")
     requested_split = {
         "train_sessions": train_sessions,
         "validation_sessions": validation_sessions,
@@ -143,6 +147,7 @@ def validate_registration_execution(
         _validate_ready_bindings(
             registration,
             symbol=symbol,
+            dev_end=dev_end,
             dataset_manifest_path=dataset_manifest_path,
             data_dir_path=data_dir_path,
             research_db_path=research_db_path,
@@ -168,6 +173,7 @@ def _validate_ready_bindings(
     registration: Mapping[str, Any],
     *,
     symbol: str,
+    dev_end: date,
     dataset_manifest_path: Path | None,
     data_dir_path: Path | None,
     research_db_path: Path | None,
@@ -180,6 +186,20 @@ def _validate_ready_bindings(
         raise RegistrationError("Registered fold count differs from generated plan")
     if split.get("plan_hash") != expected_split["plan_hash"]:
         raise RegistrationError("Registered split-plan hash differs from generated plan")
+    expected_counts = _mapping(registration, "expected_counts")
+    candidate_count = 1
+    for axis in registration.get("candidate_axes", []):
+        candidate_count *= len(axis["values"])
+    calculated_counts = {
+        "folds": expected_split["fold_count"],
+        "candidates_per_fold": candidate_count,
+        "train_memberships": expected_split["fold_count"] * candidate_count,
+        "validation_memberships": expected_split["fold_count"] * candidate_count,
+        "test_memberships": expected_split["fold_count"],
+        "total_memberships": expected_split["fold_count"] * (2 * candidate_count + 1),
+    }
+    if dict(expected_counts) != calculated_counts:
+        raise RegistrationError("Registered experiment counts differ from the split and grid")
 
     binding = _mapping(registration, "data_binding")
     if dataset_manifest_path is None:
@@ -201,6 +221,20 @@ def _validate_ready_bindings(
         raise RegistrationError("Dataset manifest identity differs from registration")
     if manifest.get("session_sequence_sha256") != binding.get("session_sequence_sha256"):
         raise RegistrationError("Dataset session sequence differs from registration")
+    sessions = manifest.get("sessions")
+    if not isinstance(sessions, list) or not sessions:
+        raise RegistrationError("Dataset manifest must contain the exact session sequence")
+    try:
+        session_dates = [date.fromisoformat(value) for value in sessions]
+    except (TypeError, ValueError) as exc:
+        raise RegistrationError("Dataset manifest contains an invalid session date") from exc
+    if max(session_dates) > dev_end:
+        raise RegistrationError("Bound dataset contains final-holdout sessions")
+    session_digest = hashlib.sha256(
+        json.dumps(sessions, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if session_digest != manifest.get("session_sequence_sha256"):
+        raise RegistrationError("Dataset manifest session sequence hash is invalid")
     symbols = manifest.get("symbols")
     if not isinstance(symbols, list) or symbol not in symbols:
         raise RegistrationError("Dataset manifest does not cover the registered symbol")
@@ -220,6 +254,20 @@ def _validate_ready_bindings(
         raise RegistrationError(f"Cannot read registered dataset file: {exc}") from exc
     if data_digest != _text(file_identity, "sha256"):
         raise RegistrationError("Dataset file hash differs from manifest")
+    try:
+        import pandas as pd
+
+        frame = pd.read_parquet(data_file)
+        index = pd.DatetimeIndex(frame.index)
+    except Exception as exc:
+        raise RegistrationError(f"Cannot inspect registered parquet file: {exc}") from exc
+    if index.empty:
+        raise RegistrationError("Registered parquet file is empty")
+    if index.max().date() > dev_end:
+        raise RegistrationError("Bound parquet contains final-holdout rows")
+    actual_sessions = sorted({instant.date().isoformat() for instant in index})
+    if actual_sessions != sessions:
+        raise RegistrationError("Parquet session sequence differs from manifest")
 
     database = _mapping(registration, "research_database")
     if research_db_path is None:

@@ -15,7 +15,11 @@
     {
       "name": "orb_minutes",
       "path": "strategy.orb_duration_minutes",
-      "values": [5, 15, 30]
+      "values": [
+        5,
+        15,
+        30
+      ]
     }
   ],
   "split_policy": {
@@ -24,7 +28,362 @@
     "test_sessions": 63,
     "step_sessions": 63,
     "warmup_sessions": 50,
-    "exact_calendar_boundaries": "pending_phase_4_data_snapshot"
+    "exact_calendar_boundaries": [
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2020-10-21",
+            "end_session": "2020-12-31",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2021-01-04",
+            "end_session": "2021-12-31",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2022-01-05",
+            "end_session": "2022-04-05",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2022-04-08",
+            "end_session": "2022-07-11",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      },
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2021-01-22",
+            "end_session": "2021-04-05",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2021-04-06",
+            "end_session": "2022-04-01",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2022-04-06",
+            "end_session": "2022-07-07",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2022-07-12",
+            "end_session": "2022-10-07",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      },
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2021-04-23",
+            "end_session": "2021-07-02",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2021-07-06",
+            "end_session": "2022-07-05",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2022-07-08",
+            "end_session": "2022-10-05",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2022-10-10",
+            "end_session": "2023-01-09",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      },
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2021-07-23",
+            "end_session": "2021-10-01",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2021-10-04",
+            "end_session": "2022-10-03",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2022-10-06",
+            "end_session": "2023-01-05",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2023-01-10",
+            "end_session": "2023-04-11",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      },
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2021-10-21",
+            "end_session": "2021-12-31",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2022-01-03",
+            "end_session": "2023-01-03",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2023-01-06",
+            "end_session": "2023-04-06",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2023-04-12",
+            "end_session": "2023-07-12",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      },
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2022-01-21",
+            "end_session": "2022-04-01",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2022-04-04",
+            "end_session": "2023-04-04",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2023-04-10",
+            "end_session": "2023-07-10",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2023-07-13",
+            "end_session": "2023-10-10",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      },
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2022-04-22",
+            "end_session": "2022-07-05",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2022-07-06",
+            "end_session": "2023-07-06",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2023-07-11",
+            "end_session": "2023-10-06",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2023-10-11",
+            "end_session": "2024-01-10",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      },
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2022-07-25",
+            "end_session": "2022-10-03",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2022-10-04",
+            "end_session": "2023-10-04",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2023-10-09",
+            "end_session": "2024-01-08",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2024-01-11",
+            "end_session": "2024-04-11",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      },
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2022-10-21",
+            "end_session": "2023-01-03",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2023-01-04",
+            "end_session": "2024-01-04",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2024-01-09",
+            "end_session": "2024-04-09",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2024-04-12",
+            "end_session": "2024-07-12",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      },
+      {
+        "manifest_version": 1,
+        "calendar_name": "XNYS",
+        "segments": [
+          {
+            "role": "warmup",
+            "start_session": "2023-01-24",
+            "end_session": "2023-04-04",
+            "session_count": 50
+          },
+          {
+            "role": "train",
+            "start_session": "2023-04-05",
+            "end_session": "2024-04-05",
+            "session_count": 252
+          },
+          {
+            "role": "validation",
+            "start_session": "2024-04-10",
+            "end_session": "2024-07-10",
+            "session_count": 63
+          },
+          {
+            "role": "test",
+            "start_session": "2024-07-15",
+            "end_session": "2024-10-10",
+            "session_count": 63
+          }
+        ],
+        "purge_sessions_derived": 0,
+        "purge_sessions_applied": 1,
+        "embargo_sessions_derived": 0,
+        "embargo_sessions_applied": 1,
+        "warmup_sessions": 50
+      }
+    ],
+    "dev_start": "2021-01-04",
+    "dev_end": "2024-12-31",
+    "fold_count": 10,
+    "plan_hash": "da71785e50b60e14fdf5de938a553cbaf09639fe10d149e6eebba997edd296a5"
   },
   "reliability_policy": {
     "version": 2,
@@ -79,12 +438,25 @@
     }
   ],
   "execution_gate": {
-    "state": "blocked",
-    "reasons": [
-      "No authoritative research database path is configured in this worktree.",
-      "No approved full historical parquet directory is configured in this worktree.",
-      "The available post-holdout QQQ cache has only 15 sessions.",
-      "Phase 4 must persist the exact dataset identity and generated calendar boundaries before any evidentiary run."
-    ]
+    "state": "ready",
+    "reasons": []
+  },
+  "data_binding": {
+    "manifest_id": "sha256:9d763b3ce55c8e36087d4ff15be12588da18afe41949a3533cab600d0668c286",
+    "manifest_path": "config/research/manifests/qqq-development-through-2024.json",
+    "manifest_sha256": "b39631f98088fe617a7eb401975b6e689fe0bcacdb3c6974cd9ad9ba0671fa73",
+    "session_sequence_sha256": "cddf8fef5366b6e7a74cd3748f7a569a924082b41b277cee12c02da9a61cc779",
+    "data_directory": "vibe/data/research/orb-duration-symmetric-exploratory-v1"
+  },
+  "research_database": {
+    "path": "C:\\Users\\wentingluo\\AppData\\Local\\strategy-lab\\research.sqlite3"
+  },
+  "expected_counts": {
+    "folds": 10,
+    "candidates_per_fold": 3,
+    "train_memberships": 30,
+    "validation_memberships": 30,
+    "test_memberships": 10,
+    "total_memberships": 70
   }
 }

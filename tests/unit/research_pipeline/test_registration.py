@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import sys
 
+import pandas as pd
 import pytest
 
 from vibe.research_pipeline.registration import (
@@ -24,7 +25,10 @@ ROOT = Path(__file__).resolve().parents[3]
 REGISTRATION = ROOT / "config/research/orb_duration_symmetric_exploratory_v1.json"
 
 
-def _validate(**overrides: object) -> None:
+def _validate(
+    registration: dict[str, object] | None = None,
+    **overrides: object,
+) -> None:
     arguments = {
         "repository_root": ROOT,
         "symbol": "QQQ",
@@ -53,12 +57,20 @@ def _validate(**overrides: object) -> None:
         "research_db_path": None,
     }
     arguments.update(overrides)
-    validate_registration_execution(load_registration(REGISTRATION), **arguments)
+    validate_registration_execution(
+        registration or load_registration(REGISTRATION),
+        **arguments,
+    )
 
 
 def test_registered_execution_remains_blocked_until_dataset_binding() -> None:
+    registration = load_registration(REGISTRATION)
+    registration["execution_gate"] = {
+        "state": "blocked",
+        "reasons": ["test binding is intentionally absent"],
+    }
     with pytest.raises(RegistrationError, match="execution gate is not ready"):
-        _validate()
+        _validate(registration)
 
 
 @pytest.mark.parametrize(
@@ -74,8 +86,13 @@ def test_registration_rejects_execution_drift(
     override: dict[str, object],
     message: str,
 ) -> None:
+    registration = load_registration(REGISTRATION)
+    registration["execution_gate"] = {
+        "state": "blocked",
+        "reasons": ["drift must fail before gate state"],
+    }
     with pytest.raises(RegistrationError, match=message):
-        _validate(**override)
+        _validate(registration, **override)
 
 
 def test_registration_hashes_match_current_repository() -> None:
@@ -108,6 +125,7 @@ def test_recorded_cli_requires_registration() -> None:
 def test_ready_gate_requires_bound_dataset_and_calendar() -> None:
     registration = load_registration(REGISTRATION)
     registration["execution_gate"] = {"state": "ready", "reasons": []}
+    registration["split_policy"]["exact_calendar_boundaries"] = []
     with pytest.raises(RegistrationError, match="fold boundaries differ"):
         validate_registration_execution(
             registration,
@@ -150,6 +168,7 @@ def test_ready_gate_requires_bound_dataset_identity() -> None:
     registration["split_policy"]["exact_calendar_boundaries"] = split["boundaries"]
     registration["split_policy"]["fold_count"] = split["fold_count"]
     registration["split_policy"]["plan_hash"] = split["plan_hash"]
+    registration.pop("data_binding", None)
     with pytest.raises(RegistrationError, match="data_binding"):
         validate_registration_execution(
             registration,
@@ -198,12 +217,30 @@ def test_ready_registration_validates_bound_files_and_database(tmp_path: Path) -
     data_dir = tmp_path / "parquet"
     data_dir.mkdir()
     data_file = data_dir / "QQQ.parquet"
-    data_file.write_bytes(b"registered-qql-data")
+    timestamps = pd.DatetimeIndex(
+        ["2021-01-04T09:30:00-05:00", "2021-01-05T09:30:00-05:00"],
+        name="ts_event",
+    )
+    pd.DataFrame(
+        {
+            "open": [1.0, 1.0],
+            "high": [1.0, 1.0],
+            "low": [1.0, 1.0],
+            "close": [1.0, 1.0],
+            "volume": [1, 1],
+        },
+        index=timestamps,
+    ).to_parquet(data_file)
     data_hash = hashlib.sha256(data_file.read_bytes()).hexdigest()
+    sessions = ["2021-01-04", "2021-01-05"]
+    session_hash = hashlib.sha256(
+        json.dumps(sessions, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     manifest = {
         "manifest_id": "manifest-1",
-        "session_sequence_sha256": "session-sequence",
+        "session_sequence_sha256": session_hash,
         "symbols": ["QQQ"],
+        "sessions": sessions,
         "files": {"QQQ": {"path": "QQQ.parquet", "sha256": data_hash}},
     }
     manifest_path = tmp_path / "manifest.json"
@@ -211,7 +248,7 @@ def test_ready_registration_validates_bound_files_and_database(tmp_path: Path) -
     registration["data_binding"] = {
         "manifest_id": "manifest-1",
         "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-        "session_sequence_sha256": "session-sequence",
+        "session_sequence_sha256": session_hash,
     }
 
     database_path = tmp_path / "research.sqlite3"
@@ -246,3 +283,78 @@ def test_ready_registration_validates_bound_files_and_database(tmp_path: Path) -
     data_file.write_bytes(b"changed")
     with pytest.raises(RegistrationError, match="Dataset file hash"):
         validate_registration_execution(registration, **arguments)
+
+
+def test_ready_registration_rejects_bound_holdout_rows(tmp_path: Path) -> None:
+    registration = load_registration(REGISTRATION)
+    split = _split_binding(
+        dev_start=date(2021, 1, 4),
+        dev_end=date(2024, 12, 31),
+        oos_start=date(2025, 1, 1),
+        oos_end=date(2026, 4, 27),
+        train_sessions=252,
+        validation_sessions=63,
+        test_sessions=63,
+        step_sessions=63,
+        warmup_sessions=50,
+    )
+    registration["split_policy"].update(
+        exact_calendar_boundaries=split["boundaries"],
+        fold_count=split["fold_count"],
+        plan_hash=split["plan_hash"],
+    )
+
+    data_dir = tmp_path / "parquet"
+    data_dir.mkdir()
+    data_file = data_dir / "QQQ.parquet"
+    timestamps = pd.DatetimeIndex(
+        ["2024-12-31T09:30:00-05:00", "2025-01-02T09:30:00-05:00"],
+        name="ts_event",
+    )
+    pd.DataFrame(
+        {
+            "open": [1.0, 1.0],
+            "high": [1.0, 1.0],
+            "low": [1.0, 1.0],
+            "close": [1.0, 1.0],
+            "volume": [1, 1],
+        },
+        index=timestamps,
+    ).to_parquet(data_file)
+    sessions = ["2024-12-31"]
+    session_hash = hashlib.sha256(
+        json.dumps(sessions, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    manifest = {
+        "manifest_id": "manifest-with-holdout",
+        "session_sequence_sha256": session_hash,
+        "symbols": ["QQQ"],
+        "sessions": sessions,
+        "files": {
+            "QQQ": {
+                "path": "QQQ.parquet",
+                "sha256": hashlib.sha256(data_file.read_bytes()).hexdigest(),
+            }
+        },
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    registration["data_binding"] = {
+        "manifest_id": manifest["manifest_id"],
+        "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "session_sequence_sha256": session_hash,
+    }
+
+    database_path = tmp_path / "research.sqlite3"
+    connection = sqlite3.connect(database_path)
+    migrate(connection)
+    connection.close()
+    registration["research_database"] = {"path": str(database_path)}
+
+    with pytest.raises(RegistrationError, match="Bound parquet contains final-holdout rows"):
+        _validate(
+            registration,
+            dataset_manifest_path=manifest_path,
+            data_dir_path=data_dir,
+            research_db_path=database_path,
+        )
