@@ -843,6 +843,30 @@ persist the dataset/manifest identity and hashes, exact exchange-session
 boundaries, generated fold count, and proof that no development window
 intersects the locked final holdout.
 
+The walk-forward entry point now accepts `--registration` and validates the
+requested symbol, ruleset path/hash, fixed direction, complete candidate-axis
+set, split sizes, Policy v2 identity, execution/metric versions, recording
+scope, reporting-only regimes, and final-holdout lock before resolving or
+reading market data. The current registration deliberately fails this
+preflight with its recorded execution-gate reasons. Focused registration,
+optimization, and planner validation passes 37 tests, and a direct CLI probe
+confirms the blocked registration cannot begin execution.
+
+Registration is mandatory for recorded or titled controlled experiments; an
+unregistered invocation cannot write study evidence. A ready registration must
+also bind non-placeholder calendar boundaries and fold count, a hashed dataset
+manifest and session sequence, the actual symbol parquet hash, and an explicit
+authoritative SQLite path. The CLI requires those manifest, data-directory, and
+database inputs and passes the bound database path to the run sink. Merely
+changing the registration state string to `ready` is therefore insufficient.
+
+After the bypass and binding corrections, the complete research-pipeline suite
+passes **907 tests**. The research-user consultant issued **APPROVE** for this
+bounded Phase 4 safety increment with no remaining implementation blocker.
+The Phase 4 exit gate and all Phase 5 execution remain explicitly blocked until
+the approved authoritative database, dataset manifest/files, generated fold
+boundaries, and expected membership counts are bound and reconciled.
+
 ## Phase 5 — execute the development-only study
 
 **Goal:** produce immutable evidence under the pre-registered design.
@@ -857,11 +881,15 @@ $env:RESEARCH__DB_PATH = '<authoritative research.sqlite3>'
 $env:BACKTEST__DATA_DIR = '<approved parquet directory>'
 
 python scripts\run_nested_walk_forward.py `
+  --registration config\research\orb_duration_symmetric_exploratory_v1.json `
+  --dataset-manifest <approved-dataset-manifest.json> `
+  --data-dir <approved-parquet-directory> `
+  --research-db <authoritative-research.sqlite3> `
   --symbol QQQ `
   --ruleset '<fixed-direction ruleset.yaml>' `
   --dev-start <YYYY-MM-DD> `
   --dev-end <YYYY-MM-DD> `
-  --oos-start 2025-01-02 `
+  --oos-start 2025-01-01 `
   --oos-end 2026-04-27 `
   --train-sessions 252 `
   --validation-sessions 63 `
