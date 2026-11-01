@@ -180,6 +180,61 @@ dialog::backdrop { background: rgba(0, 0, 0, .68); }
 }
 #experiment-detail { min-height: 0; overflow: auto; padding: 1.25rem; }
 .close { float: right; }
+.header-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; }
+#guide-toggle[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.guide-dialog-tour { margin-left: auto; }
+#detail > form .guide-dialog-tour { float: right; margin-right: .5rem; }
+.guide-hint {
+  display: inline-grid;
+  place-items: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  margin-left: .45rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface));
+  color: var(--accent);
+  padding: 0;
+  font-size: .75rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  text-transform: none;
+  vertical-align: middle;
+  animation: guide-pulse 2.4s ease-out 2;
+}
+.guide-hint:hover, .guide-hint:focus-visible { background: var(--accent); color: var(--bg); }
+.guide-anchor { position: relative; }
+.guide-anchor > .guide-hint { position: absolute; top: -.6rem; right: -.6rem; margin: 0; z-index: 1; }
+.guide-focus { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: .4rem; }
+.guide-bubble {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  width: min(26rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  border: 1px solid var(--accent);
+  border-radius: .75rem;
+  background: var(--surface-2);
+  color: var(--text);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, .55);
+  padding: 1rem 1.1rem;
+  z-index: 1000;
+}
+.guide-bubble::backdrop { background: transparent; }
+.guide-bubble h3 { margin: .1rem 0 .5rem; font-size: 1rem; }
+.guide-bubble p { margin: .45rem 0; color: var(--muted); font-size: .88rem; }
+.guide-bubble p strong { color: var(--text); }
+.guide-bubble .guide-progress { margin: 0; color: var(--accent); font-size: .7rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.guide-actions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: flex-end; margin-top: .8rem; }
+.guide-actions button { padding: .35rem .7rem; font-size: .85rem; }
+.guide-actions button[hidden] { display: none; }
+@keyframes guide-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); }
+  100% { box-shadow: 0 0 0 .5rem transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .guide-hint { animation: none; } }
 .mono, dd { overflow-wrap: anywhere; }
 .mono { color: var(--muted); font-family: ui-monospace, monospace; }
 .detail-section { margin-top: 1.5rem; }

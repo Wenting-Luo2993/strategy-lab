@@ -42,6 +42,21 @@ node tools\backtest-research-viewer\server.mjs --db C:\local\research.sqlite3
 Open `http://127.0.0.1:4178`. `--port` may select another local port.
 `--host` accepts loopback values only.
 
+## Reading guide
+
+The header has a **Guide** toggle and a **Take the tour** button.
+
+- With the guide on, small **?** hints sit next to each panel heading. Click one
+  to see what the panel shows, how to read it and where to dive deeper.
+- **Take the tour** steps through every visible panel in the current view.
+- Each detail dialog has a **Tour this view** button for the experiment or run on screen.
+- The toggle is remembered in the browser's `localStorage` (`backtest-viewer.guide`).
+  The guide is on by default. Press Escape to close a bubble.
+
+The guide text lives in `public/guide.mjs` (`GUIDE_STEPS`). Most steps target a panel by
+its exact heading text. `tests/guide.test.mjs` fails if a heading is renamed and its
+guide step is left behind.
+
 ## Experiment-first review
 
 The primary explorer lists **controlled experiments**, not unrelated segment

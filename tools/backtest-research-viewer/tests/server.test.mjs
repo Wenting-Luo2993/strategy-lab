@@ -1434,6 +1434,13 @@ test("static UI has strict security headers and local-only copy", async () => {
     const app = await rawRequest(fixture.origin, "/app.mjs");
     assert.equal(app.status, 200);
     assert.match(app.body, /import \{ mountPerformanceCharts \} from "\.\/run-charts\.mjs"/);
+    assert.match(app.body, /import \{ initGuide \} from "\.\/guide\.mjs"/);
+    assert.match(response.body, /id="guide-toggle"[^>]*aria-pressed=/);
+    assert.match(response.body, /id="guide-tour"/);
+    const guide = await rawRequest(fixture.origin, "/guide.mjs");
+    assert.equal(guide.status, 200);
+    assert.match(guide.headers["content-type"], /text\/javascript/);
+    assert.match(guide.body, /export function initGuide/);
     assert.doesNotMatch(app.body, /initializeAnalysisWorkspace|workspace\.adapter/);
     const styles = await rawRequest(fixture.origin, "/styles.css");
     assert.match(styles.body, /\.experiment-dialog\s*\{[^}]*width: 90vw;[^}]*height: 90dvh;/);

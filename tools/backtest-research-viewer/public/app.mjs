@@ -1,6 +1,7 @@
 import { mountPerformanceCharts } from "./run-charts.mjs";
 import { experimentList, experimentDetail } from "./experiment-view.mjs";
 import { renderKindExtras } from "./experiment-kinds.mjs";
+import { initGuide } from "./guide.mjs";
 
 const state = {
   runs: { page: 1, pageSize: 25 },
@@ -1074,4 +1075,5 @@ function escapeAttribute(value) {
   return escapeHtml(value);
 }
 
+initGuide(document);
 loadAll();

@@ -58,6 +58,7 @@ const STATIC_FILES = new Map([
   ["/run-charts.mjs", [join(PUBLIC_DIR, "run-charts.mjs"), "text/javascript; charset=utf-8"]],
   ["/experiment-view.mjs", [join(PUBLIC_DIR, "experiment-view.mjs"), "text/javascript; charset=utf-8"]],
   ["/experiment-kinds.mjs", [join(PUBLIC_DIR, "experiment-kinds.mjs"), "text/javascript; charset=utf-8"]],
+  ["/guide.mjs", [join(PUBLIC_DIR, "guide.mjs"), "text/javascript; charset=utf-8"]],
   ["/styles.css", [join(PUBLIC_DIR, "styles.css"), "text/css; charset=utf-8"]],
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
