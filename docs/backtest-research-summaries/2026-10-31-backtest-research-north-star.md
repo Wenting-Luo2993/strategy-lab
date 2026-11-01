@@ -329,7 +329,7 @@ registered in Reliability Policy v2.
 
 Sources: TradeStation walk-forward criteria, AmiBroker walk-forward efficiency,
 MultiCharts optimization surfaces, and Bailey and López de Prado on PSR, DSR and
-PBO (Section 9).
+PBO (Section 10).
 
 ### 5.5 Design implications
 
@@ -401,7 +401,101 @@ noisy trades:
 - reduce per-trade dispersion through the strategy's exit design, which must
   itself be a predeclared hypothesis.
 
-## 6. How established platforms present results
+## 6. Experiment types and the validation programme
+
+### 6.1 Match the design to the question
+
+"Which OR window is best?" sounds like one question, but it hides several. Each
+needs a different experiment design, and only some designs can *confirm*
+anything.
+
+| Type | Question it answers | Example | Can it confirm a hypothesis? | Label results as |
+| --- | --- | --- | --- | --- |
+| Exploratory sweep | Which settings look promising? Is the response a broad plateau or a lucky spike? | Every OR duration × direction on all of 2021–2024 | **No.** The best row is optimistic (winner's curse) | Exploratory; record trial count |
+| Selection-procedure walk-forward | Does *re-tuning on recent data* work out of sample? | The ORB direction study | Yes, but only for the procedure, not for any single setting | Confirmatory for the procedure |
+| Fixed-rule confirmation | Does *this one predeclared rule* have positive expectancy? | Long-only 15-minute ORB, locked before running | **Yes**, on data not used to choose the rule | Supported / contradicted / underpowered |
+| Comparison | Does setting A beat setting B? | 15-minute versus 30-minute ORB on the same sessions | Yes if predeclared; needs more trades than an edge test because a difference is noisier than either result | Paired difference with interval |
+| Attribution | Where does the edge come from, and when does it fail? | Results by gap size, OR width / ATR, entry time, exit reason | **No.** Generates hypotheses only | Diagnostic |
+| Robustness | Does the result survive realistic perturbations? | Cost stress, neighbouring parameters, Monte Carlo, regimes | No; it can only *weaken* a confirmed result | Robustness evidence |
+| Platform validation | Does the backtester tell the truth? | Random-entry null, planted edge, hand-verified sessions | Validates the tool, not a strategy | Pass / fail per check |
+
+Train → validate → test splits are only needed when **choosing a winner is part
+of the thing being tested** (the selection-procedure design). ORB has no fitted
+parameters: "training" only picks a winner from the grid. For a small grid, an
+exploratory sweep followed by a separate fixed-rule confirmation is simpler and
+answers the more useful question.
+
+### 6.2 What "using up" data means
+
+Running a backtest does not consume data. A dataset loses its value **as
+confirmation for a particular hypothesis** once its results have influenced
+that hypothesis. "Fresh" is a property of the *hypothesis and data pair*, not
+of the data alone.
+
+For 2021-01 through 2024-10:
+
+- **The ORB direction study remains valid.** Its verdict is honest evidence
+  about the re-selection procedure, and nothing done later changes that.
+- **The data remains fully usable** for exploration, attribution, robustness,
+  comparisons that are clearly labelled exploratory, and platform validation.
+- **It can no longer independently confirm an ORB duration or direction
+  rule.** Every candidate was evaluated on the rolling TRAIN windows, which
+  cover most development sessions; the selected candidates were evaluated on
+  every TEST window; and the per-fold candidate tables have been viewed. Any
+  duration chosen now is informed by those results, consciously or not, so
+  re-testing it on the same sessions counts the same evidence twice.
+- **It could still confirm a hypothesis about something not yet examined**
+  (for example a gap filter or an exit rule), if the hypothesis is registered
+  before any of its results are viewed. Every such test still adds to the
+  trial count on the same sessions.
+
+Practical rule: every experiment records, for its hypothesis, whether its
+evaluation data is **fresh** or **already seen**. Only fresh data can produce a
+"supported" outcome.
+
+### 6.3 Platform validation suite: does the backtester tell the truth?
+
+These are **known-answer experiments**. Because the correct outcome is known in
+advance, they test the platform rather than a strategy. Run the suite before
+trusting research results, and rerun it after any change to the engine,
+statistics or reliability policy.
+
+| ID | Experiment | Expected outcome | What it proves | State |
+| --- | --- | --- | --- | --- |
+| V1 | Golden regression: freeze the QQQ ORB simulation and metrics | Byte-identical simulation digests unless deliberately re-frozen | No silent behaviour change | **Exists** (`tests/integration/test_golden_orb.py`) |
+| V2 | Determinism: run the same config twice | Identical trade-ledger and equity digests and experiment identity | Results are reproducible | **Exists** (evidence digests, identity tests) |
+| V3 | Hand-verified sessions: about five chosen days (gap up, gap down, no breakout, stop hit, end-of-day exit), recomputed independently | Opening-range levels, entries, exits and P&L match to the cent | Strategy logic does what the rule says | **Missing** |
+| V4 | Cost reconciliation: same config with zero and with realistic costs | Net P&L difference equals modelled costs exactly; expectancy shifts by cost per trade in R | Costs are applied once, correctly | Partial (accounting reconciliation in run validation) |
+| V5 | Look-ahead canary: a deliberately cheating strategy that uses same-session future information | Leakage checks block it, or plausibility checks flag it | The pipeline catches future leakage end to end | Partial (feature leakage tests; no strategy-level canary) |
+| V6 | Random-entry null: random direction at the ORB entry time with the same stops and exits, across many seeds | Expectancy ≈ minus cost per trade in R; intervals cover that value about 95% of the time; reliability policy rejects | Statistics are calibrated; measures the policy's real **false-positive rate** | **Missing** |
+| V7 | Planted edge: synthetic or perturbed data with a known edge (for example +0.15R) | Estimate within its interval about 95% of the time; detection rate close to the predicted power from Section 5 | The platform can find a real edge at the claimed power | **Missing** |
+| V8 | Walk-forward boundary audit: a candidate that is only good inside TEST windows | Not selected more often than chance; TEST never influences selection | No leakage from TEST into selection | Partial (nested walk-forward tests) |
+| V9 | Holdout lock: attempt to read the final holdout without authorization | Refused | The final holdout stays untouched | **Exists** (holdout tests) |
+
+V6 and V7 matter most for understanding. Together they show what a
+no-edge strategy and a known-edge strategy *look like* in the viewer. That is
+the calibration a first-time researcher needs before judging real results.
+
+### 6.4 Research programme for ORB on QQQ
+
+| Step | Experiment | Type | Data | Outcome or exit |
+| --- | --- | --- | --- | --- |
+| R0 | ORB direction study (done) | Selection-procedure walk-forward | 2021-01 to 2024-10 | Rejected: re-tuning procedure not supported; no persistently best setting |
+| R1 | Data availability check | Prerequisite | Provider history | How far back clean intraday QQQ data goes; decides whether R5 is possible |
+| R2 | Duration × direction sweep, for example 5/10/15/20/30/45/60 minutes, all fixed rules on every session | Exploratory sweep | 2021–2024 (already seen) | Response surface with intervals and year-by-year results; look for a plateau, not a peak; record all trials |
+| R3 | Attribution of R2 | Attribution | 2021–2024 (already seen) | A mechanism story, and possibly a filter hypothesis; diagnostic only |
+| R4 | Register one hypothesis | Design step | None | One locked rule chosen from a plateau plus mechanism; prediction, kill criteria, minimum edge of interest and MDE |
+| R5 | Confirm the locked rule | Fixed-rule confirmation | Fresh pre-2021 history, if R1 allows | Supported, contradicted or underpowered; folds used only as a time-stability view |
+| R6 | Stress the confirmed rule | Robustness | Same data as R5 | Survives cost stress, neighbouring durations and Monte Carlo, or is weakened |
+| R7 | Final holdout, once | Fixed-rule confirmation | 2025-01-02 to 2026-04-27 | About 330 sessions (~265 trades, ±0.19R, MDE80 ≈ 0.27R): a "not broken" check, not a precise edge estimate |
+| R8 | Paper trading | Forward validation | Live | Only after R7 does not contradict R5 |
+
+If the window comparison itself matters ("does duration matter at all?"),
+compute paired per-session differences between durations inside R2 as
+exploration. Confirm a difference only by predeclaring it in R4 and testing it
+in R5.
+
+## 7. How established platforms present results
 
 | Platform | Useful idea to borrow |
 | --- | --- |
@@ -418,7 +512,7 @@ No single platform combines strict walk-forward governance with the
 explanatory views above. This project already has the governance; the
 remaining work is to add the explanatory views on top of it.
 
-## 7. Current gaps, ranked
+## 8. Current gaps, ranked
 
 1. **Experiment-level "what happened" visuals.** Stitched TEST curve, fold
    error bars and the R histogram (Section 4.3).
@@ -436,13 +530,17 @@ remaining work is to add the explanatory views on top of it.
    Ratio and Probability of Backtest Overfitting.
 8. **Remote publication of experiments.** Already tracked in the October 18
    handoff; required before Supabase can host this report.
+9. **Platform validation experiments.** Hand-verified sessions, random-entry
+   null, planted edge and a strategy-level look-ahead canary (Section 6.3).
+10. **Fresh-versus-seen data status.** Experiments do not record whether their
+    evaluation data was already seen for their hypothesis (Section 6.2).
 
-## 8. Roadmap
+## 9. Roadmap
 
 The order favours learning value per unit of work. Each item keeps the final
 holdout locked and never chooses filters from TEST outcomes.
 
-### 8.1 Experiment report prototype (gaps 1, 2)
+### 9.1 Experiment report prototype (gaps 1, 2)
 
 - Add an experiment-level performance section to the local viewer: stitched TEST
   cumulative-R and drawdown curve with fold shading, per-fold expectancy bars
@@ -452,7 +550,7 @@ holdout locked and never chooses filters from TEST outcomes.
 - **Done when** the ORB direction study shows the Section 5.2 numbers and its
   fold bars visibly overlap zero.
 
-### 8.2 Edge attribution (gap 3)
+### 9.2 Edge attribution (gap 3)
 
 - Breakdowns by direction, entry time, weekday and exit reason from stored
   trades.
@@ -463,33 +561,44 @@ holdout locked and never chooses filters from TEST outcomes.
 - **Done when** every breakdown shows trade count and interval, and MAE/MFE are
   available for new runs.
 
-### 8.3 Power-aware confirmatory experiment (gap 2, research)
+### 9.3 Platform validation suite (gap 9)
 
-- Register a hypothesis with prediction, kill criteria and minimum edge of
-  interest before running.
-- Lock exactly one configuration (direction and duration) before running,
-  justified by mechanism or prior work rather than by the 2021–2024 TEST
-  results (Section 5.5). Evaluate it on every eligible development session, and
-  use folds only as a time-stability view.
+- Add the missing known-answer experiments from Section 6.3: V3 hand-verified
+  sessions, V6 random-entry null, V7 planted edge and the V5 strategy-level
+  look-ahead canary; complete V4 and V8.
+- Show V6 and V7 results in the viewer as reference experiments, so real
+  results can be compared with what "no edge" and "known edge" look like.
+- **Done when** the policy's measured false-positive rate and planted-edge
+  detection rate are recorded and match the Section 5 calibration.
+
+### 9.4 ORB research programme (gaps 2, 10, research)
+
+- Follow Section 6.4: R1 data availability check, R2 exploratory sweep, R3
+  attribution, then R4 registration of exactly one locked rule.
+- Lock exactly one configuration (direction and duration) before
+  confirmation, justified by a plateau in R2 plus mechanism, never by the
+  single best row (Sections 5.5 and 6.2).
 - Size the sample so the minimum detectable edge is at or below the edge of
   interest, or explicitly accept an underpowered design.
+- Confirm on fresh data (R5), and record for every experiment whether its
+  evaluation data is fresh or already seen for its hypothesis.
 - Report the outcome as supported, contradicted or underpowered.
 
-### 8.4 Concept explanations (gaps 5, 6)
+### 9.5 Concept explanations (gaps 5, 6)
 
 - Turn the Section 5 calibration into viewer explanation callouts next to each
   criterion, using the experiment's own numbers.
 - Record hypothesis cards and decision/lesson entries in the existing
   `vibe/research_journal` registry.
 
-### 8.5 Later
+### 9.6 Later
 
 - Robustness visuals (gap 4).
 - Program-wide trial count, DSR and PBO (gap 7).
 - Supabase publication of experiments and reliability reports (gap 8).
 - Paper trading (diagram step 8) only after a hypothesis is supported.
 
-## 9. Sources
+## 10. Sources
 
 - QuantConnect backtest report:
   <https://www.quantconnect.com/docs/v2/cloud-platform/backtesting/report>
