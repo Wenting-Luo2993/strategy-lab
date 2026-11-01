@@ -481,8 +481,9 @@ the calibration a first-time researcher needs before judging real results.
 | Step | Experiment | Type | Data | Outcome or exit |
 | --- | --- | --- | --- | --- |
 | R0 | ORB direction study (done) | Selection-procedure walk-forward | 2021-01 to 2024-10 | Rejected: re-tuning procedure not supported; no persistently best setting |
-| R1 | Data availability check | Prerequisite | Provider history | How far back clean intraday QQQ data goes; decides whether R5 is possible |
-| R2 | Duration × direction sweep, for example 5/10/15/20/30/45/60 minutes, all fixed rules on every session | Exploratory sweep | 2021–2024 (already seen) | Response surface with intervals and year-by-year results; look for a plateau, not a peak; record all trials |
+| R0b | Symmetric ORB duration stability study (done 2026-10-29, experiment `01a188c5-4d7b-7a24-b237-23aedfa5c6d7`) | Selection-procedure walk-forward, direction fixed to symmetric, durations 5/15/30 | Reused 2021–2024 development data | Rejected: 625 stitched TEST trades, +0.108R, interval crosses zero and parameter neighbourhood unstable |
+| R1 | Data availability check | Prerequisite | Provider history | How far back clean intraday QQQ data goes; decides whether R5 is possible. The holdout declaration treats every session through 2024-12-31 as already used, and the local data has only 15 sessions after the holdout |
+| R2 | Duration × direction sweep, for example 5/10/15/20/30/45/60 minutes, all fixed rules on every session | Exploratory sweep | 2021–2024 (already seen) | Response surface with intervals and year-by-year results; look for a plateau, not a peak; record all trials. Descriptive only (see note below) |
 | R3 | Attribution of R2 | Attribution | 2021–2024 (already seen) | A mechanism story, and possibly a filter hypothesis; diagnostic only |
 | R4 | Register one hypothesis | Design step | None | One locked rule chosen from a plateau plus mechanism; prediction, kill criteria, minimum edge of interest and MDE |
 | R5 | Confirm the locked rule | Fixed-rule confirmation | Fresh pre-2021 history, if R1 allows | Supported, contradicted or underpowered; folds used only as a time-stability view |
@@ -494,6 +495,14 @@ If the window comparison itself matters ("does duration matter at all?"),
 compute paired per-session differences between durations inside R2 as
 exploration. Confirm a difference only by predeclaring it in R4 and testing it
 in R5.
+
+**Note after R0b:** two walk-forward studies on the same development data have
+now rejected ORB duration and direction re-selection. The handoff's Phase 6A
+recommends stopping ORB parameter research rather than mining further. R2 is
+therefore useful only to *understand* the response surface and to practise
+reading results. It must not be used to pick a rule for confirmation unless
+the rule also has an independent mechanism and fresh data exists (R1). A
+genuinely new economic hypothesis needs its own registration cycle.
 
 ## 7. How established platforms present results
 

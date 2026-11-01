@@ -1,7 +1,8 @@
 # Backtest research handoff
 
-**Updated:** 2026-10-28
-**Branch:** `wenting-luo2993-backtest-implementation-review`  
+**Updated:** 2026-10-31  
+**Branch:** `wenting-luo2993-backtest-continuation` (includes the merged
+`backtest-roadmap-implementation` work)  
 **Researcher:** Bloom  
 **Current focus:** Preserve the completed ORB direction study, interpret its
 rejected reliability verdict correctly, and continue with a narrower
