@@ -12,10 +12,12 @@ confirmatory experiment without reading the locked final holdout.
 Fetch and check out the branch above. Read these documents in order:
 
 1. This handoff.
-2. `2026-10-18-orb-direction-statistical-reliability-v2.md`.
-3. `2026-10-18-engine-integrity-reliability-and-hypothesis-analysis.md`.
-4. `2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md`.
-5. `2026-09-09-backtest-pipeline-implementation-plan.md` for the historical
+2. `2026-10-31-backtest-research-north-star.md` for the target research
+   report, calibration expectations, and current roadmap.
+3. `2026-10-18-orb-direction-statistical-reliability-v2.md`.
+4. `2026-10-18-engine-integrity-reliability-and-hypothesis-analysis.md`.
+5. `2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md`.
+6. `2026-09-09-backtest-pipeline-implementation-plan.md` for the historical
    implementation record.
 
 The Git branch transfers code and narrative conclusions. It does **not**
