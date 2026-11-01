@@ -1,3 +1,5 @@
+import { kindDetail } from "./experiment-kinds.mjs";
+
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[char]);
@@ -134,6 +136,8 @@ export function experimentDetail(experiment) {
   if (!definition || experiment.payloadUnavailable) {
     return '<p class="error">Experiment payload is missing, invalid or exceeds the viewer limit. No result is inferred.</p>';
   }
+  const kindHtml = kindDetail(experiment);
+  if (kindHtml) return kindHtml;
   const result = experiment.result;
   const runs = experiment.runs?.items || [];
   const planned = definition.plan?.folds || [];

@@ -6,6 +6,7 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, platform } from "node:os";
+import { cumulativeR } from "./public/experiment-kinds.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, "public");
@@ -56,6 +57,7 @@ const STATIC_FILES = new Map([
   ["/app.mjs", [join(PUBLIC_DIR, "app.mjs"), "text/javascript; charset=utf-8"]],
   ["/run-charts.mjs", [join(PUBLIC_DIR, "run-charts.mjs"), "text/javascript; charset=utf-8"]],
   ["/experiment-view.mjs", [join(PUBLIC_DIR, "experiment-view.mjs"), "text/javascript; charset=utf-8"]],
+["/experiment-kinds.mjs", [join(PUBLIC_DIR, "experiment-kinds.mjs"), "text/javascript; charset=utf-8"]],
   ["/styles.css", [join(PUBLIC_DIR, "styles.css"), "text/css; charset=utf-8"]],
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -956,6 +958,125 @@ function numberOrNull(value) {
   return value === null || value === undefined ? null : Number(value);
 }
 
+const NY_DATE = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+});
+const MAX_SERIES_TRADE_ROWS = 250_000;
+
+function nySessionDate(entryTime) {
+  const time = Date.parse(entryTime);
+  return Number.isFinite(time) ? NY_DATE.format(new Date(time)) : null;
+}
+
+function getExperimentTradeColumns(database) {
+  if (!hasTable(database, "research_experiment_runs") || !hasTable(database, "run_trades")) return null;
+  return new Set(database.prepare("PRAGMA table_info(run_trades)").all().map((c) => c.name));
+}
+
+function requireExperiment(database, experimentId) {
+  validateIdentity(experimentId, "experiment id");
+  const row = hasExperiments(database) && database.prepare(
+    "SELECT experiment_id FROM research_experiments WHERE experiment_id = ?",
+  ).get(experimentId);
+  if (!row) throw new HttpError(404, "Experiment not found.");
+}
+
+/** Net R per session date for each candidate, summed across symbols. */
+function getExperimentRSeries(database, experimentId) {
+  requireExperiment(database, experimentId);
+  const columns = getExperimentTradeColumns(database);
+  if (!columns || !["pnl", "initial_risk", "entry_time"].every((c) => columns.has(c))) {
+    return { experimentId, available: false, candidates: [] };
+  }
+  const commission = columns.has("commission") ? "t.commission" : "NULL";
+  const rows = database.prepare(`
+    SELECT e.candidate_id AS candidate_id, t.entry_time AS entry_time,
+           t.pnl AS pnl, ${commission} AS commission, t.initial_risk AS initial_risk
+    FROM research_experiment_runs e JOIN run_trades t ON t.run_id = e.run_id
+    WHERE e.experiment_id = ? AND t.initial_risk > 0
+    ORDER BY e.candidate_id, t.entry_time LIMIT ?
+  `).all(experimentId, MAX_SERIES_TRADE_ROWS);
+  const byCandidate = new Map();
+  for (const row of rows) {
+    const date = nySessionDate(row.entry_time);
+    const value = netR(row);
+    if (date === null || value === null) continue;
+    if (!byCandidate.has(row.candidate_id)) byCandidate.set(row.candidate_id, new Map());
+    const days = byCandidate.get(row.candidate_id);
+    days.set(date, (days.get(date) ?? 0) + value);
+  }
+  const candidates = [...byCandidate].map(([candidateId, days]) => {
+    const daily = [...days].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, value]) => ({ date, r: value }));
+    const series = cumulativeR(daily);
+    const truncated = series.length > MAX_DETAIL_ROWS;
+    return { candidateId, truncated, series: truncated ? series.slice(0, MAX_DETAIL_ROWS) : series };
+  });
+  return { experimentId, available: true, inputTruncated: rows.length >= MAX_SERIES_TRADE_ROWS, candidates };
+}
+
+/** MAE/MFE rows, evenly strided when there are more than the row bound. */
+function getExperimentExcursions(database, experimentId) {
+  requireExperiment(database, experimentId);
+  const columns = getExperimentTradeColumns(database);
+  if (!columns || !["pnl", "initial_risk", "mae_r", "mfe_r"].every((c) => columns.has(c))) {
+    return { experimentId, available: false, rows: [], total: 0, sampled: false };
+  }
+  const commission = columns.has("commission") ? "t.commission" : "NULL";
+  const where = `e.experiment_id = ? AND t.initial_risk > 0
+    AND t.mae_r IS NOT NULL AND t.mfe_r IS NOT NULL`;
+  const total = Number(database.prepare(`
+    SELECT COUNT(*) AS count FROM research_experiment_runs e
+    JOIN run_trades t ON t.run_id = e.run_id WHERE ${where}
+  `).get(experimentId).count);
+  const stride = total > MAX_DETAIL_ROWS ? Math.ceil(total / MAX_DETAIL_ROWS) : 1;
+  const rows = database.prepare(`
+    SELECT candidate_id, symbol, pnl, commission, initial_risk, mae_r, mfe_r, exit_reason FROM (
+      SELECT e.candidate_id AS candidate_id, t.symbol AS symbol, t.pnl AS pnl,
+             ${commission} AS commission, t.initial_risk AS initial_risk,
+             t.mae_r AS mae_r, t.mfe_r AS mfe_r, t.exit_reason AS exit_reason,
+             ROW_NUMBER() OVER (ORDER BY e.candidate_id, t.run_id, t.sequence) AS rn
+      FROM research_experiment_runs e JOIN run_trades t ON t.run_id = e.run_id
+      WHERE ${where}
+    ) WHERE (rn - 1) % ? = 0 LIMIT ?
+  `).all(experimentId, stride, MAX_DETAIL_ROWS).map((row) => ({
+    candidate_id: row.candidate_id,
+    symbol: row.symbol,
+    net_r: netR(row),
+    mae_r: numberOrNull(row.mae_r),
+    mfe_r: numberOrNull(row.mfe_r),
+    exit_reason: row.exit_reason,
+  }));
+  return { experimentId, available: true, total, sampled: stride > 1, rows };
+}
+
+/** Same grouping as the research store's ``trial_counts``. */
+function getProgrammeTrials(database, programme) {
+  validateIdentity(programme, "programme");
+  if (!hasExperiments(database)) return { programme, available: false, total_trials: 0, by_phase: {}, by_family: {}, cells: [] };
+  const rows = database.prepare(`
+    SELECT json_extract(definition_json, '$.trial.phase') AS phase,
+           json_extract(definition_json, '$.trial.family') AS family,
+           COUNT(*) AS experiments,
+           SUM(COALESCE(json_extract(definition_json, '$.trial.n_trials'), 1)) AS trials
+    FROM research_experiments
+    WHERE json_extract(definition_json, '$.trial.programme') = ?
+    GROUP BY phase, family
+  `).all(programme);
+  const byPhase = {};
+  const byFamily = {};
+  const cells = rows.map((row) => {
+    const trials = Number(row.trials);
+    byPhase[row.phase] = (byPhase[row.phase] ?? 0) + trials;
+    byFamily[row.family] = (byFamily[row.family] ?? 0) + trials;
+    return { phase: row.phase, family: row.family, experiments: Number(row.experiments), trials };
+  }).sort((a, b) => `${a.phase}|${a.family}`.localeCompare(`${b.phase}|${b.family}`));
+  return {
+    programme, available: true,
+    total_trials: Object.values(byPhase).reduce((sum, v) => sum + v, 0),
+    by_phase: byPhase, by_family: byFamily, cells,
+  };
+}
+
 function reconciliationState(outbox, acknowledgement) {
   if (!outbox) return "not_enqueued";
   if (outbox.status === "dead_letter") return "dead_letter";
@@ -1508,6 +1629,12 @@ function routeApi(database, pathname, searchParams, repositoryRoot, artifactStag
   if (pathname === "/api/experiments") return listExperiments(database, searchParams);
   const experimentMatch = pathname.match(/^\/api\/experiments\/([^/]+)$/);
   if (experimentMatch) return getExperiment(database, decodeURIComponent(experimentMatch[1]));
+  const rSeriesMatch = pathname.match(/^\/api\/experiments\/([^/]+)\/r-series$/);
+  if (rSeriesMatch) return getExperimentRSeries(database, decodeURIComponent(rSeriesMatch[1]));
+  const excursionsMatch = pathname.match(/^\/api\/experiments\/([^/]+)\/excursions$/);
+  if (excursionsMatch) return getExperimentExcursions(database, decodeURIComponent(excursionsMatch[1]));
+  const trialsMatch = pathname.match(/^\/api\/programmes\/([^/]+)\/trials$/);
+  if (trialsMatch) return getProgrammeTrials(database, decodeURIComponent(trialsMatch[1]));
   if (pathname === "/api/registry") return listRegistry(database, searchParams);
   if (pathname === "/api/publications") return listPublications(database, searchParams);
   if (pathname === "/api/artifacts") return listArtifactOutbox(database, searchParams);

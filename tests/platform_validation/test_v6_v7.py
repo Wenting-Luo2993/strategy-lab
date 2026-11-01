@@ -38,6 +38,7 @@ def test_wilson_interval_contains_point_estimate():
     assert wilson_interval(0, 0) == (0.0, 1.0)
 
 
+@pytest.mark.slow
 def test_null_calibration_has_no_excess_false_positives():
     r = run_null_calibration(20, 120, seed=1, ruleset_path=RULESET)
     assert r["degenerate_studies"] == 0
@@ -65,6 +66,7 @@ def test_cli_records_one_platform_validation_experiment(tmp_path):
     assert rows == [("V6 null calibration", "completed")]
 
 
+@pytest.mark.slow
 def test_planted_edge_report_is_well_formed_and_detects_something():
     r = run_planted_edge(
         10, 120, seed=1, ruleset_path=RULESET, up_probability_with_trend=0.502,

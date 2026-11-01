@@ -998,6 +998,103 @@ test("experiment endpoints preserve explicit membership and gracefully support v
   }
 });
 
+test("S8 r-series, excursions and trial endpoints", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.exec(`
+      INSERT INTO schema_migrations VALUES (17, '2026-11-01');
+      CREATE TABLE research_experiments (
+        experiment_id TEXT PRIMARY KEY, title TEXT, state TEXT, definition_json TEXT,
+        result_json TEXT, created_at TEXT, updated_at TEXT
+      );
+      CREATE TABLE research_experiment_runs (
+        experiment_id TEXT, fold_index INTEGER, candidate_id TEXT, segment_role TEXT, run_id TEXT
+      );
+    `);
+    const exp = writer.prepare("INSERT INTO research_experiments VALUES (?, ?, 'completed', ?, '{}', '2026-11-01', '2026-11-01')");
+    const trial = (programme, phase, family, n) => JSON.stringify({ kind: "fixed_rule", trial: { programme, phase, family, n_trials: n } });
+    exp.run("fr-1", "Fixed rule", trial("orb", "exploration", "rule", 1));
+    exp.run("fr-2", "Fixed rule 2", trial("orb", "exploration", "rule", 2));
+    exp.run("big", "Big", trial("big", "exploration", "rule", 1));
+    const link = writer.prepare("INSERT INTO research_experiment_runs VALUES (?, 0, ?, 'test', ?)");
+    link.run("fr-1", "rule", "run-a");
+    link.run("big", "rule", "run-big");
+    const addTrade = writer.prepare(`INSERT INTO run_trades
+      (run_id, sequence, symbol, side, quantity, entry_price, exit_price, entry_time, exit_time, pnl, commission, initial_risk, exit_reason, recorded_at, mae_r, mfe_r)
+      VALUES (?, ?, 'SPY', 'long', 1, 100, 101, ?, ?, ?, ?, ?, ?, 'x', ?, ?)`);
+    // Two trades on one NY session date (summed), one on the next; one unusable risk.
+    addTrade.run("run-a", 0, "2026-01-05T15:00:00Z", "2026-01-05T16:00:00Z", 2, 0, 1, "take_profit", -0.2, 2.5);
+    addTrade.run("run-a", 1, "2026-01-05T17:00:00Z", "2026-01-05T18:00:00Z", -1, 0, 1, "stop", -1, 0.3);
+    addTrade.run("run-a", 2, "2026-01-06T15:00:00Z", "2026-01-06T16:00:00Z", -3, 0, 1, "stop", -1.1, 0.1);
+    addTrade.run("run-a", 3, "2026-01-07T15:00:00Z", "2026-01-07T16:00:00Z", 5, 0, 0, "eod", null, null);
+    writer.exec("BEGIN");
+    for (let i = 0; i < 5100; i += 1) {
+      const day = new Date(Date.UTC(2000, 0, 3 + i, 15)).toISOString();
+      addTrade.run("run-big", i, day, day, 1, 0, 1, "eod", -0.1, 0.5);
+    }
+    writer.exec("COMMIT");
+    writer.close();
+
+    const series = await rawRequest(fixture.origin, "/api/experiments/fr-1/r-series");
+    assert.equal(series.status, 200);
+    assert.equal(series.json.available, true);
+    const [rule] = series.json.candidates;
+    assert.equal(rule.candidateId, "rule");
+    assert.deepEqual(rule.series.map((p) => [p.date, p.r, p.cumulative_r, p.drawdown_r]),
+      [["2026-01-05", 1, 1, 0], ["2026-01-06", -3, -2, -3]]);
+    assert.equal(rule.truncated, false);
+
+    const excursions = await rawRequest(fixture.origin, "/api/experiments/fr-1/excursions");
+    assert.equal(excursions.json.total, 3);
+    assert.equal(excursions.json.sampled, false);
+    assert.deepEqual(excursions.json.rows[0], {
+      candidate_id: "rule", symbol: "SPY", net_r: 2, mae_r: -0.2, mfe_r: 2.5, exit_reason: "take_profit",
+    });
+
+    const bigSeries = await rawRequest(fixture.origin, "/api/experiments/big/r-series");
+    assert.equal(bigSeries.json.candidates[0].truncated, true);
+    assert.equal(bigSeries.json.candidates[0].series.length, 5000);
+    const bigExcursions = await rawRequest(fixture.origin, "/api/experiments/big/excursions");
+    assert.equal(bigExcursions.json.total, 5100);
+    assert.equal(bigExcursions.json.sampled, true);
+    assert.ok(bigExcursions.json.rows.length <= 5000);
+
+    const trials = await rawRequest(fixture.origin, "/api/programmes/orb/trials");
+    assert.equal(trials.json.total_trials, 3);
+    assert.equal(trials.json.by_phase.exploration, 3);
+
+    assert.equal((await rawRequest(fixture.origin, "/api/experiments/missing/r-series")).status, 404);
+    assert.equal((await rawRequest(fixture.origin, "/api/experiments/missing/excursions")).status, 404);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
+test("S8 endpoints report unavailable on v10 history without trade columns", async () => {
+  const fixture = await startFixtureServer();
+  try {
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.exec(`
+      CREATE TABLE research_experiments (
+        experiment_id TEXT PRIMARY KEY, title TEXT, state TEXT, definition_json TEXT,
+        result_json TEXT, created_at TEXT, updated_at TEXT
+      );
+      INSERT INTO research_experiments VALUES ('old', 'Old', 'completed', '{}', '{}', '2026-10-16', '2026-10-16');
+    `);
+    writer.close();
+    const series = await rawRequest(fixture.origin, "/api/experiments/old/r-series");
+    assert.equal(series.status, 200);
+    assert.equal(series.json.available, false);
+    const excursions = await rawRequest(fixture.origin, "/api/experiments/old/excursions");
+    assert.equal(excursions.json.available, false);
+    const trials = await rawRequest(fixture.origin, "/api/programmes/none/trials");
+    assert.equal(trials.json.total_trials, 0);
+  } finally {
+    await fixture.cleanupAll();
+  }
+});
+
 test("serves retained trade rows and 404s for an unknown run", async () => {
   const fixture = await startFixtureServer();
   try {

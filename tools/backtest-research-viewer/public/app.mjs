@@ -1,5 +1,6 @@
 import { mountPerformanceCharts } from "./run-charts.mjs";
 import { experimentList, experimentDetail } from "./experiment-view.mjs";
+import { renderKindExtras } from "./experiment-kinds.mjs";
 
 const state = {
   runs: { page: 1, pageSize: 25 },
@@ -112,6 +113,17 @@ async function showExperiment(experimentId, focus = true) {
     const experiment = await api(`/api/experiments/${encodeURIComponent(experimentId)}`);
     if (request !== experimentRequest) return;
     host.innerHTML = experimentDetail(experiment);
+    if (host.querySelector("[data-kind-trial]")) {
+      const base = `/api/experiments/${encodeURIComponent(experimentId)}`;
+      const programme = experiment.definition?.trial?.programme;
+      const [rSeries, excursions, trials] = await Promise.all([
+        api(`${base}/r-series`).catch(() => null),
+        api(`${base}/excursions`).catch(() => null),
+        programme ? api(`/api/programmes/${encodeURIComponent(programme)}/trials`).catch(() => null) : null,
+      ]);
+      if (request !== experimentRequest) return;
+      renderKindExtras(host, experiment, { rSeries, excursions, trials });
+    }
     host.querySelectorAll("[data-run]").forEach((button) => {
       button.addEventListener("click", () => showRun(button.dataset.run));
     });

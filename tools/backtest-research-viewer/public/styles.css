@@ -318,6 +318,11 @@ polyline.chart-loss { fill: none; }
 .chart-crosshair { stroke: var(--muted); stroke-dasharray: 4 4; }
 .chart-scrubber { display: block; width: 100%; margin: .3rem 0; padding: 0; accent-color: var(--accent); }
 .chart-readout { display: block; min-height: 1.5em; color: var(--text); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.experiment-detail svg, #experiment-detail svg { width: 100%; max-width: 760px; display: block; }
+.chart-line.series-1, .legend.series-1 { stroke: var(--warning); color: var(--warning); }
+.scatter-0 { fill: var(--accent); } .scatter-1 { fill: var(--danger); } .scatter-2 { fill: var(--good); } .scatter-3 { fill: var(--warning); }
+.legend.scatter-0, .legend.scatter-1, .legend.scatter-2, .legend.scatter-3 { fill: none; }
+.legend.scatter-0 { color: var(--accent); } .legend.scatter-1 { color: var(--danger); } .legend.scatter-2 { color: var(--good); } .legend.scatter-3 { color: var(--warning); }
 .chart-note { font-size: .8rem; margin: .7rem 0 0; }
 .risk-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .risk-charts h3 { font-size: .95rem; }
