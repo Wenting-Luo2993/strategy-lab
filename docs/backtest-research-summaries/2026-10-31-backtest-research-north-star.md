@@ -34,7 +34,10 @@ clearly explains *why*, and narrows what to try next.
 
 ## 2. The end-to-end picture
 
-The research loop follows the high-level backtest flow diagram (历史回测流程).
+The research loop follows the high-level backtest flow diagram (历史回测流程):
+
+![High-level backtest research flow (历史回测流程)](assets/backtest-research-flow.png)
+
 The table records which steps are mature and which are thin.
 
 | Diagram step | Purpose | Current state |
@@ -60,12 +63,13 @@ Each level of the viewer should answer exactly one kind of question.
 
 ```mermaid
 flowchart TD
-    P["Research program<br/>Which ideas have I tried and what survived?"] --> H
-    H["Hypothesis<br/>What do I believe, why, and what would kill it?"] --> E
-    E["Experiment<br/>Did this design generalize out of sample?"] --> F
-    F["Fold<br/>Did validation selection hold up in its TEST window?"] --> R
-    R["Run<br/>What did one simulation do, path by path?"] --> T
+    P["Research program<br/>Which ideas have I tried and what survived?"]
+    H["Hypothesis<br/>What do I believe, why, and what would kill it?"]
+    E["Experiment<br/>Did this design generalize out of sample?"]
+    F["Fold<br/>Did validation selection hold up in its TEST window?"]
+    R["Run<br/>What did one simulation do, path by path?"]
     T["Trade<br/>Why did this trade win or lose?"]
+    P --> H --> E --> F --> R --> T
 ```
 
 | Level | Question | Primary visuals |
@@ -327,6 +331,76 @@ Sources: TradeStation walk-forward criteria, AmiBroker walk-forward efficiency,
 MultiCharts optimization surfaces, and Bailey and López de Prado on PSR, DSR and
 PBO (Section 9).
 
+### 5.5 Design implications
+
+#### What the ORB direction study actually tested
+
+The nested walk-forward study selected a different ORB duration and direction
+in many folds (for example 15-minute symmetric, then 5-minute symmetric, then
+15-minute long-only). That is by design: it tested a **selection procedure**,
+not a fixed trading rule.
+
+| Design | Question it answers | When to use |
+| --- | --- | --- |
+| Nested walk-forward with re-selection | "If I re-tune ORB settings every quarter on recent data, does the re-tuned strategy make money in the next quarter?" | Exploring whether *any* setting in a grid is persistently good, or when the live system will genuinely re-optimize |
+| Fixed-rule evaluation | "Does this one predeclared rule, for example long-only 15-minute ORB, have positive expectancy?" | Confirming a specific hypothesis |
+
+The stitched result of the direction study is the performance of the
+procedure. Because the selection kept switching, it also tells us that no
+setting was persistently best: parameter choice was mostly following noise.
+That is useful evidence, but it does not say whether any single setting works.
+
+A confirmatory experiment should therefore **lock exactly one configuration
+before running**. With no selection:
+
+- there is no winner's curse, so validation-to-TEST degradation is no longer a
+  meaningful gate;
+- TRAIN and VALIDATION windows are not needed for selection, so every
+  development session can contribute trades. For 2021-01 through 2024-10 that
+  is about 940 sessions instead of 630 TEST sessions, or roughly 750 trades
+  instead of 502;
+- walk-forward folds remain useful only as a **time-stability view** (does the
+  rule work in each period?), not as a selection mechanism.
+
+If several fixed rules are compared, report every one of them, count each as a
+trial for multiple-testing purposes, and do not promote the best one without
+fresh confirmation.
+
+**Data contamination caveat:** choosing "long-only 15-minute" because it was
+selected most often in the 2021–2024 folds and then testing it on the same
+2021–2024 sessions is circular. The locked rule must be justified by mechanism
+or prior literature, and ideally evaluated on sessions not yet used for
+research (for example earlier history, if data quality allows). The final
+holdout stays reserved for one last confirmation.
+
+#### Fewer folds do not narrow the pooled confidence interval
+
+The pooled interval depends on the **total** number of held-out trades, not on
+how they are split into folds. Splitting the same ~502 TEST trades differently:
+
+| Folds | Trades per fold | Per-fold 95% half-width | Pooled 95% half-width | P(pass "≥60% positive folds") at 0R / 0.075R / 0.15R |
+| ---: | ---: | ---: | ---: | --- |
+| 10 | ~50 | ±0.43R | ±0.135R | 0.38 / 0.72 / 0.93 |
+| 5 | ~100 | ±0.30R | ±0.135R | 0.50 / 0.82 / 0.97 |
+| 3 | ~167 | ±0.23R | ±0.135R | 0.50 / 0.83 / 0.97 |
+
+Fewer folds make each fold's estimate less noisy but leave fewer folds to judge
+consistency, and the consistency gate gets *easier for a strategy with no edge
+to pass* (50% chance with 5 folds). Fold count is a trade-off between
+per-period precision and time-consistency resolution; it is not a way to gain
+statistical power.
+
+The only ways to narrow the pooled interval are more held-out trades or less
+noisy trades:
+
+- evaluate a fixed rule on all development sessions instead of only the TEST
+  windows (about 750 trades gives ±0.111R; about 1,000 gives ±0.096R);
+- use longer history, if data quality allows;
+- add liquid symbols in one shared-capital portfolio (trades on correlated ETFs
+  such as SPY and QQQ add less information than their count suggests);
+- reduce per-trade dispersion through the strategy's exit design, which must
+  itself be a predeclared hypothesis.
+
 ## 6. How established platforms present results
 
 | Platform | Useful idea to borrow |
@@ -393,8 +467,10 @@ holdout locked and never chooses filters from TEST outcomes.
 
 - Register a hypothesis with prediction, kill criteria and minimum edge of
   interest before running.
-- Fix direction and a small predeclared duration set, as recommended in the
-  October 18 handoff.
+- Lock exactly one configuration (direction and duration) before running,
+  justified by mechanism or prior work rather than by the 2021–2024 TEST
+  results (Section 5.5). Evaluate it on every eligible development session, and
+  use folds only as a time-stability view.
 - Size the sample so the minimum detectable edge is at or below the edge of
   interest, or explicitly accept an underpowered design.
 - Report the outcome as supported, contradicted or underpowered.
