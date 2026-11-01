@@ -330,18 +330,55 @@ flowchart TD
 
 | Capability | Needed by | State |
 | --- | --- | --- |
-| Platform validation experiments V3, V5, V6, V7 | Step 0 | Missing (north-star roadmap 9.3) |
-| Fixed-rule evaluation over all sessions, with folds only as a stability view | Steps 2, 6–8 | To verify; the study runner is built around selection |
-| Multi-symbol study with pooled, day-clustered statistics | Steps 6–9 | Partial: portfolio engine and universe module exist; the nested study CLI takes one `--symbol` |
-| Conditional (tercile) breakdowns joined to causal session features | Steps 3, 7 | Missing; features exist in the feature registry |
-| Paired-difference comparison between two rules | Steps 4, 8 | Missing |
-| MAE/MFE recording | Steps 2, 4 | Missing (north-star roadmap 9.2) |
-| Program-wide trial counter | Steps 3–5 | Missing (north-star gap 7) |
+| Platform validation experiments V3, V5, V6, V7 | Step 0 | Implemented: `tests/platform_validation/` and `scripts/run_platform_validation.py` |
+| Fixed-rule evaluation over all sessions, with folds only as a stability view | Steps 2, 6–8 | Implemented: `vibe/research_pipeline/fixed_rule.py`, `scripts/run_fixed_rule_study.py` |
+| Multi-symbol study with pooled, day-clustered statistics | Steps 6–9 | Implemented: `fixed_rule.py` with `inference.py` (day-clustered estimates) |
+| Conditional (tercile) breakdowns joined to causal session features | Steps 3, 7 | Implemented: `session_features.py`, `conditional.py`. `tercile_breakdown(cutoffs=...)` reuses frozen exploration cutoffs; the confirmation runner does not yet pass them (known gap for Step 7) |
+| Paired-difference comparison between two rules | Steps 4, 8 | Implemented: `paired.py`, `scripts/run_paired_comparison.py` |
+| MAE/MFE recording | Steps 2, 4 | Implemented: engine tracking, `run_trades.mae_r/mfe_r` (schema migration 17) |
+| Program-wide trial counter | Steps 3–5 | Implemented: `trials.py`, `hypothesis_cards.py`, `scripts/show_trial_ledger.py` |
 | Holdout lock for new symbols | Step 1 | Exists; needs a config change |
 | Registration and data binding | Step 5 | Exists (merged from `backtest-roadmap-implementation`) |
 
 The implementation of these capabilities is specified in
 `2026-10-31-orb-edge-implementation-plan.md`.
+
+### How to run Steps 0, 2, 3 and 4
+
+These need market data (`BACKTEST__DATA_DIR`). Use one `<db>` for the whole
+programme so the trial ledger counts every study.
+
+```powershell
+# Step 0: platform validation
+python scripts/run_platform_validation.py --suite all --studies 200 --sessions 500 --seed 1 --research-db <db>
+
+# Step 2: baseline on the exploration set
+python scripts/run_fixed_rule_study.py --title "ORB baseline, exploration set" `
+  --ruleset vibe/rulesets/orb_production.yaml --symbols QQQ,AMZN,GOOGL,MSFT,TSLA `
+  --start 2018-05-01 --end 2024-12-31 --evidence-role exploration `
+  --programme orb_edge_2026 --trial-family baseline --trial-label orb_production `
+  --research-db <db>
+
+# Step 3: conditions (same command plus condition flags)
+python scripts/run_fixed_rule_study.py ... --condition rel_open_volume --condition abs_gap_pct `
+  --condition or_width_atr --condition atr_pctile --condition prior_trend_20d_pct `
+  --trial-family condition --trial-label step3_conditions
+
+# Step 4: one lever at a time
+python scripts/run_paired_comparison.py --title "Break-even trail vs baseline" `
+  --baseline-ruleset vibe/rulesets/orb_production.yaml --variant-ruleset <variant.yaml> `
+  --lever exit.trailing_stop --symbols QQQ,AMZN,GOOGL,MSFT,TSLA `
+  --start 2018-05-01 --end 2024-12-31 --evidence-role exploration `
+  --programme orb_edge_2026 --trial-family enhancement --trial-label break_even_trail `
+  --research-db <db>
+
+# Trial ledger
+python scripts/show_trial_ledger.py --programme orb_edge_2026 --research-db <db>
+```
+
+View results with the local viewer (`RESEARCH__DB_PATH=<db>`, `node
+tools/backtest-research-viewer/server.mjs`). Exploration outputs are labelled
+"cannot confirm".
 
 ## 7. Decisions
 

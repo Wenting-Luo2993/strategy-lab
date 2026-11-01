@@ -57,7 +57,7 @@ const STATIC_FILES = new Map([
   ["/app.mjs", [join(PUBLIC_DIR, "app.mjs"), "text/javascript; charset=utf-8"]],
   ["/run-charts.mjs", [join(PUBLIC_DIR, "run-charts.mjs"), "text/javascript; charset=utf-8"]],
   ["/experiment-view.mjs", [join(PUBLIC_DIR, "experiment-view.mjs"), "text/javascript; charset=utf-8"]],
-["/experiment-kinds.mjs", [join(PUBLIC_DIR, "experiment-kinds.mjs"), "text/javascript; charset=utf-8"]],
+  ["/experiment-kinds.mjs", [join(PUBLIC_DIR, "experiment-kinds.mjs"), "text/javascript; charset=utf-8"]],
   ["/styles.css", [join(PUBLIC_DIR, "styles.css"), "text/css; charset=utf-8"]],
 ]);
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -963,6 +963,7 @@ const NY_DATE = new Intl.DateTimeFormat("en-CA", {
 });
 const MAX_SERIES_TRADE_ROWS = 250_000;
 
+// Assumes stored entry times carry a UTC offset; an offset-less string would be read as machine-local time.
 function nySessionDate(entryTime) {
   const time = Date.parse(entryTime);
   return Number.isFinite(time) ? NY_DATE.format(new Date(time)) : null;

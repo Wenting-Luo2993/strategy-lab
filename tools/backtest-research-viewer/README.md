@@ -89,6 +89,23 @@ empty experiment view until migrated by a writer. Viewing never migrates or
 rewrites a database. Synthetic demo studies use `synthetic_demo/v1` and are
 visibly labelled as UI fixtures, not research evidence.
 
+## Study panels
+
+Experiments whose definition `kind` is `fixed_rule`, `paired_comparison` or
+`platform_validation` get a dedicated panel (other experiments keep the
+walk-forward view):
+
+- outcome badge, evidence-role banner ("Exploration: cannot confirm."), the
+  pooled or paired estimate with its interval, minimum edge and MDE;
+- cumulative R and drawdown, net R histogram, by-year, by-symbol, exit reasons,
+  MAE/MFE scatter, cost sensitivity and labelled-diagnostic condition terciles;
+- programme trial counts and, for validation studies, a pass/review badge.
+
+Supporting read-only endpoints: `GET /api/experiments/:id/r-series`,
+`GET /api/experiments/:id/excursions` (evenly sampled above 5000 trades, with
+`sampled: true`) and `GET /api/programmes/:programme/trials`. Databases without
+retained trades or MAE/MFE columns return `available: false`.
+
 ## Run detail
 
 Open a run alias in the explorer for a wide, performance-first dialog inspired

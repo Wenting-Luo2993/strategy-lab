@@ -59,6 +59,23 @@ The ORB strategy supports the registered `symmetric`, `long_only`, and
 `short_only` direction modes. Causal regime reporting uses only prior-session
 information and keeps regimes outside the candidate grid.
 
+## ORB edge research tooling (SQLite schema version 17)
+
+Implemented per `2026-10-31-orb-edge-implementation-plan.md` (stages S1–S9);
+the research programme is `2026-10-31-orb-edge-research-plan.md`.
+
+- `scripts/run_fixed_rule_study.py`: one ruleset over a symbol set, pooled
+  expectancy in R with day-clustered intervals, outcome against a minimum edge,
+  excursions, cost sensitivity and optional `--condition` tercile breakdowns.
+- `scripts/run_paired_comparison.py`: per-session paired difference between a
+  baseline and a variant ruleset.
+- `scripts/run_platform_validation.py`: V6 null calibration and V7 planted edge
+  (V3, V5 live in `tests/platform_validation/`).
+- `scripts/show_trial_ledger.py`: programme-wide trial counts and hypothesis
+  card alpha budget.
+- Schema migration 17 adds `run_trades.mae_r` and `mfe_r`.
+- The local viewer has panels for these experiment kinds; see its README.
+
 ## Completed ORB direction experiment
 
 **Experiment ID:** `01a151f2-d815-7f0f-86b0-cba0f586413e`  
