@@ -85,6 +85,15 @@ def test_missing_values_counted_cutoffs_stored_and_json_safe():
 
 
 def test_supplied_cutoffs_are_used_as_given():
+    import pytest
+
+    days = _days(60)
+    with pytest.raises(ValueError):
+        tercile_breakdown(
+            {"AAA": [_trade(days[0], 0.1, "AAA")]},
+            {"AAA": _features(days, [1.0] * 60)}, "x",
+            cutoffs={"low": 5.0, "high": 1.0},
+        )
     days = _days(60)
     values = list(range(60))
     trades = [_trade(d, 0.1, "AAA") for d in days]

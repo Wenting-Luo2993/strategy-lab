@@ -133,6 +133,13 @@ def test_load_cards_accepts_budget_and_ignores_other_status(tmp_path):
     assert len(load_cards(tmp_path)) == 3
 
 
+def test_resolved_cards_still_spend_alpha(tmp_path):
+    _write(tmp_path, [_card(card_id="H1", alpha_share=0.03, status="supported"),
+                      _card(card_id="H2", alpha_share=0.03, status="registered")])
+    with pytest.raises(ValueError, match="alpha"):
+        load_cards(tmp_path)
+
+
 def test_example_card_loads():
     cards = load_cards(REPO / "config" / "research" / "hypothesis_cards")
     assert [c.card_id for c in cards] == ["EXAMPLE"]

@@ -51,7 +51,7 @@ def load_cards(directory: str | Path) -> list[HypothesisCard]:
         cards.append(HypothesisCard(**data))
     spent: dict[str, float] = defaultdict(float)
     for card in cards:
-        if card.status == "registered":
+        if card.status not in ("example", "draft"):
             spent[card.programme] += card.alpha_share
     for programme, total in spent.items():
         if total > MAX_REGISTERED_ALPHA + 1e-12:

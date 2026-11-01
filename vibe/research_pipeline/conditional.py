@@ -117,6 +117,8 @@ def tercile_breakdown(
         low_cut, high_cut = (float(q) for q in np.quantile(values, [1 / 3, 2 / 3]))
     else:
         low_cut, high_cut = float(cutoffs["low"]), float(cutoffs["high"])
+        if low_cut > high_cut:
+            raise ValueError("cutoffs: low must not exceed high")
     result["cutoffs"] = {"low": low_cut, "high": high_cut}
     for row in joined:
         row[4] = _bucket(row[2], low_cut, high_cut)
