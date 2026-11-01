@@ -182,6 +182,7 @@ def _per_day(trades_by_symbol: Mapping[str, Sequence[Any]]) -> dict[str, Any]:
         statistics.stdev(values) / math.sqrt(n) if n >= 2 else None
     )
     return {
+        "basis": "days_with_at_least_one_trade",
         "n_days": n,
         "mean_r": statistics.fmean(values) if values else None,
         "se_r": se,
@@ -355,5 +356,6 @@ def record_fixed_rule_study(
     payload = dict(result.summary)
     if recording_errors:
         payload["recording_errors"] = recording_errors
-    store.finish_experiment(experiment_id, result.state, payload)
+    state = "inconclusive" if recording_errors else result.state
+    store.finish_experiment(experiment_id, state, payload)
     return experiment_id

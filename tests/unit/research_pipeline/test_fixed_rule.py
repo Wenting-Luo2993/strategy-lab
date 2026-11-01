@@ -280,3 +280,33 @@ def test_cli_smoke_without_recording(tmp_path, capsys):
     out = capsys.readouterr().out
     assert code == 0
     assert "Outcome vs" in out
+
+
+def test_per_day_basis_is_labelled():
+    assert (
+        _run(_spec()).summary["per_day_mean_r"]["basis"]
+        == "days_with_at_least_one_trade"
+    )
+
+
+def test_recording_failure_finishes_experiment_inconclusive(tmp_path):
+    class BrokenSink:
+        failures = ["boom"]
+
+        def record(self, *a, **k):
+            return None
+
+    spec = _spec()
+    result = _run(spec)
+    assert result.state == "completed"
+    store = SqliteResearchStore(tmp_path / "r.sqlite3")
+    try:
+        experiment_id = record_fixed_rule_study(
+            store, result, sinks={s: BrokenSink() for s in spec.symbols},
+            ruleset_for={s: None for s in spec.symbols}, definition=study_definition(spec, effective_ruleset_hash="a" * 64),
+        )
+        stored = _read_experiment(tmp_path / "r.sqlite3", experiment_id)
+    finally:
+        store.close()
+    assert stored["state"] == "inconclusive"
+    assert stored["result"]["recording_errors"] == ["boom", "boom"]

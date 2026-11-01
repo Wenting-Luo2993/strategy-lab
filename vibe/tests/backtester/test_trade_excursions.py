@@ -206,3 +206,15 @@ def test_ledger_digest_ignores_excursions() -> None:
         )
 
     assert trade_ledger_digest([make(-0.3, 1.2)]) == trade_ledger_digest([make(None, None)])
+
+
+def test_scale_in_fill_price_is_inside_observed_range() -> None:
+    pm, clock = PortfolioManager(100_000.0), SimulatedClock()
+    _open(pm, clock, "buy", 100.0, 99.0, qty=10)
+    pm.add_to_position(
+        fill=FillResult("QQQ", "buy", 10, 101.0), timestamp=_at(9, 40)
+    )
+    pos = pm.positions["QQQ"]
+    assert pos.entry_price == pytest.approx(100.5)
+    assert pos.min_price <= pos.entry_price <= pos.max_price
+    assert pos.max_price == pytest.approx(101.0)

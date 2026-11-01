@@ -344,6 +344,7 @@ class PortfolioManager:
         # Update position (quantity and entry_price only; stop/TP unchanged)
         pos.quantity = total_quantity
         pos.entry_price = weighted_avg_price
+        self._observe_prices(pos, fill.avg_price)
         # Each scale-in is a separate order and is billed as one.
         cash_before = self.cash
         add_commission = self._charge_commission(
