@@ -76,8 +76,9 @@ def tercile_breakdown(
     *,
     confidence_level: float = 0.95,
     min_edge_r: float = 0.05,
+    cutoffs: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
-    # (session date, symbol, variable value, net R, assigned later)
+    # rows: [session date, symbol, variable value, net R, tercile assigned later]
     joined: list[list[Any]] = []
     n_missing = 0
     for symbol in sorted(trades_by_symbol):
@@ -111,8 +112,11 @@ def tercile_breakdown(
     if not joined:
         return result
 
-    values = np.array([row[2] for row in joined])
-    low_cut, high_cut = (float(q) for q in np.quantile(values, [1 / 3, 2 / 3]))
+    if cutoffs is None:
+        values = np.array([row[2] for row in joined])
+        low_cut, high_cut = (float(q) for q in np.quantile(values, [1 / 3, 2 / 3]))
+    else:
+        low_cut, high_cut = float(cutoffs["low"]), float(cutoffs["high"])
     result["cutoffs"] = {"low": low_cut, "high": high_cut}
     for row in joined:
         row[4] = _bucket(row[2], low_cut, high_cut)

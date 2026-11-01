@@ -84,6 +84,18 @@ def test_missing_values_counted_cutoffs_stored_and_json_safe():
     json.dumps(out, allow_nan=False)
 
 
+def test_supplied_cutoffs_are_used_as_given():
+    days = _days(60)
+    values = list(range(60))
+    trades = [_trade(d, 0.1, "AAA") for d in days]
+    out = tercile_breakdown(
+        {"AAA": trades}, {"AAA": _features(days, values)}, "x",
+        cutoffs={"low": 10.0, "high": 50.0},
+    )
+    assert out["cutoffs"] == {"low": 10.0, "high": 50.0}
+    assert [out["terciles"][t]["n"] for t in ("low", "mid", "high")] == [11, 40, 9]
+
+
 def test_empty_and_unknown_variable_are_safe():
     out = tercile_breakdown({}, {}, "x")
     assert out["n_trades"] == 0 and out["interaction"] is None

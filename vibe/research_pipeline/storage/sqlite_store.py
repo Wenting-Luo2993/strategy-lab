@@ -356,6 +356,45 @@ class SqliteResearchStore:
                 now=now,
             )
 
+    def trial_counts(self, programme: str) -> dict[str, Any]:
+        """Sum ``definition.trial.n_trials`` for a programme by phase and family.
+
+        Every experiment state counts, including failed and archived ones.
+        """
+        rows = self._conn.execute(
+            """SELECT json_extract(definition_json, '$.trial.phase') AS phase,
+                      json_extract(definition_json, '$.trial.family') AS family,
+                      COUNT(*) AS experiments,
+                      SUM(COALESCE(json_extract(definition_json, '$.trial.n_trials'), 1))
+                          AS trials
+               FROM research_experiments
+               WHERE json_extract(definition_json, '$.trial.programme') = ?
+               GROUP BY phase, family""",
+            (programme,),
+        ).fetchall()
+        by_phase: dict[str, int] = {}
+        by_family: dict[str, int] = {}
+        cells = []
+        for row in rows:
+            trials = int(row["trials"])
+            by_phase[row["phase"]] = by_phase.get(row["phase"], 0) + trials
+            by_family[row["family"]] = by_family.get(row["family"], 0) + trials
+            cells.append(
+                {
+                    "phase": row["phase"],
+                    "family": row["family"],
+                    "experiments": int(row["experiments"]),
+                    "trials": trials,
+                }
+            )
+        return {
+            "programme": programme,
+            "total_trials": sum(by_phase.values()),
+            "by_phase": dict(sorted(by_phase.items())),
+            "by_family": dict(sorted(by_family.items())),
+            "cells": sorted(cells, key=lambda c: (c["phase"], c["family"])),
+        }
+
     def archive_experiment(
         self,
         experiment_id: str,

@@ -146,6 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             family=args.trial_family,
             label=args.trial_label or args.title,
             hypothesis_ids=tuple(args.hypothesis_id),
+            n_trials=max(1, len(args.condition)),
         )
     spec = FixedRuleSpec(
         title=args.title,
