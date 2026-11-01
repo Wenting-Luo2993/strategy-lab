@@ -482,7 +482,7 @@ the calibration a first-time researcher needs before judging real results.
 | --- | --- | --- | --- | --- |
 | R0 | ORB direction study (done) | Selection-procedure walk-forward | 2021-01 to 2024-10 | Rejected: re-tuning procedure not supported; no persistently best setting |
 | R0b | Symmetric ORB duration stability study (done 2026-10-29, experiment `01a188c5-4d7b-7a24-b237-23aedfa5c6d7`) | Selection-procedure walk-forward, direction fixed to symmetric, durations 5/15/30 | Reused 2021–2024 development data | Rejected: 625 stitched TEST trades, +0.108R, interval crosses zero and parameter neighbourhood unstable |
-| R1 | Data availability check | Prerequisite | Provider history | How far back clean intraday QQQ data goes; decides whether R5 is possible. The holdout declaration treats every session through 2024-12-31 as already used, and the local data has only 15 sessions after the holdout |
+| R1 | Data availability check (done 2026-10-31) | Prerequisite | Local manifests and `config/final_holdout.yaml` | Local data covers AMZN, GOOGL, MSFT, QQQ and TSLA from 2018-05 to 2026-04-27. The holdout lock records that every session through 2024-12-31 already influenced ORB research for these symbols, so QQQ has no fresh pre-2021 history. Fresh evidence must come from new symbols or forward data (Section 6.6) |
 | R2 | Duration × direction sweep, for example 5/10/15/20/30/45/60 minutes, all fixed rules on every session | Exploratory sweep | 2021–2024 (already seen) | Response surface with intervals and year-by-year results; look for a plateau, not a peak; record all trials. Descriptive only (see note below) |
 | R3 | Attribution of R2 | Attribution | 2021–2024 (already seen) | A mechanism story, and possibly a filter hypothesis; diagnostic only |
 | R4 | Register one hypothesis | Design step | None | One locked rule chosen from a plateau plus mechanism; prediction, kill criteria, minimum edge of interest and MDE |
@@ -503,6 +503,192 @@ therefore useful only to *understand* the response surface and to practise
 reading results. It must not be used to pick a rule for confirmation unless
 the rule also has an independent mechanism and fresh data exists (R1). A
 genuinely new economic hypothesis needs its own registration cycle.
+
+### 6.5 Which experiments show an edge?
+
+No single experiment proves an edge. Each step in the chain removes one way of
+fooling yourself. Only the **fixed-rule confirmation on fresh data** can show
+that an edge exists: one rule locked in advance, tested on data that did not
+influence choosing it, with the 95% interval for after-cost expectancy wholly
+above 0R.
+
+| Step | Experiment | Way of being fooled it rules out |
+| --- | --- | --- |
+| 1 | Platform validation (V1–V9) | The backtester is wrong: look-ahead, costs, accounting |
+| 2 | Exploration (sweep, attribution) | Nothing. It only produces a candidate rule and a mechanism |
+| 3 | **Fixed-rule confirmation on fresh data** | **Luck and hindsight selection. This is the edge test** |
+| 4 | Robustness (costs, neighbouring settings, regimes, Monte Carlo) | An edge that is real but fragile or depends on one exact parameter |
+| 5 | Final holdout, used once | Hidden overfitting to all development data |
+| 6 | Paper trading, then small live | Fills, slippage and real-world execution |
+
+"There is an edge" means steps 1, 3 and 4 pass and steps 5 and 6 do not
+contradict them. Even then it means "an edge large enough to detect at this
+sample size", never certainty.
+
+A selection-procedure walk-forward such as R0 can also establish an edge, but
+only for the re-tuning *procedure*, and only when that procedure is exactly
+what would be traded live.
+
+A rejected or underpowered study is "not shown", not "shown absent". R0's 95%
+interval was −0.06R to +0.21R, which is still compatible with a real edge of
+about +0.07R. Detecting an edge that small reliably needs more than 3,000
+trades.
+
+### 6.6 Designing an edge research programme, using ORB as the example
+
+A useful strategy programme answers four questions, in this order:
+
+1. **Is there an edge?**
+2. **How large is it?**
+3. **In which market conditions does it hold?** (the pre-screen or filter)
+4. **How can it be made larger?**
+
+Questions 3 and 4 tempt the most overfitting, so they must be explored on one
+set of data and confirmed on another.
+
+#### The evidence budget comes first
+
+Fresh data, not experiment design, is the scarce resource. Plan how to spend
+it before running anything.
+
+Current facts:
+
+- Local data covers AMZN, GOOGL, MSFT, QQQ and TSLA from 2018-05 to
+  2026-04-27.
+- `config/final_holdout.yaml` records that every session through 2024-12-31
+  already influenced ORB research for these symbols.
+- 2025-01-01 through 2026-04-27 is the locked final holdout for these five
+  symbols.
+
+| Evidence source | Status | Approximate size | Best use |
+| --- | --- | --- | --- |
+| The five researched symbols, 2018–2024 | Already seen | ~1,650 sessions each | **Exploration**: reuse freely, never call it confirmation |
+| New liquid symbols never used for ORB research, 2018–2024 | Fresh, after data acquisition | For example 20 symbols × ~1,650 sessions | **Confirmation set** for registered hypotheses |
+| Forward data after 2026-04-27 | Fresh, accruing | ~250 sessions per symbol per year | Second confirmation, then shadow or paper trading |
+| Five symbols, 2025-01 to 2026-04 | Locked holdout | ~330 sessions each | One final check against the acceptance rule pre-registered in `final_holdout.yaml` (≥0.10R, ≥200 trades) |
+
+The key design idea is a **cross-sectional split**: explore on symbols already
+seen, and confirm on symbols never examined over the same years. Freeze the
+confirmation universe, choosing symbols by liquidity, before looking at any of
+their results.
+
+Two cautions apply:
+
+- Trades on different symbols on the same day are correlated, because a
+  market-wide move affects them all. Measure uncertainty by **day** (average
+  the day's R across symbols, then compute the interval across days), not by
+  treating every trade as independent.
+- Single stocks behave differently from ETFs because of earnings, news and
+  gaps. Decide in advance whether the hypothesis is about ETFs, stocks or both.
+
+Power improves dramatically. Twenty new symbols over 2018–2024 give roughly
+25,000 nominal trades. Even if same-day correlation reduces the effective
+sample several-fold, the minimum detectable edge falls to roughly 0.03–0.06R,
+compared with ~0.19R for the QQQ-only studies.
+
+The confirmation set must also be **budgeted**. Allow at most about three
+registered confirmatory tests on it, splitting the 5% false-positive allowance
+between them (for example 1.67% each). After that it becomes "already seen"
+like everything else.
+
+#### Q1. Is there an edge? Baseline confirmation
+
+- Fix one baseline rule anchored to a mechanism or prior work, not to our own
+  results. One published anchor is the 5-minute ORB on QQQ (Zarattini and Aziz,
+  2023): stop at the opposite side of the range, exit at a 10R target or the
+  end of the day.
+- Describe the baseline freely on the exploration symbols first, to catch
+  implementation problems.
+- Register, then run once on the confirmation set.
+- **Output:** supported, contradicted or underpowered.
+
+#### Q2. How large is it? Honest sizing
+
+- Take the size from the **confirmation** estimate only. Every number from
+  exploration is inflated by selection. The gap between the early development
+  estimate of about 0.30R (recorded in `final_holdout.yaml`) and the
+  walk-forward results of about 0.08–0.11R shows how large that inflation can
+  be.
+- Report:
+  - expectancy in R with its 95% interval;
+  - after-cost return per trade in basis points;
+  - trades per year;
+  - R per year (expectancy × trades per year);
+  - the **cost break-even**: the cost per trade at which the edge reaches
+    zero. This is the margin of safety against slippage.
+
+#### Q3. Where does it hold? Conditions and pre-screening
+
+- Predeclare a short list of conditioning variables. Each must have a
+  mechanism and be known before entry:
+
+  | Variable | Mechanism |
+  | --- | --- |
+  | Relative opening volume ("stock in play") | Unusual participation, often a catalyst, should sustain intraday trends. The central idea of Zarattini, Barbon and Aziz (2024) |
+  | Overnight gap size and direction | News arriving overnight changes opening behaviour |
+  | Opening-range width relative to ATR | Tight ranges may break more cleanly; wide ranges put stops far away |
+  | Volatility regime (ATR percentile, VIX if available) | Breakouts need movement to pay |
+  | Prior multi-day trend | Breakouts aligned with the trend may continue further |
+  | Instrument type (ETF or single stock) | Different news exposure and gap behaviour |
+
+- **Explore:** on the exploration symbols, show expectancy by tercile of each
+  variable, with intervals and trade counts. Trust only patterns that are
+  **monotonic** (low, middle, high in order) and consistent across symbols and
+  years. Label all of this diagnostic.
+- **Choose at most two** filters by mechanism plus a monotonic pattern.
+  Register each as an *interaction* claim, for example "expectancy in the top
+  relative-volume tercile exceeds the bottom tercile", alongside "the filtered
+  rule has positive expectancy".
+- **Confirm** on the confirmation set.
+- Judge a filter by **total edge** (R per year, or a risk-adjusted equivalent),
+  not by expectancy alone. A filter that keeps a third of the trades must lift
+  expectancy substantially to be worth it.
+- Conditions where the edge reliably *fails* are just as valuable. They become
+  kill switches or no-trade days.
+
+#### Q4. How can it be made larger? Enhancements
+
+Likely levers for ORB, in rough order of impact:
+
+1. **What to trade:** selection by relative volume, which links to Q3.
+2. **When to trade:** the conditions found in Q3.
+3. **Exits:** stop distance, target multiple, trailing stop, time exit.
+   Diagnose them with MAE/MFE: how far trades went against and in favour
+   before exiting. This requires the MAE/MFE recording in roadmap 9.2.
+4. **Entry confirmation:** a volume threshold or a retest of the range.
+5. **Execution cost:** order type and timing.
+
+Position sizing changes dollar returns and drawdown, not expectancy in R.
+Treat it as a separate risk question.
+
+Process:
+
+- Change **one lever at a time** against the baseline on the *same* sessions,
+  and compare the per-session difference. The paired comparison is far less
+  noisy than two separate backtests.
+- Do this on exploration data only, and count every variant tried as a trial.
+- Bundle the surviving changes into **one** new rule, register it, and confirm
+  the bundle once. Do not confirm each tweak separately.
+- Prefer simple exits justified by the MAE/MFE pattern over finely tuned
+  values.
+
+#### Programme stages
+
+| Stage | Question | Experiment type | Data | Done when |
+| --- | --- | --- | --- | --- |
+| 0 | Can I trust the tool? | Platform validation V3, V5, V6, V7 | Synthetic and seen data | False-positive rate and planted-edge power are measured |
+| 1 | Universe | Prerequisite | Acquire new liquid symbols | Confirmation universe and its data manifest are frozen before any results are viewed |
+| 2 | Understand the baseline | Exploration and attribution | Five seen symbols, 2018–2024 | One baseline rule, at most two filters and at most one exit change are chosen with mechanisms |
+| 3 | Is there an edge, and how large? | Fixed-rule confirmation (Q1, Q2) | Confirmation set, test 1 of 3 | Supported, contradicted or underpowered, with honest size |
+| 4 | Where does it hold? | Interaction confirmation (Q3) | Confirmation set, test 2 of 3 | Filter supported or not |
+| 5 | Can it be larger? | Bundle confirmation (Q4) | Confirmation set, test 3 of 3 | Enhanced rule supported or not |
+| 6 | Is it fragile? | Robustness | Confirmation set | Survives cost stress, neighbouring settings and regime splits |
+| 7 | Final check | Final holdout, once | 2025-01 to 2026-04 | Pre-registered acceptance rule met |
+| 8 | Does it survive reality? | Forward, paper, then small live | After 2026-04-27 | Live fills match modelled costs |
+
+If stage 3 is contradicted, stop. Do not proceed to filters and enhancements
+in the hope of rescuing it: that turns confirmation data into exploration
+data.
 
 ## 7. How established platforms present results
 
@@ -582,7 +768,10 @@ holdout locked and never chooses filters from TEST outcomes.
 
 ### 9.4 ORB research programme (gaps 2, 10, research)
 
-- Follow Section 6.4: R1 data availability check, R2 exploratory sweep, R3
+- Preferred path: the edge research programme in Section 6.6. Acquire and
+  freeze a never-researched confirmation universe, explore on the five seen
+  symbols, then spend at most three registered confirmatory tests.
+- QQQ-only path: follow Section 6.4: R2 exploratory sweep, R3
   attribution, then R4 registration of exactly one locked rule.
 - Lock exactly one configuration (direction and duration) before
   confirmation, justified by a plateau in R2 plus mechanism, never by the
@@ -627,3 +816,10 @@ holdout locked and never chooses filters from TEST outcomes.
   <https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2460551>
 - Bailey, Borwein, López de Prado and Zhu, *The Probability of Backtest
   Overfitting*: <https://papers.ssrn.com/sol3/Papers.cfm?abstract_id=2326253>
+- Zarattini and Aziz, *Can Day Trading Really Be Profitable? Evidence of
+  Sustainable Long-term Profits from Opening Range Breakout (ORB) Day Trading
+  Strategy vs. Benchmark in the US Stock Market* (2023):
+  <https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4416622>
+- Zarattini, Barbon and Aziz, *A Profitable Day Trading Strategy for the U.S.
+  Equity Market*, Swiss Finance Institute Research Paper No. 24-98 (2024),
+  available on SSRN.
