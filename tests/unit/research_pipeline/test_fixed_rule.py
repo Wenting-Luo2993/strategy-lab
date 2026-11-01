@@ -282,6 +282,28 @@ def test_cli_smoke_without_recording(tmp_path, capsys):
     assert "Outcome vs" in out
 
 
+def test_cli_condition_option(tmp_path, capsys):
+    from scripts.run_fixed_rule_study import main
+
+    idx = pd.date_range("2024-01-02 09:30", "2024-01-31 15:55", freq="5min", tz=NY)
+    idx = idx[(idx.time <= pd.Timestamp("15:55").time()) & (idx.dayofweek < 5)]
+    price = 100 + (pd.Series(range(len(idx)), index=idx) % 7) * 0.1
+    pd.DataFrame(
+        {"open": price, "high": price + 0.3, "low": price - 0.3,
+         "close": price + 0.05, "volume": 1000.0},
+        index=idx,
+    ).to_parquet(tmp_path / "ZZZ.parquet")
+    base = [
+        "--title", "smoke", "--symbols", "ZZZ", "--start", "2024-01-16",
+        "--end", "2024-01-31", "--evidence-role", "platform_validation",
+        "--data-dir", str(tmp_path), "--warmup-sessions", "5",
+        "--bootstrap-replicates", "50", "--no-record",
+    ]
+    assert main(base + ["--condition", "gap_pct"]) == 0
+    assert "Condition gap_pct (diagnostic)" in capsys.readouterr().out
+    assert main(base + ["--condition", "bogus"]) == 2
+
+
 def test_per_day_basis_is_labelled():
     assert (
         _run(_spec()).summary["per_day_mean_r"]["basis"]

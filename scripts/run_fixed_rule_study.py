@@ -60,6 +60,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     p.add_argument("--registration", type=Path, default=None,
                    help="Pre-registration file; its sha256 is stored in the definition")
+    p.add_argument("--condition", action="append", default=[],
+                   help="Session feature for a diagnostic tercile breakdown (repeatable)")
     p.add_argument("--no-record", action="store_true")
     return p.parse_args(argv)
 
@@ -88,6 +90,14 @@ def _print_summary(result) -> None:
     print("\nBy year:")
     for year, row in s["by_year"].items():
         print(f"  {year}  n={row['n']:<5} mean={_fmt(row['mean_r'])}R")
+    for variable, block in s.get("conditions", {}).items():
+        ix = block["interaction"]
+        shown = (
+            "n/a" if ix is None
+            else f"{_fmt(ix['high_minus_low_r'])}R [{_fmt(ix['ci_low_r'])}, {_fmt(ix['ci_high_r'])}]"
+        )
+        print(f"\nCondition {variable} (diagnostic): high-low={shown} "
+              f"monotonic={block['monotonic']} missing={block['n_missing']}")
     if s["errors"]:
         print("\nErrors:")
         for symbol, message in s["errors"].items():
@@ -211,6 +221,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     except HoldoutViolation as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
+
+    if args.condition:
+        from vibe.research_pipeline.conditional import condition_blocks
+
+        trades_by_symbol = {
+            s: list(getattr(r, "trades", ()) or ())
+            for s, r in result.per_symbol.items()
+            if r is not None
+        }
+        reference = next(iter(rulesets.values()), None)
+        try:
+            result.summary["conditions"] = condition_blocks(
+                data_dir,
+                trades_by_symbol,
+                args.condition,
+                start=spec.start,
+                end=spec.end,
+                or_minutes=reference.strategy.orb_duration_minutes if reference else 5,
+                timeframe=reference.instruments.timeframe if reference else "5m",
+                confidence_level=spec.confidence_level,
+                min_edge_r=spec.min_edge_r,
+            )
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
 
     _print_summary(result)
 
