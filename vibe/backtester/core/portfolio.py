@@ -432,7 +432,15 @@ class PortfolioManager:
             pos = self.positions[symbol]
 
             # Update stop from trailing rules before evaluating exits.
+            stop_before = pos.stop_price
             self._maybe_update_trailing_stop(pos=pos, bar=bar)
+            if pos.stop_price != stop_before:
+                # The trail only moves because this bar reached its favourable
+                # extreme, so that extreme counts toward MFE even if the same
+                # bar then hits the moved stop.
+                self._observe_prices(
+                    pos, bar.high if pos.side == "buy" else bar.low
+                )
 
             is_long = pos.side == "buy"
             if is_long:

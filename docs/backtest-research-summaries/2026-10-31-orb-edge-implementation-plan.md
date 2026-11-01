@@ -89,7 +89,7 @@ Viewer tests (Node 22.13 or newer):
 ```powershell
 node --check tools\backtest-research-viewer\server.mjs
 node --check tools\backtest-research-viewer\public\app.mjs
-node --test tools\backtest-research-viewer\tests\
+node --test (Get-ChildItem tools\backtest-research-viewer\tests\*.test.mjs).FullName
 ```
 
 If a pre-existing test fails before your change, record it in the stage

@@ -94,6 +94,23 @@ def test_trailing_stop_keeps_initial_risk_denominator() -> None:
     assert trade.mae_r == pytest.approx(0.0)
 
 
+def test_trail_moved_and_hit_on_same_bar_counts_bar_extreme() -> None:
+    cfg = {"method": "breakeven_plus_ticks", "trigger_r": 1.0, "plus_ticks": 0}
+    pm, clock = PortfolioManager(100_000.0, trailing_stop_config=cfg), SimulatedClock()
+    _open(pm, clock, "buy", 100.0, 98.0)
+    _step(pm, clock, _at(10, 0), _bar(_at(10, 0), 100.5, 102.5, 99.9, 100.0))
+    (trade,) = pm.trade_history
+    assert trade.exit_reason == "STOP"
+    assert trade.mfe_r == pytest.approx(1.25)
+
+    pm, clock = PortfolioManager(100_000.0, trailing_stop_config=cfg), SimulatedClock()
+    _open(pm, clock, "sell", 100.0, 102.0)
+    _step(pm, clock, _at(10, 0), _bar(_at(10, 0), 99.5, 100.1, 97.5, 100.0))
+    (trade,) = pm.trade_history
+    assert trade.exit_reason == "STOP"
+    assert trade.mfe_r == pytest.approx(1.25)
+
+
 def test_excursions_none_when_risk_is_zero() -> None:
     pm, clock = PortfolioManager(100_000.0), SimulatedClock()
     _open(pm, clock, "buy", 100.0, 100.0)
