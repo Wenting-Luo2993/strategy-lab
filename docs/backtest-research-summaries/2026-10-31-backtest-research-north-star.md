@@ -556,7 +556,11 @@ Current facts:
 - Local data covers AMZN, GOOGL, MSFT, QQQ and TSLA from 2018-05 to
   2026-04-27.
 - `config/final_holdout.yaml` records that every session through 2024-12-31
-  already influenced ORB research for these symbols.
+  already influenced ORB research for these symbols. Most research used only
+  QQQ, but the P5b universe check viewed ORB results for all five symbols, and
+  all five are configured for live trading. The plan in
+  `2026-10-31-orb-edge-research-plan.md` therefore treats all five as
+  exploration data.
 - 2025-01-01 through 2026-04-27 is the locked final holdout for these five
   symbols.
 
@@ -690,6 +694,10 @@ If stage 3 is contradicted, stop. Do not proceed to filters and enhancements
 in the hope of rescuing it: that turns confirmation data into exploration
 data.
 
+The step-by-step version of this programme is in
+`2026-10-31-orb-edge-research-plan.md`. It covers the procedure, outputs,
+viewer views, decision gates and required pipeline capabilities for each step.
+
 ## 7. How established platforms present results
 
 | Platform | Useful idea to borrow |
@@ -768,8 +776,9 @@ holdout locked and never chooses filters from TEST outcomes.
 
 ### 9.4 ORB research programme (gaps 2, 10, research)
 
-- Preferred path: the edge research programme in Section 6.6. Acquire and
-  freeze a never-researched confirmation universe, explore on the five seen
+- Preferred path: the edge research programme in Section 6.6, written out
+  step by step in `2026-10-31-orb-edge-research-plan.md`. Freeze a
+  never-researched confirmation universe, explore on the five seen
   symbols, then spend at most three registered confirmatory tests.
 - QQQ-only path: follow Section 6.4: R2 exploratory sweep, R3
   attribution, then R4 registration of exactly one locked rule.
