@@ -1624,6 +1624,8 @@ class SqliteResearchStore:
                 _opt_float(getattr(trade, "commission", None)),
                 _opt_float(getattr(trade, "initial_risk", None)),
                 _opt_str(getattr(trade, "exit_reason", None)),
+                _opt_float(getattr(trade, "mae_r", None)),
+                _opt_float(getattr(trade, "mfe_r", None)),
                 now,
             )
             for index, trade in enumerate(trades)
@@ -1635,8 +1637,8 @@ class SqliteResearchStore:
                 INSERT INTO run_trades (
                     run_id, sequence, symbol, side, quantity, entry_price,
                     exit_price, entry_time, exit_time, pnl, commission,
-                    initial_risk, exit_reason, recorded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    initial_risk, exit_reason, mae_r, mfe_r, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )
@@ -1722,12 +1724,14 @@ class SqliteResearchStore:
                 commission=row["commission"],
                 initial_risk=row["initial_risk"],
                 exit_reason=row["exit_reason"],
+                mae_r=row["mae_r"],
+                mfe_r=row["mfe_r"],
             )
             for row in self._conn.execute(
                 """
                 SELECT sequence, symbol, side, quantity, entry_price,
                        exit_price, entry_time, exit_time, pnl, commission,
-                       initial_risk, exit_reason
+                       initial_risk, exit_reason, mae_r, mfe_r
                 FROM run_trades WHERE run_id = ? ORDER BY sequence
                 """,
                 (run_id,),

@@ -21,7 +21,7 @@ def test_forward_migration_from_v11_adds_decision_boundary_tables():
         )
     connection.commit()
 
-    assert schema.migrate(connection) == 16
+    assert schema.migrate(connection) == 17
     tables = {
         row[0]
         for row in connection.execute(

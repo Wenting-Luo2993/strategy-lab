@@ -62,6 +62,8 @@ class StoredTrade:
     commission: Optional[float]
     initial_risk: Optional[float]
     exit_reason: Optional[str]
+    mae_r: Optional[float] = None
+    mfe_r: Optional[float] = None
 
 
 class StoreError(RuntimeError):

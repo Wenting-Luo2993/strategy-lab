@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -1209,6 +1209,11 @@ BEGIN
 END;
 """
 
+_MIGRATION_17 = """
+ALTER TABLE run_trades ADD COLUMN mae_r REAL;
+ALTER TABLE run_trades ADD COLUMN mfe_r REAL;
+"""
+
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -1226,6 +1231,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (14, _MIGRATION_14),
     (15, _MIGRATION_15),
     (16, _MIGRATION_16),
+    (17, _MIGRATION_17),
 ]
 
 

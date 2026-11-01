@@ -48,6 +48,16 @@ class Position:
     entry_commission: float = 0.0
     """Commission paid to open, carried so the closed Trade reports the full
     round trip rather than the exit leg alone."""
+    max_price: Optional[float] = None
+    min_price: Optional[float] = None
+    """Highest and lowest price observed while the position was open, used for
+    MAE/MFE. See ``PortfolioManager._observe_prices``."""
+
+    def __post_init__(self) -> None:
+        if self.max_price is None:
+            self.max_price = self.entry_price
+        if self.min_price is None:
+            self.min_price = self.entry_price
 
 
 class PortfolioManager:
@@ -359,6 +369,8 @@ class PortfolioManager:
         # R-multiple denominator must remain anchored to entry-time risk.
         # Do not use the moved trailing stop at exit time.
         initial_risk = abs(pos.entry_price - pos.initial_stop_price) * pos.quantity
+        self._observe_prices(pos, fill.avg_price)
+        mae_r, mfe_r = self._excursions_r(pos)
 
         cash_before = self.cash
         exit_commission = self._charge_commission(
@@ -375,6 +387,8 @@ class PortfolioManager:
             initial_risk=initial_risk,
             exit_reason=exit_reason,
             commission=pos.entry_commission + exit_commission,
+            mae_r=mae_r,
+            mfe_r=mfe_r,
         ))
         if fill.side == "sell":  # closing long
             self.cash += fill.filled_qty * fill.avg_price
@@ -436,19 +450,52 @@ class PortfolioManager:
                     tp_hit = False
 
             if tp_hit:
+                self._observe_prices(pos, pos.take_profit)
                 self._close_at_level(
                     pos=pos, bar=bar, level=pos.take_profit,
                     reason="TP", clock=clock,
                 )
                 continue
             if stop_hit:
+                self._observe_prices(pos, pos.stop_price)
                 self._close_at_level(
                     pos=pos, bar=bar, level=pos.stop_price,
                     reason="STOP", clock=clock,
                 )
                 continue
+            self._observe_prices(pos, bar.high, bar.low)
             if is_eod:
                 self._close_at_bar_close(symbol, bar, clock, reason="EOD")
+
+    def _observe_prices(self, pos: Position, *prices: float) -> None:
+        """Extend the position's observed price range.
+
+        Observed prices are the entry fill, every evaluated bar's high and low
+        while open, the trigger level on a STOP/TP bar (the order of high and
+        low inside that bar is unknowable and the path after the exit is
+        irrelevant), and the exit fill. The fill bar itself is excluded: exits
+        are checked before entries on the same bar and the part of that bar
+        after the fill cannot be recovered from OHLC, so MAE/MFE ignores it.
+        """
+        for price in prices:
+            if price > pos.max_price:
+                pos.max_price = price
+            if price < pos.min_price:
+                pos.min_price = price
+
+    @staticmethod
+    def _excursions_r(pos: Position) -> tuple[Optional[float], Optional[float]]:
+        """``(mae_r, mfe_r)`` in initial-risk multiples, or ``(None, None)``."""
+        risk = abs(pos.entry_price - pos.initial_stop_price)
+        if risk <= 0:
+            return None, None
+        if pos.side == "buy":
+            favourable = pos.max_price - pos.entry_price
+            adverse = pos.min_price - pos.entry_price
+        else:
+            favourable = pos.entry_price - pos.min_price
+            adverse = pos.entry_price - pos.max_price
+        return min(0.0, adverse / risk), max(0.0, favourable / risk)
 
     def _close_at_bar_close(
         self, symbol: str, bar: Bar, clock, *, reason: str

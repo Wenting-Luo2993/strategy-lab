@@ -90,6 +90,8 @@ function createFixture() {
       initial_risk REAL,
       exit_reason TEXT,
       recorded_at TEXT NOT NULL,
+      mae_r REAL,
+      mfe_r REAL,
       UNIQUE (run_id, sequence)
     );
     CREATE TABLE run_equity_points (
@@ -371,12 +373,14 @@ function createFixture() {
       const insertTrade = database.prepare(`
         INSERT INTO run_trades (
           run_id, sequence, symbol, side, quantity, entry_price, exit_price,
-          entry_time, exit_time, pnl, commission, initial_risk, exit_reason, recorded_at
-        ) VALUES (?, ?, 'SPY', 'long', 10, 100, ?, ?, ?, ?, 1.5, 50, 'target', ?)
+          entry_time, exit_time, pnl, commission, initial_risk, exit_reason, recorded_at,
+          mae_r, mfe_r
+        ) VALUES (?, ?, 'SPY', 'long', 10, 100, ?, ?, ?, ?, 1.5, 50, 'target', ?, ?, ?)
       `);
       for (let seq = 0; seq < 3; seq += 1) {
         insertTrade.run(
           runId, seq, 100 + seq, timestamp, timestamp, seq * 25, timestamp,
+          seq === 0 ? null : -0.5 * seq, seq === 0 ? null : 1 + seq,
         );
       }
       const insertPoint = database.prepare(`
@@ -1005,6 +1009,10 @@ test("serves retained trade rows and 404s for an unknown run", async () => {
     assert.equal(response.json.trades[0].symbol, "SPY");
     assert.equal(response.json.trades[0].sequence, 0);
     assert.equal(response.json.trades[2].pnl, 50);
+    assert.equal(response.json.trades[0].maeR, null);
+    assert.equal(response.json.trades[2].maeR, -1);
+    assert.equal(response.json.trades[2].mfeR, 3);
+    assert.equal(response.json.trades[2].netR, (50 - 1.5) / 50);
 
     const missing = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-00000000009f/trades");
     assert.equal(missing.status, 404);

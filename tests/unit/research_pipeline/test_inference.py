@@ -137,8 +137,14 @@ def test_edge_cases() -> None:
 def test_to_dict_is_json_safe() -> None:
     import json
 
-    payload = estimate_mean([]).to_dict()
+    payload = estimate_mean(
+        [Observation(float(i % 5), f"d{i % 3}") for i in range(30)],
+        bootstrap_replicates=20,
+        bootstrap_seed=1,
+    ).to_dict()
     json.dumps(payload, allow_nan=False)
+    assert payload["bootstrap_ci_low_r"] is not None
+    json.dumps(estimate_mean([]).to_dict(), allow_nan=False)
     assert isinstance(estimate_mean([Observation(1, "a")]), MeanEstimate)
 
 

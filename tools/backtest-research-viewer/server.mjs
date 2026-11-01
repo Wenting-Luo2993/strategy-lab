@@ -807,9 +807,14 @@ function getRunTrades(database, runId) {
   const total = Number(Object.values(
     database.prepare("SELECT COUNT(*) FROM run_trades WHERE run_id = ?").get(runId),
   )[0]);
+  const tradeColumns = new Set(
+    database.prepare("PRAGMA table_info(run_trades)").all().map((column) => column.name),
+  );
+  const optional = (column) => (tradeColumns.has(column) ? column : `NULL AS ${column}`);
   const rows = database.prepare(`
     SELECT sequence, symbol, side, entry_time, exit_time, entry_price,
-           exit_price, quantity, pnl, exit_reason
+           exit_price, quantity, pnl, exit_reason, ${optional("commission")},
+           ${optional("initial_risk")}, ${optional("mae_r")}, ${optional("mfe_r")}
     FROM run_trades WHERE run_id = ? ORDER BY sequence LIMIT ?
   `).all(runId, MAX_DETAIL_ROWS);
 
@@ -828,9 +833,21 @@ function getRunTrades(database, runId) {
       exitPrice: numberOrNull(row.exit_price),
       quantity: numberOrNull(row.quantity),
       pnl: numberOrNull(row.pnl),
+      commission: numberOrNull(row.commission),
+      initialRisk: numberOrNull(row.initial_risk),
+      netR: netR(row),
+      maeR: numberOrNull(row.mae_r),
+      mfeR: numberOrNull(row.mfe_r),
       exitReason: row.exit_reason,
     })),
   };
+}
+
+function netR(row) {
+  const pnl = numberOrNull(row.pnl);
+  const risk = numberOrNull(row.initial_risk);
+  if (pnl === null || risk === null || risk <= 0) return null;
+  return (pnl - (numberOrNull(row.commission) ?? 0)) / risk;
 }
 
 /**

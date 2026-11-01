@@ -330,11 +330,10 @@ def cost_breakeven(trades: Sequence[Any]) -> dict[str, float | None]:
     for trade in trades:
         net_r = trade_net_r(trade)
         net = _net_pnl(trade)
-        if net is not None:
-            net_pnl_total += net
-            notional += float(trade.entry_price) * float(trade.quantity)
-        if net_r is None:
+        if net_r is None or net is None:
             continue
+        net_pnl_total += net
+        notional += float(trade.entry_price) * float(trade.quantity)
         net_rs.append(net_r)
         commission_rs.append(
             float(getattr(trade, "commission", None) or 0.0)
