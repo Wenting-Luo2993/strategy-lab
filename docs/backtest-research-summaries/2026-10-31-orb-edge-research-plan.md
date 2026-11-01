@@ -33,7 +33,7 @@ confirm. Confirmation data is spent the first time its results are viewed.
 | Data | Role | Why |
 | --- | --- | --- |
 | QQQ, 2018-05 to 2024-12 | **Exploration** | Used for pipeline validation, legacy ORB experiments (HYP-001 to HYP-004) and two walk-forward studies. Reusable for any exploration. It can only confirm a hypothesis never examined on it |
-| AMZN, GOOGL, MSFT, TSLA, 2018-05 to 2024-12 | **Exploration** (recommended) | ORB results were viewed once: the P5b universe check ran the ORB rule on all five symbols over a window of about 124 trades each and reported +0.44R to +0.78R (`2026-09-09-backtest-pipeline-implementation-plan.md`, "Cross-sectional result from P5b"). They are also configured for live trading |
+| AMZN, GOOGL, MSFT, TSLA, 2018-05 to 2024-12 | **Exploration** (decided 2026-10-31) | ORB results were viewed once: the P5b universe check ran the ORB rule on all five symbols over a window of about 124 trades each and reported +0.44R to +0.78R (`2026-09-09-backtest-pipeline-implementation-plan.md`, "Cross-sectional result from P5b"). They are also configured for live trading |
 | Other tickers with local history, 2018 to 2024, never run through ORB | **Confirmation set** | Never examined for ORB, so it can confirm hypotheses registered before its results are viewed |
 | All symbols, 2025-01-01 to 2026-04-27 | **Final holdout** | Locked by `config/final_holdout.yaml`; read once at the end |
 | All symbols, after 2026-04-27 | **Forward evidence** | Accrues at about 250 sessions per symbol per year; used for shadow and paper trading |
@@ -44,10 +44,9 @@ Notes:
   GOOGL, MSFT, QQQ and TSLA.
 - Most research used only QQQ, but the P5b check means AMZN, GOOGL, MSFT and
   TSLA are not fully fresh. Viewing one strongly positive window is enough to
-  bias which hypotheses look attractive. The safe choice is to explore on all
-  five and confirm on tickers never run through ORB. The weaker alternative is
-  to keep the four in the confirmation set but exclude the P5b window. That
-  only works if its exact dates can be recovered.
+  bias which hypotheses look attractive. **Decision (2026-10-31):** explore on
+  all five and confirm on tickers never run through ORB. The confirmation
+  tickers are chosen later, in Step 1.
 - Five exploration symbols are a strength: a Step 3 or Step 4 pattern that
   appears on QQQ but not on the other four is probably noise.
 - Every symbol added to the confirmation set should be added to the holdout
@@ -105,7 +104,7 @@ the power predicted in north-star Section 5. Otherwise fix the platform first.
 ### Step 2: Understand the baseline on the exploration set
 
 **Purpose:** see what the baseline looks like and learn to read the report.  
-**Data:** exploration set: QQQ, plus AMZN, GOOGL, MSFT and TSLA if they stay in exploration, 2018 to 2024.
+**Data:** exploration set: QQQ, AMZN, GOOGL, MSFT and TSLA, 2018 to 2024.
 
 **Baseline rule:** `vibe/rulesets/orb_production.yaml`:
 
@@ -137,7 +136,7 @@ nothing about the edge.
 
 **Purpose:** find at most two conditions under which the edge looks stronger
 or weaker.  
-**Data:** exploration set: QQQ, plus AMZN, GOOGL, MSFT and TSLA if they stay in exploration, 2018 to 2024.
+**Data:** exploration set: QQQ, AMZN, GOOGL, MSFT and TSLA, 2018 to 2024.
 
 **Procedure:**
 
@@ -166,7 +165,7 @@ pattern. Every variable examined is counted as a trial.
 ### Step 4: Explore enhancements (Q4)
 
 **Purpose:** find at most one bundled improvement to the baseline.  
-**Data:** exploration set: QQQ, plus AMZN, GOOGL, MSFT and TSLA if they stay in exploration, 2018 to 2024.
+**Data:** exploration set: QQQ, AMZN, GOOGL, MSFT and TSLA, 2018 to 2024.
 
 **Procedure:** change **one lever at a time** against the baseline on the same
 sessions and compare the per-session difference. That paired comparison is
@@ -203,7 +202,8 @@ Register up to three hypotheses, in order:
 
 For each hypothesis record:
 
-- prediction and minimum edge of interest (for example 0.05R);
+- prediction and minimum edge of interest: **0.05R after costs** (decided
+  2026-10-31);
 - the minimum detectable edge on the confirmation set, computed with
   **day-clustered** uncertainty (average the day's R across symbols first,
   then compute the interval across days);
@@ -340,15 +340,24 @@ flowchart TD
 | Holdout lock for new symbols | Step 1 | Exists; needs a config change |
 | Registration and data binding | Step 5 | Exists (merged from `backtest-roadmap-implementation`) |
 
-## 7. Open decisions
+The implementation of these capabilities is specified in
+`2026-10-31-orb-edge-implementation-plan.md`.
+
+## 7. Decisions
+
+Decided on 2026-10-31:
+
+- **Minimum edge of interest:** 0.05R per trade after costs.
+- **AMZN, GOOGL, MSFT and TSLA stay in exploration** with QQQ, because of the
+  P5b run.
+- **Implementation starts before Step 1.** Steps 0, 2, 3 and 4 need no
+  confirmation data.
+
+Still open:
 
 1. Which tickers form the confirmation set, and whether ETFs and single
-   stocks are tested as separate groups.
-2. The minimum edge of interest, for example 0.05R after costs.
-3. Whether AMZN, GOOGL, MSFT and TSLA stay in exploration (recommended,
-   because of the P5b run) or join the confirmation set with the P5b window
-   excluded.
-4. The final-holdout acceptance criteria for the confirmation universe.
+   stocks are tested as separate groups. Step 1 is blocked on this.
+2. The final-holdout acceptance criteria for the confirmation universe.
 
 ## 8. Sources
 

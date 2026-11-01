@@ -17,10 +17,12 @@ Fetch and check out the branch above. Read these documents in order:
    report, calibration expectations, and current roadmap.
 3. `2026-10-31-orb-edge-research-plan.md` for the step-by-step ORB edge
    research plan (Steps 0 to 11).
-4. `2026-10-18-orb-direction-statistical-reliability-v2.md`.
-5. `2026-10-18-engine-integrity-reliability-and-hypothesis-analysis.md`.
-6. `2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md`.
-7. `2026-09-09-backtest-pipeline-implementation-plan.md` for the historical
+4. `2026-10-31-orb-edge-implementation-plan.md` for the staged build (S1 to
+   S9) of the tooling that research plan needs.
+5. `2026-10-18-orb-direction-statistical-reliability-v2.md`.
+6. `2026-10-18-engine-integrity-reliability-and-hypothesis-analysis.md`.
+7. `2026-10-17-backtest-decision-boundaries-and-cleanup-plan.md`.
+8. `2026-09-09-backtest-pipeline-implementation-plan.md` for the historical
    implementation record.
 
 The Git branch transfers code and narrative conclusions. It does **not**
