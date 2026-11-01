@@ -14,10 +14,15 @@ import pytest
 from vibe.research_pipeline.contracts import (
     RetentionProfile,
     RunEvidence,
+    SegmentRole,
     ValidationCategory,
 )
 from vibe.research_pipeline.identity import RunFingerprint
 from vibe.research_pipeline.lifecycle import RunState
+from vibe.research_pipeline.methodology import (
+    FinalHoldoutAuthorization,
+    FrozenStudyDefinition,
+)
 from vibe.research_pipeline.publishing import (
     BackoffPolicy,
     PublicationKind,
@@ -36,6 +41,11 @@ from vibe.research_pipeline.publishing import (
 from vibe.research_pipeline.storage import schema
 from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
 from vibe.research_pipeline.store import StoreError
+from vibe.research_pipeline.reliability import (
+    ReliabilityPolicy,
+    ReliabilityVerdict,
+    StudyReliabilityReport,
+)
 from vibe.research_pipeline.validation import ValidationReport, ValidationScope
 
 
@@ -218,6 +228,175 @@ def test_terminal_summary_contains_only_approved_aggregates_and_identities(
 def test_forbidden_nested_aliases_are_rejected(payload: dict[str, Any]):
     with pytest.raises(StoreError, match="event-level data"):
         validate_publication_payload(PublicationKind.RUN_SUMMARY, payload)
+
+
+def test_experiment_decision_events_are_separate_safe_publications(tmp_path: Path):
+    store = SqliteResearchStore(
+        tmp_path / "research.sqlite3", origin_device_id="phase-1-device"
+    )
+    policy = ReliabilityPolicy()
+    experiment_id = store.start_experiment(
+        "ORB duration stability",
+        {"axis": "opening_range_minutes", "values": [5, 15, 30]},
+        reliability_policy=policy,
+    )
+    run_id = store.register_run(
+        fingerprint=_fingerprint("orb"),
+        methodology_version="nested-walk-forward-v1",
+        segment_role=SegmentRole.TEST,
+    )
+    store.link_experiment_run(
+        experiment_id, 0, "orb-15", SegmentRole.TEST, run_id
+    )
+    store.finish_experiment(experiment_id, "completed", {"selected": "orb-15"})
+    report = StudyReliabilityReport(
+        verdict=ReliabilityVerdict.RELIABLE,
+        policy_version=policy.version,
+        policy_hash=policy.policy_hash,
+        engine_integrity_complete=True,
+        procedure_state="completed",
+        stitched_oos_summary={"expectancy_r": 0.12},
+        fold_stability_summary={"positive_fold_fraction": 0.8},
+        robustness_summary={},
+        holdout_summary={"status": "locked"},
+        statistical_confidence={"interval_crosses_zero": False},
+        verdict_reason="All registered criteria passed.",
+        criteria=(),
+    )
+    store.record_study_reliability(experiment_id, policy, report)
+    definition = FrozenStudyDefinition.freeze(
+        strategy_id="orb",
+        ruleset_identity={"sha256": "rules"},
+        universe_identity={"symbols": ["QQQ"]},
+        dataset_ids=("dataset-1",),
+        parameter_axes=(
+            {"name": "opening_range_minutes", "values": [5, 15, 30]},
+        ),
+        split_policy={"kind": "nested"},
+        warmup_policy={"sessions": 50},
+        execution_model_version=6,
+        metric_calculation_version=2,
+        leakage_requirements=("purged",),
+        reliability_policy=policy,
+        final_holdout_lock_hash="sha256:locked",
+        frozen_at=datetime(2026, 10, 28, tzinfo=timezone.utc),
+    )
+    store.freeze_study(experiment_id, definition)
+    authorization = FinalHoldoutAuthorization(
+        token="0123456789abcdef",
+        reason="Run the locked final holdout",
+    )
+    store.authorize_final_holdout(experiment_id, authorization)
+    claim = store.claim_final_holdout(experiment_id, authorization.token)
+    store.interrupt_final_holdout(claim, "Simulated runner crash")
+
+    rows = store._conn.execute(
+        """SELECT idempotency_key, aggregate_type, parent_idempotency_key,
+                  payload_json
+           FROM publication_outbox
+           WHERE aggregate_id = ?
+           ORDER BY sequence""",
+        (experiment_id,),
+    ).fetchall()
+    assert [row["aggregate_type"] for row in rows] == [
+        "experiment_definition",
+        "experiment_membership",
+        "experiment_outcome",
+        "study_reliability",
+        "methodology_freeze",
+        "holdout_authorization",
+        "holdout_claim",
+        "holdout_terminal",
+    ]
+    assert rows[1]["parent_idempotency_key"] == (
+        f"experiment:{experiment_id}:definition"
+    )
+    for row in rows:
+        payload = json.loads(row["payload_json"])
+        validate_publication_payload(
+            PublicationKind(row["aggregate_type"]), payload
+        )
+        assert row["idempotency_key"].startswith(f"experiment:{experiment_id}:")
+        assert "token" not in row["payload_json"].lower()
+        assert "authorization_sha256" not in row["payload_json"]
+
+
+def test_experiment_outcome_and_publication_enqueue_are_atomic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    store = SqliteResearchStore(tmp_path / "research.sqlite3")
+    experiment_id = store.start_experiment("Atomic experiment", {})
+
+    def fail_enqueue(**_: Any) -> None:
+        raise RuntimeError("simulated experiment publication failure")
+
+    monkeypatch.setattr(store, "_insert_publication_tx", fail_enqueue)
+    with pytest.raises(RuntimeError, match="publication failure"):
+        store.finish_experiment(experiment_id, "completed", {"ok": True})
+
+    row = store._conn.execute(
+        """SELECT state, result_json FROM research_experiments
+           WHERE experiment_id = ?""",
+        (experiment_id,),
+    ).fetchone()
+    assert row["state"] == "running"
+    assert row["result_json"] is None
+
+
+def test_experiment_publication_rejects_secret_fields():
+    with pytest.raises(StoreError, match="event-level data"):
+        validate_publication_payload(
+            PublicationKind.HOLDOUT_AUTHORIZATION,
+            {
+                "identity": {"experiment_id": "exp"},
+                "authorization": {"authorization_token": "secret"},
+                "eligibility": {},
+                "timestamps": {},
+            },
+        )
+    with pytest.raises(StoreError, match="possible secret"):
+        validate_publication_payload(
+            PublicationKind.HOLDOUT_AUTHORIZATION,
+            {
+                "identity": {"experiment_id": "exp"},
+                "authorization": {
+                    "reason": "Authorization: Bearer super-secret-value"
+                },
+                "eligibility": {},
+                "timestamps": {},
+            },
+        )
+
+
+def test_experiment_publication_backfill_is_explicit_and_idempotent(
+    tmp_path: Path,
+):
+    store = SqliteResearchStore(tmp_path / "research.sqlite3")
+    experiment_id = store.start_experiment("Legacy experiment", {})
+    store.finish_experiment(experiment_id, "inconclusive", {"reason": "legacy"})
+    store._conn.execute(
+        """DELETE FROM publication_outbox
+           WHERE idempotency_key = ?""",
+        (f"experiment:{experiment_id}:outcome",),
+    )
+    store._conn.execute(
+        """DELETE FROM publication_outbox
+           WHERE idempotency_key = ?""",
+        (f"experiment:{experiment_id}:definition",),
+    )
+    store._conn.commit()
+
+    assert store.backfill_experiment_publications(experiment_id) == 2
+    assert store.backfill_experiment_publications(experiment_id) == 0
+    rows = store._conn.execute(
+        """SELECT aggregate_type FROM publication_outbox
+           WHERE aggregate_id = ? ORDER BY sequence""",
+        (experiment_id,),
+    ).fetchall()
+    assert [row["aggregate_type"] for row in rows] == [
+        "experiment_definition",
+        "experiment_outcome",
+    ]
 
 
 @pytest.mark.asyncio

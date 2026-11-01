@@ -156,6 +156,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--symbol", default="QQQ")
     parser.add_argument("--ruleset", type=Path, default=DEFAULT_RULESET)
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        help="Explicit parquet directory; required by a ready registration.",
+    )
+    parser.add_argument(
+        "--research-db",
+        type=Path,
+        help="Explicit authoritative SQLite database; required by a ready registration.",
+    )
     parser.add_argument("--dev-start", type=_as_date, required=True)
     parser.add_argument("--dev-end", type=_as_date, required=True)
     parser.add_argument("--oos-start", type=_as_date, required=True)
@@ -215,6 +225,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--experiment-title", help="Human-readable controlled-experiment name.")
     parser.add_argument(
+        "--registration",
+        type=Path,
+        help="Machine-readable registration that execution must match exactly.",
+    )
+    parser.add_argument(
+        "--dataset-manifest",
+        type=Path,
+        help="Bound dataset manifest required when a registration is ready.",
+    )
+    parser.add_argument(
         "--reliability-policy",
         type=Path,
         help="Optional JSON policy overrides applied to immutable Reliability Policy v1.",
@@ -255,13 +275,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "At least one --axis is required. A walk-forward with nothing to "
             "optimize is the defect this script exists to replace."
         )
-
-    try:
-        data_dir = resolve_market_data_dir()
-    except MarketDataNotFoundError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        print("Run: python scripts/convert_databento.py", file=sys.stderr)
-        return 1
+    if (args.record_runs or args.experiment_title) and not args.registration:
+        parser.error(
+            "--registration is required for recorded or titled controlled experiments"
+        )
 
     parsed = [_parse_axis(raw) for raw in args.axis]
     parameter_paths = {name: path for name, path, _ in parsed}
@@ -280,6 +297,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         step_sessions=args.step_sessions or args.test_sessions,
         indicator_lookback_sessions=args.warmup_sessions,
     )
+
+    policy_overrides = {}
+    if args.reliability_policy:
+        import json
+        policy_overrides = json.loads(args.reliability_policy.read_text(encoding="utf-8"))
+    reliability_policy = ReliabilityPolicy(**policy_overrides)
+
+    if args.registration:
+        from vibe.research_pipeline.registration import (
+            RegistrationError,
+            load_registration,
+            validate_registration_execution,
+        )
+
+        try:
+            validate_registration_execution(
+                load_registration(args.registration),
+                repository_root=Path(__file__).resolve().parent.parent,
+                symbol=args.symbol,
+                ruleset_path=args.ruleset.resolve(),
+                axes=parsed,
+                dev_start=args.dev_start,
+                dev_end=args.dev_end,
+                oos_start=args.oos_start,
+                oos_end=args.oos_end,
+                train_sessions=args.train_sessions,
+                validation_sessions=args.validation_sessions,
+                test_sessions=args.test_sessions,
+                step_sessions=args.step_sessions or args.test_sessions,
+                warmup_sessions=args.warmup_sessions,
+                record_runs=args.record_runs,
+                record_test_only=args.record_test_only,
+                reliability_policy=reliability_policy,
+                dataset_manifest_path=args.dataset_manifest,
+                data_dir_path=args.data_dir,
+                research_db_path=args.research_db,
+            )
+        except RegistrationError as exc:
+            parser.error(str(exc))
+
+    try:
+        data_dir = resolve_market_data_dir(args.data_dir)
+    except MarketDataNotFoundError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        print("Run: python scripts/convert_databento.py", file=sys.stderr)
+        return 1
 
     try:
         plan = TemporalSplitPlanner().plan(spec)
@@ -347,12 +410,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         # receives the enclosing SegmentResult. Confusing the two fails loudly
         # as an AttributeError rather than silently scoring the wrong object.
         return float(backtest_result.overall.expectancy_r)
-
-    policy_overrides = {}
-    if args.reliability_policy:
-        import json
-        policy_overrides = json.loads(args.reliability_policy.read_text(encoding="utf-8"))
-    reliability_policy = ReliabilityPolicy(**policy_overrides)
 
     from vibe.backtester.core.execution_realism import ExecutionRealismConfig
     from vibe.backtester.core.exit_slippage import FixedTickExitSlippage
@@ -434,6 +491,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             strategy_id=args.strategy_id,
             starting_equity=args.capital,
             methodology_version=METHODOLOGY_VERSION,
+            db_path=args.research_db,
             validator=recorded_validator,
         )
         roles = (

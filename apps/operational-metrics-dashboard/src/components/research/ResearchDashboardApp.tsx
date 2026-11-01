@@ -2,11 +2,17 @@
 
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createResearchDataAdapter } from "@/data/researchAdapter";
-import { pageCount, trustBadges, type TrustBadge } from "@/data/researchPresentation";
+import {
+  pageCount,
+  researchStatusOptions,
+  trustBadges,
+  type TrustBadge,
+} from "@/data/researchPresentation";
 import type {
   ResearchListQuery,
   ResearchOverview,
   ResearchPage,
+  ResearchExperimentEvent,
   ResearchPublication,
   ResearchPublicationKind,
   ResearchRegistryRecord,
@@ -33,6 +39,7 @@ const emptyOverview: ResearchOverview = {
   total: 0,
   runSummaries: 0,
   registryRecords: 0,
+  experimentEvents: 0,
   completedRuns: 0,
   validationAttention: 0,
 };
@@ -46,6 +53,7 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
   const [result, setResult] = useState(initialData?.page ?? emptyPage);
   const [query, setQuery] = useState(defaultQuery);
   const [selected, setSelected] = useState<ResearchPublication | null>(null);
+  const [selectedExperimentEvents, setSelectedExperimentEvents] = useState<ResearchExperimentEvent[]>([]);
   const [loading, setLoading] = useState(!initialData || adapter.source === "supabase");
   const [error, setError] = useState<string | null>(null);
   const theme = useSyncExternalStore<"light" | "dark">(
@@ -58,7 +66,16 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
     const selectedKey = new URL(window.location.href).searchParams.get("publication");
     if (!selectedKey) return;
     adapter.getPublication(selectedKey)
-      .then(setSelected)
+      .then(async (publication) => {
+        setSelected(publication);
+        if (publication && isExperimentEvent(publication)) {
+          setSelectedExperimentEvents(
+            await adapter.getExperimentPublications(
+              publication.experimentId ?? publication.aggregateId,
+            ),
+          );
+        }
+      })
       .catch((reason) => setError(message(reason)));
   }, [adapter]);
 
@@ -90,6 +107,12 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
 
   function selectPublication(publication: ResearchPublication): void {
     setSelected(publication);
+    setSelectedExperimentEvents([]);
+    if (isExperimentEvent(publication)) {
+      adapter.getExperimentPublications(
+        publication.experimentId ?? publication.aggregateId,
+      ).then(setSelectedExperimentEvents).catch((reason) => setError(message(reason)));
+    }
     const url = new URL(window.location.href);
     url.searchParams.set("publication", publication.idempotencyKey);
     window.history.replaceState(null, "", url);
@@ -97,6 +120,7 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
 
   function closeDetail(): void {
     setSelected(null);
+    setSelectedExperimentEvents([]);
     const url = new URL(window.location.href);
     url.searchParams.delete("publication");
     window.history.replaceState(null, "", url);
@@ -128,10 +152,11 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
       </header>
 
       <div className="mx-auto w-full max-w-7xl px-5 py-6 sm:px-8">
-        <section aria-label="Research overview" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <section aria-label="Research overview" className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
           <OverviewMetric label="Publications" value={overview.total} />
           <OverviewMetric label="Run summaries" value={overview.runSummaries} />
           <OverviewMetric label="Registry records" value={overview.registryRecords} />
+          <OverviewMetric label="Experiment events" value={overview.experimentEvents} />
           <OverviewMetric label="Completed runs" value={overview.completedRuns} />
           <OverviewMetric label="Needs validation review" value={overview.validationAttention} warning={overview.validationAttention > 0} />
         </section>
@@ -170,7 +195,13 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
         </section>
       </div>
 
-      {selected && <PublicationDetail publication={selected} onClose={closeDetail} />}
+      {selected && (
+        <PublicationDetail
+          publication={selected}
+          experimentEvents={selectedExperimentEvents}
+          onClose={closeDetail}
+        />
+      )}
     </main>
   );
 }
@@ -190,18 +221,29 @@ function ResearchFilters({ query, updateQuery }: {
           placeholder="Run or record ID"
         />
       </label>
-      <Select label="Type" value={query.kind ?? "all"} onChange={(value) => updateQuery({ kind: value as ResearchPublicationKind | "all" })} options={[
+      <Select label="Type" value={query.kind ?? "all"} onChange={(value) => updateQuery({
+        kind: value as ResearchPublicationKind | "all",
+        status: undefined,
+      })} options={[
         ["all", "All"],
         ["run_summary", "Run summaries"],
         ["registry_record", "Registry records"],
+        ["experiment_definition", "Experiment definitions"],
+        ["experiment_membership", "Experiment memberships"],
+        ["experiment_outcome", "Experiment outcomes"],
+        ["study_reliability", "Reliability decisions"],
+        ["methodology_freeze", "Methodology freezes"],
+        ["holdout_authorization", "Holdout authorizations"],
+        ["holdout_claim", "Holdout claims"],
+        ["holdout_terminal", "Holdout results"],
+        ["experiment_archive", "Experiment archives"],
       ]} />
-      <Select label="Status" value={query.status ?? ""} onChange={(value) => updateQuery({ status: value || undefined })} options={[
-        ["", "Any status"],
-        ["completed", "Completed"],
-        ["validation_failed", "Validation failed"],
-        ["failed", "Failed"],
-        ["validated", "Validated"],
-      ]} />
+      <Select
+        label="Status"
+        value={query.status ?? ""}
+        onChange={(value) => updateQuery({ status: value || undefined })}
+        options={researchStatusOptions(query.kind ?? "all")}
+      />
       <Select label="Sort" value={query.sort ?? "acknowledged_at"} onChange={(value) => updateQuery({ sort: value as ResearchSortField })} options={[
         ["acknowledged_at", "Published"],
         ["aggregate_id", "Identity"],
@@ -219,7 +261,7 @@ function Select({ label, value, onChange, options }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  options: Array<[string, string]>;
+  options: ReadonlyArray<readonly [string, string]>;
 }) {
   return (
     <label className="grid gap-1 text-xs font-semibold uppercase text-[var(--muted)]">
@@ -257,7 +299,7 @@ function PublicationTable({ publications, onSelect }: {
                 <div className="mt-1 font-mono text-xs text-[var(--muted)]">{publication.aggregateId}</div>
               </td>
               <td className="px-3 py-4">
-                <div>{publication.kind === "run_summary" ? "Run summary" : "Registry record"}</div>
+                <div>{publicationTypeLabel(publication.kind)}</div>
                 <div className="mt-1 text-xs uppercase text-[var(--muted)]">{publication.status ?? "unknown"}</div>
               </td>
               <td className="max-w-md px-3 py-4"><BadgeList badges={trustBadges(publication).slice(0, 4)} /></td>
@@ -274,7 +316,11 @@ function PublicationTable({ publications, onSelect }: {
   );
 }
 
-function PublicationDetail({ publication, onClose }: { publication: ResearchPublication; onClose: () => void }) {
+function PublicationDetail({ publication, experimentEvents, onClose }: {
+  publication: ResearchPublication;
+  experimentEvents: ResearchExperimentEvent[];
+  onClose: () => void;
+}) {
   return (
     <div className="fixed inset-0 z-50 bg-black/45 p-3 sm:p-6" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
@@ -297,7 +343,14 @@ function PublicationDetail({ publication, onClose }: { publication: ResearchPubl
         <DetailIdentity publication={publication} />
         {publication.kind === "run_summary"
           ? <RunDetail publication={publication} />
-          : <RegistryDetail publication={publication} />}
+          : publication.kind === "registry_record"
+            ? <RegistryDetail publication={publication} />
+            : (
+              <ExperimentEventDetail
+                publication={publication}
+                experimentEvents={experimentEvents}
+              />
+            )}
         <section className="mt-5 rounded-md border border-dashed border-[var(--border)] p-4 text-sm text-[var(--muted)]">
           This public record deliberately contains no trades, fills, raw bars, trade ledger, or equity curve. Evidence is represented only by aggregate counts and checksums.
         </section>
@@ -430,6 +483,56 @@ function RegistryDetail({ publication }: { publication: ResearchRegistryRecord }
   );
 }
 
+function ExperimentEventDetail({ publication, experimentEvents }: {
+  publication: ResearchExperimentEvent;
+  experimentEvents: ResearchExperimentEvent[];
+}) {
+  const reliability = publication.kind === "study_reliability"
+    ? publication.eventData.reliability as Record<string, unknown> | undefined
+    : null;
+  const report = reliability && typeof reliability.report === "object"
+    ? reliability.report as Record<string, unknown>
+    : null;
+  return (
+    <>
+      <DetailSection title="Experiment decision state">
+        <DetailStat label="Experiment ID" value={publication.experimentId ?? "--"} mono />
+        <DetailStat label="Event" value={publicationTypeLabel(publication.kind)} />
+        <DetailStat label="State / verdict" value={statusLabel(publication.status ?? "not_assessed")} />
+        <DetailStat label="Recorded" value={publication.recordedAt ? formatDate(publication.recordedAt) : "--"} />
+        {report && <DetailStat label="Decision reason" value={String(report.verdict_reason ?? "--")} />}
+        {report && <DetailStat label="Procedure" value={statusLabel(String(report.procedure_state ?? "not_assessed"))} />}
+      </DetailSection>
+      <section className="mt-6">
+        <h3 className="font-bold">Experiment timeline</h3>
+        <div className="mt-3 space-y-2">
+          {(experimentEvents.length ? experimentEvents : [publication]).map((event) => (
+            <div className="rounded-md border border-[var(--border)] p-3 text-sm" key={event.idempotencyKey}>
+              <strong>{publicationTypeLabel(event.kind)}</strong>
+              <div className="mt-1">{statusLabel(event.status ?? "not_assessed")}</div>
+              <div className="mt-1 text-xs text-[var(--muted)]">
+                {event.recordedAt ? formatDate(event.recordedAt) : "Timestamp unavailable"}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="mt-6">
+        <h3 className="font-bold">Selected event evidence</h3>
+        <pre className="mt-3 max-h-[32rem] overflow-auto rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-4 text-xs">
+          {JSON.stringify(publication.eventData, null, 2)}
+        </pre>
+      </section>
+    </>
+  );
+}
+
+function isExperimentEvent(
+  publication: ResearchPublication,
+): publication is ResearchExperimentEvent {
+  return publication.kind !== "run_summary" && publication.kind !== "registry_record";
+}
+
 function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return <section className="mt-6"><h3 className="font-bold">{title}</h3><dl className="mt-3 grid gap-3 rounded-md border border-[var(--border)] p-4 text-sm sm:grid-cols-2">{children}</dl></section>;
 }
@@ -479,7 +582,14 @@ function primaryIdentity(publication: ResearchPublication): string {
   if (publication.kind === "run_summary") {
     return publication.displayAlias ?? publication.runId ?? publication.aggregateId;
   }
-  return publication.recordId ?? publication.aggregateId;
+  if (publication.kind === "registry_record") {
+    return publication.recordId ?? publication.aggregateId;
+  }
+  return publication.experimentId ?? publication.aggregateId;
+}
+
+function publicationTypeLabel(kind: ResearchPublicationKind): string {
+  return kind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function badgeClass(tone: TrustBadge["tone"]): string {

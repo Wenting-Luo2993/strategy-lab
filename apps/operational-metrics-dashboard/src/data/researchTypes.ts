@@ -1,4 +1,17 @@
-export type ResearchPublicationKind = "run_summary" | "registry_record";
+export type ResearchExperimentEventKind =
+  | "experiment_definition"
+  | "experiment_membership"
+  | "experiment_outcome"
+  | "study_reliability"
+  | "methodology_freeze"
+  | "holdout_authorization"
+  | "holdout_claim"
+  | "holdout_terminal"
+  | "experiment_archive";
+export type ResearchPublicationKind =
+  | "run_summary"
+  | "registry_record"
+  | ResearchExperimentEventKind;
 export type ResearchPublicationCompatibility = "supported" | "unsupported" | "invalid";
 export type ResearchSortField = "acknowledged_at" | "publication_version" | "aggregate_id";
 export type SortDirection = "asc" | "desc";
@@ -126,7 +139,17 @@ export type ResearchRegistryRecord = ResearchPublicationBase & {
   lineage: ResearchLineage[];
 };
 
-export type ResearchPublication = ResearchRunSummary | ResearchRegistryRecord;
+export type ResearchExperimentEvent = ResearchPublicationBase & {
+  kind: ResearchExperimentEventKind;
+  experimentId: string | null;
+  recordedAt: string | null;
+  eventData: Record<string, unknown>;
+};
+
+export type ResearchPublication =
+  | ResearchRunSummary
+  | ResearchRegistryRecord
+  | ResearchExperimentEvent;
 
 export type ResearchListQuery = {
   page: number;
@@ -150,6 +173,7 @@ export type ResearchOverview = {
   total: number;
   runSummaries: number;
   registryRecords: number;
+  experimentEvents: number;
   completedRuns: number;
   validationAttention: number;
 };
@@ -159,6 +183,7 @@ export type ResearchDataAdapter = {
   getOverview(): Promise<ResearchOverview>;
   listPublications(query: ResearchListQuery): Promise<ResearchPage>;
   getPublication(idempotencyKey: string): Promise<ResearchPublication | null>;
+  getExperimentPublications(experimentId: string): Promise<ResearchExperimentEvent[]>;
   getAnalysisFieldCatalog(): Promise<import("./researchAnalysis.ts").AnalysisField[]>;
   estimateAnalysis(query: import("./researchAnalysis.ts").AnalysisQuery): Promise<
     Omit<import("./researchAnalysis.ts").AnalysisMetadata,

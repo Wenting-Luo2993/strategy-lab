@@ -67,6 +67,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     replay.add_argument("idempotency_key")
     replay.add_argument("--reason", required=True)
+
+    backfill = subcommands.add_parser(
+        "backfill-experiments",
+        help="Explicitly queue immutable study-level publications.",
+    )
+    backfill.add_argument(
+        "--experiment-id",
+        help="Queue one experiment; omit to queue all existing experiments.",
+    )
     return parser
 
 
@@ -156,6 +165,20 @@ async def _main() -> int:
             )
             print(json.dumps({"replayed": changed}))
             return 0 if changed else 1
+        if args.command == "backfill-experiments":
+            queued = store.backfill_experiment_publications(
+                args.experiment_id
+            )
+            print(
+                json.dumps(
+                    {
+                        "experiment_id": args.experiment_id,
+                        "queued_rows": queued,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
         raise AssertionError(f"Unhandled command: {args.command}")
     finally:
         store.close()

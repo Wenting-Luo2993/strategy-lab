@@ -4,7 +4,19 @@
 CREATE TABLE IF NOT EXISTS public.research_publications (
     idempotency_key     text PRIMARY KEY,
     aggregate_type     text NOT NULL
-                       CHECK (aggregate_type IN ('run_summary', 'registry_record')),
+                       CHECK (aggregate_type IN (
+                           'run_summary',
+                           'registry_record',
+                           'experiment_definition',
+                           'experiment_membership',
+                           'experiment_outcome',
+                           'study_reliability',
+                           'methodology_freeze',
+                           'holdout_authorization',
+                           'holdout_claim',
+                           'holdout_terminal',
+                           'experiment_archive'
+                       )),
     aggregate_id       text NOT NULL,
     schema_version     integer NOT NULL CHECK (schema_version >= 1),
     publication_version integer NOT NULL CHECK (publication_version >= 1),
@@ -15,6 +27,24 @@ CREATE TABLE IF NOT EXISTS public.research_publications (
 
 CREATE INDEX IF NOT EXISTS research_publications_aggregate
     ON public.research_publications (aggregate_type, aggregate_id);
+
+ALTER TABLE public.research_publications
+    DROP CONSTRAINT IF EXISTS research_publications_aggregate_type_check;
+ALTER TABLE public.research_publications
+    ADD CONSTRAINT research_publications_aggregate_type_check
+    CHECK (aggregate_type IN (
+        'run_summary',
+        'registry_record',
+        'experiment_definition',
+        'experiment_membership',
+        'experiment_outcome',
+        'study_reliability',
+        'methodology_freeze',
+        'holdout_authorization',
+        'holdout_claim',
+        'holdout_terminal',
+        'experiment_archive'
+    ));
 
 CREATE OR REPLACE FUNCTION public.guard_research_publication_identity()
 RETURNS trigger

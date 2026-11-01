@@ -59,6 +59,45 @@ test("Supabase adapter loads one publication by immutable idempotency key", asyn
   assert.ok(requestedUrl.includes("idempotency_key=eq.registry%3Aexperiment%3AEXP-104%3Achecksum"));
 });
 
+test("Supabase adapter retrieves every experiment event page", async () => {
+  const requests = [];
+  const event = {
+    idempotency_key: "experiment:exp-1:outcome",
+    aggregate_type: "experiment_outcome",
+    aggregate_id: "exp-1",
+    schema_version: 1,
+    publication_version: 1,
+    payload_sha256: "a".repeat(64),
+    acknowledged_at: "2026-10-28T00:00:00Z",
+    payload: {
+      identity: { experiment_id: "exp-1" },
+      outcome: { state: "completed" },
+      timestamps: { recorded_at: "2026-10-28T00:00:00Z" },
+    },
+  };
+  const adapter = new SupabaseResearchDataAdapter(
+    "https://example.supabase.co",
+    "anon-key",
+    async (url, options) => {
+      requests.push({ url: String(url), options });
+      const firstPage = options.headers.Range === "0-999";
+      return new Response(
+        JSON.stringify(firstPage ? Array.from({ length: 1000 }, () => event) : [event]),
+        { status: 200 },
+      );
+    },
+  );
+
+  const events = await adapter.getExperimentPublications("exp-1");
+
+  assert.equal(events.length, 1001);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].options.headers.Range, "0-999");
+  assert.equal(requests[1].options.headers.Range, "1000-1999");
+  assert.match(requests[0].url, /aggregate_id=eq.exp-1/);
+  assert.match(requests[0].url, /aggregate_type=not.in.%28run_summary%2Cregistry_record%29/);
+});
+
 test("query builder uses stable ordering and sanitized identity search", () => {
   const query = researchQueryParameters({
     page: 1,
@@ -68,9 +107,24 @@ test("query builder uses stable ordering and sanitized identity search", () => {
     sort: "aggregate_id",
     direction: "desc",
   });
+
   assert.equal(query.get("aggregate_id"), "ilike.*EXP-104*");
   assert.equal(query.get("order"), "aggregate_id.desc,idempotency_key.asc");
   assert.equal(query.has("aggregate_type"), false);
+});
+
+test("all-kind status filters include nested experiment decision states", () => {
+  const query = researchQueryParameters({
+    page: 1,
+    pageSize: 25,
+    kind: "all",
+    status: "rejected",
+  });
+  const filter = query.get("or");
+  assert.match(filter, /payload->reliability->>verdict\.eq\.rejected/);
+  assert.match(filter, /payload->outcome->>state\.eq\.rejected/);
+  assert.match(filter, /payload->authorization->>state\.eq\.rejected/);
+  assert.match(filter, /payload->terminal->>state\.eq\.rejected/);
 });
 
 test("content range parsing falls back safely", () => {
