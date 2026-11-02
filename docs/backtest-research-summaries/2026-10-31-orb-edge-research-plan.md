@@ -181,6 +181,32 @@ and Aziz, 2023), not to our own results.
 **Gate:** the numbers are plausible and explainable. This step answers
 nothing about the edge.
 
+**Result (2026-11-01, experiment `01a19a24-ada7-744a-855c-bdf8dfd414bc`,
+4.3 min):** 8,375 trades over 1,679 sessions. Mean net **−0.001R**, 95% CI
+[−0.046, +0.044]R, minimum detectable effect 0.064R. Every symbol's interval
+includes 0 (AMZN +0.02, GOOGL −0.05, MSFT −0.02, QQQ −0.01, TSLA +0.05). Years
+range from −0.09R (2019) to +0.11R (2022). Exits: 51% end of day (mean
++1.01R), 49% stopped (mean −1.04R). Commission costs 0.009R per trade. 40% of
+trades reach +1R of favourable excursion and 18% reach +2R; the mean adverse
+excursion is −0.75R.
+
+**Why this differs from P5b (+0.44R to +0.78R).** P5b ran in September under
+an earlier execution model. The QQQ 2022 golden history shows the change:
+
+| Golden commit | Fill model | QQQ 2022 trades | Mean R | Avg win |
+| --- | --- | --- | --- | --- |
+| `7d10441` (2026-09-17) | idealised entry fill | 251 | +0.53 | +3.16R |
+| `74f4a9b` (2026-10-07) | E6 entry fill model | 251 | +0.10 | +1.80R |
+| `0aa538a` (2026-10-08) | next-bar-open entries (current) | 251 | +0.17 | +2.36R |
+
+The early model filled entries at a price live trading could not obtain, which
+shrank risk and inflated wins in R. This runner reproduces the current golden:
+QQQ 2022 gives 251 trades at +0.176R (golden +0.170R), and QQQ 2019–2023 gives
++0.004R (golden −0.005R). **P5b's numbers are superseded.** The baseline is
+explainable. On honest fills, the 5-minute ORB with these rules has no
+detectable average edge on the exploration set, so Steps 3 and 4 must find
+conditions or changes that create one.
+
 ### Step 3: Explore market conditions (Q3)
 
 **Purpose:** find at most two conditions under which the edge looks stronger
@@ -210,6 +236,39 @@ reliably fails (candidate no-trade days). All are labelled diagnostic.
 
 **Gate:** candidates are written down with their mechanism and the observed
 pattern. Every variable examined is counted as a trial.
+
+**First pass (2026-11-01, experiment `01a19a31-b0d9-7da3-a600-023183d2bd11`,
+6 trials):** baseline rule, tercile cutoffs computed on the pooled exploration
+set.
+
+| Variable | Low | Mid | High | High − low (approx. 95% CI) | Monotonic | Years / symbols agreeing |
+| --- | --- | --- | --- | --- | --- | --- |
+| `abs_gap_pct` | −0.026 | −0.009 | +0.034 | +0.059 [−0.042, +0.160] | increasing | 6/7, 3/5 |
+| `or_width_atr` | −0.026 | +0.011 | +0.019 | +0.045 [−0.052, +0.143] | increasing | 5/7, 4/5 |
+| `rel_open_volume` | −0.029 | +0.029 | +0.002 | +0.031 [−0.063, +0.125] | none | 4/7, 3/5 |
+| `gap_pct` (signed) | +0.008 | −0.027 | +0.018 | +0.010 [−0.096, +0.116] | none | 4/7, 3/5 |
+| `atr_pctile` | +0.008 | +0.012 | −0.005 | −0.013 [−0.121, +0.096] | none | 3/6, 2/5 |
+| `prior_trend_20d_pct` | +0.017 | −0.019 | +0.006 | −0.011 [−0.118, +0.095] | none | 4/7, 3/5 |
+
+Reading:
+
+- No condition separates clearly: every high − low interval includes 0, and no
+  tercile reaches the 0.05R minimum edge.
+- `abs_gap_pct` and `or_width_atr` pass the monotonic, most-years and
+  most-symbols screen and stay as weak diagnostic candidates. Wider opening
+  ranges doing *better* contradicts the "tight ranges break cleanly"
+  mechanism, so `or_width_atr` needs a different mechanism (for example, a
+  wide range marks an active day) before it can be registered.
+- Signed gap and prior trend are **not direction-aware**: with symmetric
+  entries they mix longs and shorts, so "gap or trend in the trade's
+  direction" may be hidden. The next pass should add trade-relative
+  variables (gap aligned with the breakout, trend aligned with the breakout).
+- `rel_open_volume` cutoffs (0.70 and 0.98) show the top tercile is merely
+  normal volume. With five large symbols this is not the "stocks in play"
+  effect from Zarattini, Barbon and Aziz (2024), which ranks many stocks
+  cross-sectionally.
+- `atr_pctile` is missing for 1,333 trades because it needs about 267 prior
+  sessions and the data starts in 2018-05.
 
 ### Step 4: Explore enhancements (Q4)
 
