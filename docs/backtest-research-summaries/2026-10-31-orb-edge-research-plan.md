@@ -572,6 +572,21 @@ View results with the local viewer (`RESEARCH__DB_PATH=<db>`, `node
 tools/backtest-research-viewer/server.mjs`). Exploration outputs are labelled
 "cannot confirm".
 
+Record a one-line conclusion for each finished experiment. It is editable: a
+second `set` overwrites the same row instead of creating a new version. The
+conclusion is kept separately from the immutable experiment record and its
+publications. Both dashboards show it.
+
+```powershell
+python scripts/publish_research.py --db <db> conclusion set <experiment_id> "No edge: ..." --publish
+python scripts/publish_research.py --db <db> conclusion show <experiment_id>
+python scripts/publish_research.py --db <db> flush   # also syncs pending conclusions
+```
+
+The remote copy needs the `research_experiment_conclusions` table from
+`supabase-research-schema.sql`. Without that table, `flush` reports conclusion
+errors, and the dashboard shows no conclusions.
+
 ## 7. Decisions
 
 Decided on 2026-10-31:

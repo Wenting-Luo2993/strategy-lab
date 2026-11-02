@@ -749,7 +749,10 @@ function listExperiments(database, searchParams) {
       (SELECT COUNT(*) FROM research_experiment_runs r WHERE r.experiment_id = e.experiment_id) AS linked_runs,
       ${hasTable(database, "study_reliability_reports")
         ? "(SELECT verdict FROM study_reliability_reports sr WHERE sr.experiment_id = e.experiment_id) AS reliability_verdict"
-        : "NULL AS reliability_verdict"}
+        : "NULL AS reliability_verdict"},
+      ${hasTable(database, "research_experiment_conclusions")
+        ? "(SELECT c.conclusion FROM research_experiment_conclusions c WHERE c.experiment_id = e.experiment_id) AS conclusion"
+        : "NULL AS conclusion"}
     FROM research_experiments e ${archiveFilter}
     ORDER BY e.created_at DESC, e.experiment_id DESC LIMIT ? OFFSET ?
   `).all(pageSize, offset).map((row) => {
@@ -768,6 +771,7 @@ function listExperiments(database, searchParams) {
       linkedRuns: row.linked_runs,
       recordingErrors: experiment.result?.recording_errors?.length || 0,
       reliabilityVerdict: row.reliability_verdict || "not_assessed",
+      conclusion: row.conclusion ? redactSecrets(row.conclusion) : null,
       payloadUnavailable: experiment.payloadUnavailable,
     };
   });
@@ -817,8 +821,14 @@ function getExperiment(database, experimentId) {
   const holdout = hasTable(database, "final_holdout_executions") ? database.prepare(
     "SELECT requested_by AS requestedBy, executed_at AS executedAt, verdict, payload_json AS payloadJson FROM final_holdout_executions WHERE experiment_id = ?",
   ).get(experimentId) : null;
+  const conclusion = hasTable(database, "research_experiment_conclusions") ? database.prepare(
+    "SELECT conclusion, updated_at AS updatedAt FROM research_experiment_conclusions WHERE experiment_id = ?",
+  ).get(experimentId) : null;
   return {
     ...experimentRow(row), runs,
+    conclusion: conclusion
+      ? { text: redactSecrets(conclusion.conclusion), updatedAt: conclusion.updatedAt }
+      : null,
     reliability: reliabilityRow ? {
       verdict: reliabilityRow.verdict,
       policyHash: reliabilityRow.policyHash,

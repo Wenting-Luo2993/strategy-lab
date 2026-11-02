@@ -1007,6 +1007,23 @@ test("experiment endpoints preserve explicit membership and gracefully support v
     const afterArchive = await rawRequest(fixture.origin, "/api/experiments");
     assert.equal(afterArchive.json.total, 1);
     assert.equal(afterArchive.json.items[0].experimentId, "study-1");
+    assert.equal(afterArchive.json.items[0].conclusion, null);
+    assert.equal(detail.json.conclusion, null);
+    const conclusionWriter = new DatabaseSync(fixture.dbPath);
+    conclusionWriter.exec(`
+      CREATE TABLE research_experiment_conclusions (
+        experiment_id TEXT PRIMARY KEY, conclusion TEXT NOT NULL, updated_at TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL, synced_sha256 TEXT, synced_at TEXT
+      );
+      INSERT INTO research_experiment_conclusions VALUES
+        ('study-1', 'No edge: CI spans zero', '2026-11-02T10:00:00Z', '${"a".repeat(64)}', NULL, NULL);
+    `);
+    conclusionWriter.close();
+    const concluded = await rawRequest(fixture.origin, "/api/experiments");
+    assert.equal(concluded.json.items[0].conclusion, "No edge: CI spans zero");
+    const concludedDetail = await rawRequest(fixture.origin, "/api/experiments/study-1");
+    assert.equal(concludedDetail.json.conclusion.text, "No edge: CI spans zero");
+    assert.equal(concludedDetail.json.conclusion.updatedAt, "2026-11-02T10:00:00Z");
   } finally {
     await fixture.cleanupAll();
   }

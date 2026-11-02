@@ -1,4 +1,4 @@
-import { isKnownKind, kindDetail } from "./experiment-kinds.mjs";
+import { conclusionHtml, isKnownKind, kindDetail } from "./experiment-kinds.mjs";
 
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -91,7 +91,8 @@ export function experimentList(items) {
     const kind = isKnownKind(item.kind);
     return `
     <tr><td class="experiment-name"><button class="link" data-experiment="${escape(item.experimentId)}">${escape(item.title)}</button>
-      <small>${kind ? "" : `${escape(item.symbol)} · `}${escape(item.createdAt)}</small></td>
+      <small>${kind ? "" : `${escape(item.symbol)} · `}${escape(item.createdAt)}</small>
+      ${conclusionHtml(item.conclusion)}</td>
       <td>${kind ? kindSummary(item) : (item.axes || []).map((axis) => `${escape(axis.name)}: ${escape(axis.values.join(" / "))}`).join("<br>") || "Definition unavailable"}</td>
       <td>${kind ? "<small>No folds (single study)</small>" : `${escape(item.completedFolds ?? "—")} / ${escape(item.expectedFolds ?? "—")} completed`}
         <small>${escape(item.linkedRuns)} linked ${kind ? "" : "segment "}runs</small></td>
@@ -223,6 +224,7 @@ export function experimentDetail(experiment) {
       <div><small>Procedure execution</small>${status(experiment.state)}
       <small>Research reliability</small>${status(reliability?.verdict || "not_assessed")}</div>
       <p>${(definition.axes || []).map((axis) => `<strong>${escape(axis.name)}:</strong> ${escape(axis.values.join(" / "))} <small>(${escape(axis.path)})</small>`).join("<br>")}</p></header>
+    ${conclusionHtml(experiment.conclusion)}
     ${definition.methodology_version === "synthetic_demo/v1" ? '<p class="notice"><strong>SYNTHETIC UI DEMO.</strong> Generated test data, not market backtest results or evidence of strategy performance.</p>' : ""}
     <div class="notice"><strong>How selection works:</strong> ${escape(definition.training_policy)}
       ${escape(definition.selection_policy)} The test window never chooses the parameters.

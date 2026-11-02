@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   isKnownKind, outcomeBadge, cumulativeR, histogramModel, renderHistogram,
-  conditionsHtml, kindDetail, validationBadge, scatterModel, trialHtml, linkedRunsHtml,
+  conditionsHtml, conclusionHtml, kindDetail, validationBadge, scatterModel, trialHtml, linkedRunsHtml,
 } from "../public/experiment-kinds.mjs";
 import { experimentDetail, experimentList } from "../public/experiment-view.mjs";
 
@@ -127,4 +127,23 @@ test("experiment list summarises study kinds instead of 'Definition unavailable'
   assert.match(html, /QQQ, TSLA/);
   assert.match(html, /5 linked runs/);
   assert.doesNotMatch(html, /Definition unavailable/);
+  assert.doesNotMatch(html, /experiment-conclusion/);
+});
+
+test("one-line conclusion shows in the list and both detail views, escaped", () => {
+  assert.equal(conclusionHtml(null), "");
+  assert.equal(conclusionHtml({ text: "" }), "");
+  const list = experimentList([{
+    experimentId: "e1", title: "Gap", createdAt: "2026-11-01", kind: "fixed_rule",
+    linkedRuns: 1, state: "completed", conclusion: "No edge <b>here</b>",
+  }]);
+  assert.match(list, /class="experiment-conclusion"><strong>Conclusion:<\/strong> No edge &lt;b&gt;here&lt;\/b&gt;/);
+  const conclusion = { text: "No edge from gaps", updatedAt: "2026-11-02T10:00:00Z" };
+  const kind = kindDetail({ title: "S", state: "completed", definition: { kind: "fixed_rule" }, result: {}, conclusion });
+  assert.match(kind, /<\/header>\s*<p class="experiment-conclusion"><strong>Conclusion:<\/strong> No edge from gaps <small>Updated 2026-11-02<\/small>/);
+  const walkForward = experimentDetail({
+    title: "WF", state: "completed", conclusion,
+    definition: { symbol: "QQQ", axes: [], plan: { folds: [] } }, result: null, runs: { items: [] },
+  });
+  assert.match(walkForward, /<\/header>\s*<p class="experiment-conclusion">/);
 });

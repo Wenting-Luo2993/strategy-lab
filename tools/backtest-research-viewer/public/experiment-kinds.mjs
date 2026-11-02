@@ -10,6 +10,15 @@ const table = (headings, rows) => `<div class="table-wrap"><table><thead><tr>${h
 
 export const KNOWN_KINDS = ["fixed_rule", "paired_comparison", "platform_validation"];
 
+/** The researcher's editable one-line conclusion, if one has been recorded. */
+export function conclusionHtml(conclusion) {
+  const text = typeof conclusion === "string" ? conclusion : conclusion?.text;
+  if (!text) return "";
+  const updated = typeof conclusion === "object" && conclusion?.updatedAt
+    ? ` <small>Updated ${escape(String(conclusion.updatedAt).slice(0, 10))}</small>` : "";
+  return `<p class="experiment-conclusion"><strong>Conclusion:</strong> ${escape(text)}${updated}</p>`;
+}
+
 export function isKnownKind(kind) {
   return KNOWN_KINDS.includes(kind);
 }
@@ -254,6 +263,7 @@ export function kindDetail(experiment) {
   return `<header class="experiment-heading"><p class="eyebrow">${labels[kind]}</p>
     <h2 tabindex="-1">${escape(experiment.title)}</h2>
     <div><small>Procedure execution</small> <span class="badge ${experiment.state === "completed" ? "good" : "warning"}">${escape(experiment.state)}</span></div></header>
+    ${conclusionHtml(experiment.conclusion)}
     <div data-kind-trial></div>${body}${linkedRunsHtml(experiment.runs)}`;
 }
 

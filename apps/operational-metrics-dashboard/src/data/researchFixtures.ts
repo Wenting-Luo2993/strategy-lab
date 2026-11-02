@@ -1,5 +1,9 @@
 import { decodeResearchPublication } from "./researchDecoder.ts";
-import type { ResearchPublication, ResearchPublicationRow } from "./researchTypes.ts";
+import type {
+  ResearchExperimentConclusion,
+  ResearchPublication,
+  ResearchPublicationRow,
+} from "./researchTypes.ts";
 import type { AnalysisRow } from "./researchAnalysis.ts";
 
 const sha = (character: string) => character.repeat(64);
@@ -152,6 +156,9 @@ function registryRow(
 export function clonedResearchFixtures(): ResearchPublication[] {
   return researchFixtureRows.map((item) => decodeResearchPublication(structuredClone(item)));
 }
+
+/** The fixture rows contain no experiment events, so no conclusions either. */
+export const researchConclusionFixtures: ResearchExperimentConclusion[] = [];
 
 export const analysisFixtureRows: AnalysisRow[] = researchFixtureRows
   .slice(0, 3)

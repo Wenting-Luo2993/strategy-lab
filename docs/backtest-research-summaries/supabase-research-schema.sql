@@ -91,6 +91,38 @@ REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
 -- Python under RESEARCH_SUPABASE_SERVICE_ROLE_KEY; never expose it to a browser.
 
 -- -------------------------------------------------------------------------
+-- Editable one-line experiment conclusions
+-- -------------------------------------------------------------------------
+-- Unlike research_publications, a conclusion is a mutable annotation: the
+-- trusted publisher upserts one row per experiment (on_conflict=experiment_id)
+-- and overwrites it in place when the researcher edits it.  Browsers read only.
+
+CREATE TABLE IF NOT EXISTS public.research_experiment_conclusions (
+    experiment_id text PRIMARY KEY CHECK (length(experiment_id) > 0),
+    conclusion    text NOT NULL CHECK (
+                      length(btrim(conclusion)) > 0
+                      AND length(conclusion) <= 500
+                      AND position(E'\n' in conclusion) = 0
+                      AND position(E'\r' in conclusion) = 0
+                  ),
+    updated_at    timestamptz NOT NULL
+);
+
+ALTER TABLE public.research_experiment_conclusions ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS research_experiment_conclusions_anonymous_read
+    ON public.research_experiment_conclusions;
+CREATE POLICY research_experiment_conclusions_anonymous_read
+ON public.research_experiment_conclusions
+FOR SELECT
+TO anon, authenticated
+USING (true);
+
+GRANT SELECT ON public.research_experiment_conclusions TO anon, authenticated;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+    ON public.research_experiment_conclusions FROM anon, authenticated;
+
+-- -------------------------------------------------------------------------
 -- P13 flexible analysis read model
 -- -------------------------------------------------------------------------
 -- These rows are derived and replaceable.  The trusted publisher owns writes;

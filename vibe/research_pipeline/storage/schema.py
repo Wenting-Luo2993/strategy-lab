@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 # The highest migration version this module knows how to apply.
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _LOCK_RETRY_ATTEMPTS = 8
 _LOCK_RETRY_BASE_SECONDS = 0.01
@@ -1214,6 +1214,27 @@ ALTER TABLE run_trades ADD COLUMN mae_r REAL;
 ALTER TABLE run_trades ADD COLUMN mfe_r REAL;
 """
 
+# A researcher's one-line conclusion is an editable annotation written after a
+# study finishes, so it cannot live on the immutable experiment row or travel
+# through the immutable publication outbox. One row per experiment, updated in
+# place. ``payload_sha256`` covers what is uploaded; ``synced_sha256`` records
+# what Supabase last accepted, so a mismatch means "needs upload".
+_MIGRATION_18 = """
+CREATE TABLE research_experiment_conclusions (
+    experiment_id TEXT PRIMARY KEY REFERENCES research_experiments(experiment_id),
+    conclusion    TEXT NOT NULL CHECK (
+        length(trim(conclusion)) > 0
+        AND length(conclusion) <= 500
+        AND instr(conclusion, char(10)) = 0
+        AND instr(conclusion, char(13)) = 0
+    ),
+    updated_at     TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+    synced_sha256  TEXT,
+    synced_at      TEXT
+);
+"""
+
 _MIGRATIONS: list[tuple[int, str]] = [
     (1, _MIGRATION_1),
     (2, _MIGRATION_2),
@@ -1232,6 +1253,7 @@ _MIGRATIONS: list[tuple[int, str]] = [
     (15, _MIGRATION_15),
     (16, _MIGRATION_16),
     (17, _MIGRATION_17),
+    (18, _MIGRATION_18),
 ]
 
 

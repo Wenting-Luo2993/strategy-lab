@@ -43,11 +43,14 @@ from vibe.research_pipeline.lifecycle import (
 from vibe.research_pipeline.paths import research_db_path
 from vibe.research_pipeline.publishing import (
     PUBLICATION_SCHEMA_VERSION,
+    ExperimentConclusion,
     PublicationKind,
     PublicationStatus,
     RemoteAcknowledgement,
     RemoteRecordState,
     ResearchPublication,
+    experiment_conclusion_sha256,
+    normalize_experiment_conclusion,
     redact_secrets,
     validate_publication_payload,
 )
@@ -465,6 +468,77 @@ class SqliteResearchStore:
                 },
                 now=archive_row["archived_at"],
             )
+
+    def set_experiment_conclusion(
+        self, experiment_id: str, conclusion: str
+    ) -> ExperimentConclusion:
+        """Create or overwrite the one-line conclusion of a finished study."""
+        text = normalize_experiment_conclusion(conclusion)
+        payload_sha256 = experiment_conclusion_sha256(experiment_id, text)
+        with self._conn:
+            experiment = self._conn.execute(
+                "SELECT state FROM research_experiments WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+            if experiment is None:
+                raise StoreError(f"Unknown experiment {experiment_id!r}")
+            if experiment["state"] == "running":
+                raise ImmutableRecordError(
+                    "A running experiment cannot have a conclusion yet"
+                )
+            existing = self._conn.execute(
+                """SELECT payload_sha256 FROM research_experiment_conclusions
+                   WHERE experiment_id = ?""",
+                (experiment_id,),
+            ).fetchone()
+            if existing is None or existing["payload_sha256"] != payload_sha256:
+                self._conn.execute(
+                    """INSERT INTO research_experiment_conclusions
+                       (experiment_id, conclusion, updated_at, payload_sha256)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(experiment_id) DO UPDATE SET
+                           conclusion = excluded.conclusion,
+                           updated_at = excluded.updated_at,
+                           payload_sha256 = excluded.payload_sha256""",
+                    (experiment_id, text, schema.utc_now_iso(), payload_sha256),
+                )
+        result = self.get_experiment_conclusion(experiment_id)
+        assert result is not None
+        return result
+
+    def get_experiment_conclusion(
+        self, experiment_id: str
+    ) -> Optional[ExperimentConclusion]:
+        row = self._conn.execute(
+            """SELECT experiment_id, conclusion, updated_at, payload_sha256,
+                      synced_sha256, synced_at
+               FROM research_experiment_conclusions WHERE experiment_id = ?""",
+            (experiment_id,),
+        ).fetchone()
+        return None if row is None else ExperimentConclusion(**dict(row))
+
+    def pending_experiment_conclusions(self) -> list[ExperimentConclusion]:
+        rows = self._conn.execute(
+            """SELECT experiment_id, conclusion, updated_at, payload_sha256,
+                      synced_sha256, synced_at
+               FROM research_experiment_conclusions
+               WHERE synced_sha256 IS NULL OR synced_sha256 != payload_sha256
+               ORDER BY updated_at, experiment_id"""
+        ).fetchall()
+        return [ExperimentConclusion(**dict(row)) for row in rows]
+
+    def mark_experiment_conclusion_synced(
+        self, experiment_id: str, payload_sha256: str
+    ) -> bool:
+        """Record an upload; ignored if the text was edited since it was read."""
+        with self._conn:
+            cursor = self._conn.execute(
+                """UPDATE research_experiment_conclusions
+                   SET synced_sha256 = payload_sha256, synced_at = ?
+                   WHERE experiment_id = ? AND payload_sha256 = ?""",
+                (schema.utc_now_iso(), experiment_id, payload_sha256),
+            )
+        return cursor.rowcount == 1
 
     def record_engine_integrity(
         self, run_id: str, report: EngineIntegrityReport

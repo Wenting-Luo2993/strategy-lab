@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { createResearchDataAdapter } from "@/data/researchAdapter";
 import {
   pageCount,
@@ -9,6 +9,7 @@ import {
   type TrustBadge,
 } from "@/data/researchPresentation";
 import type {
+  ResearchExperimentConclusion,
   ResearchListQuery,
   ResearchOverview,
   ResearchPage,
@@ -56,6 +57,15 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
   const [selectedExperimentEvents, setSelectedExperimentEvents] = useState<ResearchExperimentEvent[]>([]);
   const [loading, setLoading] = useState(!initialData || adapter.source === "supabase");
   const [error, setError] = useState<string | null>(null);
+  const [conclusions, setConclusions] = useState<Record<string, ResearchExperimentConclusion>>({});
+
+  const loadConclusions = useCallback((publications: ResearchPublication[]) => {
+    const ids = publications.filter(isExperimentEvent).map(experimentIdOf);
+    if (!ids.length) return;
+    adapter.getExperimentConclusions(ids)
+      .then((found) => setConclusions((current) => ({ ...current, ...found })))
+      .catch(() => undefined);
+  }, [adapter]);
   const theme = useSyncExternalStore<"light" | "dark">(
     subscribeTheme,
     getThemeSnapshot,
@@ -69,15 +79,14 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
       .then(async (publication) => {
         setSelected(publication);
         if (publication && isExperimentEvent(publication)) {
+          loadConclusions([publication]);
           setSelectedExperimentEvents(
-            await adapter.getExperimentPublications(
-              publication.experimentId ?? publication.aggregateId,
-            ),
+            await adapter.getExperimentPublications(experimentIdOf(publication)),
           );
         }
       })
       .catch((reason) => setError(message(reason)));
-  }, [adapter]);
+  }, [adapter, loadConclusions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,6 +95,7 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
         if (!cancelled) {
           setOverview(nextOverview);
           setResult(nextPage);
+          loadConclusions(nextPage.items);
         }
       })
       .catch((reason) => {
@@ -97,7 +107,7 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
     return () => {
       cancelled = true;
     };
-  }, [adapter, query]);
+  }, [adapter, query, loadConclusions]);
 
   function updateQuery(update: Partial<ResearchListQuery>): void {
     setLoading(true);
@@ -109,9 +119,10 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
     setSelected(publication);
     setSelectedExperimentEvents([]);
     if (isExperimentEvent(publication)) {
-      adapter.getExperimentPublications(
-        publication.experimentId ?? publication.aggregateId,
-      ).then(setSelectedExperimentEvents).catch((reason) => setError(message(reason)));
+      loadConclusions([publication]);
+      adapter.getExperimentPublications(experimentIdOf(publication))
+        .then(setSelectedExperimentEvents)
+        .catch((reason) => setError(message(reason)));
     }
     const url = new URL(window.location.href);
     url.searchParams.set("publication", publication.idempotencyKey);
@@ -182,7 +193,11 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
           )}
           {!error && !loading && result.items.length > 0 && (
             <>
-              <PublicationTable publications={result.items} onSelect={selectPublication} />
+              <PublicationTable
+                publications={result.items}
+                conclusions={conclusions}
+                onSelect={selectPublication}
+              />
               <Pagination
                 page={result.page}
                 totalPages={totalPages}
@@ -199,6 +214,9 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
         <PublicationDetail
           publication={selected}
           experimentEvents={selectedExperimentEvents}
+          conclusion={isExperimentEvent(selected)
+            ? conclusions[experimentIdOf(selected)] ?? null
+            : null}
           onClose={closeDetail}
         />
       )}
@@ -273,8 +291,9 @@ function Select({ label, value, onChange, options }: {
   );
 }
 
-function PublicationTable({ publications, onSelect }: {
+function PublicationTable({ publications, conclusions, onSelect }: {
   publications: ResearchPublication[];
+  conclusions: Record<string, ResearchExperimentConclusion>;
   onSelect: (publication: ResearchPublication) => void;
 }) {
   return (
@@ -297,6 +316,11 @@ function PublicationTable({ publications, onSelect }: {
                   {primaryIdentity(publication)}
                 </button>
                 <div className="mt-1 font-mono text-xs text-[var(--muted)]">{publication.aggregateId}</div>
+                {isExperimentEvent(publication) && conclusions[experimentIdOf(publication)] && (
+                  <p className="mt-2 max-w-md text-xs">
+                    <strong>Conclusion:</strong> {conclusions[experimentIdOf(publication)].conclusion}
+                  </p>
+                )}
               </td>
               <td className="px-3 py-4">
                 <div>{publicationTypeLabel(publication.kind)}</div>
@@ -316,9 +340,10 @@ function PublicationTable({ publications, onSelect }: {
   );
 }
 
-function PublicationDetail({ publication, experimentEvents, onClose }: {
+function PublicationDetail({ publication, experimentEvents, conclusion, onClose }: {
   publication: ResearchPublication;
   experimentEvents: ResearchExperimentEvent[];
+  conclusion: ResearchExperimentConclusion | null;
   onClose: () => void;
 }) {
   return (
@@ -349,6 +374,7 @@ function PublicationDetail({ publication, experimentEvents, onClose }: {
               <ExperimentEventDetail
                 publication={publication}
                 experimentEvents={experimentEvents}
+                conclusion={conclusion}
               />
             )}
         <section className="mt-5 rounded-md border border-dashed border-[var(--border)] p-4 text-sm text-[var(--muted)]">
@@ -483,9 +509,10 @@ function RegistryDetail({ publication }: { publication: ResearchRegistryRecord }
   );
 }
 
-function ExperimentEventDetail({ publication, experimentEvents }: {
+function ExperimentEventDetail({ publication, experimentEvents, conclusion }: {
   publication: ResearchExperimentEvent;
   experimentEvents: ResearchExperimentEvent[];
+  conclusion: ResearchExperimentConclusion | null;
 }) {
   const reliability = publication.kind === "study_reliability"
     ? publication.eventData.reliability as Record<string, unknown> | undefined
@@ -495,6 +522,15 @@ function ExperimentEventDetail({ publication, experimentEvents }: {
     : null;
   return (
     <>
+      {conclusion && (
+        <section className="mt-6 rounded-md border border-[var(--accent-strong)] p-4 text-sm">
+          <h3 className="font-bold">Research conclusion</h3>
+          <p className="mt-2">{conclusion.conclusion}</p>
+          {conclusion.updatedAt && (
+            <p className="mt-1 text-xs text-[var(--muted)]">Updated {formatDate(conclusion.updatedAt)}</p>
+          )}
+        </section>
+      )}
       <DetailSection title="Experiment decision state">
         <DetailStat label="Experiment ID" value={publication.experimentId ?? "--"} mono />
         <DetailStat label="Event" value={publicationTypeLabel(publication.kind)} />
@@ -531,6 +567,10 @@ function isExperimentEvent(
   publication: ResearchPublication,
 ): publication is ResearchExperimentEvent {
   return publication.kind !== "run_summary" && publication.kind !== "registry_record";
+}
+
+function experimentIdOf(publication: ResearchExperimentEvent): string {
+  return publication.experimentId ?? publication.aggregateId;
 }
 
 function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {

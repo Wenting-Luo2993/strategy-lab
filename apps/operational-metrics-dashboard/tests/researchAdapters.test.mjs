@@ -10,6 +10,14 @@ import {
   trustBadges,
 } from "../src/data/researchPresentation.ts";
 
+test("fixture adapter returns only requested experiment conclusions", async () => {
+  const conclusion = { experimentId: "exp-1", conclusion: "No edge.", updatedAt: "2026-11-02T00:00:00Z" };
+  const adapter = new FixtureResearchDataAdapter(undefined, [conclusion]);
+  assert.deepEqual(await adapter.getExperimentConclusions(["exp-1", "exp-2"]), { "exp-1": conclusion });
+  assert.deepEqual(await adapter.getExperimentConclusions(["exp-2"]), {});
+  assert.deepEqual(await new FixtureResearchDataAdapter().getExperimentConclusions(["exp-1"]), {});
+});
+
 test("fixture adapter paginates, filters, and sorts deterministically", async () => {
   const adapter = new FixtureResearchDataAdapter();
   const first = await adapter.listPublications({

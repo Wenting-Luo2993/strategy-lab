@@ -53,6 +53,7 @@ test("adapter contract exposes no mutation methods and has exactly two implement
       "constructor",
       "estimateAnalysis",
       "getAnalysisFieldCatalog",
+      "getExperimentConclusions",
       "getExperimentPublications",
       "getOverview",
       "getPublication",
@@ -65,6 +66,7 @@ test("adapter contract exposes no mutation methods and has exactly two implement
     [
       "estimateAnalysis",
       "getAnalysisFieldCatalog",
+      "getExperimentConclusions",
       "getExperimentPublications",
       "getOverview",
       "getPublication",

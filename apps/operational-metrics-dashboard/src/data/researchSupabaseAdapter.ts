@@ -8,6 +8,7 @@ import type {
 } from "./researchAnalysis.ts";
 import type {
   ResearchDataAdapter,
+  ResearchExperimentConclusion,
   ResearchExperimentEvent,
   ResearchListQuery,
   ResearchOverview,
@@ -107,6 +108,38 @@ export class SupabaseResearchDataAdapter implements ResearchDataAdapter {
         String(right.recordedAt ?? right.acknowledgedAt),
       ),
     );
+  }
+
+  async getExperimentConclusions(
+    experimentIds: readonly string[],
+  ): Promise<Record<string, ResearchExperimentConclusion>> {
+    const ids = [...new Set(experimentIds)].filter((id) => /^[A-Za-z0-9_.:-]+$/.test(id));
+    if (!ids.length) return {};
+    const parameters = new URLSearchParams({
+      select: "experiment_id,conclusion,updated_at",
+      experiment_id: `in.(${ids.join(",")})`,
+    });
+    let rows: Array<Record<string, unknown>>;
+    try {
+      const response = await this.#request(
+        `/rest/v1/research_experiment_conclusions?${parameters}`,
+      );
+      rows = await response.json() as Array<Record<string, unknown>>;
+    } catch {
+      // Conclusions are an optional annotation; a project that has not applied
+      // the conclusions table yet must still render its publications.
+      return {};
+    }
+    const conclusions: Record<string, ResearchExperimentConclusion> = {};
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (typeof row.experiment_id !== "string" || typeof row.conclusion !== "string") continue;
+      conclusions[row.experiment_id] = {
+        experimentId: row.experiment_id,
+        conclusion: row.conclusion,
+        updatedAt: typeof row.updated_at === "string" ? row.updated_at : "",
+      };
+    }
+    return conclusions;
   }
 
   async getAnalysisFieldCatalog(): Promise<AnalysisField[]> {

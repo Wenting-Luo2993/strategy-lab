@@ -1,7 +1,12 @@
 import { FixtureAnalysisAdapter } from "./researchAnalysis.ts";
-import { analysisFixtureRows, clonedResearchFixtures } from "./researchFixtures.ts";
+import {
+  analysisFixtureRows,
+  clonedResearchFixtures,
+  researchConclusionFixtures,
+} from "./researchFixtures.ts";
 import type {
   ResearchDataAdapter,
+  ResearchExperimentConclusion,
   ResearchExperimentEvent,
   ResearchListQuery,
   ResearchOverview,
@@ -13,10 +18,15 @@ export class FixtureResearchDataAdapter implements ResearchDataAdapter {
   readonly source = "fixture" as const;
   readonly #items: ResearchPublication[];
   readonly #analysis: FixtureAnalysisAdapter;
+  readonly #conclusions: ResearchExperimentConclusion[];
 
-  constructor(items = clonedResearchFixtures()) {
+  constructor(
+    items = clonedResearchFixtures(),
+    conclusions: ResearchExperimentConclusion[] = researchConclusionFixtures,
+  ) {
     this.#items = items;
     this.#analysis = new FixtureAnalysisAdapter(items, analysisFixtureRows);
+    this.#conclusions = conclusions;
   }
 
   async getOverview(): Promise<ResearchOverview> {
@@ -77,6 +87,17 @@ export class FixtureResearchDataAdapter implements ResearchDataAdapter {
       item.kind !== "run_summary"
       && item.kind !== "registry_record"
       && item.experimentId === experimentId
+    );
+  }
+
+  async getExperimentConclusions(
+    experimentIds: readonly string[],
+  ): Promise<Record<string, ResearchExperimentConclusion>> {
+    const wanted = new Set(experimentIds);
+    return Object.fromEntries(
+      this.#conclusions
+        .filter((item) => wanted.has(item.experimentId))
+        .map((item) => [item.experimentId, { ...item }]),
     );
   }
 

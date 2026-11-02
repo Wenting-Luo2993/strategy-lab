@@ -83,6 +83,13 @@ The applied Supabase schema grants `SELECT` on `research_publications` to
 truncate, references, and trigger privileges. The dashboard adapter exposes no
 mutation method.
 
+`research_experiment_conclusions` holds one editable, one-line conclusion per
+experiment and follows the same select-only rules. The dashboard reads it with
+`getExperimentConclusions`. It shows the conclusion under the experiment
+identity in the publication table and at the top of the experiment detail. If
+the table is missing, the adapter returns no conclusions instead of failing.
+Writes come only from `scripts/publish_research.py conclusion set`.
+
 Apply `docs/backtest-research-summaries/supabase-research-schema.sql` to add the
 normalized `research_analysis_*` read model, field catalog, typed filter
 evaluator, bounded aggregate RPC, RLS, and grants. Browsers cannot select the

@@ -518,6 +518,58 @@ def redact_secrets(message: Any, secrets: Sequence[str] = ()) -> str:
     return text
 
 
+MAX_EXPERIMENT_CONCLUSION_LENGTH = 500
+EXPERIMENT_CONCLUSIONS_TABLE = "research_experiment_conclusions"
+
+
+def normalize_experiment_conclusion(text: Any) -> str:
+    """Validate a researcher's one-line, publishable study conclusion."""
+    if not isinstance(text, str):
+        raise ValueError("Experiment conclusion must be text")
+    value = text.strip()
+    if not value:
+        raise ValueError("Experiment conclusion must not be empty")
+    if "\n" in value or "\r" in value:
+        raise ValueError("Experiment conclusion must be a single line")
+    if len(value) > MAX_EXPERIMENT_CONCLUSION_LENGTH:
+        raise ValueError(
+            "Experiment conclusion must be at most "
+            f"{MAX_EXPERIMENT_CONCLUSION_LENGTH} characters"
+        )
+    if any(pattern.search(value) for pattern in _SECRET_PATTERNS):
+        raise ValueError("Experiment conclusion looks like it contains a secret")
+    return value
+
+
+def experiment_conclusion_sha256(experiment_id: str, conclusion: str) -> str:
+    return sha256_hex(
+        canonical_json({"experiment_id": experiment_id, "conclusion": conclusion})
+    )
+
+
+@dataclass(frozen=True)
+class ExperimentConclusion:
+    """Editable one-line conclusion; synced by upsert, never via the outbox."""
+
+    experiment_id: str
+    conclusion: str
+    updated_at: str
+    payload_sha256: str
+    synced_sha256: Optional[str] = None
+    synced_at: Optional[str] = None
+
+    @property
+    def pending_sync(self) -> bool:
+        return self.synced_sha256 != self.payload_sha256
+
+    def remote_row(self) -> dict[str, str]:
+        return {
+            "experiment_id": self.experiment_id,
+            "conclusion": self.conclusion,
+            "updated_at": self.updated_at,
+        }
+
+
 @dataclass(frozen=True)
 class ResearchPublication:
     event_id: str
@@ -1054,3 +1106,81 @@ class SupabaseResearchDestination:
             return None
         total = content_range.rsplit("/", 1)[1]
         return None if total == "*" else int(total)
+
+    async def upsert_conclusion(self, conclusion: ExperimentConclusion) -> None:
+        """Insert or overwrite the single remote conclusion row in place."""
+        endpoint = (
+            f"{self.settings.url.rstrip('/')}/rest/v1/"
+            f"{EXPERIMENT_CONCLUSIONS_TABLE}"
+        )
+        response = await self._request(
+            "POST",
+            endpoint,
+            headers=self._headers(),
+            params={"on_conflict": "experiment_id"},
+            json_body=conclusion.remote_row(),
+            timeout_seconds=self.settings.timeout_seconds,
+        )
+        if not 200 <= response.status < 300:
+            safe = redact_secrets(
+                response.body, (self.settings.service_role_key,)
+            )
+            raise RuntimeError(
+                "Supabase experiment conclusion sync failed: "
+                f"status={response.status} body={safe}"
+            )
+        body = response.body
+        row = body[0] if isinstance(body, list) and body else body
+        if (
+            not isinstance(row, Mapping)
+            or row.get("experiment_id") != conclusion.experiment_id
+            or row.get("conclusion") != conclusion.conclusion
+        ):
+            raise RuntimeError(
+                "Supabase experiment conclusion sync returned no matching row"
+            )
+
+
+class ConclusionDestination(Protocol):
+    async def upsert_conclusion(self, conclusion: ExperimentConclusion) -> None: ...
+
+
+class ConclusionStore(Protocol):
+    def pending_experiment_conclusions(self) -> Sequence[ExperimentConclusion]: ...
+
+    def mark_experiment_conclusion_synced(
+        self, experiment_id: str, payload_sha256: str
+    ) -> bool: ...
+
+
+@dataclass(frozen=True)
+class ConclusionSyncResult:
+    pending: int
+    synced: int
+    failed: int
+    errors: tuple[str, ...] = ()
+
+
+async def sync_experiment_conclusions(
+    store: ConclusionStore, destination: ConclusionDestination
+) -> ConclusionSyncResult:
+    """Upload edited conclusions; an edit made mid-sync stays pending."""
+    pending = list(store.pending_experiment_conclusions())
+    synced = 0
+    errors: list[str] = []
+    for conclusion in pending:
+        try:
+            await destination.upsert_conclusion(conclusion)
+        except Exception as exc:
+            errors.append(f"{conclusion.experiment_id}: {redact_secrets(exc)}")
+            continue
+        if store.mark_experiment_conclusion_synced(
+            conclusion.experiment_id, conclusion.payload_sha256
+        ):
+            synced += 1
+    return ConclusionSyncResult(
+        pending=len(pending),
+        synced=synced,
+        failed=len(errors),
+        errors=tuple(errors),
+    )

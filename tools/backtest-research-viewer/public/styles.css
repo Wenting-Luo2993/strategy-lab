@@ -127,12 +127,14 @@ td small { display: block; margin-top: .3rem; color: var(--muted); }
 .criterion-callout::backdrop { background: transparent; }
 .criterion-callout p { margin: .45rem 0; color: var(--muted); }
 .criterion-callout small { display: block; color: var(--text); }
-.verdict-reason {
+.verdict-reason, .experiment-conclusion {
   margin: 1rem 0;
   border-left: 3px solid var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, var(--surface));
   padding: .7rem .85rem;
 }
+.experiment-conclusion small { display: inline; color: var(--muted); }
+td .experiment-conclusion { margin: .4rem 0 0; padding: .35rem .55rem; font-size: .85rem; max-width: 36rem; }
 .evaluation-findings { margin-top: .75rem; max-width: 22rem; }
 .evaluation-findings p { font-size: .8rem; }
 #experiment-detail pre { white-space: pre-wrap; overflow-wrap: anywhere; }

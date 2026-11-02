@@ -93,9 +93,9 @@ def _columns(conn: sqlite3.Connection) -> set[str]:
 
 
 def test_fresh_database_reaches_v17_with_excursion_columns(tmp_path: Path) -> None:
-    assert schema.SCHEMA_VERSION == 17
+    assert schema.SCHEMA_VERSION >= 17
     with sqlite3.connect(tmp_path / "fresh.sqlite3") as conn:
-        assert schema.migrate(conn) == 17
+        assert schema.migrate(conn) == schema.SCHEMA_VERSION
         assert {"mae_r", "mfe_r"} <= _columns(conn)
 
 

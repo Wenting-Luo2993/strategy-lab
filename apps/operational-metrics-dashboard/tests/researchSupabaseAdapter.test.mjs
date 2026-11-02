@@ -98,6 +98,43 @@ test("Supabase adapter retrieves every experiment event page", async () => {
   assert.match(requests[0].url, /aggregate_type=not.in.%28run_summary%2Cregistry_record%29/);
 });
 
+test("Supabase adapter reads experiment conclusions with a GET-only id filter", async () => {
+  const requests = [];
+  const adapter = new SupabaseResearchDataAdapter(
+    "https://example.supabase.co",
+    "anon-key",
+    async (url, options) => {
+      requests.push({ url: String(url), options });
+      return new Response(JSON.stringify([
+        { experiment_id: "exp-1", conclusion: "No edge.", updated_at: "2026-11-02T00:00:00Z" },
+        { experiment_id: 7, conclusion: "malformed" },
+      ]), { status: 200 });
+    },
+  );
+
+  const conclusions = await adapter.getExperimentConclusions(["exp-1", "exp-1", "exp-2", "bad id)"]);
+
+  assert.deepEqual(conclusions, {
+    "exp-1": { experimentId: "exp-1", conclusion: "No edge.", updatedAt: "2026-11-02T00:00:00Z" },
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].options.method, "GET");
+  assert.equal("body" in requests[0].options, false);
+  assert.match(requests[0].url, /research_experiment_conclusions/);
+  assert.match(requests[0].url, /experiment_id=in.%28exp-1%2Cexp-2%29/);
+  assert.deepEqual(await adapter.getExperimentConclusions([]), {});
+  assert.equal(requests.length, 1);
+});
+
+test("Supabase adapter tolerates a missing conclusions table", async () => {
+  const adapter = new SupabaseResearchDataAdapter(
+    "https://example.supabase.co",
+    "anon-key",
+    async () => new Response("{}", { status: 404 }),
+  );
+  assert.deepEqual(await adapter.getExperimentConclusions(["exp-1"]), {});
+});
+
 test("query builder uses stable ordering and sanitized identity search", () => {
   const query = researchQueryParameters({
     page: 1,

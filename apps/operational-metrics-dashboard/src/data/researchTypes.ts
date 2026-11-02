@@ -178,12 +178,22 @@ export type ResearchOverview = {
   validationAttention: number;
 };
 
+export type ResearchExperimentConclusion = {
+  experimentId: string;
+  conclusion: string;
+  updatedAt: string;
+};
+
 export type ResearchDataAdapter = {
   readonly source: "fixture" | "supabase";
   getOverview(): Promise<ResearchOverview>;
   listPublications(query: ResearchListQuery): Promise<ResearchPage>;
   getPublication(idempotencyKey: string): Promise<ResearchPublication | null>;
   getExperimentPublications(experimentId: string): Promise<ResearchExperimentEvent[]>;
+  /** Editable one-line conclusions keyed by experiment id; missing ids are omitted. */
+  getExperimentConclusions(
+    experimentIds: readonly string[],
+  ): Promise<Record<string, ResearchExperimentConclusion>>;
   getAnalysisFieldCatalog(): Promise<import("./researchAnalysis.ts").AnalysisField[]>;
   estimateAnalysis(query: import("./researchAnalysis.ts").AnalysisQuery): Promise<
     Omit<import("./researchAnalysis.ts").AnalysisMetadata,
