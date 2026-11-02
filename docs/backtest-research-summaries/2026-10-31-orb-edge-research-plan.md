@@ -34,7 +34,7 @@ confirm. Confirmation data is spent the first time its results are viewed.
 | --- | --- | --- |
 | QQQ, 2018-05 to 2024-12 | **Exploration** | Used for pipeline validation, legacy ORB experiments (HYP-001 to HYP-004) and two walk-forward studies. Reusable for any exploration. It can only confirm a hypothesis never examined on it |
 | AMZN, GOOGL, MSFT, TSLA, 2018-05 to 2024-12 | **Exploration** (decided 2026-10-31) | ORB results were viewed once: the P5b universe check ran the ORB rule on all five symbols over a window of about 124 trades each and reported +0.44R to +0.78R (`2026-09-09-backtest-pipeline-implementation-plan.md`, "Cross-sectional result from P5b"). They are also configured for live trading |
-| Other tickers with local history, 2018 to 2024, never run through ORB | **Confirmation set** | Never examined for ORB, so it can confirm hypotheses registered before its results are viewed |
+| 25 single stocks, 2018-05 to 2024-12, never run through ORB (frozen 2026-11-01, see Step 1) | **Confirmation set** | Never examined for ORB, so it can confirm hypotheses registered before its results are viewed |
 | All symbols, 2025-01-01 to 2026-04-27 | **Final holdout** | Locked by `config/final_holdout.yaml`; read once at the end |
 | All symbols, after 2026-04-27 | **Forward evidence** | Accrues at about 250 sessions per symbol per year; used for shadow and paper trading |
 
@@ -46,7 +46,7 @@ Notes:
   TSLA are not fully fresh. Viewing one strongly positive window is enough to
   bias which hypotheses look attractive. **Decision (2026-10-31):** explore on
   all five and confirm on tickers never run through ORB. The confirmation
-  tickers are chosen later, in Step 1.
+  tickers were frozen in Step 1 on 2026-11-01.
 - Five exploration symbols are a strength: a Step 3 or Step 4 pattern that
   appears on QQQ but not on the other four is probably noise.
 - Every symbol added to the confirmation set should be added to the holdout
@@ -100,6 +100,38 @@ the power predicted in north-star Section 5. Otherwise fix the platform first.
 **Outputs:** frozen confirmation universe, manifest hash and holdout lock.
 
 **Gate:** committed before any ORB run on those symbols.
+
+**Result (done 2026-11-01).** Declaration:
+`config/research/universes/orb-confirmation-universe-v1.json`
+(`declaration_id` `sha256:2da9ca91...e374d5`). It was built from file
+metadata only; the run databases shipped with the raw data were empty.
+
+- **Source:** Databento XNAS.ITCH ohlcv-1m, 2018-05-01 to 2026-06-12. The
+  declaration stores the sha256 of each raw `.csv.zst` file. The Parquet
+  manifest in the `config/research/manifests/` form is built in Step 6 from
+  these exact files, truncated at 2024-12-31, so nothing is converted or run
+  before hypotheses are registered.
+- **Rule:** single stocks only (no ETFs were acquired); session coverage at
+  least 95% over 2018-05 to 2024-12; raw minimum price at least $10; median
+  daily dollar volume on the Nasdaq venue at least $50M; at most 3% sparse
+  sessions (fewer than 300 one-minute bars); issuer not an exploration
+  issuer; only forward splits, which the converter adjusts.
+- **Set (25):** AAPL, ABBV, AMD, AVGO, BA, BAC, CAT, COST, CRM, CVX, GS, HD,
+  JNJ, JPM, MCD, MS, NFLX, NKE, NVDA, ORCL, PFE, ROKU, UNH, WMT, XOM.
+- **Excluded (9):** META (ticker was a different instrument before 2022-06),
+  XYZ (no data before 2025), GOOG (same issuer as GOOGL), COIN, PLTR, UBER
+  and LYFT (coverage under 95%), GE (unadjusted 1:8 reverse split and
+  spin-offs), SHOP (105 sparse sessions).
+- **Holdout:** all 25 added to `config/final_holdout.yaml`, which changes
+  `lock_hash`. Raw data after 2026-04-27 is forward evidence. The exploratory
+  QQQ walk-forward registration
+  (`config/research/orb_duration_symmetric_exploratory_v1.json`) pinned the old
+  hash, so its `lock_hash` was amended, with the previous value and reason
+  recorded under `lock_hash_amendments`. QQQ's holdout boundary is unchanged.
+- **Caveat:** AAPL, NVDA, AVGO, AMD, COST and NFLX are large QQQ
+  constituents, so confirmation is not fully independent of QQQ. Day-clustered
+  standard errors handle same-day correlation; Step 6 should also report
+  results by sector.
 
 ### Step 2: Understand the baseline on the exploration set
 
@@ -416,11 +448,13 @@ Decided on 2026-10-31:
 - **Implementation starts before Step 1.** Steps 0, 2, 3 and 4 need no
   confirmation data.
 
+Decided on 2026-11-01:
+
+- **Confirmation set:** the 25 single stocks listed in Step 1. No ETFs.
+
 Still open:
 
-1. Which tickers form the confirmation set, and whether ETFs and single
-   stocks are tested as separate groups. Step 1 is blocked on this.
-2. The final-holdout acceptance criteria for the confirmation universe.
+1. The final-holdout acceptance criteria for the confirmation universe.
 
 ## 8. Sources
 

@@ -405,10 +405,18 @@
   },
   "final_holdout": {
     "config_path": "config/final_holdout.yaml",
-    "lock_hash": "71b39411cd2612cd87fe5ec3ddbb2d476c6ff88efa85970a9262fcd50df38482",
+    "lock_hash": "6cba881723b0222d44b25f0a19bdcb8bacecf841dbbf26c559a3a770155218f5",
     "start": "2025-01-01",
     "end": "2026-04-27",
-    "must_remain_unread": true
+    "must_remain_unread": true,
+    "lock_hash_amendments": [
+      {
+        "date": "2026-11-01",
+        "previous_lock_hash": "71b39411cd2612cd87fe5ec3ddbb2d476c6ff88efa85970a9262fcd50df38482",
+        "reason": "config/final_holdout.yaml added the 25 ORB confirmation symbols (orb-confirmation-universe-v1). Dates, acceptance rule and the QQQ entry are unchanged, so this QQQ study's holdout boundary is unchanged.",
+        "approved_by": "wentingluo"
+      }
+    ]
   },
   "data_reuse_inventory": [
     {
