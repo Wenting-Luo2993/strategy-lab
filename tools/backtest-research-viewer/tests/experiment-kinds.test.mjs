@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   isKnownKind, outcomeBadge, cumulativeR, histogramModel, renderHistogram,
-  conditionsHtml, kindDetail, validationBadge, scatterModel, trialHtml,
+  conditionsHtml, kindDetail, validationBadge, scatterModel, trialHtml, linkedRunsHtml,
 } from "../public/experiment-kinds.mjs";
-import { experimentDetail } from "../public/experiment-view.mjs";
+import { experimentDetail, experimentList } from "../public/experiment-view.mjs";
 
 test("badge choice per outcome", () => {
   assert.deepEqual(outcomeBadge("supported"), { label: "Supported", tone: "good" });
@@ -83,4 +83,37 @@ test("known kinds render, unknown kinds fall back", () => {
 test("trial html reports programme totals", () => {
   assert.match(trialHtml({ programme: "p", phase: "x", family: "f", n_trials: 2 }, { total_trials: 7 }), /programme total 7/);
   assert.equal(trialHtml(null, null), "");
+});
+
+test("linked runs are a collapsed section at the end of kind views", () => {
+  assert.equal(linkedRunsHtml(null), "");
+  assert.equal(linkedRunsHtml({ items: [] }), "");
+  const runs = {
+    total: 2, truncated: false,
+    items: [
+      { runId: "r1", displayAlias: "RUN-000001", symbols: "QQQ", segmentRole: "train", tradeCount: 10,
+        meanNetR: 0.12345, firstEntry: "2019-01-02T14:40:00Z", lastEntry: "2024-12-30T15:00:00Z", runState: "validating" },
+      { runId: "r2", displayAlias: "RUN-000002", strategyId: "fixed_rule_tsla", segmentRole: "train", runState: "validating" },
+    ],
+  };
+  const html = linkedRunsHtml(runs);
+  assert.match(html, /^<details class="detail-section linked-runs"><summary>Linked runs \(2\)<\/summary>/);
+  assert.doesNotMatch(html, /<details[^>]* open/);
+  assert.match(html, /data-run="r1"/);
+  assert.match(html, /0\.123R/);
+  assert.match(html, /2019-01-02 → 2024-12-30/);
+  assert.match(html, /fixed_rule_tsla/);
+  const view = kindDetail({ title: "S", state: "completed", definition: { kind: "platform_validation" }, result: {}, runs });
+  assert.ok(view.trimEnd().endsWith("</details>"));
+});
+
+test("experiment list summarises study kinds instead of 'Definition unavailable'", () => {
+  const html = experimentList([{
+    experimentId: "e1", title: "Baseline", createdAt: "2026-11-01", kind: "fixed_rule",
+    symbols: ["QQQ", "TSLA"], evidenceRole: "exploration", linkedRuns: 5, state: "completed",
+  }]);
+  assert.match(html, /Fixed-rule study/);
+  assert.match(html, /QQQ, TSLA/);
+  assert.match(html, /5 linked runs/);
+  assert.doesNotMatch(html, /Definition unavailable/);
 });

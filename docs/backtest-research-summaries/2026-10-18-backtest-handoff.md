@@ -10,6 +10,11 @@ confirmatory experiment without reading the locked final holdout.
 
 ## Start here on the other device
 
+> **Newer handoff:** for the current research state (Steps 0 to 3 done) and the
+> next ORB edge exploration steps, read
+> `2026-11-01-orb-edge-exploration-handoff.md` first. This document remains the
+> record of the platform build.
+
 Fetch and check out the branch above. Read these documents in order:
 
 1. This handoff.

@@ -222,6 +222,22 @@ function pairedHtml(experiment) {
     <h3>Difference by symbol</h3>${barRows(s.by_symbol, "Symbol")}`;
 }
 
+/** Compact, collapsed list of the runs this experiment explicitly recorded. */
+export function linkedRunsHtml(runsPayload) {
+  const runs = runsPayload?.items || [];
+  if (!runs.length) return "";
+  const dates = (run) => [run.firstEntry, run.lastEntry].map((v) => (v ? String(v).slice(0, 10) : "?")).join(" → ");
+  const rows = runs.map((run) => `<tr><td><button class="link" data-run="${escape(run.runId)}">${escape(run.displayAlias)}</button></td>
+    <td>${escape(run.symbols || run.strategyId || "—")}</td><td>${escape(run.segmentRole)}</td>
+    <td>${escape(run.tradeCount ?? "—")}</td><td>${r(run.meanNetR)}</td>
+    <td>${run.firstEntry ? escape(dates(run)) : "—"}</td><td>${escape(run.runState)}</td></tr>`);
+  const total = runsPayload.total ?? runs.length;
+  return `<details class="detail-section linked-runs"><summary>Linked runs (${escape(total)})</summary>
+    <p class="chart-note">Stored runs this experiment recorded. Open one for its trades, equity and provenance.</p>
+    ${table(["Run", "Symbol", "Role", "Trades", "Mean net R", "Trade dates", "Stored state"], rows)}
+    ${runsPayload.truncated ? `<p class="notice">Showing ${escape(runs.length)} of ${escape(total)} links.</p>` : ""}</details>`;
+}
+
 /** Returns HTML for a known experiment kind, or null so the caller falls back. */
 export function kindDetail(experiment) {
   const kind = experiment?.definition?.kind;
@@ -232,7 +248,7 @@ export function kindDetail(experiment) {
   return `<header class="experiment-heading"><p class="eyebrow">${labels[kind]}</p>
     <h2 tabindex="-1">${escape(experiment.title)}</h2>
     <div><small>Procedure execution</small> <span class="badge ${experiment.state === "completed" ? "good" : "warning"}">${escape(experiment.state)}</span></div></header>
-    <div data-kind-trial></div>${body}`;
+    <div data-kind-trial></div>${body}${linkedRunsHtml(experiment.runs)}`;
 }
 
 /** Fill the async placeholders of a rendered kind view. */

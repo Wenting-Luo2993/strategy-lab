@@ -470,10 +470,19 @@ function listRuns(database, searchParams) {
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const total = database.prepare(`SELECT COUNT(*) AS count FROM runs r ${where}`).get(...params).count;
   const hasIntegrity = hasTable(database, "engine_integrity_reports");
+  const hasMembership = hasExperiments(database) && hasTable(database, "research_experiment_runs");
+  const membership = hasMembership
+    ? `(SELECT x.experiment_id FROM research_experiment_runs x WHERE x.run_id = r.run_id
+         ORDER BY x.experiment_id LIMIT 1) AS experiment_id,
+       (SELECT re.title FROM research_experiment_runs x
+         JOIN research_experiments re ON re.experiment_id = x.experiment_id
+         WHERE x.run_id = r.run_id ORDER BY x.experiment_id LIMIT 1) AS experiment_title,`
+    : "NULL AS experiment_id, NULL AS experiment_title,";
   const rows = database.prepare(`
     SELECT r.run_id, r.display_alias, r.strategy_id, r.methodology_version,
            r.state, r.notes, r.code_commit, r.code_dirty, r.created_at, r.updated_at,
            r.lineage_id, r.identity_json, r.origin_device_id, r.segment_role,
+           ${membership}
            e.trade_count, e.equity_points, e.retention_profile,
            json_extract(e.payload_json, '$.first_session') AS first_session,
            json_extract(e.payload_json, '$.last_session') AS last_session,
@@ -529,6 +538,8 @@ function listRuns(database, searchParams) {
       lineageId: row.lineage_id || row.run_id,
       originDeviceId: row.origin_device_id,
       segmentRole: row.segment_role || null,
+      experimentId: row.experiment_id || null,
+      experimentTitle: row.experiment_title ? redactSecrets(row.experiment_title) : null,
       executionModelVersion: identity.execution_model_version ?? null,
       retentionProfile: row.retention_profile,
       tradeCount: row.trade_count == null ? null : Number(row.trade_count),
@@ -673,7 +684,19 @@ function getRun(database, runId) {
     } : { state: "local", acknowledgement: null, reconciliation: "not_enqueued" },
     badges: trustBadges(run, identity, evidence, validationRow, findingCounts),
     localArtifacts: localArtifactAvailability(database, runId, evidenceRow),
+    experiments: runExperiments(database, runId),
   };
+}
+
+/** Experiments that explicitly recorded this run; membership is never inferred. */
+function runExperiments(database, runId) {
+  if (!hasExperiments(database) || !hasTable(database, "research_experiment_runs")) return [];
+  return database.prepare(`
+    SELECT e.experiment_id AS experimentId, x.title, x.state, e.fold_index AS foldIndex,
+           e.segment_role AS segmentRole, e.candidate_id AS candidateId
+    FROM research_experiment_runs e JOIN research_experiments x ON x.experiment_id = e.experiment_id
+    WHERE e.run_id = ? ORDER BY x.created_at, e.fold_index LIMIT 50
+  `).all(runId).map((row) => ({ ...row, title: redactSecrets(row.title) }));
 }
 
 function hasExperiments(database) {
@@ -735,6 +758,10 @@ function listExperiments(database, searchParams) {
       experimentId: experiment.experimentId, title: experiment.title,
       state: experiment.state, createdAt: experiment.createdAt,
       symbol: experiment.definition?.symbol,
+      kind: experiment.definition?.kind ?? null,
+      symbols: Array.isArray(experiment.definition?.symbols) ? experiment.definition.symbols : null,
+      suite: experiment.definition?.suite ?? null,
+      evidenceRole: experiment.definition?.evidence_role ?? null,
       axes: experiment.payloadUnavailable ? null : experiment.definition?.axes,
       expectedFolds: experiment.payloadUnavailable ? null : experiment.definition?.plan?.folds?.length,
       completedFolds: experiment.payloadUnavailable ? null : experiment.result?.n_folds_completed,
@@ -753,11 +780,22 @@ function getExperiment(database, experimentId) {
     "SELECT * FROM research_experiments WHERE experiment_id = ?",
   ).get(experimentId);
   if (!row) throw new HttpError(404, "Experiment not found.");
+  const tradeColumns = hasTable(database, "run_trades")
+    ? new Set(database.prepare("PRAGMA table_info(run_trades)").all().map((c) => c.name)) : null;
+  const tradeStats = tradeColumns
+    ? `(SELECT COUNT(*) FROM run_trades t WHERE t.run_id = e.run_id) AS tradeCount,
+      (SELECT GROUP_CONCAT(DISTINCT t.symbol) FROM run_trades t WHERE t.run_id = e.run_id) AS symbols,
+      (SELECT AVG((t.pnl - ${tradeColumns.has("commission") ? "COALESCE(t.commission, 0)" : "0"}) / t.initial_risk)
+        FROM run_trades t WHERE t.run_id = e.run_id AND t.initial_risk > 0 AND t.pnl IS NOT NULL) AS meanNetR,
+      (SELECT MIN(t.entry_time) FROM run_trades t WHERE t.run_id = e.run_id) AS firstEntry,
+      (SELECT MAX(t.entry_time) FROM run_trades t WHERE t.run_id = e.run_id) AS lastEntry`
+    : "NULL AS tradeCount, NULL AS symbols, NULL AS meanNetR, NULL AS firstEntry, NULL AS lastEntry";
   const runs = boundedRows(database, {
     countSql: "SELECT COUNT(*) AS count FROM research_experiment_runs WHERE experiment_id = ?",
     listSql: `SELECT e.fold_index AS foldIndex, e.candidate_id AS candidateId,
       e.segment_role AS segmentRole, e.run_id AS runId,
-      r.display_alias AS displayAlias, r.state AS runState
+      r.display_alias AS displayAlias, r.state AS runState, r.strategy_id AS strategyId,
+      ${tradeStats}
       FROM research_experiment_runs e JOIN runs r ON r.run_id = e.run_id
       WHERE e.experiment_id = ? ORDER BY e.fold_index, e.segment_role, e.candidate_id LIMIT ?`,
     params: [experimentId], limit: MAX_DETAIL_ROWS,

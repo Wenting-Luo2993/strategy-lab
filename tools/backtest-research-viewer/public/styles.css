@@ -312,6 +312,10 @@ dialog.run-dialog {
   padding: 1.5rem;
 }
 .run-subtitle, .chart-note { color: var(--muted); }
+.run-experiments { margin: .25rem 0 0; font-size: .85rem; color: var(--muted); }
+.run-experiments small { display: inline; }
+button.link.inline-link { display: inline; padding: 0; font-size: inherit; }
+.linked-runs summary { cursor: pointer; color: var(--muted); }
 .sample-notice {
   margin: 1rem 0;
   border-left: 3px solid var(--warning);

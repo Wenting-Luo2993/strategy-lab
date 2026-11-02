@@ -215,6 +215,7 @@ function renderRuns(result) {
           <button class="link" data-run="${escapeAttribute(run.runId)}">${escapeHtml(run.displayAlias)}</button>
           <small>${escapeHtml(run.notes || run.strategyId)}</small>
           <small>${escapeHtml(run.state)}</small>
+          ${run.experimentId ? `<small>Experiment: <button class="link inline-link" data-open-experiment="${escapeAttribute(run.experimentId)}">${escapeHtml(run.experimentTitle || run.experimentId)}</button></small>` : ""}
         </td>
         <td>
           ${escapeHtml(run.symbol || "—")}
@@ -247,6 +248,7 @@ function renderRuns(result) {
     elements.runs.querySelectorAll("[data-run]").forEach((button) => {
       button.addEventListener("click", () => showRun(button.dataset.run));
     });
+    bindExperimentLinks(elements.runs);
   }
   renderPagination(elements["run-pagination"], result, (page) => {
     state.runs.page = page;
@@ -310,6 +312,7 @@ async function showRun(runId) {
       <p class="eyebrow">LOCAL RUN · ${escapeHtml(run.state)}</p>
       <h2>${escapeHtml(run.displayAlias)}</h2>
       <p class="run-subtitle">${escapeHtml(run.strategyId)} · ${escapeHtml(detail.evidence?.first_session || "Unknown start")} to ${escapeHtml(detail.evidence?.last_session || "unknown end")}</p>
+      ${experimentLinks(detail.experiments)}
       <div class="badge-list">${badges(detail.badges)}</div>
       <p class="sample-notice">${escapeHtml(sampleExplanation(run.segmentRole))}</p>
       ${runHeadline(detail)}
@@ -476,6 +479,7 @@ function recordedMetrics(metrics) {
 }
 
 function bindRunTabs() {
+  bindExperimentLinks(elements["detail-content"]);
   const tabs = [...elements["detail-content"].querySelectorAll("[data-run-tab]")];
   function activate(tab) {
     for (const button of tabs) {
@@ -999,6 +1003,22 @@ function publicationTone(value) {
   if (value === "dead_letter" || value === "failed") return "danger";
   if (value === "pending" || value === "publishing") return "warning";
   return "neutral";
+}
+
+function experimentLinks(experiments) {
+  if (!experiments?.length) return "";
+  return `<p class="run-experiments">Part of ${experiments.map((item) =>
+    `<button class="link inline-link" data-open-experiment="${escapeAttribute(item.experimentId)}">${escapeHtml(item.title)}</button>`
+    + ` <small>(${escapeHtml(item.segmentRole)}${item.candidateId && item.candidateId !== "rule" ? ` · ${escapeHtml(item.candidateId)}` : ""})</small>`).join(", ")}</p>`;
+}
+
+function bindExperimentLinks(root) {
+  root.querySelectorAll("[data-open-experiment]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (elements.detail.open) elements.detail.close();
+      showExperiment(button.dataset.openExperiment);
+    });
+  });
 }
 
 function openDetailLoading() {

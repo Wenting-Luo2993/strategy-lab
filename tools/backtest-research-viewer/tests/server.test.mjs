@@ -981,6 +981,20 @@ test("experiment endpoints preserve explicit membership and gracefully support v
     assert.equal((await rawRequest(fixture.origin, "/api/experiments?pageSize=101")).status, 400);
     const run = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-000000000004");
     assert.ok(run.json.badges.some((item) => item.label === "Not validated"));
+    assert.deepEqual(run.json.experiments, [{
+      experimentId: "study-1", title: "Controlled ORB comparison", state: "completed",
+      foldIndex: 0, segmentRole: "test", candidateId: "candidate-15",
+    }]);
+    const trades = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-000000000004/trades");
+    assert.equal(detail.json.runs.items[0].tradeCount, trades.json.total ?? trades.json.items.length);
+    assert.ok("meanNetR" in detail.json.runs.items[0]);
+    const runList = await rawRequest(fixture.origin, "/api/runs?pageSize=50");
+    const linked = runList.json.items.find((item) => item.runId === "00000000-0000-7000-8000-000000000004");
+    assert.equal(linked.experimentId, "study-1");
+    assert.equal(linked.experimentTitle, "Controlled ORB comparison");
+    assert.ok(runList.json.items.filter((item) => item !== linked).every((item) => item.experimentId === null));
+    const unlinked = await rawRequest(fixture.origin, "/api/runs/00000000-0000-7000-8000-000000000001");
+    assert.deepEqual(unlinked.json.experiments, []);
     const archiveWriter = new DatabaseSync(fixture.dbPath);
     archiveWriter.exec(`
       CREATE TABLE archived_research_experiments (

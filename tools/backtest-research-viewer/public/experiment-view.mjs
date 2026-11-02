@@ -1,4 +1,4 @@
-import { kindDetail } from "./experiment-kinds.mjs";
+import { isKnownKind, kindDetail } from "./experiment-kinds.mjs";
 
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -76,16 +76,29 @@ function criterionWithCallout(item) {
   </div>`;
 }
 
+const KIND_LABELS = { fixed_rule: "Fixed-rule study", paired_comparison: "Paired comparison", platform_validation: "Platform validation" };
+
+function kindSummary(item) {
+  const parts = [KIND_LABELS[item.kind]];
+  if (item.suite) parts.push(String(item.suite).toUpperCase());
+  if (item.symbols?.length) parts.push(item.symbols.join(", "));
+  if (item.evidenceRole) parts.push(`role: ${item.evidenceRole}`);
+  return parts.map(escape).join("<br>");
+}
+
 export function experimentList(items) {
-  return table(["Experiment", "Controlled settings", "Folds", "Procedure / reliability"], items.map((item) => `
+  return table(["Experiment", "Controlled settings", "Folds", "Procedure / reliability"], items.map((item) => {
+    const kind = isKnownKind(item.kind);
+    return `
     <tr><td class="experiment-name"><button class="link" data-experiment="${escape(item.experimentId)}">${escape(item.title)}</button>
-      <small>${escape(item.symbol)} · ${escape(item.createdAt)}</small></td>
-      <td>${(item.axes || []).map((axis) => `${escape(axis.name)}: ${escape(axis.values.join(" / "))}`).join("<br>") || "Definition unavailable"}</td>
-      <td>${escape(item.completedFolds ?? "—")} / ${escape(item.expectedFolds ?? "—")} completed
-        <small>${escape(item.linkedRuns)} linked segment runs</small></td>
+      <small>${kind ? "" : `${escape(item.symbol)} · `}${escape(item.createdAt)}</small></td>
+      <td>${kind ? kindSummary(item) : (item.axes || []).map((axis) => `${escape(axis.name)}: ${escape(axis.values.join(" / "))}`).join("<br>") || "Definition unavailable"}</td>
+      <td>${kind ? "<small>No folds (single study)</small>" : `${escape(item.completedFolds ?? "—")} / ${escape(item.expectedFolds ?? "—")} completed`}
+        <small>${escape(item.linkedRuns)} linked ${kind ? "" : "segment "}runs</small></td>
       <td><small>Procedure</small>${status(item.state)}
         <small>Research reliability</small>${status(item.reliabilityVerdict)}
-        ${item.recordingErrors ? "<small>Recording errors — inspect coverage</small>" : ""}</td></tr>`));
+        ${item.recordingErrors ? "<small>Recording errors — inspect coverage</small>" : ""}</td></tr>`;
+  }));
 }
 
 function runLink(runs, foldIndex, role, candidateId) {

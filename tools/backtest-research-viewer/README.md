@@ -116,6 +116,14 @@ walk-forward view):
   MAE/MFE scatter, cost sensitivity and labelled-diagnostic condition terciles;
 - programme trial counts and, for validation studies, a pass/review badge.
 
+Experiment-to-run links stay out of the way. Each study panel ends with a
+collapsed "Linked runs (N)" section listing the stored runs it recorded (symbol,
+segment role, trade count, mean net R, trade dates); a run alias opens its
+detail. In the other direction, run detail shows one small "Part of
+<experiment>" line, and the runs list shows a small experiment link. Both
+reopen the experiment. The experiment list summarises study kind, symbols and
+evidence role.
+
 Supporting read-only endpoints: `GET /api/experiments/:id/r-series`,
 `GET /api/experiments/:id/excursions` (evenly sampled above 5000 trades, with
 `sampled: true`) and `GET /api/programmes/:programme/trials`. Databases without
