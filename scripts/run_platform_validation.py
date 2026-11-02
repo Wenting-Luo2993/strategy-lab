@@ -6,7 +6,9 @@ Example:
 
 Each suite is recorded as one experiment with ``evidence_role`` of
 ``platform_validation``; the report is in its result. These runs drive the real
-backtest engine on synthetic data and are slow at full size.
+backtest engine on synthetic data and are slow at full size, so studies run in
+``--workers`` processes (default: half the logical CPUs). Every study has its
+own seed, so the report does not depend on the worker count.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -32,6 +35,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--ruleset", default=DEFAULT_RULESET)
     p.add_argument("--up-probability", type=float, default=0.502)
     p.add_argument("--truth-sessions", type=int, default=20000)
+    p.add_argument(
+        "--truth-chunk-sessions", type=int, default=None,
+        help="V7 truth is pooled over independent runs of this many sessions "
+        "(default: --sessions)",
+    )
+    p.add_argument(
+        "--workers", type=int, default=None,
+        help="worker processes (default: half the logical CPUs; 1 runs serially)",
+    )
     p.add_argument("--confidence-level", type=float, default=0.95)
     p.add_argument("--research-db", type=Path, default=None)
     p.add_argument("--no-record", action="store_true")
@@ -41,14 +53,38 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     from vibe.research_pipeline.validation_suite.suite import (
+        default_workers,
         run_null_calibration,
         run_planted_edge,
     )
 
+    workers = args.workers if args.workers is not None else default_workers()
+    if workers < 1:
+        print("--workers must be at least 1", file=sys.stderr)
+        return 2
+
+    def progress(label: str):
+        start = time.monotonic()
+        step = 1
+
+        def report(done: int, total: int) -> None:
+            nonlocal step
+            if done == total or done * 20 // total >= step:
+                step = done * 20 // total + 1
+                elapsed = time.monotonic() - start
+                print(
+                    f"[{label}] {done}/{total} studies, {elapsed / 60:.1f} min",
+                    file=sys.stderr, flush=True,
+                )
+
+        return report
+
+    print(f"Workers: {workers}", file=sys.stderr, flush=True)
     reports: list[tuple[str, str, dict[str, Any]]] = []
     if args.suite in ("v6", "all"):
         report = run_null_calibration(
-            args.studies, args.sessions, args.seed, args.ruleset, args.confidence_level
+            args.studies, args.sessions, args.seed, args.ruleset, args.confidence_level,
+            workers=workers, progress=progress("V6"),
         )
         reports.append(("V6 null calibration", "v6", report))
     if args.suite in ("v7", "all"):
@@ -57,6 +93,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             up_probability_with_trend=args.up_probability,
             truth_sessions=args.truth_sessions,
             confidence_level=args.confidence_level,
+            truth_chunk_sessions=args.truth_chunk_sessions,
+            workers=workers, progress=progress("V7"),
         )
         reports.append(("V7 planted edge", "v7", report))
 

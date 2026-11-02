@@ -371,7 +371,7 @@ flowchart TD
 | Program-wide trial counter | Steps 3–5 | Implemented: `trials.py`, `hypothesis_cards.py`, `scripts/show_trial_ledger.py` |
 | Holdout lock for new symbols | Step 1 | Exists; needs a config change |
 | Registration and data binding | Step 5 | Exists (merged from `backtest-roadmap-implementation`) |
-| Parallel workers for independent runs | All steps (runtime only) | Planned, not blocking. See below |
+| Parallel workers for independent runs | All steps (runtime only) | Implemented for V6/V7 (`run_platform_validation.py --workers`); planned for fixed-rule and paired runners. See below |
 
 The implementation of these capabilities is specified in
 `2026-10-31-orb-edge-implementation-plan.md`.
@@ -400,6 +400,22 @@ Tests:
 - a worker exception must surface as that unit's error without hanging the pool.
 
 Expected effect: about 8–10× faster with 10 workers.
+
+**Status (2026-11-01):** done for the validation suite.
+`scripts/run_platform_validation.py --workers N` (default half the logical CPUs)
+runs V6/V7 studies in a process pool; `test_reports_do_not_depend_on_worker_count`
+checks that serial and parallel reports are identical. Fixed-rule and paired
+runners are still serial.
+
+V7's truth run is also split: `--truth-chunk-sessions` (default `--sessions`)
+pools the 20,000 truth sessions from independent runs (chunk `k` uses seed
+`seed + 10_000_000 + k`, and its clusters are prefixed with `k`). Synthetic
+sessions are independent, so this measures the same edge. It also avoids a
+cost that grows with run length: the engine passes the full bar history to
+the strategy on every bar, and the ORB level code scans that history, so one
+20,000-session run slowed from ~62 to ~24 bars/s and was stopped after 4.6 h.
+Fixing that scan in the engine is a separate follow-up, since it also slows
+long real-data backtests.
 
 ### How to run Steps 0, 2, 3 and 4
 

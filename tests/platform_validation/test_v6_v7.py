@@ -8,6 +8,7 @@ import pytest
 from vibe.research_pipeline.validation_suite.suite import (
     run_null_calibration,
     run_planted_edge,
+    truth_chunk_sizes,
     wilson_interval,
 )
 from vibe.research_pipeline.validation_suite.synthetic import tick_walk_sessions
@@ -76,3 +77,44 @@ def test_planted_edge_report_is_well_formed_and_detects_something():
     assert 0.0 <= r["detection_rate"] <= 1.0
     assert 0.0 <= r["predicted_power"] <= 1.0
     assert r["coverage_of_truth"] is not None
+
+
+def test_truth_chunk_sizes_cover_the_requested_sessions():
+    assert truth_chunk_sizes(20000, 500) == [500] * 40
+    assert truth_chunk_sizes(1100, 500) == [500, 500, 100]
+    assert truth_chunk_sizes(300, 500) == [300]
+    with pytest.raises(ValueError):
+        truth_chunk_sizes(0, 500)
+
+
+def test_reports_do_not_depend_on_worker_count():
+    kwargs = dict(seed=3, ruleset_path=RULESET)
+    v6_serial = run_null_calibration(3, 40, workers=1, **kwargs)
+    v6_parallel = run_null_calibration(3, 40, workers=3, **kwargs)
+    assert v6_serial == v6_parallel
+
+    v7 = dict(up_probability_with_trend=0.502, truth_sessions=100, truth_chunk_sessions=40)
+    seen = []
+    v7_serial = run_planted_edge(2, 40, workers=1, **kwargs, **v7)
+    v7_parallel = run_planted_edge(
+        2, 40, workers=3, progress=lambda d, t: seen.append((d, t)), **kwargs, **v7
+    )
+    assert v7_serial == v7_parallel
+    assert v7_serial["truth_chunks"] == 3
+    assert seen[-1] == (5, 5)
+
+
+def test_truth_chunks_pool_without_merging_clusters():
+    # Every chunk starts on the same synthetic date, so un-prefixed clusters
+    # would merge across chunks and understate the number of independent days.
+    r = run_planted_edge(
+        1, 40, seed=5, ruleset_path=RULESET, up_probability_with_trend=0.502,
+        truth_sessions=80, truth_chunk_sessions=40,
+    )
+    single = run_planted_edge(
+        1, 40, seed=5, ruleset_path=RULESET, up_probability_with_trend=0.502,
+        truth_sessions=40, truth_chunk_sessions=40,
+    )
+    assert r["truth_chunks"] == 2
+    assert r["truth_trades"] > single["truth_trades"]
+    assert r["truth_se_r"] is not None
