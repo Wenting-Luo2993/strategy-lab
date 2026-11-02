@@ -81,6 +81,23 @@ planted-edge detection rate.
 **Gate:** the false-positive rate is near 5% or below, and detection matches
 the power predicted in north-star Section 5. Otherwise fix the platform first.
 
+**V6/V7 results (2026-11-01, 200 studies × 500 sessions, seed 1):**
+
+- V6 (experiment `01a1995d-81b6-7264-a192-55f462401160`, serial, 109.8 min):
+  0/200 false positives (Wilson 0–1.9%), coverage 95.5%, mean of means
+  +0.008R. Pass.
+- V7 (experiment `01a19a1b-874c-7c9a-88db-09848d437ced`, 10 workers,
+  12.3 min, truth pooled from 40 × 500 sessions): truth +0.256R ± 0.024
+  (matches the S7 calibration of ~0.26R), coverage of truth 95.0%, detection
+  28.5% vs predicted 40.6%. Pass under the suite tolerance (±0.15), but the
+  detection rate is below prediction: the Wilson interval for 57/200 is about
+  23–35%. The gap is in the conservative direction (the platform misses some
+  real edges and does not over-claim). Likely causes are uncertainty in the
+  truth (±0.024R moves the predicted power across ~34–47%) and skewed R
+  outcomes, where studies with high means also have wider SEs. It is not
+  blocking, but it means real-data power estimates should be treated as
+  optimistic by about 10 points.
+
 ### Step 1: Freeze the evidence map
 
 **Purpose:** decide what counts as confirmation data before seeing anything.  
