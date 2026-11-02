@@ -339,9 +339,35 @@ flowchart TD
 | Program-wide trial counter | Steps 3–5 | Implemented: `trials.py`, `hypothesis_cards.py`, `scripts/show_trial_ledger.py` |
 | Holdout lock for new symbols | Step 1 | Exists; needs a config change |
 | Registration and data binding | Step 5 | Exists (merged from `backtest-roadmap-implementation`) |
+| Parallel workers for independent runs | All steps (runtime only) | Planned, not blocking. See below |
 
 The implementation of these capabilities is specified in
 `2026-10-31-orb-edge-implementation-plan.md`.
+
+### Planned optimisation: parallel workers
+
+The runners use one CPU core. The first full Step 0 run took about 110 minutes
+per suite at 10–20% total CPU on a 20-thread machine.
+
+The work splits into independent units:
+
+- V6/V7 studies (each uses seed `seed + i`);
+- symbols in a fixed-rule study;
+- the baseline and variant runs in a paired comparison.
+
+Planned design:
+
+- add a `--workers N` flag; the default is half the logical CPUs (`os.cpu_count() // 2`), and `--workers 1` keeps today's serial path;
+- use `concurrent.futures.ProcessPoolExecutor`, because the engine is CPU-bound Python and threads would not help;
+- workers only compute and return plain results; the parent process collects them in submission order and is the only writer to SQLite, so reports and stored experiments do not depend on the worker count;
+- each worker loads its own ruleset and data (nothing shared or mutable).
+
+Tests:
+
+- reports from `--workers 1` and `--workers 4` must be identical for a small V6/V7 run and for a fixed-rule study on synthetic Parquet;
+- a worker exception must surface as that unit's error without hanging the pool.
+
+Expected effect: about 8–10× faster with 10 workers.
 
 ### How to run Steps 0, 2, 3 and 4
 
