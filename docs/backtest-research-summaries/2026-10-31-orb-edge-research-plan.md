@@ -270,6 +270,48 @@ Reading:
 - `atr_pctile` is missing for 1,333 trades because it needs about 267 prior
   sessions and the data starts in 2018-05.
 
+**Second pass: overnight gap, direction-aware and ATR-scaled (2026-11-02,
+experiment `01a19e08-dfd9-737e-8379-5185a2f7ab0c`, 2 trials):** baseline rule,
+pooled tercile cutoffs. Two variables were declared before looking:
+
+- `gap_aligned_atr` = trade side (+1 long, −1 short) × (open − prior close) /
+  ATR14. Mechanism: overnight news creates order flow in its direction, so a
+  breakout with the gap should continue and one against it should fight it.
+- `abs_gap_atr` = |gap| / ATR14. Replaces `abs_gap_pct`, whose pooled high
+  tercile held 58% of TSLA sessions but only 23% of QQQ's, so the first-pass
+  lead could have been a TSLA effect.
+
+Decision rule, fixed in advance: monotonic, high − low sign holds in at least
+5/7 years and 4/5 symbols, the favoured tercile reaches 0.05R, and a mechanism.
+
+| Variable | Low | Mid | High | High − low (approx. 95% CI) | Monotonic | Years / symbols agreeing |
+| --- | --- | --- | --- | --- | --- | --- |
+| `gap_aligned_atr` | +0.020 | −0.040 | +0.023 | +0.003 [−0.108, +0.115] | none | 3/7, 3/5 |
+| `abs_gap_atr` | −0.045 | +0.029 | +0.020 | +0.066 [−0.032, +0.163] | none | 6/7, 4/5 |
+
+Cutoffs: `gap_aligned_atr` −0.150 / +0.136; `abs_gap_atr` 0.143 / 0.340.
+75 trades lack ATR history. The run reproduces the baseline exactly (8,375
+trades, −0.001R).
+
+Reading:
+
+- **Gap direction does not matter.** Breakouts with the gap (+0.023R) and
+  against it (+0.020R) do the same, for longs (+0.026 vs +0.020) and shorts
+  (+0.019 vs +0.020) alike. The weak middle tercile is the size effect below
+  (near-zero alignment means a small gap), not a direction effect.
+  `gap_aligned_atr` is dropped.
+- **Gap size survives ATR scaling but stays weak.** Symbols now spread evenly
+  across terciles, and the sign holds in 6/7 years and 4/5 symbols, so the
+  first-pass lead was not just TSLA. The shape is "quiet opens are bad"
+  (low tercile −0.045R) rather than "big gaps are good" (mid +0.029, high
+  +0.020). It fails the rule: not monotonic, no tercile reaches 0.05R, and the
+  interval includes 0.
+- **Even a perfect filter would fall short.** Skipping the low tercile leaves
+  about +0.025R, half the minimum edge. `abs_gap_atr` stays a diagnostic note
+  (a candidate no-trade condition) and is not registered on its own.
+- Deferred: whether the gap was already filled by entry time. With no
+  direction effect, this is unlikely to help.
+
 ### Step 4: Explore enhancements (Q4)
 
 **Purpose:** find at most one bundled improvement to the baseline.  

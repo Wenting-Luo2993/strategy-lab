@@ -111,6 +111,31 @@ def test_or_width_atr_and_relative_volume_hand_computed():
     assert last["prior_trend_20d_pct"] == pytest.approx(0.0)
 
 
+def test_gap_atr_hand_computed():
+    days = pd.bdate_range("2020-01-02", periods=17)
+    opens = [100.0] * 15 + [103.0, 100.0]
+    rows = []
+    for day, o in zip(days, opens):
+        d = day.strftime("%Y-%m-%d")
+        # every session has high-low = 2 and closes at 100
+        rows.append((pd.Timestamp(d + " 09:30", tz=NY), o, max(o, 101.0), min(o, 99.0), 100.0, 10.0))
+        rows.append((pd.Timestamp(d + " 09:35", tz=NY), 100.0, 101.0, 99.0, 100.0, 10.0))
+    df = pd.DataFrame(
+        [r[1:] for r in rows], index=[r[0] for r in rows],
+        columns=["open", "high", "low", "close", "volume"],
+    )
+    feats = build_session_features(df)
+    assert np.isnan(feats["gap_atr"].iloc[:15]).all()  # ATR needs 14 prior true ranges
+    # Day 15: ATR of prior 14 sessions is 2; gap is +3.
+    assert feats["gap_atr"].iloc[15] == pytest.approx(1.5)
+    assert feats["abs_gap_atr"].iloc[15] == pytest.approx(1.5)
+    # Day 16: prior TR window now includes day 15's TR of 4 (high 103 - low 99).
+    atr = (13 * 2.0 + 4.0) / 14
+    assert feats["gap_atr"].iloc[16] == pytest.approx(0.0)
+    assert feats["abs_gap_atr"].iloc[16] == pytest.approx(0.0)
+    assert feats["or_width_atr"].iloc[16] == pytest.approx(2.0 / atr)
+
+
 def test_warmup_rows_are_nan_and_percentile_needs_history():
     feats = build_session_features(_bars(40))
     assert list(feats.columns) == list(FEATURE_COLUMNS)

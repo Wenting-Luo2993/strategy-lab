@@ -143,9 +143,15 @@ export function conditionsHtml(conditions) {
     });
     const ix = block.interaction;
     const share = block.consistency || {};
+    const sideRows = Object.entries(block.by_side || {}).map(([side, byTercile]) =>
+      `<tr><th scope="row">${escape(side)}</th>${["low", "mid", "high"].map((t) => {
+        const e = byTercile?.[t];
+        return `<td>${e ? `${r(e.mean_r)} (n=${escape(e.n)})` : "n/a"}</td>`;
+      }).join("")}</tr>`);
+    const sideTable = sideRows.length ? table(["Side", "Low", "Mid", "High"], sideRows) : "";
     return `<h4>${escape(variable)}</h4>${table(["Tercile", "n", "Mean", "Interval"], rows)}
       <p class="chart-note">High minus low: ${ix ? `${r(ix.high_minus_low_r)} ${interval(ix.ci_low_r, ix.ci_high_r)} (approximate)` : "n/a"}
-      · monotonic: ${escape(block.monotonic ?? "n/a")} · same-sign years: ${pct(share.share_years)} · same-sign symbols: ${pct(share.share_symbols)}</p>`;
+      · monotonic: ${escape(block.monotonic ?? "n/a")} · same-sign years: ${pct(share.share_years)} · same-sign symbols: ${pct(share.share_symbols)}</p>${sideTable}`;
   }).join("")}`;
 }
 

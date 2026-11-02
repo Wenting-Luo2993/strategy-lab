@@ -20,6 +20,28 @@ from vibe.research_pipeline.inference import (
 
 TERCILES = ("low", "mid", "high")
 
+# Trade-relative variables: trade side (+1 long, -1 short) times a session
+# feature, so "with the gap/trend" and "against it" separate for both sides.
+TRADE_RELATIVE_VARIABLES = {
+    "gap_aligned_pct": "gap_pct",
+    "gap_aligned_atr": "gap_atr",
+    "trend_aligned_pct": "prior_trend_20d_pct",
+}
+
+
+def trade_side_sign(trade: Any) -> int | None:
+    """+1 for a long (buy) entry, -1 for a short (sell) entry, else None."""
+    side = str(getattr(trade, "side", "") or "").lower()
+    if side in ("buy", "long"):
+        return 1
+    if side in ("sell", "short"):
+        return -1
+    return None
+
+
+def _side_label(sign: int | None) -> str:
+    return {1: "long", -1: "short"}.get(sign, "unknown")
+
 
 def _sign(value: float | None) -> int | None:
     if value is None or not math.isfinite(value) or value == 0:
@@ -39,11 +61,14 @@ def _mean(values: Sequence[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-def _group_means(rows: Sequence[tuple[str, str, float, float]], key: int) -> dict[str, dict[str, Any]]:
-    """Mean R and count of each tercile within each year (key=0) or symbol (key=1)."""
+def _group_means(rows: Sequence[Sequence[Any]], key: int) -> dict[str, dict[str, Any]]:
+    """Mean R and count of each tercile within each group.
+
+    ``key`` 0 groups by year, otherwise by ``row[key]`` (1 symbol, 5 side).
+    """
     grouped: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     for row in rows:
-        label = row[0][:4] if key == 0 else row[1]
+        label = row[0][:4] if key == 0 else row[key]
         grouped[label][row[4]].append(row[3])
     return {
         label: {
@@ -78,9 +103,11 @@ def tercile_breakdown(
     min_edge_r: float = 0.05,
     cutoffs: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
-    # rows: [session date, symbol, variable value, net R, tercile assigned later]
+    # rows: [session date, symbol, variable value, net R, tercile, side]
     joined: list[list[Any]] = []
     n_missing = 0
+    base_variable = TRADE_RELATIVE_VARIABLES.get(variable, variable)
+    trade_relative = variable in TRADE_RELATIVE_VARIABLES
     for symbol in sorted(trades_by_symbol):
         features = features_by_symbol.get(symbol)
         for trade in trades_by_symbol[symbol]:
@@ -88,13 +115,16 @@ def tercile_breakdown(
             if net_r is None:
                 continue
             day = trade_session_date(trade)
+            sign = trade_side_sign(trade)
             value = float("nan")
-            if features is not None and day in features.index and variable in features.columns:
-                value = float(features.at[day, variable])
+            if features is not None and day in features.index and base_variable in features.columns:
+                value = float(features.at[day, base_variable])
+                if trade_relative:
+                    value = value * sign if sign is not None else float("nan")
             if not math.isfinite(value):
                 n_missing += 1
                 continue
-            joined.append([day, symbol, value, net_r, None])
+            joined.append([day, symbol, value, net_r, None, _side_label(sign)])
 
     result: dict[str, Any] = {
         "label": "diagnostic",
@@ -108,6 +138,7 @@ def tercile_breakdown(
         "consistency": {"share_years": None, "share_symbols": None},
         "by_year": {},
         "by_symbol": {},
+        "by_side": {},
     }
     if not joined:
         return result
@@ -135,6 +166,7 @@ def tercile_breakdown(
     by_symbol = _group_means(joined, 1)
     result["by_year"] = by_year
     result["by_symbol"] = by_symbol
+    result["by_side"] = _group_means(joined, 5)
 
     means = [estimates[t].mean_r for t in TERCILES]
     if all(m is not None for m in means):
@@ -198,7 +230,10 @@ def condition_blocks(
     )
     from zoneinfo import ZoneInfo
 
-    unknown = [v for v in variables if v not in FEATURE_COLUMNS]
+    unknown = [
+        v for v in variables
+        if v not in FEATURE_COLUMNS and v not in TRADE_RELATIVE_VARIABLES
+    ]
     if unknown:
         raise ValueError(f"unknown condition variable(s): {unknown}")
     tz = ZoneInfo(EXCHANGE_TZ)

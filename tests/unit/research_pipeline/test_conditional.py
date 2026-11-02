@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from vibe.common.models.trade import Trade
 from vibe.research_pipeline.conditional import tercile_breakdown
@@ -103,6 +104,56 @@ def test_supplied_cutoffs_are_used_as_given():
     )
     assert out["cutoffs"] == {"low": 10.0, "high": 50.0}
     assert [out["terciles"][t]["n"] for t in ("low", "mid", "high")] == [11, 40, 9]
+
+
+def _sided_trade(day: date, r: float, symbol: str, side: str) -> Trade:
+    stamp = datetime(day.year, day.month, day.day, 10, 0, tzinfo=NY)
+    sign = 1 if side == "buy" else -1
+    return Trade(
+        symbol=symbol, side=side, quantity=1, entry_price=100.0,
+        exit_price=100.0 + sign * r * 10.0, entry_time=stamp, exit_time=stamp,
+        initial_risk=10.0, commission=0.0, exit_reason="EOD",
+    )
+
+
+def test_trade_relative_variable_uses_side():
+    rng = random.Random(7)
+    days = _days(900)
+    gaps = [rng.uniform(-1, 1) for _ in days]
+    trades = []
+    for d, g in zip(days, gaps):
+        side = rng.choice(["buy", "sell"])
+        aligned = (1 if side == "buy" else -1) * g
+        trades.append(_sided_trade(d, (0.4 if aligned > 0.3 else -0.1) + rng.gauss(0, 0.05), "AAA", side))
+    features = {"AAA": pd.DataFrame({"gap_atr": gaps}, index=[d.isoformat() for d in days])}
+
+    aligned = tercile_breakdown({"AAA": trades}, features, "gap_aligned_atr")
+    assert aligned["monotonic"] == "increasing"
+    assert aligned["interaction"]["ci_low_r"] > 0
+    assert set(aligned["by_side"]) == {"long", "short"}
+    for side in ("long", "short"):
+        assert aligned["by_side"][side]["high"]["mean_r"] > aligned["by_side"][side]["low"]["mean_r"]
+
+    # The signed session feature mixes sides and hides the effect.
+    signed = tercile_breakdown({"AAA": trades}, features, "gap_atr")
+    assert abs(signed["interaction"]["high_minus_low_r"]) < aligned["interaction"]["high_minus_low_r"] / 2
+
+
+def test_trade_relative_value_is_side_times_feature():
+    from vibe.research_pipeline.conditional import trade_side_sign
+
+    days = _days(2)
+    features = {"AAA": pd.DataFrame({"gap_atr": [0.5, 0.5]}, index=[d.isoformat() for d in days])}
+    long_t = _sided_trade(days[0], 0.1, "AAA", "buy")
+    short_t = _sided_trade(days[1], 0.1, "AAA", "sell")
+    assert trade_side_sign(long_t) == 1 and trade_side_sign(short_t) == -1
+    assert trade_side_sign(type("T", (), {"side": "neutral"})()) is None
+    out = tercile_breakdown({"AAA": [long_t, short_t]}, features, "gap_aligned_atr")
+    # Values are +0.5 (long, with the gap) and -0.5 (short, against it).
+    assert out["cutoffs"]["low"] == pytest.approx(-0.5 + 1 / 3)
+    assert out["by_side"]["long"]["high"]["n"] == 1
+    assert out["by_side"]["short"]["low"]["n"] == 1
+    assert out["n_trades"] == 2 and out["n_missing"] == 0
 
 
 def test_empty_and_unknown_variable_are_safe():

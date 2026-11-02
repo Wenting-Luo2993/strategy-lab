@@ -51,6 +51,17 @@ test("conditions table is labelled diagnostic and lists terciles", () => {
   assert.match(html, /Diagnostic/);
   assert.match(html, /<h4>gap<\/h4>/);
   assert.match(html, /decreasing/);
+  assert.doesNotMatch(html, /<th[^>]*>Side<\/th>/);
+  const sided = conditionsHtml({
+    gap_aligned_atr: {
+      terciles: { low: { n: 2, mean_r: -0.1 } },
+      by_side: { long: { low: { n: 1, mean_r: -0.25 }, high: { n: 3, mean_r: 0.5 } }, short: { mid: { n: 4, mean_r: 0 } } },
+    },
+  });
+  assert.match(sided, /Side/);
+  assert.match(sided, /long/);
+  assert.match(sided, /n=3/);
+  assert.match(sided, /n\/a/);
   assert.equal(conditionsHtml({}), "");
 });
 

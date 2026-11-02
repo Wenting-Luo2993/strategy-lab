@@ -27,12 +27,16 @@ That document stays as the record of the platform build.
 | 1. Freeze evidence map | Done | none (metadata only) | 25 confirmation stocks in `config/research/universes/orb-confirmation-universe-v1.json`, all locked in `config/final_holdout.yaml` |
 | 2. Baseline | Done | `01a19a24-ada7-744a-855c-bdf8dfd414bc` | 8,375 trades, mean net −0.001R, 95% CI [−0.046, +0.044]R. No average edge on honest fills |
 | 3. Conditions, first pass | Done | `01a19a31-b0d9-7da3-a600-023183d2bd11` | No condition is significant. Weak leads: `abs_gap_pct` (+0.059R high − low) and `or_width_atr` (+0.045R) |
-| 3. Conditions, direction-aware | **Next** | | |
+| 3. Conditions, gap second pass | Done (2026-11-02) | `01a19e08-dfd9-737e-8379-5185a2f7ab0c` | Gap direction (`gap_aligned_atr`) has no effect. ATR-scaled gap size (`abs_gap_atr`, +0.066R high − low) holds in 6/7 years and 4/5 symbols but fails the rule; quiet opens are the weak spot |
+| 3. Conditions, trend direction-aware | **Next** | | `trend_aligned_pct` is wired in `conditional.py` |
 | 4. Enhancements | **Next** | | |
 | 5 onward | Blocked on 3 and 4 | | Confirmation data stays untouched until hypotheses are registered |
 
-Trial ledger (`orb_edge_2026`): 7 trials (1 baseline + 6 conditions). Every
-variable or variant you try adds to it.
+Trial ledger (`orb_edge_2026`): 9 trials (1 baseline + 6 conditions + 2 gap
+conditions on 2026-11-02). The local research DB was rebuilt on 2026-11-02, so
+`show_trial_ledger.py` counts only the 2 recent trials; the earlier 7 are
+recorded here and in the research plan. Every variable or variant you try adds
+to it.
 
 ### What the baseline tells us
 
@@ -61,13 +65,12 @@ The first pass used signed gap and trend, which mixes longs and shorts. A long
 breakout after a gap up and a short breakout after a gap up land in the same
 tercile, which can hide a real effect.
 
-- **Code needed (small):** in `vibe/research_pipeline/session_features.py`
-  / `conditional.py`, add trade-relative variables that multiply by the trade
-  side (+1 long, −1 short):
-  - `gap_aligned_pct` = side × `gap_pct`;
-  - `trend_aligned_pct` = side × `prior_trend_20d_pct`.
-
-  Add a short unit test for each.
+- **Code (done 2026-11-02):** `vibe/research_pipeline/conditional.py` has
+  `TRADE_RELATIVE_VARIABLES`, which multiply a session feature by the trade
+  side (+1 long, −1 short): `gap_aligned_pct`, `gap_aligned_atr` and
+  `trend_aligned_pct`. `session_features.py` adds `gap_atr` and `abs_gap_atr`.
+  Tercile output now includes a `by_side` (long/short) breakdown, shown in the
+  viewer. The gap half is done (see the status table); trend remains.
 - **Run:** `run_fixed_rule_study.py` with the two new `--condition` flags,
   `--trial-family condition --trial-label step3_direction_aware`.
 - **Read:** a monotonic increase from "against" to "with" that holds in most

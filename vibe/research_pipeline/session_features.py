@@ -24,6 +24,8 @@ FEATURE_COLUMNS = (
     "atr_pctile",
     "rel_open_volume",
     "prior_trend_20d_pct",
+    "gap_atr",
+    "abs_gap_atr",
 )
 
 
@@ -72,6 +74,9 @@ def build_session_features(bars: pd.DataFrame, *, or_minutes: int = 5) -> pd.Dat
     atr_known = true_range.rolling(ATR_WINDOW, min_periods=ATR_WINDOW).mean().shift(1)
 
     gap_pct = (daily["open"] - prev_close) / prev_close * 100.0
+    # Gap in units of the stock's own daily range, so volatile names do not
+    # dominate pooled terciles the way they do with gap_pct.
+    gap_atr = (daily["open"] - prev_close) / atr_known
     or_width_atr = (opening["or_high"] - opening["or_low"]) / atr_known
     prior_volume_mean = (
         opening["or_volume"].shift(1).rolling(VOLUME_WINDOW, min_periods=VOLUME_WINDOW).mean()
@@ -100,6 +105,8 @@ def build_session_features(bars: pd.DataFrame, *, or_minutes: int = 5) -> pd.Dat
             "atr_pctile": atr_pctile,
             "rel_open_volume": rel_open_volume,
             "prior_trend_20d_pct": trend,
+            "gap_atr": gap_atr,
+            "abs_gap_atr": gap_atr.abs(),
         },
         index=pd.Index(sessions, name="session"),
     )
