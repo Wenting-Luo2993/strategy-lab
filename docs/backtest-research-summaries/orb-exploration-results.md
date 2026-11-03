@@ -1,6 +1,11 @@
-# ORB edge exploration: results so far
+# ORB edge exploration: results
 
-**Updated:** 2026-11-03  
+A living, high-level summary of what has been explored for the ORB strategy
+and what was found. Add a row for each new experiment, and revise the overall
+conclusion and "What is left" when the picture changes. Detailed tables and
+decision rules stay in the research plan.
+
+**Last updated:** 2026-11-03  
 **Programme:** `orb_edge_2026` (19 trials)  
 **Data:** exploration set only: QQQ, AMZN, GOOGL, MSFT and TSLA, 2018-05-01
 to 2024-12-31. Confirmation stocks and the holdout are untouched.  

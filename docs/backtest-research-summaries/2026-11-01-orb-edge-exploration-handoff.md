@@ -14,8 +14,9 @@ That document stays as the record of the platform build.
 ## Read first
 
 1. This handoff.
-2. `2026-11-03-orb-exploration-results.md`: one table of every exploratory
-   experiment, with full IDs and conclusions.
+2. `orb-exploration-results.md`: the living summary, with one table of every
+   exploratory experiment (full IDs and conclusions). Add a row for each new
+   experiment.
 3. `2026-10-31-orb-edge-research-plan.md`: Steps 0 to 11, with the results of
    Steps 0 to 4 recorded inline.
 4. `2026-10-31-backtest-research-north-star.md`: what a finished experiment
