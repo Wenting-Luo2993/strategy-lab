@@ -33,7 +33,10 @@ class OrbRangeMultipleTakeProfit(BaseModel):
     """Take profit based on ORB range multiple."""
 
     method: Literal["orb_range_multiple"] = "orb_range_multiple"
-    multiplier: float = Field(default=2.0, description="TP = ORB_Range * multiplier (0.0 = disabled)")
+    multiplier: float = Field(
+        default=2.0,
+        description="TP = breakout level +/- ORB_Range * multiplier (0.0 = disabled)",
+    )
 
     @model_validator(mode="after")
     def multiplier_positive(self) -> "OrbRangeMultipleTakeProfit":
@@ -44,11 +47,15 @@ class OrbRangeMultipleTakeProfit(BaseModel):
 
 
 class ATRMultipleTakeProfit(BaseModel):
-    """Take profit based on ATR multiple from entry."""
+    """Take profit at a multiple of daily ATR beyond the breakout level.
+
+    ATR is the simple mean of the last ``period`` daily true ranges, known at
+    the session open (regular hours only).
+    """
 
     method: Literal["atr_multiple"] = "atr_multiple"
-    multiplier: float = Field(default=2.0, description="TP = Entry + (ATR * multiplier)")
-    period: int = Field(default=14, description="ATR period")
+    multiplier: float = Field(default=2.0, description="TP = breakout level +/- daily ATR * multiplier")
+    period: int = Field(default=14, description="Daily ATR period, in sessions")
 
     @model_validator(mode="after")
     def validate_multiplier_and_period(self) -> "ATRMultipleTakeProfit":
@@ -57,7 +64,7 @@ class ATRMultipleTakeProfit(BaseModel):
 
 
 class FixedPctTakeProfit(BaseModel):
-    """Take profit based on fixed percentage from entry."""
+    """Take profit based on fixed percentage from entry (not supported by the ORB strategy)."""
 
     method: Literal["fixed_pct"] = "fixed_pct"
     value: float = Field(description="Percentage, e.g., 0.02 = 2%")

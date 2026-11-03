@@ -28,7 +28,12 @@ from vibe.backtester.analysis.metrics import (
 )
 from vibe.backtester.analysis.performance import PerformanceAnalyzer
 from vibe.backtester.core.clock import SimulatedClock
-from vibe.backtester.core.engine import BacktestEngine, _add_atr, _resample
+from vibe.backtester.core.engine import (
+    BacktestEngine,
+    _add_atr,
+    _add_take_profit_features,
+    _resample,
+)
 from vibe.backtester.core.execution.config import ExecutionConfig
 from vibe.backtester.core.execution.impact import NoImpact
 from vibe.backtester.core.execution.models import Order
@@ -856,6 +861,7 @@ class PortfolioBacktestEngine(BacktestEngine):
                 )
             if "ATR_14" not in frame:
                 frame = _add_atr(frame)
+            frame = _add_take_profit_features(frame, self.ruleset)
             frame["timestamp"] = frame.index
             prepared[symbol] = frame
         return prepared

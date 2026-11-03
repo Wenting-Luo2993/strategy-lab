@@ -2,7 +2,8 @@
 Opening Range Breakout (ORB) Strategy Implementation.
 
 Entry: Price breaks ORB_High (long) or ORB_Low (short)
-Exit: Take-profit at 2x ATR range, stop-loss at ORB level
+Exit: Optional take-profit beyond the breakout level (ORB-range or daily-ATR
+multiple), stop-loss at ORB level
 Time filter: No entries after 15:00
 End-of-day exit for open positions
 """
@@ -15,6 +16,7 @@ import numpy as np
 from pydantic import Field
 
 from vibe.common.strategies.base import StrategyBase, StrategyConfig
+from vibe.common.indicators.daily_atr import add_daily_atr, daily_atr_column
 from vibe.common.indicators.orb_levels import ORBCalculator, ORBLevels
 
 logger = logging.getLogger(__name__)
@@ -38,11 +40,47 @@ class ORBStrategyConfig(StrategyConfig):
         description="Breakout evaluation mode: wick or body",
     )
     entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
-    take_profit_multiplier: float = Field(default=2.0, description="TP = ORB_Range * multiplier")
+    take_profit_multiplier: float = Field(
+        default=2.0,
+        description="Target distance beyond the breakout level, in units set by take_profit_method (0 = no target)",
+    )
+    take_profit_method: Literal["orb_range_multiple", "atr_multiple"] = Field(
+        default="orb_range_multiple",
+        description=(
+            "orb_range_multiple: target = breakout level +/- multiplier * ORB range. "
+            "atr_multiple: target = breakout level +/- multiplier * daily ATR known at the open"
+        ),
+    )
+    take_profit_atr_period: int = Field(
+        default=14, ge=1, description="Daily ATR period for take_profit_method='atr_multiple'",
+    )
     stop_loss_at_level: bool = Field(default=True, description="Stop-loss at ORB level")
     use_volume_filter: bool = Field(default=False, description="Require above-average volume")
     volume_threshold: float = Field(default=1.5, description="Volume must be > average * threshold")
     market_close_time: str = Field(default="16:00", description="Market close time")
+
+
+def take_profit_settings(take_profit: Any) -> Dict[str, Any]:
+    """Map a ruleset ``exit.take_profit`` block to ``ORBStrategyConfig`` fields.
+
+    Raises for methods the ORB strategy cannot honour, so a ruleset never
+    silently runs without the target it declares.
+    """
+    if take_profit is None:
+        return {"take_profit_multiplier": 0.0}
+    method = getattr(take_profit, "method", None)
+    if method == "orb_range_multiple":
+        return {
+            "take_profit_method": "orb_range_multiple",
+            "take_profit_multiplier": float(take_profit.multiplier),
+        }
+    if method == "atr_multiple":
+        return {
+            "take_profit_method": "atr_multiple",
+            "take_profit_multiplier": float(take_profit.multiplier),
+            "take_profit_atr_period": int(take_profit.period),
+        }
+    raise NotImplementedError(f"ORB strategy does not support take_profit method {method!r}")
 
 
 class ORBStrategy(StrategyBase):
@@ -55,7 +93,7 @@ class ORBStrategy(StrategyBase):
     - Optional volume confirmation
 
     Exit conditions:
-    - Take-profit at 2x ORB_Range
+    - Optional take-profit (see ``take_profit_method``)
     - Stop-loss at ORB level
     - End-of-day exit
     """
@@ -381,11 +419,7 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = None
-            if self.config.take_profit_multiplier > 0:
-                tp = orb_calc.get_long_exit_level(
-                    levels, atr, multiplier=self.config.take_profit_multiplier,
-                )
+            tp = self._take_profit_level(levels, "long", df_context)
             sl = levels.low if self.config.stop_loss_at_level else current_price - atr
 
             metadata.update({
@@ -409,11 +443,7 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = None
-            if self.config.take_profit_multiplier > 0:
-                tp = orb_calc.get_short_exit_level(
-                    levels, atr, multiplier=self.config.take_profit_multiplier,
-                )
+            tp = self._take_profit_level(levels, "short", df_context)
             sl = levels.high if self.config.stop_loss_at_level else current_price + atr
 
             metadata.update({
@@ -428,6 +458,42 @@ class ORBStrategy(StrategyBase):
         # No breakout
         metadata.setdefault("reason", "no_breakout")
         return 0, metadata
+
+    def _take_profit_level(
+        self, levels: ORBLevels, side: str, df_context: pd.DataFrame
+    ) -> Optional[float]:
+        """Target price beyond the breakout level, or None when disabled.
+
+        The target is anchored to the breakout level, not the fill, so it is a
+        fixed price at signal time in both backtest and live. With the stop at
+        the opposite side of the range, ``orb_range_multiple`` k is k R measured
+        from the trigger.
+        """
+        multiplier = self.config.take_profit_multiplier
+        if multiplier <= 0:
+            return None
+        if self.config.take_profit_method == "orb_range_multiple":
+            distance = levels.range * multiplier
+        else:
+            daily_atr = self._daily_atr_at_signal(df_context)
+            if daily_atr is None:
+                return None
+            distance = daily_atr * multiplier
+        return levels.high + distance if side == "long" else levels.low - distance
+
+    def _daily_atr_at_signal(self, df_context: pd.DataFrame) -> Optional[float]:
+        period = self.config.take_profit_atr_period
+        column = daily_atr_column(period)
+        if column not in df_context.columns:
+            # Live context has no precomputed column; derive it from history.
+            df_context = add_daily_atr(df_context, period)
+        value = df_context[column].iloc[-1]
+        if pd.isna(value) or value <= 0:
+            logger.warning(
+                "Daily ATR(%d) unavailable at signal; no take-profit set for this trade", period
+            )
+            return None
+        return float(value)
 
     def _calculate_body_percentage(self, bar: dict) -> float:
         """

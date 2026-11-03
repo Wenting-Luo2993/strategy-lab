@@ -4,7 +4,7 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 from vibe.common.ruleset.models import StrategyRuleSet
-from vibe.common.strategies.orb import ORBStrategy, ORBStrategyConfig
+from vibe.common.strategies.orb import ORBStrategy, ORBStrategyConfig, take_profit_settings
 
 
 class RuleSetRunner:
@@ -38,10 +38,6 @@ class RuleSetRunner:
         s = ruleset.strategy
         exit_ = ruleset.exit
 
-        tp_multiplier = 0.0
-        if exit_.take_profit is not None and hasattr(exit_.take_profit, "multiplier"):
-            tp_multiplier = exit_.take_profit.multiplier
-
         config = ORBStrategyConfig(
             name=ruleset.name,
             orb_start_time=s.orb_start_time,
@@ -50,7 +46,7 @@ class RuleSetRunner:
             direction_mode=getattr(s, "direction_mode", "symmetric"),
             breakout_evaluation=getattr(s, "breakout_evaluation", "wick"),
             entry_cutoff_time=s.entry_cutoff_time,
-            take_profit_multiplier=tp_multiplier,
+            **take_profit_settings(exit_.take_profit),
             stop_loss_at_level=(exit_.stop_loss.method == "orb_level"),
             use_volume_filter=ruleset.trade_filter.volume_confirmation,
             volume_threshold=ruleset.trade_filter.volume_threshold,

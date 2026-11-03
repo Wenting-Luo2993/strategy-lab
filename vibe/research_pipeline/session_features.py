@@ -9,6 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from vibe.common.indicators.daily_atr import atr_known_at_open
+
 EXCHANGE_TZ = "America/New_York"
 SESSION_OPEN = pd.Timedelta(hours=9, minutes=30)
 SESSION_CLOSE = pd.Timedelta(hours=16)
@@ -63,15 +65,8 @@ def build_session_features(bars: pd.DataFrame, *, or_minutes: int = 5) -> pd.Dat
     ).reindex(sessions)
 
     prev_close = daily["close"].shift(1)
-    true_range = np.maximum.reduce([
-        (daily["high"] - daily["low"]).to_numpy(),
-        (daily["high"] - prev_close).abs().to_numpy(),
-        (daily["low"] - prev_close).abs().to_numpy(),
-    ])
-    true_range = pd.Series(true_range, index=daily.index).where(prev_close.notna())
-
     # ATR known at the close of the previous session, aligned to today's row.
-    atr_known = true_range.rolling(ATR_WINDOW, min_periods=ATR_WINDOW).mean().shift(1)
+    atr_known = atr_known_at_open(daily, ATR_WINDOW)
 
     gap_pct = (daily["open"] - prev_close) / prev_close * 100.0
     # Gap in units of the stock's own daily range, so volatile names do not

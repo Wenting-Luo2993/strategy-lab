@@ -16,6 +16,7 @@ from vibe.backtester.core.execution_realism import (
 from vibe.backtester.core.reconciliation import reconcile_portfolio
 from vibe.backtester.core.integrity import build_engine_integrity_report
 from vibe.common.risk.position_sizer import PositionSizer
+from vibe.common.indicators.daily_atr import add_daily_atr, daily_atr_column
 from vibe.backtester.core.execution.config import ExecutionConfig
 from vibe.backtester.core.execution.simulator import ExecutionSimulator
 from vibe.backtester.core.execution.pending_queue import PendingOrderQueue
@@ -88,6 +89,17 @@ def _add_atr(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     df = df.copy()
     df[f"ATR_{period}"] = tr.ewm(alpha=1.0 / period, adjust=False, min_periods=period).mean()
     return df
+
+
+def _add_take_profit_features(df: pd.DataFrame, ruleset: StrategyRuleSet) -> pd.DataFrame:
+    """Add the daily ATR column an ``atr_multiple`` take-profit reads at signal time."""
+    take_profit = ruleset.exit.take_profit
+    if getattr(take_profit, "method", None) != "atr_multiple":
+        return df
+    period = int(take_profit.period)
+    if daily_atr_column(period) in df.columns:
+        return df
+    return add_daily_atr(df, period)
 
 
 def _compute_adv(df: pd.DataFrame, window: int = 20) -> pd.Series:
@@ -192,6 +204,7 @@ class BacktestEngine:
         else:
             # Backward compatibility: compute ATR if not provided
             df = _add_atr(df)
+        df = _add_take_profit_features(df, self.ruleset)
         
         # ORBCalculator requires a 'timestamp' column (not just the DatetimeIndex)
         df["timestamp"] = df.index

@@ -45,7 +45,7 @@ from vibe.trading_bot.execution.trade_executor import (
 from vibe.common.models import Trade
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
-from vibe.common.strategies.orb import ORBStrategyConfig
+from vibe.common.strategies.orb import ORBStrategyConfig, take_profit_settings
 from vibe.common.indicators.engine import IncrementalIndicatorEngine
 from vibe.trading_bot.notifications.discord import DiscordNotifier
 from vibe.trading_bot.notifications.payloads import (
@@ -1730,10 +1730,9 @@ class TradingOrchestrator:
             try:
                 if self.ruleset:
                     orb_params = self.ruleset.strategy
-                    # Take profit multiplier: 0.0 means disabled (no TP target)
-                    tp_multiplier = 0.0
-                    if self.ruleset.exit.take_profit is not None:
-                        tp_multiplier = getattr(self.ruleset.exit.take_profit, "multiplier", 0.0)
+                    tp_settings = take_profit_settings(self.ruleset.exit.take_profit)
+                    tp_multiplier = tp_settings["take_profit_multiplier"]
+                    tp_method = tp_settings.get("take_profit_method", "orb_range_multiple")
                     # Stop loss: True if ORB level stop, False if ATR-based
                     stop_at_level = isinstance(self.ruleset.exit.stop_loss, OrbLevelStopLoss)
                     strategy_config = ORBStrategyConfig(
@@ -1743,7 +1742,7 @@ class TradingOrchestrator:
                         orb_body_pct_filter=orb_params.orb_body_pct_filter,
                         breakout_evaluation=orb_params.breakout_evaluation,
                         entry_cutoff_time=orb_params.entry_cutoff_time,
-                        take_profit_multiplier=tp_multiplier,
+                        **tp_settings,
                         stop_loss_at_level=stop_at_level,
                         use_volume_filter=self.ruleset.trade_filter.volume_confirmation,
                         volume_threshold=self.ruleset.trade_filter.volume_threshold,
@@ -1754,7 +1753,7 @@ class TradingOrchestrator:
                         f"ORB {orb_params.orb_start_time}+{orb_params.orb_duration_minutes}m, "
                         f"body_filter={orb_params.orb_body_pct_filter:.0%}, "
                         f"breakout={orb_params.breakout_evaluation}, "
-                        f"tp={'disabled' if tp_multiplier == 0 else f'{tp_multiplier}x'}, "
+                        f"tp={'disabled' if tp_multiplier == 0 else f'{tp_multiplier}x {tp_method}'}, "
                         f"sl={'orb_level' if stop_at_level else 'atr'}"
                     )
                 else:
