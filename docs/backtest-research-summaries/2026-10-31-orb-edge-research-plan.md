@@ -312,6 +312,29 @@ Reading:
 - Deferred: whether the gap was already filled by entry time. With no
   direction effect, this is unlikely to help.
 
+**Third pass: prior trend, direction-aware (2026-11-03, experiment
+`01a1a253-6a62-7475-8ccf-8ff1d65c8202`, 1 trial):** baseline rule, pooled
+tercile cutoffs.
+
+- `trend_aligned_pct` = trade side × prior 20-session return. Mechanism: a
+  breakout in the direction of the recent trend has the trend's order flow
+  behind it and should travel further.
+- Decision rule, fixed in advance: as in the second pass.
+
+| Variable | Against | Mid | With | With − against (approx. 95% CI) | Monotonic | Years / symbols agreeing |
+| --- | --- | --- | --- | --- | --- | --- |
+| `trend_aligned_pct` | −0.029 | +0.050 | −0.017 | +0.012 [−0.090, +0.114] | none | 3/7, 3/5 |
+
+Reading:
+
+- **Contradicted.** Trend alignment does not separate outcomes, and longs and
+  shorts show the same flat shape. The mid tercile is the best but is not
+  explained by any mechanism and is not pursued.
+- This also deprioritises wiring `mtf_validation` (a higher-timeframe trend
+  filter): the cheaper daily-trend version of the same idea found nothing.
+- Step 3 closes with no registered condition. `abs_gap_atr` remains a
+  diagnostic note.
+
 ### Step 4: Explore enhancements (Q4)
 
 **Purpose:** find at most one bundled improvement to the baseline.  
@@ -336,6 +359,75 @@ Treat it separately.
 
 **Gate:** the bundle is justified by mechanism or by an MAE/MFE pattern, not
 only by having the best number. Every variant tried is counted as a trial.
+
+**First pass: exit levers (2026-11-03, 9 trials).** Each lever is a paired
+comparison against `orb_production.yaml` on the same 8,395 symbol-sessions
+(1,679 clusters). Variant rulesets are in
+`config/research/variants/orb_edge_2026/`.
+
+- Mechanism: 40% of trades reach +1R of favourable excursion, yet the average
+  trade is about 0R. Locking in some of that open profit might help.
+- Prior expectation, stated before the results: a take-profit or tighter exit
+  hurts, because the edge, if any, lives in the right tail of end-of-day
+  exits.
+- Decision rule, fixed in advance:
+  - a paired difference of at least +0.05R per trade, with the interval
+    excluding 0;
+  - the same sign in at least 5/7 years and 4/5 symbols;
+  - for the TP grids, a coherent shape across the grid, not one isolated
+    winner among the six.
+
+**Take-profit fix (commit `cc30292`).** Before this study, the backtester
+ignored `exit.take_profit.method`: every multiple was applied to the 5-minute
+ATR. The TP now honours its method:
+
+- `orb_range_multiple`: breakout level ± k × opening-range width;
+- `atr_multiple`: breakout level ± k × daily ATR(14), using only completed
+  days, so the value is known at the open
+  (`vibe/common/indicators/daily_atr.py`).
+
+The target is anchored at the breakout level and fixed at signal time.
+Entries fill at the next bar's open, often well past the breakout level. A hit
+target therefore realises far less than k in R: 1× OR gives a median of 0.46R.
+The table shows the realised size, so the grids did not test true 1R, 2R and
+3R targets.
+
+Each row shows the difference from baseline in R per session, with an
+approximate 95% CI, and how many years and symbols were negative.
+
+| Lever | Experiment | Variant − baseline, R/session [CI] | Negative years / symbols | TP hit rate, median realised R of hits |
+| --- | --- | --- | --- | --- |
+| Break-even stop after +1R | `01a1a263-8056-7def-8d7b-05e25fe56c81` | −0.041 [−0.062, −0.020] | 7/7, 5/5 | n/a |
+| Flat at 12:00 | `01a1a274-c8eb-714f-bd89-f374269a8851` | −0.021 [−0.047, +0.005] | 5/7, 5/5 | n/a |
+| Flat at 14:00 | `01a1a284-c7db-70bb-8a93-037055ecbd27` | −0.007 [−0.026, +0.012] | 4/7, 4/5 | n/a |
+| TP 1× OR range | `01a1a27c-dd1a-7a29-8d5c-b21e0c709dbc` | −0.041 [−0.077, −0.006] | 6/7, 4/5 | 57%, 0.46R |
+| TP 2× OR range | `01a1a28c-66e4-7139-92ee-17a9bb7f34c0` | −0.030 [−0.055, −0.005] | 6/7, 4/5 | 31%, 1.09R |
+| TP 3× OR range | `01a1a29c-0591-7b90-8b52-876f1f672660` | −0.009 [−0.027, +0.009] | 4/7, 4/5 | 17%, 1.70R |
+| TP 0.25× daily ATR | `01a1a27c-f364-74f2-ba85-9ee78bb7c280` | −0.040 [−0.075, −0.005] | 6/7, 4/5 | 58%, 0.44R |
+| TP 0.5× daily ATR | `01a1a28c-7bf4-783a-98ae-018502e9a90d` | −0.021 [−0.044, +0.003] | 4/7, 5/5 | 33%, 1.03R |
+| TP 1× daily ATR | `01a1a29b-dd42-719a-915b-177859107b30` | −0.001 [−0.011, +0.009] | 5/7, 3/5 | 8%, 1.94R |
+
+The median 5-minute opening range is 0.19 to 0.28× daily ATR, so the two TP
+grids cover similar distances and agree closely.
+
+Reading:
+
+- **Contradicted, as expected.** No exit lever improves on holding to 15:55.
+  Every variant is at or below the baseline. The tighter the exit, the larger
+  the loss.
+- **The shape is coherent.** Both TP grids rise smoothly towards 0 as the
+  target widens: a monotonic cost of capping winners, not noise. The widest
+  targets are hit too rarely to matter.
+- **Break-even is clearly harmful.** It costs −0.041R per session in every
+  year and symbol, even though the engine's trailing update is slightly
+  optimistic. Breakouts often retest before running, and a break-even stop
+  turns those retests into scratches.
+- **The "winners give back" clue is a mirage.** The open profit that is
+  returned is the price of letting the end-of-day tail run. Removing it loses
+  more than it saves.
+- **Not tested:** a target set from the actual entry (entry + k × initial
+  risk), which would test true 1R/2R/3R. Given the smooth shape above, it is
+  unlikely to reverse the result.
 
 ### Step 5: Register the hypotheses
 

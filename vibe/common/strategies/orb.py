@@ -467,7 +467,8 @@ class ORBStrategy(StrategyBase):
         The target is anchored to the breakout level, not the fill, so it is a
         fixed price at signal time in both backtest and live. With the stop at
         the opposite side of the range, ``orb_range_multiple`` k is k R measured
-        from the trigger.
+        from the trigger; fills often land well beyond the trigger (close-based
+        signal, next-bar entry), so the realised R of a hit target is lower.
         """
         multiplier = self.config.take_profit_multiplier
         if multiplier <= 0:
