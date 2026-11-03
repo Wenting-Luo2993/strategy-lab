@@ -6,7 +6,7 @@ conclusion and "What is left" when the picture changes. Detailed tables and
 decision rules stay in the research plan.
 
 **Last updated:** 2026-11-03  
-**Programme:** `orb_edge_2026` (19 trials)  
+**Programme:** `orb_edge_2026` (22 trials)  
 **Data:** exploration set only: QQQ, AMZN, GOOGL, MSFT and TSLA, 2018-05-01
 to 2024-12-31. Confirmation stocks and the holdout are untouched.  
 **Baseline rule:** `vibe/rulesets/orb_production.yaml`: 5-minute opening
@@ -24,19 +24,22 @@ rules are in `2026-10-31-orb-edge-research-plan.md`, Steps 0 to 4.
 - On realistic fills, the 5-minute ORB averages about 0R per trade.
 - No market condition separates good sessions from bad ones.
 - No exit change beats holding to 15:55.
+- The opening-range duration does not matter: 15, 30 and 60 minutes all sit
+  within 0.01R of the baseline.
 - Nothing reaches the +0.05R per trade minimum edge needed to justify a
   confirmation test.
 
-The opening-range duration sweep is the only planned lever not yet tried. If
-it also finds nothing, the honest conclusion is "this ORB has no edge worth
-confirming".
+Every planned lever has now been tried. Unless a new idea with a strong
+mechanism comes up (see "What is left"), the honest conclusion is "this ORB
+has no edge worth confirming".
 
 ## Experiments
 
 R is profit divided by initial risk. Condition studies compare terciles
-(low / mid / high) of a variable known at entry time. Exit studies are paired
-comparisons: variant minus baseline on the same 8,395 symbol-sessions (1,679
-clustered sessions). Intervals are approximate 95% confidence intervals.
+(low / mid / high) of a variable known at entry time. Exit and opening-range
+studies are paired comparisons: variant minus baseline on the same 8,395
+symbol-sessions (1,679 clustered sessions). Intervals are approximate 95%
+confidence intervals.
 
 | # | Question | Experiment ID(s) | Trials | Conclusion |
 | --- | --- | --- | --- | --- |
@@ -48,6 +51,7 @@ clustered sessions). Intervals are approximate 95% confidence intervals.
 | 5 | Does moving the stop to break-even after +1R help? (Step 4) | `01a1a263-8056-7def-8d7b-05e25fe56c81` | 1 | **No, it clearly hurts.** −0.041R per session, CI [−0.062, −0.020], negative in 7/7 years and 5/5 symbols. Breakouts often retest before running, and a break-even stop turns those retests into scratches. This holds even though the engine's trailing-stop update is slightly optimistic. |
 | 6 | Does closing earlier than 15:55 help? (Step 4) | Flat at 12:00: `01a1a274-c8eb-714f-bd89-f374269a8851`<br>Flat at 14:00: `01a1a284-c7db-70bb-8a93-037055ecbd27` | 2 | **No.** Flat at 12:00: −0.021R, CI [−0.047, +0.005], negative in 5/7 years and 5/5 symbols. Flat at 14:00: −0.007R, CI [−0.026, +0.012], mixed. The earlier the exit, the worse the result: the afternoon is where the end-of-day winners make their money. |
 | 7 | Does a take-profit help? (Step 4, after fixing the take-profit) | 1× OR range: `01a1a27c-dd1a-7a29-8d5c-b21e0c709dbc`<br>2× OR range: `01a1a28c-66e4-7139-92ee-17a9bb7f34c0`<br>3× OR range: `01a1a29c-0591-7b90-8b52-876f1f672660`<br>0.25× daily ATR: `01a1a27c-f364-74f2-ba85-9ee78bb7c280`<br>0.5× daily ATR: `01a1a28c-7bf4-783a-98ae-018502e9a90d`<br>1× daily ATR: `01a1a29b-dd42-719a-915b-177859107b30` | 6 | **No.** OR grid: −0.041, −0.030 and −0.009R. ATR grid: −0.040, −0.021 and −0.001R. The two grids agree, and the cost shrinks smoothly as the target widens: capping winners loses more than it saves. Targets are anchored at the breakout level and entries fill past it, so a hit realises about half the nominal size (median 0.46R at 1× OR, 1.09R at 2× OR, 1.94R at 1× ATR). The widest targets are hit too rarely (8–17% of trades) to matter. The take-profit was ignored by the backtester before commit `cc30292`. |
+| 8 | Does a longer opening range help, i.e. waiting 15, 30 or 60 minutes and trading the breakout of the early move? (Step 4) | 15 min: `01a1a314-ed14-7d59-9f7b-c919c72f7603`<br>30 min: `01a1a31d-197d-7faf-aebd-d3f06d6e44e2`<br>60 min: `01a1a32e-1821-7c5b-a347-339fdd8c4c97` | 3 | **No.** 15 min: +0.011R, CI [−0.020, +0.042]. 30 min: +0.009R, CI [−0.026, +0.043]. 60 min: +0.007R, CI [−0.032, +0.046]. Each is positive in only 3/7 years and 3/5 symbols. A flat plateau at zero: the duration does not matter. All three gain and lose in the same years (up in 2019, 2020 and 2024, down in 2018, 2021 and 2022), so the year pattern is the market's, not the duration's. A longer range widens the stop, so more trades are held to the close (85% at 60 minutes) and fewer trades fire (7,105 vs 8,375). Even "trade the direction of the first hour and hold to the close" averages about 0R on these symbols. |
 
 ## What the results say together
 
@@ -60,13 +64,48 @@ clustered sessions). Intervals are approximate 95% confidence intervals.
 - **The results are consistent, not noisy.** Exit levers lose more the
   tighter they are, across two independent target definitions. That
   pattern makes it unlikely the null results are just low power.
+- **Nothing about timing helps either.** Neither waiting longer to define the
+  range nor trend measured over 20 days changes the result.
 
 ## What is left
 
 | Option | Status |
 | --- | --- |
-| Opening-range duration sweep (5, 10, 15 and 30 minutes) | Next: the last planned lever |
+| Opening-range duration sweep (15, 30 and 60 minutes vs the 5-minute baseline) | Done (row 8): flat at zero |
 | Take-profit set from the entry price (entry + k × initial risk), to test true 1R/2R/3R | Optional, low priority; the smooth shape above makes a reversal unlikely |
+| Prior-session intraday trend: return over the last 30, 60 and 240 minutes of the previous session, gap excluded, aligned with the trade side (a condition study, 3 trials) | Documented, not run. See the note below |
 | Higher-timeframe trend filter (`mtf_validation`) | Deprioritised by row 4 |
 | Stocks in play (relative volume across many stocks) | Needs a broader universe; not with the five exploration symbols |
-| Stop and conclude "no edge worth confirming" | Valid if the duration sweep also finds nothing |
+| Stop and conclude "no edge worth confirming" | The default now that every planned lever is done |
+
+### Note: prior-session intraday trend (option, not run)
+
+The idea is the short-horizon version of row 4: does the trend of the last
+0.5, 1 or 4 hours, rather than 20 days, line up with good breakouts?
+
+- **What it would measure.** The data is regular hours only (09:30 to 16:00),
+  and trades enter early (median 10 minutes after the open, 91% within 30
+  minutes). So at entry, a 0.5h, 1h or 4h lookback is almost entirely the end
+  of the previous session. The window should end at the previous close:
+  - excluding the overnight gap, which row 3 already tested;
+  - excluding today's opening minutes, which overlap with the breakout move
+    and would make almost every trade look aligned.
+- **How to run it.** As a condition study, not a filter. Terciles of
+  trade side × prior-session return over the last 30, 60 and 240 minutes show
+  the whole against/mid/with shape on the existing trades with no reruns. A
+  filter is just "drop a tercile", so its effect can be read off the study. An
+  EMA-based filter would add a free parameter and cut the trade count.
+- **Why it was not run.** The mechanism is weak: nothing clearly links
+  yesterday's afternoon to today's breakout. Its close relatives, the 20-day
+  trend (row 4) and the overnight gap (row 3), both showed nothing. The
+  published intraday-momentum effect (Gao, Han, Li and Zhou, 2018) is within
+  one day: the first half-hour predicts the last half-hour. Each extra
+  low-prior trial also raises the bar for anything confirmed later.
+- **Higher timeframes collapse to multi-day trends.** On regular-hours bars,
+  a 20-period EMA on 4-hour bars spans about 10 sessions, close to the 20-day
+  trend already tested. On 1-hour bars it spans about 3 sessions, and on
+  30-minute bars about 1.5.
+- **"Wait 15, 30 or 60 minutes, then trade with the early move"** is the
+  opening-range duration sweep: a breakout of a 30-minute range only fires in
+  the direction the price already moved after the open. It was run (row 8) and
+  found nothing.

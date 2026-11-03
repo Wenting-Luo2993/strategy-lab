@@ -429,6 +429,49 @@ Reading:
   risk), which would test true 1R/2R/3R. Given the smooth shape above, it is
   unlikely to reverse the result.
 
+**Second pass: opening-range duration (2026-11-03, 3 trials).** Paired
+comparisons of a 15, 30 and 60-minute opening range against the 5-minute
+baseline (`config/research/variants/orb_edge_2026/or_15m.yaml`, `or_30m.yaml`
+and `or_60m.yaml`). Everything else is unchanged, including the 15:00 entry
+cutoff and the 15:55 exit.
+
+- Mechanism: a longer range waits out the noisy first minutes. A breakout of
+  it follows a move that is already established, in line with intraday
+  momentum (Gao, Han, Li and Zhou, 2018). This is also the "wait 15, 30 or 60
+  minutes and trade with the early move" version of a short-horizon trend
+  filter.
+- Side effects to keep in mind: the stop is wider (the 60-minute range gives
+  roughly twice the risk per share), so R is on a different scale, and less of
+  the day is left for the move.
+- Decision rule, fixed in advance:
+  - a paired difference of at least +0.05R per session, with the interval
+    excluding 0;
+  - the same sign in at least 5/7 years and 4/5 symbols;
+  - a plateau: at least one neighbouring duration is also positive, not one
+    isolated peak.
+- A scratch run (QQQ, January to February 2024, not recorded) confirmed that
+  the 60-minute variant's first entries are at 10:30.
+
+| Opening range | Experiment | Variant − baseline, R/session [CI] | Positive years / symbols | Variant trades | End-of-day exits |
+| --- | --- | --- | --- | --- | --- |
+| 5 min (baseline) | n/a | n/a | n/a | 8,375 | 51% |
+| 15 min | `01a1a314-ed14-7d59-9f7b-c919c72f7603` | +0.011 [−0.020, +0.042] | 3/7, 3/5 | 8,221 | 65% |
+| 30 min | `01a1a31d-197d-7faf-aebd-d3f06d6e44e2` | +0.009 [−0.026, +0.043] | 3/7, 3/5 | 7,872 | 75% |
+| 60 min | `01a1a32e-1821-7c5b-a347-339fdd8c4c97` | +0.007 [−0.032, +0.046] | 3/7, 3/5 | 7,105 | 85% |
+
+Reading:
+
+- **Contradicted.** Every duration is within about 0.01R of the baseline, and
+  every interval includes 0. There is a plateau, but it is at zero:
+  the opening-range duration does not matter.
+- **The year pattern belongs to the market, not the duration.** All three
+  variants gain in 2019, 2020 and 2024 and lose in 2018, 2021 and 2022.
+- **Waiting for the early move does not help.** With a 60-minute range, 85% of
+  trades are held to the close, so the rule is close to "trade the direction
+  of the first hour and hold to the close". It still averages about 0R on
+  these symbols. The wider stop changes how trades exit, not what they earn.
+- Step 4 closes with no enhancement worth bundling.
+
 ### Step 5: Register the hypotheses
 
 **Purpose:** fix exactly what will be tested before seeing confirmation data.  

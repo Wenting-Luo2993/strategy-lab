@@ -33,17 +33,18 @@ That document stays as the record of the platform build.
 | 3. Conditions, gap second pass | Done (2026-11-02) | `01a19e08-dfd9-737e-8379-5185a2f7ab0c` | Gap direction (`gap_aligned_atr`) has no effect. ATR-scaled gap size (`abs_gap_atr`, +0.066R high − low) holds in 6/7 years and 4/5 symbols but fails the rule; quiet opens are the weak spot |
 | 3. Conditions, trend direction-aware | Done (2026-11-03) | `01a1a253-6a62-7475-8ccf-8ff1d65c8202` | Contradicted: with − against +0.012R [−0.090, +0.114], not monotonic, 3/7 years and 3/5 symbols. Step 3 closes with no registered condition |
 | 4. Exit levers | Done (2026-11-03) | 9 experiments, listed in the research plan, Step 4 | Contradicted: break-even −0.041R, time exits −0.021R (12:00) and −0.007R (14:00), and take-profit −0.041R to −0.001R per session. Tighter exits hurt more; nothing beats holding to 15:55 |
-| 4. Opening-range duration | **Next** | | Sweep 5/10/15/30 minutes (section C) |
-| 5 onward | Blocked on 4 | | Confirmation data stays untouched until hypotheses are registered |
+| 4. Opening-range duration | Done (2026-11-03) | `01a1a314-ed14-7d59-9f7b-c919c72f7603` (15 min), `01a1a31d-197d-7faf-aebd-d3f06d6e44e2` (30 min), `01a1a32e-1821-7c5b-a347-339fdd8c4c97` (60 min) | Contradicted: +0.011R, +0.009R and +0.007R per session, all intervals include 0, 3/7 years. A flat plateau at zero. Step 4 closes with no enhancement |
+| 5 onward | Decision pending | | Every planned lever is done and nothing reached 0.05R. Confirmation data stays untouched until hypotheses are registered |
 
-Trial ledger (`orb_edge_2026`): 19 trials:
+Trial ledger (`orb_edge_2026`): 22 trials:
 
 - 1 baseline;
 - 6 conditions in the first pass;
 - 2 gap conditions (2026-11-02);
 - 1 trend condition (2026-11-03);
 - 9 exit variants (2026-11-03): break-even, two time exits and six
-  take-profits.
+  take-profits;
+- 3 opening-range durations (2026-11-03): 15, 30 and 60 minutes.
 
 The local research DB was rebuilt on 2026-11-02, so `show_trial_ledger.py`
 misses the earlier 7 trials. They are recorded here and in the research plan.
@@ -72,8 +73,11 @@ schema v18), shown in the local viewer and the remote dashboard. Set one with
 Work only on the exploration set: QQQ, AMZN, GOOGL, MSFT and TSLA, 2018-05-01
 to 2024-12-31 (always pass `--end 2024-12-31`).
 
-A, B and D are done or deprioritised. **C is next.** After C, decide between
-Step 5 and the honest stop: so far nothing has reached the 0.05R minimum edge.
+A to D are done or deprioritised. Nothing has reached the 0.05R minimum edge,
+so the next decision is between the honest stop ("this ORB has no edge worth
+confirming") and a new idea with a strong mechanism. Options not yet run,
+including the prior-session intraday trend, are listed in
+`orb-exploration-results.md`, "What is left".
 
 ### A. Direction-aware conditions (Step 3, second pass): done
 
@@ -130,7 +134,12 @@ sessions, per-session difference):
 Use the MAE/MFE panel to explain any change, not just the mean. Count each
 variant as a trial.
 
-### C. Opening-range duration (Step 4): next
+### C. Opening-range duration (Step 4): done
+
+Ran 15, 30 and 60 minutes against the 5-minute baseline (the 10-minute point
+was dropped in favour of 60 to cover the "wait an hour" idea). All three are
+within 0.01R of the baseline: a flat plateau at zero. Results are in the
+research plan, Step 4, second pass. The original plan for C is kept below.
 
 **Question:** is 5 minutes special, or is there a broad plateau?
 
