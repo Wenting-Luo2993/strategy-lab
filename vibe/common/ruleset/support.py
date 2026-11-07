@@ -87,3 +87,39 @@ def require_supported(ruleset: StrategyRuleSet, context: Context) -> None:
             f"Ruleset {ruleset.name!r} sets options the {context} path would ignore: "
             + "; ".join(problems)
         )
+
+
+def resting_stop_conflicts(ruleset: StrategyRuleSet) -> List[str]:
+    """Settings a backtest with a resting stop entry order cannot honour.
+
+    A resting stop fills the instant price reaches the level, so its entry
+    decision may only use information known at that moment. Any filter that
+    reads the *completed* breakout bar is lookahead under that order model.
+
+    ``orb_body_pct_filter`` is deliberately not listed: dropping the
+    completed-bar body filter is part of the policy's definition (the engine
+    reports the ignored value in its diagnostics), whereas the settings below
+    have no such declared meaning and would otherwise be silently ignored.
+    """
+    problems: List[str] = []
+    if ruleset.trade_filter.volume_confirmation:
+        problems.append(
+            "trade_filter.volume_confirmation=true reads the completed breakout bar's volume"
+        )
+    if ruleset.strategy.breakout_evaluation != "wick":
+        problems.append(
+            f"strategy.breakout_evaluation={ruleset.strategy.breakout_evaluation!r} "
+            "needs the completed breakout bar's body"
+        )
+    return problems
+
+
+def require_resting_stop_compatible(ruleset: StrategyRuleSet) -> None:
+    """Raise when a ruleset enables a completed-bar filter under a resting stop."""
+    problems = resting_stop_conflicts(ruleset)
+    if problems:
+        raise UnsupportedRulesetSettingsError(
+            f"Ruleset {ruleset.name!r} enables completed-bar entry filters that a "
+            "resting stop entry (EntryFillPolicy.RESTING_STOP) cannot know at fill "
+            "time: " + "; ".join(problems)
+        )

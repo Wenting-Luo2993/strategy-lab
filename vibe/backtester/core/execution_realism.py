@@ -82,6 +82,10 @@ __all__ = [
 # at the limit says nothing about whether a resting order was reached in the
 # queue. The buying-power diagnostic also stops double counting an entry that
 # was capped both at sizing and at fill.
+#
+# ``EntryFillPolicy.RESTING_STOP`` was added without a bump: it is a new,
+# opt-in policy that changes no existing configuration's semantics, and it is
+# distinguished in every fingerprint through ``identity()["entry_fill_policy"]``.
 EXECUTION_MODEL_VERSION = 7
 
 
@@ -159,6 +163,28 @@ class EntryFillPolicy(str, Enum):
     overnight gap would reintroduce exactly the kind of free option E6 exists
     to remove."""
 
+    RESTING_STOP = "resting_stop"
+    """A genuine resting stop-market order, simulated on 1-minute bars.
+
+    Once the opening range is complete a buy-stop rests at ``OR_high`` and a
+    sell-stop at ``OR_low`` (as allowed by ``direction_mode``) until the entry
+    cutoff. The entry fills on the *first* 1-minute bar whose high reaches
+    ``OR_high`` (low reaches ``OR_low``), at ``max(OR_high, minute open)``
+    (``min`` for shorts) plus the entry slippage ticks -- so a minute that
+    opens beyond the trigger fills at its open, not at the trigger.
+
+    Unlike ``AT_STOP_TRIGGER`` this is lookahead-free: a resting order cannot
+    see the completed breakout bar, so the completed-bar body filter
+    (``orb_body_pct_filter``) is not applied, and rulesets that enable any
+    other completed-bar filter are rejected at engine construction. A minute
+    that reaches both triggers, or the entry and its own initial stop, skips
+    the session as ambiguous. After the fill, exits are checked on the
+    remaining 1-minute bars of the entry's 5-minute bar, then on the normal
+    timeframe bars. Sessions without 1-minute source data are skipped and
+    counted, never priced off coarser bars.
+
+    Opt-in only; requires the engine's source data to be 1-minute bars."""
+
 
 class BuyingPowerError(RuntimeError):
     """Raised when a position would exceed available buying power."""
@@ -219,6 +245,7 @@ class ExecutionRealismConfig:
         exit_slippage: ExitSlippageModel | None = None,
         min_risk_bps: float = 5.0,
         take_profit_trade_through_ticks: int = 1,
+        entry_fill_policy: EntryFillPolicy = EntryFillPolicy.AT_NEXT_BAR_OPEN,
     ) -> "ExecutionRealismConfig":
         """Conservative, cash-bounded execution for results meant to be believed.
 
@@ -237,11 +264,14 @@ class ExecutionRealismConfig:
                 fill price, for an entry to be taken.
             take_profit_trade_through_ticks: How far price must trade beyond
                 a take-profit before the limit is treated as filled.
+            entry_fill_policy: Entry order model. ``AT_NEXT_BAR_OPEN`` models
+                what live submits today; ``RESTING_STOP`` is the opt-in,
+                lookahead-free resting stop-market alternative.
         """
         return cls(
             intrabar_exit_resolution=IntrabarExitResolution.CONSERVATIVE,
             gap_fill_policy=GapFillPolicy.AT_OPEN,
-            entry_fill_policy=EntryFillPolicy.AT_NEXT_BAR_OPEN,
+            entry_fill_policy=EntryFillPolicy(entry_fill_policy),
             enforce_buying_power=True,
             max_gross_leverage=max_gross_leverage,
             commission_model=(
@@ -257,6 +287,11 @@ class ExecutionRealismConfig:
             min_risk_bps=min_risk_bps,
             take_profit_trade_through_ticks=take_profit_trade_through_ticks,
         )
+
+    @classmethod
+    def realistic_resting_stop(cls, **kwargs) -> "ExecutionRealismConfig":
+        """``realistic()`` with entries modelled as a resting stop order."""
+        return cls.realistic(entry_fill_policy=EntryFillPolicy.RESTING_STOP, **kwargs)
 
     def entry_risk_too_small(
         self, *, side: str, fill_price: float, stop_price: float

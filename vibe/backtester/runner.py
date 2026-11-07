@@ -87,6 +87,34 @@ class RuleSetRunner:
             return float(metadata["orb_low"]) - tick_size
         return None
 
+    def resting_stop_take_profit(
+        self,
+        *,
+        orb_high: float,
+        orb_low: float,
+        side: str,
+        df_context: pd.DataFrame,
+        symbol: str,
+        trading_date,
+    ) -> Optional[float]:
+        """The strategy's take-profit for an entry it did not signal itself.
+
+        Used by ``EntryFillPolicy.RESTING_STOP``, where the engine places the
+        entry from the opening range alone. The target depends only on the
+        range and the open-known daily ATR, so it is the same price the
+        strategy would have attached to a signalled entry.
+        """
+        from vibe.common.indicators.orb_levels import ORBLevels
+
+        levels = ORBLevels(high=orb_high, low=orb_low, range=orb_high - orb_low)
+        return self.strategy._take_profit_level(
+            levels,
+            "long" if side == "buy" else "short",
+            df_context,
+            symbol,
+            trading_date,
+        )
+
     def track_position(
         self,
         symbol: str,

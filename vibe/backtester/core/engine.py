@@ -14,6 +14,11 @@ from vibe.backtester.core.execution_realism import (
     EXECUTION_MODEL_VERSION,
 )
 from vibe.backtester.core.reconciliation import reconcile_portfolio
+from vibe.backtester.core.resting_stop import (
+    SessionMinutes,
+    session_time,
+    split_sessions,
+)
 from vibe.backtester.core.integrity import build_engine_integrity_report
 from vibe.common.risk.position_sizer import PositionSizer
 from vibe.common.indicators.daily_atr import add_daily_atr, daily_atr_column
@@ -30,6 +35,7 @@ from vibe.backtester.analysis.metrics import BacktestResult
 from vibe.backtester.analysis.performance import PerformanceAnalyzer
 from vibe.common.models.bar import Bar
 from vibe.common.ruleset.models import StrategyRuleSet
+from vibe.common.ruleset.support import require_resting_stop_compatible
 
 
 def _next_session_bar(
@@ -155,7 +161,19 @@ class BacktestEngine:
         # Entry orders reduced by buying power at sizing and/or fill, by id.
         self.buying_power_capped_orders: set[str] = set()
         self.entries_skipped_min_risk = 0
+        self.entries_skipped_ambiguous_trigger = 0
+        self.entries_skipped_no_1m_data = 0
         self._last_sizing_cap: str | None = None
+        if self.execution_realism.entry_fill_policy is EntryFillPolicy.RESTING_STOP:
+            # A resting stop cannot see the completed breakout bar, so any
+            # filter that reads it would be lookahead. Refuse up front.
+            require_resting_stop_compatible(ruleset)
+            if execution_config is not None and execution_config.latency_bars != 0:
+                raise ValueError(
+                    "EntryFillPolicy.RESTING_STOP fills on the triggering minute; "
+                    f"execution_config.latency_bars={execution_config.latency_bars} "
+                    "would defer it to a later bar"
+                )
         config = ruleset.position_size
         self._position_sizer = PositionSizer(
             risk_pct=config.value,
@@ -279,6 +297,19 @@ class BacktestEngine:
         self.sizing_caps = {}
         self.buying_power_capped_orders = set()
         self.entries_skipped_min_risk = 0
+        self.entries_skipped_ambiguous_trigger = 0
+        self.entries_skipped_no_1m_data = 0
+        self.resting_stop_triggers = 0
+        self.resting_stop_gap_fills = 0
+        self.resting_stop_entry_bar_exits = 0
+
+        # RESTING_STOP simulates the entry order on the source 1-minute bars.
+        resting_stop = (
+            self.execution_realism.entry_fill_policy is EntryFillPolicy.RESTING_STOP
+        )
+        minute_sessions = split_sessions(df_1m) if resting_stop else {}
+        bar_span = pd.Timedelta(pd_interval)
+        resting_done: set[date] = set()
 
         # 5. Event loop with bar_index counter
         prev_date = None
@@ -340,19 +371,47 @@ class BacktestEngine:
 
             # Generate entry signal only if no open position and no pending order.
             has_pending_symbol_order = any(o.symbol == symbol for o in self.pending_orders)
+            resting_entry = None
+            resting_post_fill: tuple[SessionMinutes, int] | None = None
             if (
                 not is_warmup
                 and symbol not in portfolio.positions
                 and not has_pending_symbol_order
             ):
-                current_bar_dict = row.to_dict()
-                current_bar_dict["timestamp"] = ts.to_pydatetime()
+                if resting_stop:
+                    # The strategy's completed-bar signal is not consulted: a
+                    # resting order fills on the triggering minute, before
+                    # that bar has completed.
+                    resting_entry = self._resting_stop_entry(
+                        symbol=symbol, ts=ts, i=i, df=df,
+                        sessions=minute_sessions, done=resting_done,
+                        runner=runner, bar_span=bar_span,
+                    )
+                    signal_value, metadata = 0, {}
+                else:
+                    current_bar_dict = row.to_dict()
+                    current_bar_dict["timestamp"] = ts.to_pydatetime()
 
-                signal_value, metadata = runner.generate_signal(
-                    symbol, current_bar_dict, df.loc[:ts]
-                )
+                    signal_value, metadata = runner.generate_signal(
+                        symbol, current_bar_dict, df.loc[:ts]
+                    )
 
-                if signal_value in (1, -1):
+                if resting_entry is not None:
+                    side, stop_price, rs_take_profit, rs_minutes, rs_trigger = (
+                        resting_entry
+                    )
+                    signal_value = 1 if side == "buy" else -1
+                    metadata = {"take_profit": rs_take_profit}
+                    _TICK = 0.01
+                    slippage = self.slippage_ticks * _TICK
+                    pin_to_trigger = False
+                    stop_trigger = None
+                    # close = the trigger fill price, so the fill paths price
+                    # the order there (plus slippage) on the real minute bar.
+                    entry_bar = rs_minutes.bar(
+                        rs_trigger.index, close=rs_trigger.base_price
+                    )
+                elif signal_value in (1, -1):
                     side = "buy" if signal_value == 1 else "sell"
                     stop_price = metadata.get("stop_loss", bar.close * 0.99)
 
@@ -439,6 +498,11 @@ class BacktestEngine:
                                 self._last_sizing_cap == "buying_power"
                             ),
                         }
+                        if resting_entry is not None:
+                            pending_order_meta[order.id]["entry_time"] = (
+                                rs_minutes.index[rs_trigger.index]
+                            )
+                            resting_post_fill = (rs_minutes, rs_trigger.index)
 
             # Execute all orders eligible for this bar based on configured latency.
             eligible_orders = pending_queue.get_eligible_orders(
@@ -525,11 +589,12 @@ class BacktestEngine:
                     self.buying_power_capped_orders.add(order.id)
 
                 if order.symbol not in portfolio.positions:
+                    entry_time = order_meta.get("entry_time", ts).to_pydatetime()
                     portfolio.open_position(
                         fill_result,
                         stop_price=stop_price,
                         take_profit=take_profit,
-                        timestamp=ts.to_pydatetime(),
+                        timestamp=entry_time,
                     )
                     runner.track_position(
                         symbol=order.symbol,
@@ -537,7 +602,7 @@ class BacktestEngine:
                         entry_price=fill_result.avg_price,
                         take_profit=take_profit,
                         stop_loss=stop_price,
-                        timestamp=ts.to_pydatetime(),
+                        timestamp=entry_time,
                     )
                 else:
                     # Partial fills can accumulate into an existing position.
@@ -556,6 +621,23 @@ class BacktestEngine:
 
             # Keep exposed state synchronized for tests/diagnostics.
             self.pending_orders = [entry.order for entry in pending_queue._orders]
+
+            # RESTING_STOP: the position exists from the fill minute, so its
+            # exits are checked on the remaining minutes of this bar. The 5-min
+            # check for this bar already ran (before entry) and the next one
+            # starts at the next bar, so nothing before the fill is evaluated.
+            if resting_post_fill is not None and symbol in portfolio.positions:
+                rs_minutes, fill_idx = resting_post_fill
+                _, bar_hi = rs_minutes.span(ts, ts + bar_span)
+                for j in range(fill_idx + 1, bar_hi):
+                    if symbol not in portfolio.positions:
+                        break
+                    clock.set_time(rs_minutes.index[j].to_pydatetime())
+                    portfolio.check_exits({symbol: rs_minutes.bar(j)}, clock)
+                    if symbol not in portfolio.positions:
+                        runner.close_position(symbol)
+                        self.resting_stop_entry_bar_exits += 1
+                clock.set_time(ts.to_pydatetime())
 
             # Never carry an intraday position overnight. Runs before this
             # relied on the EOD exit alone, which was safe only while its
@@ -627,6 +709,7 @@ class BacktestEngine:
                 # that warmup was actually supplied and actually excluded,
                 # rather than trusting the caller's intent.
                 "warmup_sessions_excluded": float(len(warmup_sessions_seen)),
+                **(self._resting_stop_diagnostics() if resting_stop else {}),
             },
         )
         result.engine_integrity_report = build_engine_integrity_report(
@@ -638,6 +721,111 @@ class BacktestEngine:
             pending_order_count=len(self.pending_orders),
         )
         return result
+
+    def _resting_stop_diagnostics(self) -> dict[str, float]:
+        """Diagnostics published only under ``EntryFillPolicy.RESTING_STOP``.
+
+        Kept out of every other policy's result so their diagnostics (and the
+        golden snapshots that pin them) are unchanged.
+        """
+        body_pct = getattr(self.ruleset.strategy, "orb_body_pct_filter", None)
+        return {
+            "entries_skipped_ambiguous_trigger": float(
+                self.entries_skipped_ambiguous_trigger
+            ),
+            "entries_skipped_no_1m_data": float(self.entries_skipped_no_1m_data),
+            "resting_stop_triggers": float(self.resting_stop_triggers),
+            "resting_stop_gap_fills": float(self.resting_stop_gap_fills),
+            "resting_stop_entry_bar_exits": float(self.resting_stop_entry_bar_exits),
+            # The ruleset's completed-bar body filter cannot apply to a
+            # resting order; reported so the omission is visible.
+            "orb_body_pct_filter_ignored": float(body_pct or 0.0),
+        }
+
+    def _resting_stop_entry(
+        self,
+        *,
+        symbol: str,
+        ts: pd.Timestamp,
+        i: int,
+        df: pd.DataFrame,
+        sessions: dict,
+        done: set,
+        runner: RuleSetRunner,
+        bar_span: pd.Timedelta,
+    ):
+        """Simulate the session's resting OR stops over the minutes of bar ``ts``.
+
+        Returns ``(side, stop, take_profit, minutes, trigger)`` when a resting
+        order fills inside ``[ts, ts + bar_span)``, else None. Uses only what
+        a resting order knows when it fills: the opening range, the clock, the
+        open-known daily ATR (for the target), and the triggering minute.
+        Once a session triggers (filled, skipped or ambiguous) it is done:
+        one entry attempt per day.
+        """
+        session = ts.date()
+        if session in done:
+            return None
+
+        strategy_cfg = self.ruleset.strategy
+        minutes = sessions.get(session)
+        if minutes is None or not minutes.minute_resolution:
+            # Never fall back to the coarse bars: a stop's fill minute and
+            # gap-open price cannot be recovered from them.
+            done.add(session)
+            self.entries_skipped_no_1m_data += 1
+            return None
+
+        tz = ts.tz
+        or_start = session_time(session, strategy_cfg.orb_start_time, tz)
+        or_end = or_start + pd.Timedelta(minutes=strategy_cfg.orb_duration_minutes)
+        cutoff = session_time(session, strategy_cfg.entry_cutoff_time, tz)
+        if ts >= cutoff:
+            done.add(session)
+            return None
+        window_start = max(ts, or_end)
+        window_end = min(ts + bar_span, cutoff)
+        if window_end <= window_start:
+            return None
+
+        opening_range = minutes.opening_range(or_start, or_end)
+        if opening_range is None:
+            done.add(session)
+            return None
+        or_high, or_low = opening_range
+
+        direction = getattr(strategy_cfg, "direction_mode", "symmetric")
+        long_level = or_high if direction != "short_only" else None
+        short_level = or_low if direction != "long_only" else None
+
+        lo, hi = minutes.span(window_start, window_end)
+        trigger = minutes.first_trigger(
+            lo, hi,
+            long_level=long_level, short_level=short_level,
+            long_stop=or_low, short_stop=or_high,
+        )
+        if trigger is None:
+            return None
+        done.add(session)
+        self.resting_stop_triggers += 1
+        if trigger.ambiguous:
+            self.entries_skipped_ambiguous_trigger += 1
+            return None
+
+        side = trigger.side
+        level = long_level if side == "buy" else short_level
+        if trigger.base_price != level:
+            self.resting_stop_gap_fills += 1
+        stop = or_low if side == "buy" else or_high
+        take_profit = runner.resting_stop_take_profit(
+            orb_high=or_high,
+            orb_low=or_low,
+            side=side,
+            df_context=df.iloc[: i + 1],
+            symbol=symbol,
+            trading_date=session,
+        )
+        return side, stop, take_profit, minutes, trigger
 
     def _clamp_fill_to_buying_power(
         self,
