@@ -348,6 +348,242 @@ def cost_breakeven(trades: Sequence[Any]) -> dict[str, float | None]:
     }
 
 
+def trade_net_pnl(trade: Any) -> float | None:
+    """Net dollar P&L of one trade: ``pnl - commission``."""
+    return _net_pnl(trade)
+
+
+# Step 0 null calibration: observed z-scores were ~0.81 of nominal, so a true
+# edge produces a smaller test statistic than the nominal SE implies.
+DEFAULT_POWER_DEFLATION = 0.81
+
+
+def power_table(
+    se: float | None,
+    edges: Sequence[float] = (0.03, 0.05, 0.08),
+    *,
+    alpha: float = 0.05,
+    deflation: float = DEFAULT_POWER_DEFLATION,
+    min_edge_r: float = 0.05,
+    mean: float | None = None,
+) -> dict[str, Any] | None:
+    """Power to detect each true edge at standard error ``se`` (normal approx).
+
+    ``power_nonzero`` is two-sided power to reject a zero mean;
+    ``power_supported`` is the chance the lower bound clears ``min_edge_r``,
+    i.e. that ``classify_outcome`` says "supported". ``*_deflated`` versions
+    shrink the expected z by ``deflation`` (Step 0 calibration). When
+    ``mean`` is given, ``excluded_edge_r`` is the one-sided ``1 - alpha/2``
+    upper bound: every true edge at or above it is excluded.
+    """
+    if se is None or not math.isfinite(se) or se <= 0:
+        return None
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be in (0, 1)")
+    if not 0.0 < deflation <= 1.0:
+        raise ValueError("deflation must be in (0, 1]")
+    normal = statistics.NormalDist()
+    z = normal.inv_cdf(1.0 - alpha / 2.0)
+
+    def two_sided(shift: float) -> float:
+        return normal.cdf(shift - z) + normal.cdf(-shift - z)
+
+    rows = []
+    for edge in edges:
+        e = float(edge)
+        rows.append({
+            "edge_r": e,
+            "power_nonzero": two_sided(e / se),
+            "power_nonzero_deflated": two_sided(deflation * e / se),
+            "power_supported": normal.cdf((e - min_edge_r) / se - z),
+            "power_supported_deflated": normal.cdf(deflation * (e - min_edge_r) / se - z),
+        })
+    excluded = excluded_deflated = None
+    if mean is not None and math.isfinite(mean):
+        excluded = mean + z * se
+        excluded_deflated = mean + z * se / deflation
+    return {
+        "se_r": se,
+        "alpha": alpha,
+        "deflation": deflation,
+        "min_edge_r": min_edge_r,
+        "rows": rows,
+        "excluded_edge_r": excluded,
+        "excluded_edge_deflated_r": excluded_deflated,
+        "basis": "normal approximation; deflation scales expected z by the Step 0 calibration factor",
+    }
+
+
+def trimmed_mean(values: Sequence[float], proportion: float) -> float | None:
+    """Mean after cutting ``proportion`` of observations from each tail."""
+    if not 0.0 <= proportion < 0.5:
+        raise ValueError("proportion must be in [0, 0.5)")
+    data = sorted(float(v) for v in values)
+    cut = int(len(data) * proportion)
+    kept = data[cut: len(data) - cut]
+    return statistics.fmean(kept) if kept else None
+
+
+def sample_skewness(values: Sequence[float]) -> float | None:
+    """Adjusted Fisher-Pearson skewness (G1); ``None`` below 3 values or zero SD."""
+    data = [float(v) for v in values]
+    n = len(data)
+    if n < 3:
+        return None
+    mean = statistics.fmean(data)
+    m2 = sum((x - mean) ** 2 for x in data) / n
+    if m2 == 0:
+        return None
+    m3 = sum((x - mean) ** 3 for x in data) / n
+    g1 = m3 / m2 ** 1.5
+    return g1 * math.sqrt(n * (n - 1)) / (n - 2)
+
+
+def mean_without_top_values(values: Sequence[float], k: int) -> float | None:
+    """Mean after removing the ``k`` largest values."""
+    data = sorted(float(v) for v in values)
+    kept = data[: max(0, len(data) - k)]
+    return statistics.fmean(kept) if kept else None
+
+
+def mean_without_top_clusters(observations: Sequence[Observation], k: int) -> float | None:
+    """Per-observation mean after removing the ``k`` clusters with the largest sums."""
+    sums: dict[str, float] = defaultdict(float)
+    for obs in observations:
+        sums[obs.cluster] += float(obs.value_r)
+    top = set(sorted(sums, key=lambda c: (-sums[c], c))[:k])
+    kept = [float(o.value_r) for o in observations if o.cluster not in top]
+    return statistics.fmean(kept) if kept else None
+
+
+def distribution_robustness(
+    observations: Sequence[Observation],
+    *,
+    top_days: Sequence[int] = (10, 20, 50),
+    top_trades: Sequence[int] = (50, 100),
+) -> dict[str, Any]:
+    """How much of the mean is carried by the right tail."""
+    values = [float(o.value_r) for o in observations if math.isfinite(float(o.value_r))]
+    clean = [o for o in observations if math.isfinite(float(o.value_r))]
+    n = len(values)
+    return {
+        "n": n,
+        "mean_r": statistics.fmean(values) if values else None,
+        "median_r": statistics.median(values) if values else None,
+        "trimmed_mean_1pct_r": trimmed_mean(values, 0.01) if values else None,
+        "trimmed_mean_5pct_r": trimmed_mean(values, 0.05) if values else None,
+        "skew": sample_skewness(values),
+        "win_rate": sum(v > 0 for v in values) / n if n else None,
+        "mean_without_top_days_r": {
+            str(k): mean_without_top_clusters(clean, k) for k in top_days
+        },
+        "mean_without_top_trades_r": {
+            str(k): mean_without_top_values(values, k) for k in top_trades
+        },
+    }
+
+
+def session_pnl_totals(
+    trades_by_symbol: Mapping[str, Sequence[Any]],
+) -> dict[tuple[str, str], float]:
+    """Net dollar P&L summed per ``(symbol, session_date)``."""
+    totals: dict[tuple[str, str], float] = defaultdict(float)
+    for symbol, trades in trades_by_symbol.items():
+        for trade in trades:
+            net = _net_pnl(trade)
+            if net is None or not math.isfinite(net):
+                continue
+            totals[(symbol, trade_session_date(trade))] += net
+    return dict(totals)
+
+
+def _usd_interval(est: MeanEstimate) -> dict[str, Any]:
+    return {
+        "n": est.n,
+        "n_clusters": est.n_clusters,
+        "mean_usd": _finite_or_none(est.mean_r),
+        "se_cluster_usd": _finite_or_none(est.se_cluster_r),
+        "ci_low_usd": _finite_or_none(est.ci_low_r),
+        "ci_high_usd": _finite_or_none(est.ci_high_r),
+        "confidence_level": est.confidence_level,
+    }
+
+
+def dollar_summary(
+    trades_by_symbol: Mapping[str, Sequence[Any]],
+    *,
+    capital: float | None = None,
+    years: float | None = None,
+    confidence_level: float = 0.95,
+) -> dict[str, Any]:
+    """Dollar view of a trade set, since sizing caps make R and $ diverge.
+
+    ``per_symbol_session`` covers (symbol, date) pairs with at least one trade
+    and is clustered by date. ``return_on_equity_per_year`` assumes each
+    symbol ran on its own ``capital`` account; it is simple, not compounded.
+    """
+    trade_obs: list[Observation] = []
+    bps: list[float] = []
+    risks: list[float] = []
+    total = 0.0
+    for symbol in sorted(trades_by_symbol):
+        for trade in trades_by_symbol[symbol]:
+            net = _net_pnl(trade)
+            if net is None or not math.isfinite(net):
+                continue
+            total += net
+            trade_obs.append(Observation(net, cluster=trade_session_date(trade)))
+            notional = float(trade.entry_price) * float(trade.quantity)
+            if notional > 0:
+                bps.append(net / notional * 1e4)
+            risk = getattr(trade, "initial_risk", None)
+            if risk is not None and math.isfinite(float(risk)) and float(risk) > 0:
+                risks.append(float(risk))
+    session_obs = [
+        Observation(v, cluster=day)
+        for (_symbol, day), v in sorted(session_pnl_totals(trades_by_symbol).items())
+    ]
+    n_symbols = len(trades_by_symbol)
+    roe = None
+    if capital and years and n_symbols and capital > 0 and years > 0:
+        roe = total / (capital * n_symbols) / years
+    return {
+        "total_net_pnl_usd": total,
+        "per_trade": _usd_interval(estimate_mean(trade_obs, confidence_level=confidence_level)),
+        "per_symbol_session": {
+            **_usd_interval(estimate_mean(session_obs, confidence_level=confidence_level)),
+            "basis": "symbol_sessions_with_at_least_one_trade",
+        },
+        "mean_bps_of_notional": statistics.fmean(bps) if bps else None,
+        "median_initial_risk_usd": statistics.median(risks) if risks else None,
+        "mean_initial_risk_usd": statistics.fmean(risks) if risks else None,
+        "return_on_equity_per_year": roe,
+    }
+
+
+def capped_share(results: Iterable[Any]) -> dict[str, Any]:
+    """Share of entries whose size was capped by buying power, from engine diagnostics."""
+    capped = 0
+    trades = 0
+    reported = False
+    for result in results:
+        if result is None:
+            continue
+        diag = getattr(result, "execution_diagnostics", None) or {}
+        trades += len(getattr(result, "trades", ()) or ())
+        value = diag.get("orders_capped_by_buying_power")
+        if value is not None:
+            reported = True
+            capped += int(value)
+    return {
+        "orders_capped_by_buying_power": capped if reported else None,
+        "n_trades": trades,
+        "share_capped_by_buying_power": (
+            capped / trades if reported and trades else None
+        ),
+    }
+
+
 def split_alpha(total_alpha: float, n_tests: int) -> float:
     """Bonferroni share of ``total_alpha`` for each of ``n_tests`` tests."""
     if n_tests < 1:

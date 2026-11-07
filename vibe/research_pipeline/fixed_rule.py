@@ -24,10 +24,14 @@ from vibe.research_pipeline.holdout import load_lock
 from vibe.research_pipeline.inference import (
     MeanEstimate,
     Observation,
+    capped_share,
     classify_outcome,
     cost_breakeven,
+    distribution_robustness,
+    dollar_summary,
     estimate_mean,
     minimum_detectable_effect,
+    power_table,
     session_r_totals,
     trade_net_r,
     trade_session_date,
@@ -127,7 +131,9 @@ def run_fixed_rule_study(
         spec=spec,
         per_symbol=per_symbol,
         errors=errors,
-        summary=summarise(spec, trades_by_symbol, errors),
+        summary=summarise(
+            spec, trades_by_symbol, errors, capped=capped_share(per_symbol.values())
+        ),
     )
 
 
@@ -214,8 +220,11 @@ def summarise(
     spec: FixedRuleSpec,
     trades_by_symbol: Mapping[str, Sequence[Any]],
     errors: Mapping[str, str],
+    *,
+    capped: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     all_trades = [t for s in sorted(trades_by_symbol) for t in trades_by_symbol[s]]
+    observations = _observations(all_trades)
     pooled = _estimate(spec, all_trades, bootstrap=True)
     outcome = classify_outcome(
         pooled.ci_low_r, pooled.ci_high_r, min_edge_r=spec.min_edge_r
@@ -284,6 +293,22 @@ def summarise(
             [v for v in (trade_net_r(t) for t in all_trades) if v is not None]
         ),
         "excursions": _excursions(all_trades),
+        "robustness": distribution_robustness(observations),
+        "power": power_table(
+            pooled.se_cluster_r,
+            alpha=alpha,
+            min_edge_r=spec.min_edge_r,
+            mean=pooled.mean_r,
+        ),
+        "dollars": {
+            **dollar_summary(
+                trades_by_symbol,
+                capital=spec.capital,
+                years=years,
+                confidence_level=spec.confidence_level,
+            ),
+            "sizing": dict(capped) if capped is not None else None,
+        },
         "symbols_positive": sum(
             1 for v in by_symbol.values() if v["mean_r"] is not None and v["mean_r"] > 0
         ),

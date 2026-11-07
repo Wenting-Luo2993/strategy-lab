@@ -158,10 +158,66 @@ export function conditionsHtml(conditions) {
         return `<td>${e ? `${r(e.mean_r)} (n=${escape(e.n)})` : "n/a"}</td>`;
       }).join("")}</tr>`);
     const sideTable = sideRows.length ? table(["Side", "Low", "Mid", "High"], sideRows) : "";
-    return `<h4>${escape(variable)}</h4>${table(["Tercile", "n", "Mean", "Interval"], rows)}
-      <p class="chart-note">High minus low: ${ix ? `${r(ix.high_minus_low_r)} ${interval(ix.ci_low_r, ix.ci_high_r)} (approximate)` : "n/a"}
+    return `<h4>${escape(variable)}</h4>${oosHtml(block.oos)}${table(["Tercile", "n", "Mean", "Interval"], rows)}
+      <p class="chart-note">In-sample high minus low: ${ix ? `${r(ix.high_minus_low_r)} ${interval(ix.ci_low_r, ix.ci_high_r)} (approximate)` : "n/a"}
       · monotonic: ${escape(block.monotonic ?? "n/a")} · same-sign years: ${pct(share.share_years)} · same-sign symbols: ${pct(share.share_symbols)}</p>${sideTable}`;
   }).join("")}`;
+}
+
+const OOS_BADGES = {
+  replicated: ["Replicated out of sample", "good"],
+  same_sign_not_significant: ["Same sign, not significant", "warning"],
+  reversed: ["Reversed out of sample", "danger"],
+  insufficient: ["Insufficient data", "warning"],
+};
+
+/** Time-split tercile test: cutoffs from the first half, applied to the second. */
+export function oosHtml(oos) {
+  if (!oos) return "";
+  const [label, tone] = OOS_BADGES[oos.verdict] || ["Not assessed", "warning"];
+  const row = (name, b, period) => `<tr><th scope="row">${name}</th><td>${escape((period || []).join(" → "))}</td>
+    <td>${escape(b?.n_trades ?? "n/a")}</td><td>${r(b?.high_minus_low_r)}</td><td>${interval(b?.ci_low_r, b?.ci_high_r)}</td></tr>`;
+  return `<p>Out-of-sample test ${badgeHtml({ label, tone })} <small>split ${escape(oos.split_date)}</small></p>
+    ${table(["Half", "Dates", "Trades", "High − low", "Interval"], [row("Train", oos.train, oos.train_period), row("Test", oos.test, oos.test_period)])}`;
+}
+
+const usd = (value, digits = 2) => (finite(value) ? `${value < 0 ? "−" : ""}$${Math.abs(value).toFixed(digits)}` : "n/a");
+const usdInterval = (low, high) => (finite(low) && finite(high) ? `[${usd(low)}, ${usd(high)}]` : "n/a");
+
+/** Power to detect each true edge, nominal and deflated by Step 0 calibration. */
+export function powerHtml(power, unit = "R") {
+  if (!power?.rows?.length) return "";
+  const rows = power.rows.map((p) => `<tr><th scope="row">${r(p.edge_r)}</th><td>${pct(p.power_nonzero)}</td>
+    <td>${pct(p.power_nonzero_deflated)}</td><td>${pct(p.power_supported)}</td><td>${pct(p.power_supported_deflated)}</td></tr>`);
+  const excluded = finite(power.excluded_edge_r)
+    ? `<p class="chart-note">One-sided: true edges ≥ ${r(power.excluded_edge_r)} are excluded (deflated: ≥ ${r(power.excluded_edge_deflated_r)}).</p>` : "";
+  return `<h3>Power</h3>${table([`True edge (${unit})`, "Detect ≠ 0", "Deflated", "Classified supported", "Deflated"], rows)}
+    <p class="chart-note">SE ${r(power.se_r, 4)} · deflation ${escape(power.deflation)} (Step 0 calibration).</p>${excluded}`;
+}
+
+export function robustnessHtml(rob) {
+  if (!rob) return "";
+  const pairs = [
+    ["Median", r(rob.median_r)], ["Trimmed mean 1%", r(rob.trimmed_mean_1pct_r)],
+    ["Trimmed mean 5%", r(rob.trimmed_mean_5pct_r)], ["Skew", finite(rob.skew) ? rob.skew.toFixed(2) : "n/a"],
+    ["Win rate", pct(rob.win_rate)],
+    ...Object.entries(rob.mean_without_top_days_r || {}).map(([k, v]) => [`Mean without top ${k} days`, r(v)]),
+    ...Object.entries(rob.mean_without_top_trades_r || {}).map(([k, v]) => [`Mean without top ${k} trades`, r(v)]),
+  ];
+  return `<h3>Tail robustness</h3>${table(["Measure", "Value"], pairs.map(([a, b]) => `<tr><th scope="row">${escape(a)}</th><td>${escape(b)}</td></tr>`))}`;
+}
+
+export function dollarsHtml(dollars, label = "Dollars") {
+  if (!dollars) return "";
+  const t = dollars.per_trade || {};
+  const s = dollars.per_symbol_session || {};
+  const sizing = dollars.sizing || {};
+  return `<h3>${escape(label)}</h3><p>${usd(t.mean_usd)}/trade ${usdInterval(t.ci_low_usd, t.ci_high_usd)}
+    · ${usd(s.mean_usd)}/symbol-session ${usdInterval(s.ci_low_usd, s.ci_high_usd)}
+    · ${finite(dollars.mean_bps_of_notional) ? `${dollars.mean_bps_of_notional.toFixed(2)} bps` : "n/a"} of notional
+    · return on equity ${pct(dollars.return_on_equity_per_year)}/yr
+    · median risk ${usd(dollars.median_initial_risk_usd, 0)}
+    · capped by buying power ${pct(sizing.share_capped_by_buying_power)}</p>`;
 }
 
 export function trialHtml(trial, trialsPayload) {
@@ -221,6 +277,7 @@ function fixedRuleHtml(experiment) {
     <h3>Exit reasons</h3>${table(["Reason", "n", "Share", "Mean"], exitRows)}
     <h3>Excursions</h3><div data-kind-chart="excursions"><p class="empty">Loading…</p></div>
     <h3>Cost sensitivity</h3><p>Mean net R ${r(cost.mean_net_r)} · break-even extra cost ${finite(cost.breakeven_extra_cost_bps) ? `${cost.breakeven_extra_cost_bps.toFixed(1)} bps` : "n/a"}.</p>
+    ${powerHtml(s.power)}${robustnessHtml(s.robustness)}${dollarsHtml(s.dollars)}
     ${conditionsHtml(s.conditions)}`;
 }
 
@@ -232,6 +289,10 @@ function pairedHtml(experiment) {
     <h3>Difference ${badgeHtml(outcomeBadge(s.outcome))}</h3>
     <p>Mean per-session difference ${r(d.mean_r)} over ${escape(d.n)} sessions, interval ${interval(d.ci_low_r, d.ci_high_r)}.
       Minimum edge per session ${r(s.min_edge_per_session_r)} · MDE ${r(s.mde_per_session_r)}.</p>
+    ${s.difference_usd ? `<p>Dollar difference ${usd(s.difference_usd.mean_diff_usd)}/symbol-session ${usdInterval(s.difference_usd.ci_low_usd, s.difference_usd.ci_high_usd)}
+      · capped by buying power: baseline ${pct(s.baseline?.dollars?.sizing?.share_capped_by_buying_power)}, variant ${pct(s.variant?.dollars?.sizing?.share_capped_by_buying_power)}.</p>` : ""}
+    ${powerHtml(s.power_per_session, "R/session")}
+    ${dollarsHtml(s.baseline?.dollars, "Baseline dollars")}${dollarsHtml(s.variant?.dollars, "Variant dollars")}
     <h3>Cumulative R, baseline vs variant</h3><div data-kind-chart="r-series"><p class="empty">Loading…</p></div>
     <h3>Difference by year</h3>${barRows(s.by_year, "Year")}
     <h3>Difference by symbol</h3>${barRows(s.by_symbol, "Symbol")}`;

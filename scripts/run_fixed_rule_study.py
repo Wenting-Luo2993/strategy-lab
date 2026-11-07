@@ -63,7 +63,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--condition", action="append", default=[],
                    help="Session feature for a diagnostic tercile breakdown (repeatable)")
     p.add_argument("--no-record", action="store_true")
-    return p.parse_args(argv)
+    p.add_argument("--entry-fill-policy", default="at_next_bar_open",
+                   choices=["at_next_bar_open", "at_signal_bar_close",
+                            "at_stop_trigger", "resting_stop"],
+                   help="EntryFillPolicy for ExecutionRealismConfig.realistic()")
+    args = p.parse_args(argv)
+    if args.entry_fill_policy != "at_next_bar_open" and not args.no_record:
+        # The recorded study definition does not carry the entry policy.
+        p.error("--entry-fill-policy other than the default requires --no-record")
+    return args
 
 
 def _sha256(path: Path) -> str:
@@ -87,6 +95,9 @@ def _print_summary(result) -> None:
     )
     print(f"Outcome vs {result.spec.min_edge_r}R edge: {s['outcome']}")
     print(f"Minimum detectable effect: {_fmt(s['mde_r'])}R")
+    from vibe.research_pipeline.report_blocks import fixed_rule_report
+
+    print(fixed_rule_report(s))
     print("\nBy year:")
     for year, row in s["by_year"].items():
         print(f"  {year}  n={row['n']:<5} mean={_fmt(row['mean_r'])}R")
@@ -98,6 +109,8 @@ def _print_summary(result) -> None:
         )
         print(f"\nCondition {variable} (diagnostic): high-low={shown} "
               f"monotonic={block['monotonic']} missing={block['n_missing']}")
+        if block.get("summary_text"):
+            print(f"  {block['summary_text']}")
     if s["errors"]:
         print("\nErrors:")
         for symbol, message in s["errors"].items():
@@ -211,7 +224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             ruleset=ruleset,
             data_dir=data_dir,
             initial_capital=spec.capital,
-            execution_realism=ExecutionRealismConfig.realistic(),
+            execution_realism=ExecutionRealismConfig.realistic(
+                entry_fill_policy=args.entry_fill_policy
+            ),
         )
         return run_segment(
             engine, symbol, segment, warmup_sessions=spec.warmup_sessions

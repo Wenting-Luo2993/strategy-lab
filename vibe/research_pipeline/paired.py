@@ -26,10 +26,14 @@ from vibe.research_pipeline.fixed_rule import (
 from vibe.research_pipeline.inference import (
     MeanEstimate,
     Observation,
+    capped_share,
     classify_outcome,
+    dollar_summary,
     estimate_mean,
     minimum_detectable_effect,
     paired_session_differences,
+    power_table,
+    session_pnl_totals,
     session_r_totals,
 )
 from vibe.research_pipeline.trials import TrialTag
@@ -126,7 +130,15 @@ def run_paired_comparison(
         baseline=baseline,
         variant=variant,
         errors=errors,
-        summary=summarise_paired(spec, _trades(baseline), _trades(variant), sessions, errors),
+        summary=summarise_paired(
+            spec,
+            _trades(baseline),
+            _trades(variant),
+            sessions,
+            errors,
+            baseline_capped=capped_share(baseline.values()),
+            variant_capped=capped_share(variant.values()),
+        ),
     )
 
 
@@ -140,7 +152,11 @@ def _group_estimate(spec: PairedSpec, obs: Sequence[Observation]) -> dict[str, A
     }
 
 
-def _rule_block(spec: PairedSpec, trades_by_symbol: Mapping[str, Sequence[Any]]) -> dict[str, Any]:
+def _rule_block(
+    spec: PairedSpec,
+    trades_by_symbol: Mapping[str, Sequence[Any]],
+    capped: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
     all_trades = [t for s in sorted(trades_by_symbol) for t in trades_by_symbol[s]]
     est: MeanEstimate = _estimate(spec, all_trades, bootstrap=False)
     years = max((spec.end - spec.start).days / 365.25, 1e-9)
@@ -148,6 +164,38 @@ def _rule_block(spec: PairedSpec, trades_by_symbol: Mapping[str, Sequence[Any]])
         "per_trade": est.to_dict(),
         "n_trades": est.n,
         "trades_per_year": est.n / years,
+        "dollars": {
+            **dollar_summary(
+                trades_by_symbol,
+                capital=spec.capital,
+                years=years,
+                confidence_level=spec.confidence_level,
+            ),
+            "sizing": dict(capped) if capped is not None else None,
+        },
+    }
+
+
+def _dollar_difference(
+    spec: PairedSpec,
+    baseline_trades: Mapping[str, Sequence[Any]],
+    variant_trades: Mapping[str, Sequence[Any]],
+    keys: Sequence[tuple[str, str]],
+) -> dict[str, Any]:
+    """Per symbol-session ``variant - baseline`` net dollars, clustered by date."""
+    obs = paired_session_differences(
+        session_pnl_totals(baseline_trades), session_pnl_totals(variant_trades), keys
+    )
+    est = estimate_mean(obs, confidence_level=spec.confidence_level)
+    return {
+        "n_sessions": est.n,
+        "n_clusters": est.n_clusters,
+        "mean_diff_usd": est.mean_r,
+        "se_cluster_usd": est.se_cluster_r,
+        "ci_low_usd": est.ci_low_r,
+        "ci_high_usd": est.ci_high_r,
+        "confidence_level": spec.confidence_level,
+        "basis": "all graded symbol-sessions; sessions without a trade count as $0",
     }
 
 
@@ -157,6 +205,9 @@ def summarise_paired(
     variant_trades: Mapping[str, Sequence[Any]],
     sessions: Mapping[str, Sequence[str]],
     errors: Mapping[str, str],
+    *,
+    baseline_capped: Optional[Mapping[str, Any]] = None,
+    variant_capped: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     keys = [(s, d) for s in sorted(sessions) for d in sorted(set(sessions[s]))]
     base_totals = session_r_totals(baseline_trades)
@@ -169,8 +220,8 @@ def summarise_paired(
         bootstrap_seed=spec.bootstrap_seed,
     )
 
-    baseline_block = _rule_block(spec, baseline_trades)
-    variant_block = _rule_block(spec, variant_trades)
+    baseline_block = _rule_block(spec, baseline_trades, baseline_capped)
+    variant_block = _rule_block(spec, variant_trades, variant_capped)
     n_sessions = len(keys)
     min_edge_per_session = (
         spec.min_edge_r * baseline_block["n_trades"] / n_sessions if n_sessions else 0.0
@@ -206,6 +257,18 @@ def summarise_paired(
         "min_edge_r": spec.min_edge_r,
         "outcome": outcome.value,
         "mde_per_session_r": mde,
+        "power_per_session": power_table(
+            diff.se_cluster_r,
+            edges=tuple(
+                e * baseline_block["n_trades"] / n_sessions if n_sessions else e
+                for e in (0.03, 0.05, 0.08)
+            ),
+            alpha=1.0 - spec.confidence_level,
+            min_edge_r=min_edge_per_session,
+            mean=diff.mean_r,
+        ),
+        "power_edges_per_trade_r": [0.03, 0.05, 0.08],
+        "difference_usd": _dollar_difference(spec, baseline_trades, variant_trades, keys),
         "baseline": baseline_block,
         "variant": variant_block,
         "sessions_changed": sum(1 for o in observations if not math.isclose(o.value_r, 0.0, abs_tol=1e-12)),

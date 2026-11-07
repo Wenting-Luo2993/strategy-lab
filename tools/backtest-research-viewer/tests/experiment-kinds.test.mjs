@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   isKnownKind, outcomeBadge, cumulativeR, histogramModel, renderHistogram,
   conditionsHtml, conclusionHtml, kindDetail, validationBadge, scatterModel, trialHtml, linkedRunsHtml,
+  oosHtml, powerHtml, robustnessHtml, dollarsHtml,
 } from "../public/experiment-kinds.mjs";
 import { experimentDetail, experimentList } from "../public/experiment-view.mjs";
 
@@ -63,6 +64,33 @@ test("conditions table is labelled diagnostic and lists terciles", () => {
   assert.match(sided, /n=3/);
   assert.match(sided, /n\/a/);
   assert.equal(conditionsHtml({}), "");
+});
+
+test("OOS, power, robustness and dollar blocks render and tolerate absence", () => {
+  const oos = oosHtml({
+    split_date: "2021-08-02", verdict: "reversed",
+    train_period: ["2018-05-01", "2021-07-30"], test_period: ["2021-08-02", "2024-12-31"],
+    train: { n_trades: 100, high_minus_low_r: 0.2, ci_low_r: 0.05, ci_high_r: 0.35 },
+    test: { n_trades: 90, high_minus_low_r: -0.1, ci_low_r: -0.3, ci_high_r: 0.1 },
+  });
+  assert.match(oos, /Reversed out of sample/);
+  assert.match(oos, /Train/);
+  assert.equal(oosHtml(null), "");
+  const power = powerHtml({
+    se_r: 0.023, deflation: 0.81, excluded_edge_r: 0.044, excluded_edge_deflated_r: 0.055,
+    rows: [{ edge_r: 0.05, power_nonzero: 0.58, power_nonzero_deflated: 0.42, power_supported: 0.025, power_supported_deflated: 0.025 }],
+  });
+  assert.match(power, /58\.0%/);
+  assert.match(power, /excluded/);
+  assert.equal(powerHtml(undefined), "");
+  assert.match(robustnessHtml({ median_r: -0.81, skew: 3.7, mean_without_top_days_r: { 20: -0.051 }, mean_without_top_trades_r: {} }), /top 20 days/);
+  const dollars = dollarsHtml({
+    per_trade: { mean_usd: -2.1, ci_low_usd: -28, ci_high_usd: 24 }, per_symbol_session: {},
+    sizing: { share_capped_by_buying_power: 0.77 },
+  });
+  assert.match(dollars, /−\$2\.10/);
+  assert.match(dollars, /77\.0%/);
+  assert.equal(dollarsHtml(null), "");
 });
 
 test("validation badge rules", () => {

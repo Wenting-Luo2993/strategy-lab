@@ -59,7 +59,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
                    help="JSON file mapping SYMBOL -> dataset_id")
     p.add_argument("--registration", type=Path, default=None)
     p.add_argument("--no-record", action="store_true")
-    return p.parse_args(argv)
+    p.add_argument("--entry-fill-policy", default="at_next_bar_open",
+                   choices=["at_next_bar_open", "at_signal_bar_close",
+                            "at_stop_trigger", "resting_stop"],
+                   help="EntryFillPolicy for both arms (realistic profile)")
+    args = p.parse_args(argv)
+    if args.entry_fill_policy != "at_next_bar_open" and not args.no_record:
+        # The recorded study definition does not carry the entry policy.
+        p.error("--entry-fill-policy other than the default requires --no-record")
+    return args
 
 
 def _sha256(path: Path) -> str:
@@ -92,6 +100,9 @@ def _print_summary(result) -> None:
     print(
         f"Baseline trades={s['baseline']['n_trades']}  Variant trades={s['variant']['n_trades']}"
     )
+    from vibe.research_pipeline.report_blocks import paired_report
+
+    print(paired_report(s))
     if s["errors"]:
         print("\nErrors:")
         for symbol, message in s["errors"].items():
@@ -207,7 +218,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             rulesets[name][symbol] = ruleset
             engine = BacktestEngine(
                 ruleset=ruleset, data_dir=data_dir, initial_capital=spec.capital,
-                execution_realism=ExecutionRealismConfig.realistic(),
+                execution_realism=ExecutionRealismConfig.realistic(
+                    entry_fill_policy=args.entry_fill_policy
+                ),
             )
             return run_segment(
                 engine, symbol, segment, warmup_sessions=spec.warmup_sessions
