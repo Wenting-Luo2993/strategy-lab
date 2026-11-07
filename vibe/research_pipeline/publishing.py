@@ -162,6 +162,9 @@ _RUN_IDENTITY_KEYS = frozenset(
         "lineage_id",
         "origin_device_id",
         "badges",
+        # Present only for runs recorded with an execution identity in their
+        # fingerprint parameters; legacy run payloads are unchanged.
+        "execution_identity",
     }
 )
 _RUN_EVIDENCE_KEYS = frozenset(
@@ -323,6 +326,43 @@ def _approved_keys(
     return mapping
 
 
+def _validate_execution_identity(value: Any) -> None:
+    execution_identity = _approved_keys(
+        value,
+        _EXECUTION_IDENTITY_KEYS,
+        "identity.execution_identity",
+    )
+    exit_ticks = execution_identity.get("exit_slippage_ticks", {})
+    if not isinstance(exit_ticks, Mapping):
+        raise StoreError(
+            "Publication field 'identity.execution_identity.exit_slippage_ticks' "
+            "must be an object"
+        )
+    unexpected_tick_keys = set(exit_ticks) - _EXIT_SLIPPAGE_REASON_KEYS
+    if unexpected_tick_keys:
+        raise StoreError(
+            "Publication field "
+            "'identity.execution_identity.exit_slippage_ticks' contains "
+            f"unapproved exit reasons: {sorted(unexpected_tick_keys)}"
+        )
+    for reason, ticks in exit_ticks.items():
+        if (
+            isinstance(ticks, bool)
+            or not isinstance(ticks, (int, float))
+            or not math.isfinite(float(ticks))
+            or float(ticks) < 0
+            or float(ticks) > 1_000_000
+        ):
+            raise StoreError(
+                "Publication field "
+                f"'identity.execution_identity.exit_slippage_ticks.{reason}' "
+                "must be a finite numeric scalar between 0 and 1000000"
+            )
+    for key, value in execution_identity.items():
+        if key != "exit_slippage_ticks":
+            _require_scalar(value, f"identity.execution_identity.{key}")
+
+
 def _validate_approved_shape(
     kind: PublicationKind, payload: Mapping[str, Any]
 ) -> None:
@@ -347,6 +387,8 @@ def _validate_approved_shape(
         for key, value in identity.items():
             if key == "badges":
                 _require_scalar_list(value, "identity.badges")
+            elif key == "execution_identity":
+                _validate_execution_identity(value)
             else:
                 _require_scalar(value, f"identity.{key}")
         evidence = _approved_keys(
@@ -428,40 +470,7 @@ def _validate_approved_shape(
     for key, value in identity.items():
         if key != "execution_identity":
             _require_scalar(value, f"identity.{key}")
-    execution_identity = _approved_keys(
-        identity.get("execution_identity", {}),
-        _EXECUTION_IDENTITY_KEYS,
-        "identity.execution_identity",
-    )
-    exit_ticks = execution_identity.get("exit_slippage_ticks", {})
-    if not isinstance(exit_ticks, Mapping):
-        raise StoreError(
-            "Publication field 'identity.execution_identity.exit_slippage_ticks' "
-            "must be an object"
-        )
-    unexpected_tick_keys = set(exit_ticks) - _EXIT_SLIPPAGE_REASON_KEYS
-    if unexpected_tick_keys:
-        raise StoreError(
-            "Publication field "
-            "'identity.execution_identity.exit_slippage_ticks' contains "
-            f"unapproved exit reasons: {sorted(unexpected_tick_keys)}"
-        )
-    for reason, ticks in exit_ticks.items():
-        if (
-            isinstance(ticks, bool)
-            or not isinstance(ticks, (int, float))
-            or not math.isfinite(float(ticks))
-            or float(ticks) < 0
-            or float(ticks) > 1_000_000
-        ):
-            raise StoreError(
-                "Publication field "
-                f"'identity.execution_identity.exit_slippage_ticks.{reason}' "
-                "must be a finite numeric scalar between 0 and 1000000"
-            )
-    for key, value in execution_identity.items():
-        if key != "exit_slippage_ticks":
-            _require_scalar(value, f"identity.execution_identity.{key}")
+    _validate_execution_identity(identity.get("execution_identity", {}))
     checksum = _approved_keys(
         payload.get("checksum", {}),
         frozenset({"canonical_sha256"}),

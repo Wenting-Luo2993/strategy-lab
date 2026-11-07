@@ -539,8 +539,15 @@ class BacktestRunSink:
         retention: RetentionProfile = RetentionProfile.SUMMARY,
         owner: str = "research_study",
         validator: Optional[Callable[[Any], Any]] = None,
+        execution_identity: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self._store = store
+        # Folded into each run's fingerprint parameters, so runs that differ
+        # only in execution config (e.g. entry fill policy) never dedupe onto
+        # one run_id. ``None`` keeps legacy fingerprints unchanged.
+        self._execution_identity = (
+            dict(execution_identity) if execution_identity is not None else None
+        )
         self._strategy_id = strategy_id
         self._symbol = symbol
         self._data_snapshot_id = data_snapshot_id
@@ -594,10 +601,13 @@ class BacktestRunSink:
         """
         try:
             first_session, last_session = _evaluation_window(result)
+            run_parameters = dict(parameters)
+            if self._execution_identity is not None:
+                run_parameters["execution_identity"] = dict(self._execution_identity)
             fingerprint = build_run_fingerprint(
                 strategy_id=self._strategy_id,
                 ruleset_sha256=hash_effective_ruleset(ruleset),
-                parameters=dict(parameters),
+                parameters=run_parameters,
                 symbol=self._symbol,
                 first_session=first_session,
                 last_session=last_session,

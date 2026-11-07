@@ -63,11 +63,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
                    choices=["at_next_bar_open", "at_signal_bar_close",
                             "at_stop_trigger", "resting_stop"],
                    help="EntryFillPolicy for both arms (realistic profile)")
-    args = p.parse_args(argv)
-    if args.entry_fill_policy != "at_next_bar_open" and not args.no_record:
-        # The recorded study definition does not carry the entry policy.
-        p.error("--entry-fill-policy other than the default requires --no-record")
-    return args
+    return p.parse_args(argv)
 
 
 def _sha256(path: Path) -> str:
@@ -209,6 +205,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         session_count=calendar.session_count(spec.start, spec.end),
     )
     rulesets: dict[str, dict[str, Any]] = {"baseline": {}, "variant": {}}
+    execution_realism = ExecutionRealismConfig.realistic(
+        entry_fill_policy=args.entry_fill_policy
+    )
 
     def runner(name: str):
         def run(symbol: str):
@@ -218,9 +217,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             rulesets[name][symbol] = ruleset
             engine = BacktestEngine(
                 ruleset=ruleset, data_dir=data_dir, initial_capital=spec.capital,
-                execution_realism=ExecutionRealismConfig.realistic(
-                    entry_fill_policy=args.entry_fill_policy
-                ),
+                execution_realism=execution_realism,
             )
             return run_segment(
                 engine, symbol, segment, warmup_sessions=spec.warmup_sessions
@@ -243,16 +240,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     _print_summary(result)
 
     if not args.no_record:
+        from vibe.research_pipeline.dataset_pin import (
+            dataset_pin,
+            default_cache_path,
+        )
         from vibe.research_pipeline.paths import research_db_path
+        from vibe.research_pipeline.provenance import study_definition_hash
         from vibe.research_pipeline.research_sink import (
             _repository_root,
             dataset_snapshot_id,
         )
         from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
 
-        store = SqliteResearchStore(
-            args.research_db or research_db_path(create_parents=True)
-        )
+        db_path = args.research_db or research_db_path(create_parents=True)
+        store = SqliteResearchStore(db_path)
+        execution_identity = execution_realism.identity()
         try:
             sinks = {
                 symbol: BacktestRunSink(
@@ -262,6 +264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     methodology_version=METHODOLOGY_VERSION,
                     repo_root=_repository_root(), starting_equity=spec.capital,
                     retention=RetentionProfile.DIAGNOSTIC,
+                    execution_identity=execution_identity,
                 )
                 for symbol in spec.symbols
             }
@@ -270,10 +273,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 spec,
                 baseline_ruleset_hash=ruleset_set_hash(rulesets["baseline"]),
                 variant_ruleset_hash=ruleset_set_hash(rulesets["variant"]),
-                dataset_manifest_hash=manifest_hash,
+                dataset_id_manifest_hash=manifest_hash,
+                execution_identity=execution_identity,
+                dataset_pin=dataset_pin(
+                    data_dir, spec.symbols, cache_path=default_cache_path(db_path)
+                ),
             )
             if args.registration is not None:
                 definition["registration_sha256"] = _sha256(args.registration)
+                # Keep definition_sha256 covering every recorded field.
+                definition["definition_sha256"] = study_definition_hash(definition)
             experiment_id = record_paired_comparison(
                 store, result, sinks=sinks,
                 baseline_ruleset_for=rulesets["baseline"],

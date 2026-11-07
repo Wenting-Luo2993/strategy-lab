@@ -67,11 +67,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
                    choices=["at_next_bar_open", "at_signal_bar_close",
                             "at_stop_trigger", "resting_stop"],
                    help="EntryFillPolicy for ExecutionRealismConfig.realistic()")
-    args = p.parse_args(argv)
-    if args.entry_fill_policy != "at_next_bar_open" and not args.no_record:
-        # The recorded study definition does not carry the entry policy.
-        p.error("--entry-fill-policy other than the default requires --no-record")
-    return args
+    return p.parse_args(argv)
 
 
 def _sha256(path: Path) -> str:
@@ -141,6 +137,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         record_fixed_rule_study,
         run_fixed_rule_study,
         study_definition,
+    )
+    from vibe.research_pipeline.provenance import (
+        study_definition_hash,
     )
     from vibe.research_pipeline.holdout import HoldoutViolation
     from vibe.research_pipeline.recording import (
@@ -214,6 +213,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     rulesets: dict[str, Any] = {}
+    execution_realism = ExecutionRealismConfig.realistic(
+        entry_fill_policy=args.entry_fill_policy
+    )
 
     def run_symbol(symbol: str):
         cfg = json.loads(json.dumps(config, default=str))
@@ -224,9 +226,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ruleset=ruleset,
             data_dir=data_dir,
             initial_capital=spec.capital,
-            execution_realism=ExecutionRealismConfig.realistic(
-                entry_fill_policy=args.entry_fill_policy
-            ),
+            execution_realism=execution_realism,
         )
         return run_segment(
             engine, symbol, segment, warmup_sessions=spec.warmup_sessions
@@ -266,6 +266,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     _print_summary(result)
 
     if not args.no_record:
+        from vibe.research_pipeline.dataset_pin import (
+            dataset_pin,
+            default_cache_path,
+        )
         from vibe.research_pipeline.paths import research_db_path
         from vibe.research_pipeline.research_sink import (
             _repository_root,
@@ -273,9 +277,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
 
-        store = SqliteResearchStore(
-            args.research_db or research_db_path(create_parents=True)
-        )
+        db_path = args.research_db or research_db_path(create_parents=True)
+        store = SqliteResearchStore(db_path)
+        execution_identity = execution_realism.identity()
         try:
             sinks = {
                 symbol: BacktestRunSink(
@@ -288,6 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     repo_root=_repository_root(),
                     starting_equity=spec.capital,
                     retention=RetentionProfile.DIAGNOSTIC,
+                    execution_identity=execution_identity,
                 )
                 for symbol in spec.symbols
             }
@@ -297,10 +302,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 effective_ruleset_hash=(
                     hash_effective_ruleset(reference) if reference else ""
                 ),
-                dataset_manifest_hash=manifest_hash,
+                dataset_id_manifest_hash=manifest_hash,
+                execution_identity=execution_identity,
+                dataset_pin=dataset_pin(
+                    Path(data_dir),
+                    spec.symbols,
+                    cache_path=default_cache_path(db_path),
+                ),
             )
             if args.registration is not None:
                 definition["registration_sha256"] = _sha256(args.registration)
+                # Keep definition_sha256 covering every recorded field.
+                definition["definition_sha256"] = study_definition_hash(definition)
             experiment_id = record_fixed_rule_study(
                 store,
                 result,

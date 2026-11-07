@@ -1,0 +1,68 @@
+# External / legacy trials for the orb_edge_2026 programme.
+#
+# scripts/show_trial_ledger.py adds these to the trials it counts from the
+# research DB (definition.trial.n_trials of experiments tagged with this
+# programme). Each entry is printed as its own labelled line.
+#
+# Double counting: an entry listing `experiment_ids` is skipped automatically
+# when any of those experiments is present (with this programme tag) in the DB
+# the ledger is read from -- e.g. tmp/research-viewer.sqlite3 still holds both
+# pre-rebuild experiments, so against that DB they count once, from the DB.
+#
+# `counts_toward_total: false` entries are shown but excluded from the
+# programme total (use for context that should not inflate the multiplicity
+# correction). Change it deliberately, with a note.
+
+programme: orb_edge_2026
+schema_version: 1
+
+entries:
+  - id: pre_rebuild_baseline
+    source: pre-rebuild research DB (before the Supabase rebuild)
+    phase: exploration
+    family: baseline
+    trials: 1
+    experiment_ids:
+      - 01a19a24-ada7-744a-855c-bdf8dfd414bc
+    note: >-
+      "ORB baseline, exploration set" (orb_production ruleset). Recorded
+      before the rebuild; not among the 15 trials now in Supabase.
+
+  - id: pre_rebuild_conditions
+    source: pre-rebuild research DB (before the Supabase rebuild)
+    phase: exploration
+    family: condition
+    trials: 6
+    experiment_ids:
+      - 01a19a31-b0d9-7da3-a600-023183d2bd11
+    note: >-
+      "ORB baseline, Step 3 condition breakdowns" -- first pass over 6
+      session conditions (one trial per condition looked at).
+
+  - id: october_same_data_legacy
+    source: same-data legacy runs (October 2026, pre-programme)
+    phase: legacy
+    family: same_data_legacy
+    trials: 75
+    counts_toward_total: true
+    runs:
+      nested_walk_forward: 172
+      sensitivity_runner: 65
+      exp073: 3
+    breakdown:
+      nested_walk_forward: 9
+      sensitivity_runner: 65
+      exp073: 1
+    note: >-
+      240 runs on the same QQQ bar data, made before orb_edge_2026 existed;
+      they still spend the same data's degrees of freedom, so they are
+      counted. Counted by distinct configurations, not by runs: re-running
+      one configuration on different folds or re-validating it adds no new
+      hypothesis. nested_walk_forward: 172 completed runs (5 experiments in
+      the October local DB) cover 9 distinct (ruleset, parameters) points --
+      orb_minutes {5,15,30} x direction {default, long_only, symmetric} --
+      re-evaluated across folds and re-runs. sensitivity_runner: 65 runs, not
+      present in any local DB found; counted conservatively as 65 distinct
+      parameter points (a one-at-a-time sweep evaluates one point per run).
+      exp073: 3 runs (2 v1 attempts that failed execution/validation, 1 v2
+      re-validation) of a single production configuration -> 1.

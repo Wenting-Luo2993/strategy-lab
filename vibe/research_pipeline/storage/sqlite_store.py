@@ -54,7 +54,7 @@ from vibe.research_pipeline.publishing import (
     redact_secrets,
     validate_publication_payload,
 )
-from vibe.research_pipeline.storage import schema
+from vibe.research_pipeline.storage import run_summary_reports, schema
 from vibe.research_pipeline.storage.legacy_importer import upsert_registry_payload
 from vibe.research_pipeline.store import (
     ImmutableRecordError,
@@ -326,6 +326,58 @@ class SqliteResearchStore:
                 now=now,
             )
 
+    def enqueue_member_run_summary(self, run_id: str) -> Optional[str]:
+        """Enqueue the run_summary of a fixed-rule / paired / condition member.
+
+        Those studies record without a validator, so their runs rest at
+        ``VALIDATING`` and ``finalize_validation`` never enqueues a summary:
+        without this, code_commit, code_dirty, $ totals and the trade-ledger
+        hash of every member never reach the remote read model. Terminal runs
+        get their normal ``run:{run_id}`` summary (idempotent). Returns the
+        idempotency key, or ``None`` when the local DB lacks the data.
+        """
+        with self._conn:
+            return self._enqueue_member_run_summary_tx(
+                run_id, now=schema.utc_now_iso()
+            )
+
+    def _member_run_summary_eligibility(self, run_id: str) -> Optional[str]:
+        return run_summary_reports.member_run_summary_eligibility(self._conn, run_id)
+
+    def _enqueue_member_run_summary_tx(
+        self, run_id: str, *, now: str
+    ) -> Optional[str]:
+        if self._member_run_summary_eligibility(run_id) is not None:
+            return None
+        return self._enqueue_run_publication_tx(
+            run_id, now=now, allow_validating=True
+        )
+
+    def member_run_summary_status(
+        self, experiment_id: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        return run_summary_reports.member_run_summary_status(
+            self._conn, experiment_id
+        )
+
+    def backfill_member_run_summaries(
+        self, experiment_id: Optional[str] = None
+    ) -> list[str]:
+        """Enqueue summaries for eligible member runs; return the keys added."""
+        added: list[str] = []
+        now = schema.utc_now_iso()
+        with self._conn:
+            for item in self.member_run_summary_status(experiment_id):
+                if not item["eligible"]:
+                    continue
+                key = self._enqueue_member_run_summary_tx(item["run_id"], now=now)
+                if key is not None and key not in added:
+                    added.append(key)
+        return added
+
+    def orphan_run_summaries(self) -> dict[str, Any]:
+        return run_summary_reports.orphan_run_summaries(self._conn)
+
     def finish_experiment(
         self, experiment_id: str, state: str, result: dict[str, Any],
     ) -> None:
@@ -378,6 +430,15 @@ class SqliteResearchStore:
         by_phase: dict[str, int] = {}
         by_family: dict[str, int] = {}
         cells = []
+        experiment_ids = [
+            item["experiment_id"]
+            for item in self._conn.execute(
+                """SELECT experiment_id FROM research_experiments
+                   WHERE json_extract(definition_json, '$.trial.programme') = ?
+                   ORDER BY experiment_id""",
+                (programme,),
+            ).fetchall()
+        ]
         for row in rows:
             trials = int(row["trials"])
             by_phase[row["phase"]] = by_phase.get(row["phase"], 0) + trials
@@ -396,6 +457,7 @@ class SqliteResearchStore:
             "by_phase": dict(sorted(by_phase.items())),
             "by_family": dict(sorted(by_family.items())),
             "cells": sorted(cells, key=lambda c: (c["phase"], c["family"])),
+            "experiment_ids": experiment_ids,
         }
 
     def archive_experiment(
@@ -2378,7 +2440,18 @@ class SqliteResearchStore:
         ).fetchone()
         return row["idempotency_key"] if row is not None else None
 
-    def _enqueue_run_publication_tx(self, run_id: str, *, now: str) -> None:
+    def _enqueue_run_publication_tx(
+        self, run_id: str, *, now: str, allow_validating: bool = False
+    ) -> str:
+        """Enqueue a run summary; return its idempotency key.
+
+        ``allow_validating`` admits runs resting at ``VALIDATING`` -- the state
+        every fixed-rule / paired / condition study member stays in, because
+        those studies record without a validator. Their summary is keyed
+        ``run:{run_id}:validating`` so that a later ``finalize_validation``
+        still enqueues the terminal ``run:{run_id}`` summary instead of
+        colliding with (and being swallowed by) the provisional one.
+        """
         row = self._conn.execute(
             """
             SELECT run_id, display_alias, fingerprint, fingerprint_version,
@@ -2391,11 +2464,26 @@ class SqliteResearchStore:
         ).fetchone()
         if row is None:
             raise StoreError(f"Unknown run {run_id!r}")
-        if RunState(row["state"]) not in TERMINAL_STATES:
+        run_state = RunState(row["state"])
+        if run_state not in TERMINAL_STATES and not (
+            allow_validating and run_state is RunState.VALIDATING
+        ):
             raise StoreError("Only terminal runs are eligible for publication")
+        idempotency_key = (
+            f"run:{run_id}"
+            if run_state in TERMINAL_STATES
+            else f"run:{run_id}:validating"
+        )
 
         identity = json.loads(row["identity_json"]) if row["identity_json"] else {}
         execution_version = identity.get("execution_model_version")
+        parameters = identity.get("parameters")
+        run_execution_identity = (
+            parameters.get("execution_identity")
+            if isinstance(parameters, dict)
+            and isinstance(parameters.get("execution_identity"), dict)
+            else None
+        )
         execution_badge = (
             "unknown-pre-p2b"
             if execution_version is None
@@ -2514,6 +2602,11 @@ class SqliteResearchStore:
                 "code_dirty": bool(row["code_dirty"]),
                 "lineage_id": row["lineage_id"] or row["run_id"],
                 "origin_device_id": row["origin_device_id"] or "unknown",
+                **(
+                    {"execution_identity": run_execution_identity}
+                    if run_execution_identity is not None
+                    else {}
+                ),
                 "badges": [
                     (
                         "legacy-uncontrolled"
@@ -2538,12 +2631,13 @@ class SqliteResearchStore:
             "research_reliability": "not_assessed",
         }
         self._insert_publication_tx(
-            idempotency_key=f"run:{run_id}",
+            idempotency_key=idempotency_key,
             kind=PublicationKind.RUN_SUMMARY,
             aggregate_id=run_id,
             payload=payload,
             now=now,
         )
+        return idempotency_key
 
     def _enqueue_registry_publication_tx(
         self,

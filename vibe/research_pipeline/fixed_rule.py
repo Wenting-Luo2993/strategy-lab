@@ -37,6 +37,7 @@ from vibe.research_pipeline.inference import (
     trade_session_date,
 )
 from vibe.research_pipeline.trials import TrialTag
+from vibe.research_pipeline.provenance import apply_provenance
 from vibe.research_pipeline.universe import run_universe, static_declared
 
 SCHEMA_VERSION = 1
@@ -320,7 +321,9 @@ def study_definition(
     spec: FixedRuleSpec,
     *,
     effective_ruleset_hash: str,
-    dataset_manifest_hash: Optional[str] = None,
+    dataset_id_manifest_hash: Optional[str] = None,
+    execution_identity: Optional[Mapping[str, Any]] = None,
+    dataset_pin: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     definition: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -339,9 +342,21 @@ def study_definition(
         "bootstrap_seed": spec.bootstrap_seed,
         "trial": spec.trial.model_dump(mode="json") if spec.trial else None,
     }
-    if dataset_manifest_hash:
-        definition["dataset_manifest_hash"] = dataset_manifest_hash
-    return definition
+    return apply_provenance(
+        definition,
+        execution_identity=execution_identity,
+        dataset_pin=dataset_pin,
+        dataset_id_manifest_hash=dataset_id_manifest_hash,
+    )
+
+
+def _enqueue_member_summary(store: Any, run_id: str, errors: list[str]) -> None:
+    """Queue the member run's run_summary; a store without support is skipped."""
+    enqueue = getattr(store, "enqueue_member_run_summary", None)
+    if enqueue is None:
+        return
+    if enqueue(run_id) is None:
+        errors.append(f"{run_id}: run_summary not enqueued (no local evidence)")
 
 
 def record_fixed_rule_study(
@@ -378,6 +393,7 @@ def record_fixed_rule_study(
         store.link_experiment_run(
             experiment_id, index, "rule", spec.segment_role, outcome.run_id
         )
+        _enqueue_member_summary(store, outcome.run_id, recording_errors)
     payload = dict(result.summary)
     if recording_errors:
         payload["recording_errors"] = recording_errors

@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from vibe.research_pipeline.contracts import SegmentRole
+from vibe.research_pipeline.provenance import apply_provenance
 from vibe.research_pipeline.fixed_rule import (
     EVIDENCE_ROLES,
     ConfirmationNotSupported,
+    _enqueue_member_summary,
     _estimate,
     check_holdout,
 )
@@ -306,7 +308,9 @@ def paired_definition(
     *,
     baseline_ruleset_hash: str,
     variant_ruleset_hash: str,
-    dataset_manifest_hash: Optional[str] = None,
+    dataset_id_manifest_hash: Optional[str] = None,
+    execution_identity: Optional[Mapping[str, Any]] = None,
+    dataset_pin: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     definition: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -328,9 +332,12 @@ def paired_definition(
         "bootstrap_seed": spec.bootstrap_seed,
         "trial": spec.trial.model_dump(mode="json") if spec.trial else None,
     }
-    if dataset_manifest_hash:
-        definition["dataset_manifest_hash"] = dataset_manifest_hash
-    return definition
+    return apply_provenance(
+        definition,
+        execution_identity=execution_identity,
+        dataset_pin=dataset_pin,
+        dataset_id_manifest_hash=dataset_id_manifest_hash,
+    )
 
 
 def record_paired_comparison(
@@ -367,6 +374,7 @@ def record_paired_comparison(
             store.link_experiment_run(
                 experiment_id, index, candidate, spec.segment_role, outcome.run_id
             )
+            _enqueue_member_summary(store, outcome.run_id, recording_errors)
     payload = dict(result.summary)
     if recording_errors:
         payload["recording_errors"] = recording_errors
