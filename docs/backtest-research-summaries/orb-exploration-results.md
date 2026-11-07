@@ -102,11 +102,11 @@ are not counted yet. Any future lead must be judged against the full count.
 
 | Option | Status |
 | --- | --- |
-| **Gap-aware resting-stop entry on 1-minute bars** (fill = max(trigger, first crossing open) + slippage; filters only use information available at fill time, so no completed-bar body filter) | Next. The decisive test of the entry question |
-| **First-candle-direction ORB** (Zarattini & Aziz 2023): enter at 09:35 in the first 5-min candle's direction, stop at its opposite extreme, exit at 10R or EOD. Replicate on QQQ 2018-05 to 2023-02 first | Next. Standalone check: all five symbols about +0.04R after realistic costs, QQQ +0.12R |
-| Dollar, power and robustness reporting ($/session, % equity, power table, trimmed means, top-k-day removal, out-of-sample terciles) | In progress |
-| Republish rows 0–2 to Supabase, publish run summaries for member runs, add a dataset manifest hash | In progress |
-| Execution model v7 (minimum-risk floor, take-profit must trade through) and baseline rerun | In progress |
+| **Gap-aware resting-stop entry on 1-minute bars** (`--entry-fill-policy resting_stop`, commit `e00bfd8`) | Implemented. Unrecorded check: +0.062R [+0.010, +0.115], n = 8,383 (QQQ +0.099R). Tail-dependent: without the top 10 days +0.034R. Needs a recorded run before it counts |
+| **First-candle-direction ORB** (Zarattini & Aziz 2023; `vibe/rulesets/orb_first_candle_za.yaml`, commit `e6f3d2d`) | Implemented and replicated near-frictionless on QQQ 2018-05 to 2023-02: +0.193R, 24.3% wins, 74.5% stop exits (paper target +0.16–0.20R). Realistic costs: QQQ +0.087R [−0.049, +0.222]; 5 symbols +0.028R [−0.031, +0.087]. Unrecorded |
+| Dollar, power and robustness reporting | Done (commit `4ba9762`); printed by every study and shown in the local viewer, not yet on the Supabase dashboard |
+| Execution identity, dataset pin, member-run summaries, trial ledger (commit `4c942a5`) | Done in code. Ledger with October legacy runs: 82 trials. Republishing rows 0–2 and backfilling the 85 member runs is still open |
+| Execution model v7 (minimum-risk floor, take-profit must trade through; commit `7bd69a6`) | Done. Baseline rerun under v7: +0.003R [−0.042, +0.049], unrecorded |
 | Time-exit rerun paired against a same-cutoff baseline | Open |
 | Opening-range duration sweep (15, 30 and 60 minutes vs the 5-minute baseline) | Done (row 8): flat at zero in R, worse in $ |
 | Take-profit set from the entry price (entry + k × initial risk), to test true 1R/2R/3R | Optional, low priority |
