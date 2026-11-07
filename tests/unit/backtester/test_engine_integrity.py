@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from vibe.backtester.analysis.performance import PerformanceAnalyzer
+from vibe.backtester.core.execution_realism import EXECUTION_MODEL_VERSION
 from vibe.backtester.core.integrity import (
     EngineIntegrityStatus,
     build_engine_integrity_report,
@@ -30,7 +31,7 @@ def _result():
             "total_costs": 0.0,
             "min_cash": 10_000.0,
             "max_funded_entry_leverage": 0.0,
-            "execution_model_version": 6.0,
+            "execution_model_version": float(EXECUTION_MODEL_VERSION),
         },
     )
 

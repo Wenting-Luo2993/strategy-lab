@@ -212,6 +212,8 @@ _EXECUTION_IDENTITY_KEYS = frozenset(
         "entry_fill_policy",
         "enforce_buying_power",
         "max_gross_leverage",
+        "min_risk_bps",
+        "take_profit_trade_through_ticks",
         "commission_model",
         "per_share",
         "minimum_per_order",

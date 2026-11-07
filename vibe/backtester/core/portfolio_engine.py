@@ -363,6 +363,7 @@ class PortfolioBacktestEngine(BacktestEngine):
             "signals_rejected_max_positions": 0,
             "signals_rejected_no_buying_power": 0,
             "orders_capped_by_concentration": 0,
+            "entries_skipped_min_risk": 0,
             "incomplete_symbol_sessions": incomplete_sessions,
         }
         self.sizing_caps = {}
@@ -769,6 +770,17 @@ class PortfolioBacktestEngine(BacktestEngine):
             )
         if fill_result is None or fill_result.filled_qty <= 0:
             return False
+
+        if (
+            symbol not in portfolio.positions
+            and self.execution_realism.entry_risk_too_small(
+                side=item.ranked.side,
+                fill_price=fill_result.avg_price,
+                stop_price=item.stop_price,
+            )
+        ):
+            diagnostics["entries_skipped_min_risk"] += 1
+            return True
 
         fill_result, buying_power_capped = self._clamp_fill_to_buying_power(
             fill_result, portfolio

@@ -133,12 +133,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         PairedSpec,
         paired_definition,
         record_paired_comparison,
+        ruleset_set_hash,
         run_paired_comparison,
     )
-    from vibe.research_pipeline.recording import (
-        BacktestRunSink,
-        hash_effective_ruleset,
-    )
+    from vibe.research_pipeline.recording import BacktestRunSink
     from vibe.research_pipeline.segment_runner import run_segment
     from vibe.research_pipeline.splits.calendar import SessionCalendar
     from vibe.research_pipeline.trials import TrialTag
@@ -255,14 +253,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for symbol in spec.symbols
             }
 
-            def first_hash(name: str) -> str:
-                ruleset = next(iter(rulesets[name].values()), None)
-                return hash_effective_ruleset(ruleset) if ruleset else ""
-
             definition = paired_definition(
                 spec,
-                baseline_ruleset_hash=first_hash("baseline"),
-                variant_ruleset_hash=first_hash("variant"),
+                baseline_ruleset_hash=ruleset_set_hash(rulesets["baseline"]),
+                variant_ruleset_hash=ruleset_set_hash(rulesets["variant"]),
                 dataset_manifest_hash=manifest_hash,
             )
             if args.registration is not None:

@@ -71,7 +71,18 @@ __all__ = [
 # Version 6 moves the realistic entry fill to the next bar's open. Version 5
 # filled at the signal bar's own close, which assumes the bot reacts to a
 # completed bar in zero time and still gets its closing print.
-EXECUTION_MODEL_VERSION = 6
+#
+# Version 7 adds two realistic-profile guards from a 1-minute repricing of the
+# baseline's 8,375 trades. A minimum-risk floor skips entries whose fill sits
+# within ``min_risk_bps`` of the stop (or at/beyond it): 28 trades with under
+# 5 bps of risk contributed -39.6R of a -8.7R total, because sizing on a
+# near-zero denominator turns noise into enormous R-multiples. And a
+# take-profit limit must now trade *through* its price by
+# ``take_profit_trade_through_ticks`` before it counts as filled, since a touch
+# at the limit says nothing about whether a resting order was reached in the
+# queue. The buying-power diagnostic also stops double counting an entry that
+# was capped both at sizing and at fill.
+EXECUTION_MODEL_VERSION = 7
 
 
 class IntrabarExitResolution(str, Enum):
@@ -170,12 +181,28 @@ class ExecutionRealismConfig:
     exit_slippage: ExitSlippageModel = field(
         default_factory=FixedTickExitSlippage.zero
     )
+    min_risk_bps: float = 0.0
+    """Skip an entry whose fill-to-stop distance is below this many basis
+    points of the fill price, or whose fill is at or beyond its stop. Zero
+    disables the check entirely, which is the legacy behaviour."""
+    take_profit_trade_through_ticks: int = 0
+    """Ticks price must trade beyond a take-profit before the limit counts as
+    filled. Zero is the legacy touch-fill."""
 
     def __post_init__(self) -> None:
         if self.max_gross_leverage <= 0:
             raise ValueError(
                 f"max_gross_leverage must be positive, got "
                 f"{self.max_gross_leverage}"
+            )
+        if self.min_risk_bps < 0:
+            raise ValueError(
+                f"min_risk_bps must be non-negative, got {self.min_risk_bps}"
+            )
+        if self.take_profit_trade_through_ticks < 0:
+            raise ValueError(
+                "take_profit_trade_through_ticks must be non-negative, got "
+                f"{self.take_profit_trade_through_ticks}"
             )
 
     @classmethod
@@ -190,6 +217,8 @@ class ExecutionRealismConfig:
         max_gross_leverage: float = 1.0,
         commission_model: CommissionModel | None = None,
         exit_slippage: ExitSlippageModel | None = None,
+        min_risk_bps: float = 5.0,
+        take_profit_trade_through_ticks: int = 1,
     ) -> "ExecutionRealismConfig":
         """Conservative, cash-bounded execution for results meant to be believed.
 
@@ -204,6 +233,10 @@ class ExecutionRealismConfig:
                 ``FixedTickExitSlippage.zero()`` to isolate commission, or a
                 wider setting to stress the assumption -- it is the single
                 largest lever in the cost model.
+            min_risk_bps: Minimum fill-to-stop risk, in basis points of the
+                fill price, for an entry to be taken.
+            take_profit_trade_through_ticks: How far price must trade beyond
+                a take-profit before the limit is treated as filled.
         """
         return cls(
             intrabar_exit_resolution=IntrabarExitResolution.CONSERVATIVE,
@@ -221,7 +254,26 @@ class ExecutionRealismConfig:
                 if exit_slippage is not None
                 else FixedTickExitSlippage.liquid_equity()
             ),
+            min_risk_bps=min_risk_bps,
+            take_profit_trade_through_ticks=take_profit_trade_through_ticks,
         )
+
+    def entry_risk_too_small(
+        self, *, side: str, fill_price: float, stop_price: float
+    ) -> bool:
+        """True when an entry filled at ``fill_price`` should be skipped.
+
+        Uses the signed risk, so a fill at or beyond its stop -- which the
+        sizer's ``abs()`` would otherwise treat as a positive distance -- is
+        rejected whenever the floor is enabled.
+        """
+        if self.min_risk_bps <= 0:
+            return False
+        risk = fill_price - stop_price if side == "buy" else stop_price - fill_price
+        if risk <= 0 or fill_price <= 0:
+            return True
+        # A distance exactly at the floor passes despite float representation.
+        return risk / fill_price < self.min_risk_bps / 10_000.0 - 1e-12
 
     @property
     def is_legacy(self) -> bool:
@@ -241,6 +293,8 @@ class ExecutionRealismConfig:
             "entry_fill_policy": self.entry_fill_policy.value,
             "enforce_buying_power": self.enforce_buying_power,
             "max_gross_leverage": self.max_gross_leverage,
+            "min_risk_bps": self.min_risk_bps,
+            "take_profit_trade_through_ticks": self.take_profit_trade_through_ticks,
             **self.commission_model.identity(),
             **self.exit_slippage.identity(),
         }

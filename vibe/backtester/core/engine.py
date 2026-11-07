@@ -152,6 +152,10 @@ class BacktestEngine:
         self.pending_orders: list[Order] = []
         # Counts of orders reduced by each cap, reported in execution_diagnostics.
         self.sizing_caps: dict[str, int] = {}
+        # Entry orders reduced by buying power at sizing and/or fill, by id.
+        self.buying_power_capped_orders: set[str] = set()
+        self.entries_skipped_min_risk = 0
+        self._last_sizing_cap: str | None = None
         config = ruleset.position_size
         self._position_sizer = PositionSizer(
             risk_pct=config.value,
@@ -273,6 +277,8 @@ class BacktestEngine:
         pending_order_meta: dict[str, dict[str, float | None]] = {}
         self.pending_orders = []
         self.sizing_caps = {}
+        self.buying_power_capped_orders = set()
+        self.entries_skipped_min_risk = 0
 
         # 5. Event loop with bar_index counter
         prev_date = None
@@ -429,6 +435,9 @@ class BacktestEngine:
                             "stop_loss": stop_price,
                             "take_profit": metadata.get("take_profit"),
                             "fill_bar": entry_bar,
+                            "buying_power_capped": (
+                                self._last_sizing_cap == "buying_power"
+                            ),
                         }
 
             # Execute all orders eligible for this bar based on configured latency.
@@ -484,6 +493,23 @@ class BacktestEngine:
                 if fill_result is None or fill_result.filled_qty <= 0:
                     continue
 
+                order_meta = pending_order_meta.get(order.id, {})
+                stop_price = float(order_meta.get("stop_loss", bar.close * 0.99))
+                take_profit = order_meta.get("take_profit")
+
+                if (
+                    order.symbol not in portfolio.positions
+                    and self.execution_realism.entry_risk_too_small(
+                        side=order.side,
+                        fill_price=fill_result.avg_price,
+                        stop_price=stop_price,
+                    )
+                ):
+                    self.entries_skipped_min_risk += 1
+                    pending_queue.mark_filled(order.id)
+                    pending_order_meta.pop(order.id, None)
+                    continue
+
                 fill_result, buying_power_fill_capped = (
                     self._clamp_fill_to_buying_power(fill_result, portfolio)
                 )
@@ -492,9 +518,11 @@ class BacktestEngine:
                     pending_order_meta.pop(order.id, None)
                     continue
 
-                order_meta = pending_order_meta.get(order.id, {})
-                stop_price = float(order_meta.get("stop_loss", bar.close * 0.99))
-                take_profit = order_meta.get("take_profit")
+                if buying_power_fill_capped or order_meta.get("buying_power_capped"):
+                    # A set, because an order can be capped at sizing and
+                    # again at fill, and a partial fill re-enters this loop
+                    # under the same id. Each capped entry counts once.
+                    self.buying_power_capped_orders.add(order.id)
 
                 if order.symbol not in portfolio.positions:
                     portfolio.open_position(
@@ -580,9 +608,9 @@ class BacktestEngine:
                 "total_costs": float(portfolio.total_costs),
                 "execution_model_version": float(EXECUTION_MODEL_VERSION),
                 "orders_capped_by_buying_power": float(
-                    self.sizing_caps.get("buying_power", 0)
-                    + self.sizing_caps.get("buying_power_fill", 0)
+                    len(self.buying_power_capped_orders)
                 ),
+                "entries_skipped_min_risk": float(self.entries_skipped_min_risk),
                 "orders_capped_by_declared_limits": float(
                     self.sizing_caps.get("max_position_size", 0)
                     + self.sizing_caps.get("max_position_pct", 0)
@@ -663,6 +691,7 @@ class BacktestEngine:
         both of which are wrong but load-bearing for historical comparisons.
         """
         risk_pct = self.ruleset.position_size.value
+        self._last_sizing_cap = None
         stop_distance = abs(entry_price - stop_price)
         if stop_distance <= 0:
             return 0
@@ -683,6 +712,7 @@ class BacktestEngine:
             buying_power=buying_power,
         )
         if result.was_capped:
+            self._last_sizing_cap = result.capped_by
             self.sizing_caps[result.capped_by] = (
                 self.sizing_caps.get(result.capped_by, 0) + 1
             )

@@ -11,6 +11,7 @@ import sys
 import pandas as pd
 import pytest
 
+from vibe.backtester.core.execution_realism import EXECUTION_MODEL_VERSION
 from vibe.research_pipeline.registration import (
     RegistrationError,
     _split_binding,
@@ -23,6 +24,29 @@ from vibe.research_pipeline.storage.schema import migrate
 
 ROOT = Path(__file__).resolve().parents[3]
 REGISTRATION = ROOT / "config/research/orb_duration_symmetric_exploratory_v1.json"
+
+
+def _registration() -> dict[str, object]:
+    """The frozen registration, re-pinned to the current execution model.
+
+    The file records the execution-model version its study ran under, and the
+    gate correctly refuses to re-execute it under a newer one. Tests of the
+    *other* gates re-pin it so they keep exercising what they are named for.
+    """
+    registration = load_registration(REGISTRATION)
+    registration["execution_identity"]["execution_model_version"] = (
+        EXECUTION_MODEL_VERSION
+    )
+    return registration
+
+
+def test_frozen_registration_is_blocked_under_a_newer_execution_model() -> None:
+    registration = load_registration(REGISTRATION)
+    registration["execution_gate"] = {"state": "ready", "reasons": []}
+    if registration["execution_identity"]["execution_model_version"] == EXECUTION_MODEL_VERSION:
+        pytest.skip("registration already pinned to the current execution model")
+    with pytest.raises(RegistrationError, match="Execution-model version differs"):
+        _validate(registration)
 
 
 def _validate(
@@ -58,13 +82,13 @@ def _validate(
     }
     arguments.update(overrides)
     validate_registration_execution(
-        registration or load_registration(REGISTRATION),
+        registration or _registration(),
         **arguments,
     )
 
 
 def test_registered_execution_remains_blocked_until_dataset_binding() -> None:
-    registration = load_registration(REGISTRATION)
+    registration = _registration()
     registration["execution_gate"] = {
         "state": "blocked",
         "reasons": ["test binding is intentionally absent"],
@@ -86,7 +110,7 @@ def test_registration_rejects_execution_drift(
     override: dict[str, object],
     message: str,
 ) -> None:
-    registration = load_registration(REGISTRATION)
+    registration = _registration()
     registration["execution_gate"] = {
         "state": "blocked",
         "reasons": ["drift must fail before gate state"],
@@ -96,7 +120,7 @@ def test_registration_rejects_execution_drift(
 
 
 def test_registration_hashes_match_current_repository() -> None:
-    registration = load_registration(REGISTRATION)
+    registration = _registration()
     assert registration["strategy"]["direction_mode"] == "symmetric"
     assert registration["reliability_policy"]["policy_hash"] == ReliabilityPolicy().policy_hash
 
@@ -123,7 +147,7 @@ def test_recorded_cli_requires_registration() -> None:
 
 
 def test_ready_gate_requires_bound_dataset_and_calendar() -> None:
-    registration = load_registration(REGISTRATION)
+    registration = _registration()
     registration["execution_gate"] = {"state": "ready", "reasons": []}
     registration["split_policy"]["exact_calendar_boundaries"] = []
     with pytest.raises(RegistrationError, match="fold boundaries differ"):
@@ -152,7 +176,7 @@ def test_ready_gate_requires_bound_dataset_and_calendar() -> None:
 
 
 def test_ready_gate_requires_bound_dataset_identity() -> None:
-    registration = load_registration(REGISTRATION)
+    registration = _registration()
     registration["execution_gate"] = {"state": "ready", "reasons": []}
     split = _split_binding(
         dev_start=date(2021, 1, 4),
@@ -195,7 +219,7 @@ def test_ready_gate_requires_bound_dataset_identity() -> None:
 
 
 def test_ready_registration_validates_bound_files_and_database(tmp_path: Path) -> None:
-    registration = load_registration(REGISTRATION)
+    registration = _registration()
     registration["execution_gate"] = {"state": "ready", "reasons": []}
     split = _split_binding(
         dev_start=date(2021, 1, 4),
@@ -286,7 +310,7 @@ def test_ready_registration_validates_bound_files_and_database(tmp_path: Path) -
 
 
 def test_ready_registration_rejects_bound_holdout_rows(tmp_path: Path) -> None:
-    registration = load_registration(REGISTRATION)
+    registration = _registration()
     split = _split_binding(
         dev_start=date(2021, 1, 4),
         dev_end=date(2024, 12, 31),

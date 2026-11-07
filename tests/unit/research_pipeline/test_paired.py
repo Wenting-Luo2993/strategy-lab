@@ -300,3 +300,33 @@ def test_cli_smoke_with_two_rulesets(tmp_path, capsys):
     out = capsys.readouterr().out
     assert code == 0
     assert "Outcome vs" in out
+
+
+def _symbol_ruleset(symbol, **instrument_overrides):
+    from vibe.common.ruleset.loader import RuleSetLoader
+
+    base = RuleSetLoader.from_name("orb_production")
+    instruments = base.instruments.model_copy(
+        update={"symbols": [symbol], **instrument_overrides}
+    )
+    return base.model_copy(update={"instruments": instruments})
+
+
+def test_ruleset_set_hash_is_independent_of_symbol_order():
+    from vibe.research_pipeline.paired import ruleset_set_hash
+
+    a, b = _symbol_ruleset("AMZN"), _symbol_ruleset("QQQ")
+    assert ruleset_set_hash({"AMZN": a, "QQQ": b}) == ruleset_set_hash(
+        {"QQQ": b, "AMZN": a}
+    )
+    assert ruleset_set_hash({}) == ""
+
+
+def test_ruleset_set_hash_changes_when_any_symbol_changes():
+    from vibe.research_pipeline.paired import ruleset_set_hash
+
+    a, b = _symbol_ruleset("AMZN"), _symbol_ruleset("QQQ")
+    changed = _symbol_ruleset("QQQ", timeframe="15m")
+    assert ruleset_set_hash({"AMZN": a, "QQQ": b}) != ruleset_set_hash(
+        {"AMZN": a, "QQQ": changed}
+    )

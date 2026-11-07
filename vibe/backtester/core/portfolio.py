@@ -11,6 +11,7 @@ from vibe.backtester.core.execution_realism import (
     clamp_to_bar,
 )
 from vibe.backtester.core.fill_simulator import FillResult
+from vibe.backtester.core.exit_slippage import TICK_SIZE
 from vibe.backtester.core.reconciliation import CashLedgerEntry
 from vibe.common.models.bar import Bar
 from vibe.common.models.trade import Trade
@@ -414,7 +415,9 @@ class PortfolioManager:
         When a single bar touches both the stop and the target, the true order
         of events is unknowable from OHLC. Resolution follows
         ``execution_realism.intrabar_exit_resolution``; every such bar is
-        counted in ``ambiguous_exit_bars`` regardless of mode.
+        counted in ``ambiguous_exit_bars`` regardless of mode. "Touches the
+        target" means satisfies the take-profit trade-through condition, so a
+        bar that only reaches the limit price is neither a TP nor ambiguous.
 
         Exit priority when unambiguous: TP/Stop (whichever triggered) > EOD.
         The EOD cutoff comes from ``self.eod_cutoff`` (the ruleset's
@@ -444,11 +447,10 @@ class PortfolioManager:
                 )
 
             is_long = pos.side == "buy"
+            tp_hit = self._take_profit_traded_through(pos, bar)
             if is_long:
-                tp_hit = pos.take_profit is not None and bar.high >= pos.take_profit
                 stop_hit = bar.low <= pos.stop_price
             else:
-                tp_hit = pos.take_profit is not None and bar.low <= pos.take_profit
                 stop_hit = bar.high >= pos.stop_price
 
             if tp_hit and stop_hit:
@@ -475,6 +477,27 @@ class PortfolioManager:
             self._observe_prices(pos, bar.high, bar.low)
             if is_eod:
                 self._close_at_bar_close(symbol, bar, clock, reason="EOD")
+
+    def _take_profit_traded_through(self, pos: Position, bar: Bar) -> bool:
+        """Whether a resting take-profit limit can be assumed filled on ``bar``.
+
+        A touch at the limit price does not prove a resting order was reached
+        in the queue, so the realistic profile requires price to trade
+        ``take_profit_trade_through_ticks`` beyond it. The fill itself is
+        still priced at the limit (or the open on a gap).
+        """
+        if pos.take_profit is None:
+            return False
+        ticks = self.execution_realism.take_profit_trade_through_ticks
+        if not ticks:
+            if pos.side == "buy":
+                return bar.high >= pos.take_profit
+            return bar.low <= pos.take_profit
+        # Half-tick tolerance absorbs float error in ``target + n * 0.01``.
+        through = ticks * TICK_SIZE - TICK_SIZE / 2
+        if pos.side == "buy":
+            return bar.high > pos.take_profit + through
+        return bar.low < pos.take_profit - through
 
     def _observe_prices(self, pos: Position, *prices: float) -> None:
         """Extend the position's observed price range.

@@ -2,54 +2,54 @@
   "metrics": {
     "by_year": {
       "2022": {
-        "avg_loss_r": -0.993362171,
-        "avg_win_r": 2.364032504,
+        "avg_loss_r": -0.988124428,
+        "avg_win_r": 2.335689629,
         "eod_losses": 9,
-        "eod_wins": 87,
-        "expectancy_r": 0.170356302,
+        "eod_wins": 89,
+        "expectancy_r": 0.190439122,
         "first_date": "2022-01-03",
-        "gross_pnl": 34591.925000003,
+        "gross_pnl": 35673.890000003,
         "last_date": "2022-12-30",
         "max_losing_streak": 15,
-        "max_loss_r": -1.385714286,
+        "max_loss_r": -1.15,
         "max_win_r": 18.558108108,
         "n_trades": 251,
-        "skewness": 3.5825603,
-        "stop_losses": 155,
+        "skewness": 3.571825026,
+        "stop_losses": 153,
         "stop_wins": 0,
-        "top10_pct": 52.361006712,
-        "total_costs": 639.597,
-        "total_pnl": 33952.328000003,
-        "win_rate": 0.346613546
+        "top10_pct": 51.866180895,
+        "total_costs": 641.095,
+        "total_pnl": 35032.795000003,
+        "win_rate": 0.354581673
       }
     },
     "equity": {
-      "annualized_return": 0.343868941,
+      "annualized_return": 0.35482926,
       "max_drawdown": -0.129701871,
       "max_drawdown_duration_days": 106,
-      "sharpe_ratio": 1.782670559,
-      "total_return": 0.33952328
+      "sharpe_ratio": 1.826263458,
+      "total_return": 0.35032795
     },
     "overall": {
-      "avg_loss_r": -0.993362171,
-      "avg_win_r": 2.364032504,
+      "avg_loss_r": -0.988124428,
+      "avg_win_r": 2.335689629,
       "eod_losses": 9,
-      "eod_wins": 87,
-      "expectancy_r": 0.170356302,
+      "eod_wins": 89,
+      "expectancy_r": 0.190439122,
       "first_date": "2022-01-03",
-      "gross_pnl": 34591.925000003,
+      "gross_pnl": 35673.890000003,
       "last_date": "2022-12-30",
       "max_losing_streak": 15,
-      "max_loss_r": -1.385714286,
+      "max_loss_r": -1.15,
       "max_win_r": 18.558108108,
       "n_trades": 251,
-      "skewness": 3.5825603,
-      "stop_losses": 155,
+      "skewness": 3.571825026,
+      "stop_losses": 153,
       "stop_wins": 0,
-      "top10_pct": 52.361006712,
-      "total_costs": 639.597,
-      "total_pnl": 33952.328000003,
-      "win_rate": 0.346613546
+      "top10_pct": 51.866180895,
+      "total_costs": 641.095,
+      "total_pnl": 35032.795000003,
+      "win_rate": 0.354581673
     }
   },
   "run": {
@@ -63,29 +63,30 @@
   },
   "schema_version": 1,
   "simulation": {
-    "equity_curve_sha256": "37a4db0461b9d88c1bb438502f89bf254501d0ebc9166bc2841c8324067f2c3a",
+    "equity_curve_sha256": "71d2c312324cc121d376618be5035cb763f2c681c48b55c2be143795384931c1",
     "execution_diagnostics": {
       "accounting_checks_applicable": 3.0,
       "accounting_failures": 0.0,
       "ambiguous_exit_bars": 0.0,
-      "execution_model_version": 6.0,
-      "exit_slippage_cost": 1425.369999999,
+      "entries_skipped_min_risk": 3.0,
+      "execution_model_version": 7.0,
+      "exit_slippage_cost": 1421.129999999,
       "exit_slippage_events": 251.0,
       "gap_through_exits": 1.0,
-      "max_funded_entry_leverage": 0.999932808,
-      "max_gross_exposure_ratio": 1.015123647,
-      "min_cash": 10.162500003,
+      "max_funded_entry_leverage": 0.999962552,
+      "max_gross_exposure_ratio": 1.01527912,
+      "min_cash": 4.626000003,
       "orders_capped_by_buying_power": 219.0,
       "orders_capped_by_declared_limits": 0.0,
-      "total_costs": 639.597,
+      "total_costs": 641.095,
       "warmup_sessions_excluded": 0.0
     },
     "exit_reason_counts": {
-      "EOD": 96,
-      "STOP": 155
+      "EOD": 98,
+      "STOP": 153
     },
     "n_equity_points": 19570,
     "n_trades": 251,
-    "trade_ledger_sha256": "6d38e08459222776f33a6088dade6f8beaa1a5459ba2f02cfbf97d701fc6997e"
+    "trade_ledger_sha256": "252a9267aa2e3d0a2a37c438ef2ce1660b58aaadb4013f1e5b45b94e17b2bb24"
   }
 }

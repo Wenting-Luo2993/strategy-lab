@@ -215,6 +215,29 @@ def summarise_paired(
     }
 
 
+def ruleset_set_hash(rulesets_by_symbol: Mapping[str, Any]) -> str:
+    """One deterministic hash for the per-symbol rulesets of a candidate.
+
+    Each symbol runs a copy of the ruleset with ``instruments.symbols``
+    narrowed to itself, so every per-symbol hash differs. Hashing whichever
+    symbol happened to be inserted first made the published hash depend on
+    run order; this hashes the symbol-sorted mapping of per-symbol hashes
+    instead, so it is independent of order and still changes if any symbol's
+    effective configuration does. Empty input hashes to ``""``.
+    """
+    from vibe.research_pipeline.hashing import hash_object
+    from vibe.research_pipeline.recording import hash_effective_ruleset
+
+    if not rulesets_by_symbol:
+        return ""
+    return hash_object(
+        {
+            symbol: hash_effective_ruleset(ruleset)
+            for symbol, ruleset in sorted(rulesets_by_symbol.items())
+        }
+    )
+
+
 def paired_definition(
     spec: PairedSpec,
     *,
