@@ -4,8 +4,23 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 from vibe.common.ruleset.models import StrategyRuleSet
-from vibe.common.ruleset.support import require_supported
+from vibe.common.ruleset.support import (
+    FIRST_CANDLE_DIRECTION,
+    UnsupportedRulesetSettingsError,
+    require_supported,
+)
 from vibe.common.strategies.orb import ORBStrategy, ORBStrategyConfig, take_profit_settings
+
+
+def _timeframe_minutes(timeframe: str) -> int:
+    """Minutes in a ruleset timeframe such as ``"5m"`` or ``"1h"``."""
+    unit = timeframe[-1].lower()
+    value = int(timeframe[:-1])
+    if unit == "m":
+        return value
+    if unit == "h":
+        return value * 60
+    raise ValueError(f"Unsupported timeframe {timeframe!r}")
 
 
 class RuleSetRunner:
@@ -39,6 +54,22 @@ class RuleSetRunner:
     def _build_strategy(self, ruleset: StrategyRuleSet) -> ORBStrategy:
         s = ruleset.strategy
         exit_ = ruleset.exit
+        entry_mode = (
+            "first_candle_direction"
+            if s.entry_mode == FIRST_CANDLE_DIRECTION
+            else "breakout"
+        )
+        bar_minutes = (
+            _timeframe_minutes(ruleset.instruments.timeframe)
+            if entry_mode == "first_candle_direction"
+            else 5
+        )
+        if entry_mode == "first_candle_direction" and s.orb_duration_minutes % bar_minutes:
+            raise UnsupportedRulesetSettingsError(
+                f"Ruleset {ruleset.name!r}: entry_mode='first_candle_direction' needs "
+                f"orb_duration_minutes ({s.orb_duration_minutes}) to be a whole number "
+                f"of {ruleset.instruments.timeframe} bars"
+            )
 
         config = ORBStrategyConfig(
             name=ruleset.name,
@@ -53,8 +84,18 @@ class RuleSetRunner:
             use_volume_filter=ruleset.trade_filter.volume_confirmation,
             volume_threshold=ruleset.trade_filter.volume_threshold,
             market_close_time=exit_.eod_time if exit_.eod else "16:00",
+            entry_mode=entry_mode,
+            bar_minutes=bar_minutes,
         )
         return ORBStrategy(config=config)
+
+    @property
+    def take_profit_r_multiple(self) -> Optional[float]:
+        """The R multiple of a fill-anchored target, or None when not configured."""
+        cfg = self.strategy.config
+        if cfg.take_profit_method == "r_multiple" and cfg.take_profit_multiplier > 0:
+            return float(cfg.take_profit_multiplier)
+        return None
 
     def generate_signal(
         self,

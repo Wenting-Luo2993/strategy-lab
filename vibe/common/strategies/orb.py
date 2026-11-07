@@ -44,11 +44,13 @@ class ORBStrategyConfig(StrategyConfig):
         default=2.0,
         description="Target distance beyond the breakout level, in units set by take_profit_method (0 = no target)",
     )
-    take_profit_method: Literal["orb_range_multiple", "atr_multiple"] = Field(
+    take_profit_method: Literal["orb_range_multiple", "atr_multiple", "r_multiple"] = Field(
         default="orb_range_multiple",
         description=(
             "orb_range_multiple: target = breakout level +/- multiplier * ORB range. "
-            "atr_multiple: target = breakout level +/- multiplier * daily ATR known at the open"
+            "atr_multiple: target = breakout level +/- multiplier * daily ATR known at the open. "
+            "r_multiple: target = entry fill +/- multiplier * initial risk, set by the "
+            "executor once the entry has filled (the strategy reports no price)"
         ),
     )
     take_profit_atr_period: int = Field(
@@ -58,6 +60,19 @@ class ORBStrategyConfig(StrategyConfig):
     use_volume_filter: bool = Field(default=False, description="Require above-average volume")
     volume_threshold: float = Field(default=1.5, description="Volume must be > average * threshold")
     market_close_time: str = Field(default="16:00", description="Market close time")
+    entry_mode: Literal["breakout", "first_candle_direction"] = Field(
+        default="breakout",
+        description=(
+            "breakout: enter when price breaks the opening range. "
+            "first_candle_direction: at the close of the opening-range candle, go long "
+            "if it closed above its open, short if below, no trade on a doji "
+            "(Zarattini & Aziz 2023). Stop stays at the opposite ORB extreme"
+        ),
+    )
+    bar_minutes: int = Field(
+        default=5, ge=1,
+        description="Signal bar length; first_candle_direction fires on the bar ending the window",
+    )
 
 
 def take_profit_settings(take_profit: Any) -> Dict[str, Any]:
@@ -79,6 +94,11 @@ def take_profit_settings(take_profit: Any) -> Dict[str, Any]:
             "take_profit_method": "atr_multiple",
             "take_profit_multiplier": float(take_profit.multiplier),
             "take_profit_atr_period": int(take_profit.period),
+        }
+    if method == "r_multiple":
+        return {
+            "take_profit_method": "r_multiple",
+            "take_profit_multiplier": float(take_profit.multiplier),
         }
     raise NotImplementedError(f"ORB strategy does not support take_profit method {method!r}")
 
@@ -150,7 +170,11 @@ class ORBStrategy(StrategyBase):
         Returns Series with signals: 1 (long), -1 (short), 0 (neutral)
         """
         signals = pd.Series(0, index=df.index)
-
+        if self.config.entry_mode != "breakout":
+            raise NotImplementedError(
+                f"generate_signals does not implement entry_mode={self.config.entry_mode!r}; "
+                "use generate_signal_incremental"
+            )
         if df.empty or "ATR_14" not in df.columns:
             return signals
 
@@ -352,6 +376,12 @@ class ORBStrategy(StrategyBase):
         if self._traded_today.get(symbol) == trading_date:
             return 0, {**metadata, "reason": "already_traded_today"}
 
+        if self.config.entry_mode == "first_candle_direction":
+            return self._first_candle_signal(
+                orb_calc, df_context, current_time_local, levels, metadata,
+                symbol, trading_date,
+            )
+
         # Intrabar breakout detection: use the configured price source with a 1-tick offset.
         # QC places stop-market orders at OR_high+$0.01 (long) and OR_low-$0.01
         # (short), so merely touching OR_high does NOT trigger a fill.
@@ -467,6 +497,84 @@ class ORBStrategy(StrategyBase):
         metadata.setdefault("reason", "no_breakout")
         return 0, metadata
 
+    def _first_candle_signal(
+        self,
+        orb_calc: ORBCalculator,
+        df_context: pd.DataFrame,
+        current_time_local,
+        levels: ORBLevels,
+        metadata: Dict[str, Any],
+        symbol: str,
+        trading_date,
+    ) -> Tuple[int, Dict[str, Any]]:
+        """Zarattini & Aziz (2023) entry: trade the opening candle's direction.
+
+        Fires only on the bar that completes the opening window, so the
+        decision uses nothing beyond that bar's close; the executor fills it no
+        earlier than the next bar. The opening candle's open is the first
+        window bar's open, its close the completing bar's close, and its
+        extremes are the ORB levels -- so the stop is the opposite extreme.
+        """
+        start = orb_calc.start_time
+        window_end = start.hour * 60 + start.minute + self.config.orb_duration_minutes
+        bar_start = current_time_local.hour * 60 + current_time_local.minute
+        if bar_start + self.config.bar_minutes != window_end:
+            metadata.setdefault("reason", "not_opening_candle_close")
+            return 0, metadata
+
+        n_bars = -(-self.config.orb_duration_minutes // self.config.bar_minutes)
+        window = df_context.tail(n_bars)
+        timestamps = pd.DatetimeIndex(window["timestamp"])
+        if timestamps.tz is not None:
+            timestamps = timestamps.tz_convert("America/New_York")
+        first = timestamps[0]
+        complete = (
+            len(window) == n_bars
+            and all(ts.date() == trading_date for ts in timestamps)
+            and (first.hour, first.minute) == (start.hour, start.minute)
+            and all(orb_calc._is_in_opening_window(ts) for ts in timestamps)
+        )
+        if not complete:
+            metadata.update({
+                "reason": "incomplete_opening_candle",
+                "reason_detail": "Opening window bars missing; first-candle direction unknown",
+            })
+            return 0, metadata
+
+        candle_open = float(window["open"].iloc[0])
+        candle_close = float(window["close"].iloc[-1])
+        metadata.update({"first_candle_open": candle_open, "first_candle_close": candle_close})
+        if candle_close == candle_open:
+            metadata["reason"] = "first_candle_doji"
+            return 0, metadata
+
+        long_dir = candle_close > candle_open
+        allowed_long, allowed_short = self._apply_direction_mode(long_dir, not long_dir)
+        if not (allowed_long or allowed_short):
+            metadata.update({
+                "reason": "direction_not_allowed",
+                "reason_detail": f"First candle suppressed by direction_mode={self.config.direction_mode}",
+            })
+            return 0, metadata
+
+        side = "long" if long_dir else "short"
+        atr = df_context["ATR_14"].iloc[-1]
+        tp = self._take_profit_level(levels, side, df_context, symbol, trading_date)
+        if tp is None and self._missing_live_daily_atr(df_context):
+            metadata.update(self._daily_atr_unavailable_reason())
+            return 0, metadata
+        price = candle_close
+        if long_dir:
+            sl = levels.low if self.config.stop_loss_at_level else price - atr
+        else:
+            sl = levels.high if self.config.stop_loss_at_level else price + atr
+        metadata.update({
+            "signal": f"first_candle_{side}",
+            "take_profit": tp,
+            "stop_loss": sl,
+        })
+        return (1 if long_dir else -1), metadata
+
     def _take_profit_level(
         self,
         levels: ORBLevels,
@@ -484,7 +592,8 @@ class ORBStrategy(StrategyBase):
         signal, next-bar entry), so the realised R of a hit target is lower.
         """
         multiplier = self.config.take_profit_multiplier
-        if multiplier <= 0:
+        if multiplier <= 0 or self.config.take_profit_method == "r_multiple":
+            # r_multiple is anchored at the fill, which only the executor knows.
             return None
         if self.config.take_profit_method == "orb_range_multiple":
             distance = levels.range * multiplier

@@ -267,6 +267,12 @@ class PortfolioBacktestEngine(BacktestEngine):
                 "Portfolio simulation requires buying-power enforcement; pass "
                 "ExecutionRealismConfig.realistic()"
             )
+        take_profit = ruleset.exit.take_profit
+        if take_profit is not None and take_profit.method == "r_multiple":
+            raise NotImplementedError(
+                "Portfolio simulation does not set fill-anchored take-profits; "
+                "exit.take_profit.method='r_multiple' is single-symbol BacktestEngine only"
+            )
         self.portfolio_config = portfolio_config
         self._runner_factory = runner_factory
         self.ranker = CausalSignalRanker(portfolio_config.symbol_priority)

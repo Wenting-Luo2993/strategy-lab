@@ -35,7 +35,11 @@ from vibe.backtester.analysis.metrics import BacktestResult
 from vibe.backtester.analysis.performance import PerformanceAnalyzer
 from vibe.common.models.bar import Bar
 from vibe.common.ruleset.models import StrategyRuleSet
-from vibe.common.ruleset.support import require_resting_stop_compatible
+from vibe.common.ruleset.support import (
+    FIRST_CANDLE_DIRECTION,
+    UnsupportedRulesetSettingsError,
+    require_resting_stop_compatible,
+)
 
 
 def _next_session_bar(
@@ -71,6 +75,20 @@ def _next_session_bar(
         close=next_open,
         volume=float(next_row["volume"]),
     )
+
+
+def _r_multiple_target(
+    *, side: str, fill_price: float, stop_price: float, multiple: float
+) -> Optional[float]:
+    """Take-profit ``multiple`` initial risks beyond the entry fill.
+
+    None when the fill is at or beyond its stop: there is no positive risk to
+    scale, and the min-risk floor (when enabled) skips such entries anyway.
+    """
+    risk = fill_price - stop_price if side == "buy" else stop_price - fill_price
+    if risk <= 0:
+        return None
+    return fill_price + multiple * risk if side == "buy" else fill_price - multiple * risk
 
 
 def _resample(df: pd.DataFrame, interval: str = "5min") -> pd.DataFrame:
@@ -175,6 +193,19 @@ class BacktestEngine:
                     "would defer it to a later bar"
                 )
         config = ruleset.position_size
+        if (
+            ruleset.strategy.entry_mode == FIRST_CANDLE_DIRECTION
+            and self.execution_realism.entry_fill_policy
+            is EntryFillPolicy.AT_STOP_TRIGGER
+        ):
+            # AT_STOP_TRIGGER prices the fill at the ORB breakout level, which
+            # for a first-candle entry is the stop side or a level never traded.
+            raise UnsupportedRulesetSettingsError(
+                f"Ruleset {ruleset.name!r}: entry_mode='first_candle_direction' is a "
+                "market entry after the opening candle closes; "
+                "EntryFillPolicy.AT_STOP_TRIGGER would price it at a breakout level. "
+                "Use AT_NEXT_BAR_OPEN (or AT_SIGNAL_BAR_CLOSE)"
+            )
         self._position_sizer = PositionSizer(
             risk_pct=config.value,
             max_position_size=getattr(config, "max_shares", None),
@@ -590,6 +621,14 @@ class BacktestEngine:
 
                 if order.symbol not in portfolio.positions:
                     entry_time = order_meta.get("entry_time", ts).to_pydatetime()
+                    r_multiple = getattr(runner, "take_profit_r_multiple", None)
+                    if r_multiple is not None:
+                        take_profit = _r_multiple_target(
+                            side=order.side,
+                            fill_price=fill_result.avg_price,
+                            stop_price=stop_price,
+                            multiple=r_multiple,
+                        )
                     portfolio.open_position(
                         fill_result,
                         stop_price=stop_price,

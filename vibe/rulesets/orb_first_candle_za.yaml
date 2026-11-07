@@ -1,0 +1,44 @@
+name: orb_first_candle_za
+version: "1.0.0"
+description: >-
+  Zarattini & Aziz (2023) 5-minute ORB: trade the direction of the 09:30-09:35
+  candle (long if close > open, short if close < open, doji = no trade), stop
+  at the candle's opposite extreme, target 10R from the fill, else exit at the
+  close. Backtest only (entry_mode and r_multiple are rejected for live).
+
+instruments:
+  symbols: [QQQ]
+  timeframe: 5m
+
+strategy:
+  type: orb
+  orb_start_time: "09:30"
+  orb_duration_minutes: 5
+  orb_body_pct_filter: 0.0
+  direction_mode: symmetric
+  breakout_evaluation: wick
+  entry_cutoff_time: "15:00"
+  # Signal at the close of the opening candle; under AT_NEXT_BAR_OPEN the
+  # fill is the 09:35 bar open (+ entry slippage). RESTING_STOP and
+  # AT_STOP_TRIGGER are rejected for this mode.
+  entry_mode: first_candle_direction
+
+position_size:
+  method: max_loss_pct
+  value: 0.01
+
+exit:
+  eod: true
+  # The 15:55 5-minute bar exits at its close, i.e. the 16:00 closing price.
+  eod_time: "15:55"
+  take_profit:
+    method: r_multiple
+    multiplier: 10
+  stop_loss:
+    method: orb_level
+
+trade_filter:
+  volume_confirmation: false
+
+mtf_validation:
+  enabled: false

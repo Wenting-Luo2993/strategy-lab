@@ -63,6 +63,24 @@ class ATRMultipleTakeProfit(BaseModel):
         return self
 
 
+class RMultipleTakeProfit(BaseModel):
+    """Take profit at a multiple of the trade's own initial risk.
+
+    Anchored at the entry *fill*: TP = fill +/- multiplier * |fill - stop|, so a
+    hit target books exactly ``multiplier`` R before exit costs. The target is
+    only known once the entry has filled (backtest only).
+    """
+
+    method: Literal["r_multiple"] = "r_multiple"
+    multiplier: float = Field(default=10.0, description="TP = fill +/- multiplier * initial risk")
+
+    @model_validator(mode="after")
+    def multiplier_positive(self) -> "RMultipleTakeProfit":
+        if self.multiplier <= 0:
+            raise ValueError("multiplier must be positive")
+        return self
+
+
 class FixedPctTakeProfit(BaseModel):
     """Take profit based on fixed percentage from entry (not supported by the ORB strategy)."""
 
@@ -77,7 +95,12 @@ class FixedPctTakeProfit(BaseModel):
 
 
 TakeProfitConfig = Annotated[
-    Union[OrbRangeMultipleTakeProfit, ATRMultipleTakeProfit, FixedPctTakeProfit],
+    Union[
+        OrbRangeMultipleTakeProfit,
+        ATRMultipleTakeProfit,
+        RMultipleTakeProfit,
+        FixedPctTakeProfit,
+    ],
     Field(discriminator="method"),
 ]
 
@@ -280,7 +303,11 @@ class ORBStrategyParams(BaseModel):
     entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
     entry_mode: str = Field(
         default="no_validation_simple",
-        description="Entry validation mode",
+        description=(
+            "Entry mode. 'no_validation_simple' = ORB breakout. "
+            "'first_candle_direction' (backtest only) = trade in the direction of "
+            "the opening-range candle (close vs open) at its close; doji = no trade"
+        ),
     )
     one_trade_per_day: bool = Field(default=True, description="Max one trade per day")
     cancel_other_side: bool = Field(
