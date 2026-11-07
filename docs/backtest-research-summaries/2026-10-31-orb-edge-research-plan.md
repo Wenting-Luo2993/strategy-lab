@@ -419,12 +419,20 @@ Reading:
   target widens: a monotonic cost of capping winners, not noise. The widest
   targets are hit too rarely to matter.
 - **Break-even is clearly harmful.** It costs −0.041R per session in every
-  year and symbol, even though the engine's trailing update is slightly
-  optimistic. Breakouts often retest before running, and a break-even stop
+  year and symbol, and it is the only exit comparison whose interval excludes
+  0. The engine moves the trailing stop on the bar high before testing the bar
+  low, which is slightly *pessimistic* here (about −0.002R on 1-minute
+  repricing). Breakouts often retest before running, and a break-even stop
   turns those retests into scratches.
-- **The "winners give back" clue is a mirage.** The open profit that is
-  returned is the price of letting the end-of-day tail run. Removing it loses
-  more than it saves.
+- **Locking in open profit costs more than it saves.** The open profit that is
+  returned is the price of letting the end-of-day tail run; the edge, if any,
+  lives in a handful of trend days.
+- **Time-exit confound.** `time_1200` and `time_1400` also move the entry
+  cutoff to the exit time, so they test fewer late entries and an earlier exit
+  together. A clean rerun pairs them against a baseline with the same cutoff.
+- **Labels.** Only break-even, 1× OR, 2× OR and 0.25× ATR have intervals that
+  exclude 0 (they hurt). The 12:00/14:00 exits, 3× OR, 0.5× and 1× ATR are
+  "not supported": their intervals include 0.
 - **Not tested:** a target set from the actual entry (entry + k × initial
   risk), which would test true 1R/2R/3R. Given the smooth shape above, it is
   unlikely to reverse the result.
@@ -455,21 +463,27 @@ cutoff and the 15:55 exit.
 | Opening range | Experiment | Variant − baseline, R/session [CI] | Positive years / symbols | Variant trades | End-of-day exits |
 | --- | --- | --- | --- | --- | --- |
 | 5 min (baseline) | n/a | n/a | n/a | 8,375 | 51% |
-| 15 min | `01a1a314-ed14-7d59-9f7b-c919c72f7603` | +0.011 [−0.020, +0.042] | 3/7, 3/5 | 8,221 | 65% |
-| 30 min | `01a1a31d-197d-7faf-aebd-d3f06d6e44e2` | +0.009 [−0.026, +0.043] | 3/7, 3/5 | 7,872 | 75% |
-| 60 min | `01a1a32e-1821-7c5b-a347-339fdd8c4c97` | +0.007 [−0.032, +0.046] | 3/7, 3/5 | 7,105 | 85% |
+| 15 min | `01a1a314-ed14-7d59-9f7b-c919c72f7603` | +0.011 [−0.020, +0.042] | not re-verified | 8,221 | 65% |
+| 30 min | `01a1a31d-197d-7faf-aebd-d3f06d6e44e2` | +0.009 [−0.026, +0.043] | not re-verified | 7,872 | 75% |
+| 60 min | `01a1a32e-1821-7c5b-a347-339fdd8c4c97` | +0.007 [−0.032, +0.046] | 4/7, 4/5 (only TSLA negative) | 7,105 | 85% |
+
+The original table said 3/7 years and 3/5 symbols for every row; the
+2026-11-03 audit found 60 min is 4/7 and 4/5. The 15 and 30-minute counts
+should be recomputed from the published runs.
 
 Reading:
 
-- **Contradicted.** Every duration is within about 0.01R of the baseline, and
-  every interval includes 0. There is a plateau, but it is at zero:
-  the opening-range duration does not matter.
-- **The year pattern belongs to the market, not the duration.** All three
-  variants gain in 2019, 2020 and 2024 and lose in 2018, 2021 and 2022.
-- **Waiting for the early move does not help.** With a 60-minute range, 85% of
-  trades are held to the close, so the rule is close to "trade the direction
-  of the first hour and hold to the close". It still averages about 0R on
-  these symbols. The wider stop changes how trades exit, not what they earn.
+- **Not supported.** Every duration is within about 0.01R of the baseline,
+  and every interval includes 0. There is a plateau, but it is at zero in R.
+- **Worse in dollars.** A wider stop changes position size. Paired against
+  the baseline, all three lose $2 to $5 per symbol-session (CIs about ±$20 to
+  ±$26), so the small R "gain" is not a dollar gain.
+- **The year pattern is mostly shared.** All three gain in 2019, 2020 and
+  2024 and lose in 2018, 2021 and 2022. In 2023, 15 and 30 minutes are
+  negative and 60 minutes is positive.
+- **This is not the first-candle-direction rule.** These variants trade a
+  breakout of either side of a longer range. Trading the first candle's
+  direction (Zarattini & Aziz, 2023) is a different rule and is still open.
 - Step 4 closes with no enhancement worth bundling.
 
 ### Step 5: Register the hypotheses

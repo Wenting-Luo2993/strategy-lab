@@ -31,10 +31,11 @@ That document stays as the record of the platform build.
 | 2. Baseline | Done | `01a19a24-ada7-744a-855c-bdf8dfd414bc` | 8,375 trades, mean net −0.001R, 95% CI [−0.046, +0.044]R. No average edge on honest fills |
 | 3. Conditions, first pass | Done | `01a19a31-b0d9-7da3-a600-023183d2bd11` | No condition is significant. Weak leads: `abs_gap_pct` (+0.059R high − low) and `or_width_atr` (+0.045R) |
 | 3. Conditions, gap second pass | Done (2026-11-02) | `01a19e08-dfd9-737e-8379-5185a2f7ab0c` | Gap direction (`gap_aligned_atr`) has no effect. ATR-scaled gap size (`abs_gap_atr`, +0.066R high − low) holds in 6/7 years and 4/5 symbols but fails the rule; quiet opens are the weak spot |
-| 3. Conditions, trend direction-aware | Done (2026-11-03) | `01a1a253-6a62-7475-8ccf-8ff1d65c8202` | Contradicted: with − against +0.012R [−0.090, +0.114], not monotonic, 3/7 years and 3/5 symbols. Step 3 closes with no registered condition |
+| 3. Conditions, trend direction-aware | Done (2026-11-03) | `01a1a253-6a62-7475-8ccf-8ff1d65c8202` | Not supported: with − against +0.012R [−0.090, +0.114], not monotonic; out of sample the train-period gap reverses. Step 3 closes with no registered condition. The earlier "weak leads" (`abs_gap_atr`, `or_width_atr`, `abs_gap_pct`) also fail a train/test split (see `orb-exploration-results.md`, row 3) |
 | 4. Exit levers | Done (2026-11-03) | 9 experiments, listed in the research plan, Step 4 | Contradicted: break-even −0.041R, time exits −0.021R (12:00) and −0.007R (14:00), and take-profit −0.041R to −0.001R per session. Tighter exits hurt more; nothing beats holding to 15:55 |
-| 4. Opening-range duration | Done (2026-11-03) | `01a1a314-ed14-7d59-9f7b-c919c72f7603` (15 min), `01a1a31d-197d-7faf-aebd-d3f06d6e44e2` (30 min), `01a1a32e-1821-7c5b-a347-339fdd8c4c97` (60 min) | Contradicted: +0.011R, +0.009R and +0.007R per session, all intervals include 0, 3/7 years. A flat plateau at zero. Step 4 closes with no enhancement |
-| 5 onward | Decision pending | | Every planned lever is done and nothing reached 0.05R. Confirmation data stays untouched until hypotheses are registered |
+| 4. Opening-range duration | Done (2026-11-03) | `01a1a314-ed14-7d59-9f7b-c919c72f7603` (15 min), `01a1a31d-197d-7faf-aebd-d3f06d6e44e2` (30 min), `01a1a32e-1821-7c5b-a347-339fdd8c4c97` (60 min) | Not supported: +0.011R, +0.009R and +0.007R per session, all intervals include 0 (60 min: 4/7 years, 4/5 symbols). Flat at zero in R and worse than the baseline in dollars. Step 4 closes with no enhancement |
+| Panel review | Done (2026-11-03) | none | Numbers reproduce. "No edge" is overstated: it holds for next-bar-open market entry, but a lookahead-free resting-stop entry gives +0.06R [+0.01, +0.11]. See `orb-exploration-results.md` |
+| 5 onward | Decision pending | | Next: resting-stop entry, first-candle-direction replication, dollar/power reporting. Confirmation data stays untouched until hypotheses are registered |
 
 Trial ledger (`orb_edge_2026`): 22 trials:
 
@@ -47,7 +48,10 @@ Trial ledger (`orb_edge_2026`): 22 trials:
 - 3 opening-range durations (2026-11-03): 15, 30 and 60 minutes.
 
 The local research DB was rebuilt on 2026-11-02, so `show_trial_ledger.py`
-misses the earlier 7 trials. They are recorded here and in the research plan.
+misses the earlier 7 trials. They are recorded here and in the research plan,
+but they (and the V6/V7 checks) are **not in Supabase yet**; Supabase
+`n_trials` sums to 15. The October 2026 nested walk-forward (172 runs),
+sensitivity sweep (65) and EXP-073 used the same data and are not counted.
 Every variable or variant you try adds to the ledger.
 
 Every experiment now has a one-line conclusion (`research_experiment_conclusions`,
@@ -74,8 +78,9 @@ Work only on the exploration set: QQQ, AMZN, GOOGL, MSFT and TSLA, 2018-05-01
 to 2024-12-31 (always pass `--end 2024-12-31`).
 
 A to D are done or deprioritised. Nothing has reached the 0.05R minimum edge,
-so the next decision is between the honest stop ("this ORB has no edge worth
-confirming") and a new idea with a strong mechanism. Options not yet run,
+but the panel review showed the conclusion depends on the entry order type,
+so the next steps are a lookahead-free resting-stop entry and the
+first-candle-direction ORB before any "no edge" conclusion. Options not yet run,
 including the prior-session intraday trend, are listed in
 `orb-exploration-results.md`, "What is left".
 
@@ -171,8 +176,9 @@ needs a broader universe. Do not use confirmation stocks for it.
 Aim for **at most two conditions and one bundled enhancement**, each with a
 mechanism. Then go to Step 5 (register hypotheses, compute the minimum
 detectable edge on the confirmation set) before touching confirmation data. If
-nothing reaches the 0.05R minimum edge on exploration, the honest conclusion is
-"this ORB has no edge worth confirming". That is a valid result.
+nothing reaches the 0.05R minimum edge on exploration, state the scoped
+result: which entry rule, which symbols and years, which edge size is
+excluded, and the power to detect it. That is a valid result.
 
 ## Rules that still apply
 
