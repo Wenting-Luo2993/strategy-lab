@@ -163,11 +163,40 @@ class TestORBTakeProfitLevels:
         )
         assert signal == 1 and meta["take_profit"] == pytest.approx(101.0 + 2.0)
 
-    def test_atr_multiple_without_history_trades_without_target(self):
+    def test_atr_multiple_without_history_refuses_live_entry(self):
         strategy_config = {"take_profit_method": "atr_multiple", "take_profit_multiplier": 1.0,
                            "take_profit_atr_period": 30}
         signal, meta = self._signal("long", with_daily_atr=False, **strategy_config)
+        assert signal == 0 and meta["reason"] == "daily_atr_unavailable"
+
+    def test_backtest_nan_daily_atr_trades_without_target(self):
+        # Precomputed column present but NaN (first sessions of the data): unchanged behaviour.
+        strategy = ORBStrategy(ORBStrategyConfig(
+            name="ORB", use_volume_filter=False, take_profit_method="atr_multiple",
+            take_profit_multiplier=1.0, take_profit_atr_period=30,
+        ))
+        context = self._context(with_daily_atr=False)
+        context["DAILY_ATR_30"] = float("nan")
+        stamp = context["timestamp"].iloc[-1] + pd.Timedelta(minutes=5)
+        bar = {"timestamp": stamp.to_pydatetime(), "open": 100.5, "high": 101.5, "low": 100.5,
+               "close": 101.4, "volume": 2_000_000}
+        signal, meta = strategy.generate_signal_incremental(symbol="TEST", current_bar=bar, df_context=context)
         assert signal == 1 and meta["take_profit"] is None
+
+    def test_injected_daily_atr_is_used(self):
+        strategy = ORBStrategy(ORBStrategyConfig(
+            name="ORB", use_volume_filter=False, take_profit_method="atr_multiple",
+            take_profit_multiplier=1.0, take_profit_atr_period=30,
+        ))
+        assert strategy.needs_daily_atr
+        context = self._context(with_daily_atr=False)
+        stamp = context["timestamp"].iloc[-1] + pd.Timedelta(minutes=5)
+        strategy.set_daily_atr("TEST", stamp.date(), 3.0)
+        assert strategy.has_daily_atr("TEST", stamp.date())
+        bar = {"timestamp": stamp.to_pydatetime(), "open": 100.5, "high": 101.5, "low": 100.5,
+               "close": 101.4, "volume": 2_000_000}
+        signal, meta = strategy.generate_signal_incremental(symbol="TEST", current_bar=bar, df_context=context)
+        assert signal == 1 and meta["take_profit"] == pytest.approx(101.0 + 3.0)
 
     def test_zero_multiplier_disables_target(self):
         signal, meta = self._signal("long", take_profit_multiplier=0.0)

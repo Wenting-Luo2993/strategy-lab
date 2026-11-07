@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 from vibe.common.ruleset.models import StrategyRuleSet
+from vibe.common.ruleset.support import require_supported
 from vibe.common.strategies.orb import ORBStrategy, ORBStrategyConfig, take_profit_settings
 
 
@@ -30,6 +31,7 @@ class RuleSetRunner:
                 see ``EntryFillPolicy``. The default matches live, which is
                 also what ``TradingOrchestrator`` passes.
         """
+        require_supported(ruleset, "backtest")
         self.ruleset = ruleset
         self.reject_retraced_wick = reject_retraced_wick
         self.strategy = self._build_strategy(ruleset)

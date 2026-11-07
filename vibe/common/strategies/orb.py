@@ -108,6 +108,8 @@ class ORBStrategy(StrategyBase):
         # Per-symbol ORB calculators - ORBCalculator caches by date only,
         # so a single shared instance would return the first symbol's levels for all symbols.
         self._orb_calculators: Dict[str, ORBCalculator] = {}
+        # Daily ATR injected by live trading, keyed by (symbol, trading date).
+        self._daily_atr_cache: Dict[tuple, float] = {}
         self._orb_calculator_config = {
             "start_time": config.orb_start_time,
             "duration_minutes": config.orb_duration_minutes,
@@ -419,7 +421,10 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = self._take_profit_level(levels, "long", df_context)
+            tp = self._take_profit_level(levels, "long", df_context, symbol, trading_date)
+            if tp is None and self._missing_live_daily_atr(df_context):
+                metadata.update(self._daily_atr_unavailable_reason())
+                return 0, metadata
             sl = levels.low if self.config.stop_loss_at_level else current_price - atr
 
             metadata.update({
@@ -443,7 +448,10 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = self._take_profit_level(levels, "short", df_context)
+            tp = self._take_profit_level(levels, "short", df_context, symbol, trading_date)
+            if tp is None and self._missing_live_daily_atr(df_context):
+                metadata.update(self._daily_atr_unavailable_reason())
+                return 0, metadata
             sl = levels.high if self.config.stop_loss_at_level else current_price + atr
 
             metadata.update({
@@ -460,7 +468,12 @@ class ORBStrategy(StrategyBase):
         return 0, metadata
 
     def _take_profit_level(
-        self, levels: ORBLevels, side: str, df_context: pd.DataFrame
+        self,
+        levels: ORBLevels,
+        side: str,
+        df_context: pd.DataFrame,
+        symbol: Optional[str] = None,
+        trading_date=None,
     ) -> Optional[float]:
         """Target price beyond the breakout level, or None when disabled.
 
@@ -476,13 +489,40 @@ class ORBStrategy(StrategyBase):
         if self.config.take_profit_method == "orb_range_multiple":
             distance = levels.range * multiplier
         else:
-            daily_atr = self._daily_atr_at_signal(df_context)
+            daily_atr = self._daily_atr_at_signal(df_context, symbol, trading_date)
             if daily_atr is None:
                 return None
             distance = daily_atr * multiplier
         return levels.high + distance if side == "long" else levels.low - distance
 
-    def _daily_atr_at_signal(self, df_context: pd.DataFrame) -> Optional[float]:
+    @property
+    def needs_daily_atr(self) -> bool:
+        """True when the take-profit is a multiple of the daily ATR."""
+        return (
+            self.config.take_profit_method == "atr_multiple"
+            and self.config.take_profit_multiplier > 0
+        )
+
+    def set_daily_atr(self, symbol: str, trading_date, value: Optional[float]) -> None:
+        """Supply the open-known daily ATR for ``symbol`` on ``trading_date``.
+
+        Live context holds too few sessions to derive it, so the caller computes
+        it once per day from longer history.
+        """
+        if value is None or pd.isna(value) or value <= 0:
+            self._daily_atr_cache.pop((symbol, trading_date), None)
+            return
+        self._daily_atr_cache[(symbol, trading_date)] = float(value)
+
+    def has_daily_atr(self, symbol: str, trading_date) -> bool:
+        return (symbol, trading_date) in self._daily_atr_cache
+
+    def _daily_atr_at_signal(
+        self, df_context: pd.DataFrame, symbol: Optional[str] = None, trading_date=None
+    ) -> Optional[float]:
+        cached = self._daily_atr_cache.get((symbol, trading_date))
+        if cached is not None:
+            return cached
         period = self.config.take_profit_atr_period
         column = daily_atr_column(period)
         if column not in df_context.columns:
@@ -495,6 +535,25 @@ class ORBStrategy(StrategyBase):
             )
             return None
         return float(value)
+
+    def _missing_live_daily_atr(self, df_context: pd.DataFrame) -> bool:
+        """An ATR target is configured but could not be set outside a backtest.
+
+        Backtests precompute the column, so a NaN there (the first sessions of
+        the data) keeps the historical behaviour of trading without a target.
+        Live trading must not silently drop the configured exit.
+        """
+        return (
+            self.needs_daily_atr
+            and daily_atr_column(self.config.take_profit_atr_period) not in df_context.columns
+        )
+
+    @staticmethod
+    def _daily_atr_unavailable_reason() -> Dict[str, Any]:
+        return {
+            "reason": "daily_atr_unavailable",
+            "reason_detail": "ATR take-profit configured but daily ATR unavailable; entry refused",
+        }
 
     def _calculate_body_percentage(self, bar: dict) -> float:
         """

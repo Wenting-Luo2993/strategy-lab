@@ -76,6 +76,12 @@ from vibe.trading_bot.notifications.helper import discord_notification_context
 from vibe.trading_bot.version import BUILD_VERSION
 from vibe.trading_bot.core.phases import WarmupPhaseManager, CooldownPhaseManager
 from vibe.common.ruleset import StrategyRuleSet, RuleSetLoader, OrbLevelStopLoss, OrbRangeMultipleTakeProfit
+from vibe.common.ruleset.support import unsupported_settings
+from vibe.common.indicators.daily_atr import (
+    _bar_timestamps as _daily_atr_bar_timestamps,
+    add_daily_atr,
+    daily_atr_column,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -214,6 +220,8 @@ class TradingOrchestrator:
         # Latest close price per symbol (updated each trading cycle for position monitoring)
         self._latest_bar_prices: Dict[str, float] = {}
 
+        # Daily-ATR fetch attempts per (symbol, trading date), for ATR take-profits
+        self._daily_atr_attempts: Dict[tuple, int] = {}
         # Polling task for REST providers
         self._polling_task: Optional[asyncio.Task] = None
 
@@ -1729,6 +1737,10 @@ class TradingOrchestrator:
             # 5. Initialize strategy — driven by ruleset if available, else fall back to .env
             try:
                 if self.ruleset:
+                    for problem in unsupported_settings(self.ruleset, "live"):
+                        self.logger.error(
+                            f"Ruleset '{self.ruleset.name}' setting ignored by live trading: {problem}"
+                        )
                     orb_params = self.ruleset.strategy
                     tp_settings = take_profit_settings(self.ruleset.exit.take_profit)
                     tp_multiplier = tp_settings["take_profit_multiplier"]
@@ -1740,6 +1752,7 @@ class TradingOrchestrator:
                         orb_start_time=orb_params.orb_start_time,
                         orb_duration_minutes=orb_params.orb_duration_minutes,
                         orb_body_pct_filter=orb_params.orb_body_pct_filter,
+                        direction_mode=orb_params.direction_mode,
                         breakout_evaluation=orb_params.breakout_evaluation,
                         entry_cutoff_time=orb_params.entry_cutoff_time,
                         **tp_settings,
@@ -2941,6 +2954,56 @@ class TradingOrchestrator:
             )
             return self._idle_cycle_interval
 
+    async def _ensure_daily_atr(self, symbol: str, bar_timestamp: Any) -> None:
+        """Cache today's open-known daily ATR for an ATR take-profit.
+
+        The trading cycle fetches one day of bars, too few for the daily ATR,
+        so it is computed once per symbol per session from ~35 calendar days.
+        If it still cannot be computed the strategy refuses the entry.
+        """
+        if bar_timestamp is None:
+            return
+        stamp = pd.Timestamp(bar_timestamp)
+        stamp = (
+            stamp.tz_localize("America/New_York")
+            if stamp.tzinfo is None
+            else stamp.tz_convert("America/New_York")
+        )
+        trading_date = stamp.date()
+        if self.strategy.has_daily_atr(symbol, trading_date):
+            return
+        attempts = self._daily_atr_attempts.get((symbol, trading_date), 0)
+        if attempts >= 3:
+            return
+        self._daily_atr_attempts[(symbol, trading_date)] = attempts + 1
+        period = self.strategy.config.take_profit_atr_period
+        try:
+            history = await self.data_manager.get_data(symbol=symbol, timeframe="5m", days=35)
+            value = None
+            if history is not None and not history.empty:
+                with_atr = add_daily_atr(history, period)
+                local_dates = pd.Series(
+                    [d.date() for d in _daily_atr_bar_timestamps(with_atr)]
+                )
+                today = with_atr[daily_atr_column(period)].to_numpy()[
+                    (local_dates == trading_date).to_numpy()
+                ]
+                if len(today) and not pd.isna(today[-1]):
+                    value = float(today[-1])
+            self.strategy.set_daily_atr(symbol, trading_date, value)
+            if value is None:
+                self.logger.error(
+                    f"[ATR TP] {symbol}: daily ATR({period}) unavailable for {trading_date}; "
+                    "entries will be refused"
+                )
+            else:
+                self.logger.info(f"[ATR TP] {symbol}: daily ATR({period}) = {value:.4f} for {trading_date}")
+        except Exception as e:
+            self.logger.error(
+                f"[ATR TP] {symbol}: failed to compute daily ATR: {e}; entries will be refused",
+                exc_info=True,
+            )
+
     async def _trading_cycle(self) -> bool:
         """Execute one trading cycle: fetch data, generate signals, execute trades.
 
@@ -3096,6 +3159,9 @@ class TradingOrchestrator:
                             symbol,
                             current_bar_timestamp,
                         )
+
+                    if getattr(self.strategy, "needs_daily_atr", False):
+                        await self._ensure_daily_atr(symbol, current_bar.get("timestamp"))
 
                     # Generate signal for current bar with historical context
                     signal_value, signal_metadata = self.strategy.generate_signal_incremental(
