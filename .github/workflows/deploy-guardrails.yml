@@ -1,0 +1,55 @@
+name: Deploy Guardrails
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "deploy/ibkr-docker/**"
+      - "vibe/trading_bot/Dockerfile"
+      - ".claude/skills/deploy-trading-bot/**"
+      - "tests/deploy/**"
+      - ".github/workflows/deploy-guardrails.yml"
+  pull_request:
+    paths:
+      - "deploy/ibkr-docker/**"
+      - "vibe/trading_bot/Dockerfile"
+      - ".claude/skills/deploy-trading-bot/**"
+      - "tests/deploy/**"
+      - ".github/workflows/deploy-guardrails.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: for f in deploy/ibkr-docker/*.sh; do bash -n "$f"; done
+
+      - name: ShellCheck
+        run: shellcheck -S warning deploy/ibkr-docker/*.sh
+
+      - name: Compose config validates (dummy secrets)
+        working-directory: deploy/ibkr-docker
+        run: |
+          mkdir -p secrets
+          printf 'TWS_USERID=dummy\n' > secrets/ib-gateway.env
+          printf 'dummy' > secrets/tws_password
+          cp secrets/trading-bot.env.example secrets/trading-bot.env
+          docker compose -f docker-compose.paper.yml config --quiet
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Guardrail tests
+        run: |
+          pip install pytest pyyaml
+          python -m pytest tests/deploy -q -p no:cacheprovider

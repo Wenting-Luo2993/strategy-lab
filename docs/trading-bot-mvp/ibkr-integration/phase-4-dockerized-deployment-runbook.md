@@ -33,10 +33,11 @@ Key decisions:
 
 | Script | Purpose |
 |---|---|
+| `deploy.sh` | The single entry point for routine operations: `status`, `check`, `bot`, `gateway`, `rollback-bot`. It preflights the host, pulls `main`, rebuilds, recreates, verifies log markers and `/api/health`, and appends to `deploys.log`. Coding agents use it through the `.claude/skills/deploy-trading-bot` skill. CI (`.github/workflows/deploy-guardrails.yml`) runs ShellCheck, `compose config` and `tests/deploy`. |
 | `import-ibkr-credentials.sh` | Writes `secrets/ib-gateway.env` and `secrets/tws_password` from `/etc/ibkr/config.ini`, or from hidden prompts with `--prompt`. It prints only lengths. |
 | `cutover-systemd-to-docker.sh` | Pre-pulls and builds while systemd is still running, asks for confirmation, then stops and disables the four systemd units. It backs up `/opt/strategy-lab/data`, copies bot data into the Docker volume, installs the bot env, runs `up -d` and waits for the bot to be healthy. |
 | `rollback-to-systemd.sh` | Runs `compose down`, optionally copies Docker bot data back, then re-enables the systemd units. |
-| `rotate-env-key.sh` | Rotates one key in `secrets/trading-bot.env` with a backup, a last-4-character check and a confirmation, then recreates the bot. |
+| `rotate-env-key.sh` | Rotates one key in `secrets/trading-bot.env` with a backup, a last-4-character check and a confirmation. Apply it afterwards with `deploy.sh bot`. |
 
 ---
 

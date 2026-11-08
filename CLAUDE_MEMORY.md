@@ -218,8 +218,8 @@ orchestrator = TradingOrchestrator(config, mock_scheduler)
 **CRITICAL: Run 3-day cycle integration test before deploying orchestrator or phase changes!**
 
 ```bash
-# Stop Oracle Cloud first (Finnhub 1 connection limit)
-ssh ubuntu@146.235.228.116 "cd strategy-lab/vibe/trading_bot && docker compose down"
+# If the test needs the production data/broker connection, ask the user to stop production
+# first (see .claude/skills/deploy-trading-bot); never stop it yourself.
 python test_orchestrator_daily_cycle.py
 ```
 
@@ -317,14 +317,19 @@ Also: warmup phase must reset cooldown manager state for fresh start each day.
 
 ## Deployment & Operations
 
+**Production (since 2026-11-08) is the Docker Compose project `strategy-lab` in
+`/opt/strategy-lab/deploy/ibkr-docker` (IB Gateway + bot). Follow
+`.claude/skills/deploy-trading-bot/SKILL.md` and use only `deploy/ibkr-docker/deploy.sh`.**
+The old `vibe/trading_bot/docker-compose.yml` flow and the systemd units are obsolete for production.
+
 ### Docker Rebuild Required for Code Changes
 
 ```bash
-# ❌ WRONG: Does NOT pick up code changes
+# ❌ WRONG: Does NOT pick up code changes or env_file changes
 docker compose restart
 
-# ✅ RIGHT: Rebuilds with new code
-docker compose down && docker compose build && docker compose up -d
+# ✅ RIGHT (on the VM, after merging to main): pull, rebuild, recreate, verify
+bash deploy/ibkr-docker/deploy.sh bot
 ```
 
 ### Always Validate Locally Before Deploying
@@ -340,7 +345,8 @@ pytest tests/test_my_module.py -v
 ### Version Verification After Deploy
 
 ```bash
-docker compose logs trading-bot | grep "Trading Bot"
+bash deploy/ibkr-docker/deploy.sh status
+docker logs strategy-lab-trading-bot 2>&1 | grep "Trading Bot"
 # Should show: Trading Bot v1.x.x (YYYY-MM-DD HH:MM:SS UTC)
 ```
 
@@ -350,19 +356,10 @@ docker compose logs trading-bot | grep "Trading Bot"
 ssh -i "C:\Users\wentingluo\OneDrive - Microsoft\Personal\Development\ssh-key-2025-12-21-oracle-cloud-private.key" ubuntu@146.235.228.116
 ```
 
-### Finnhub Free Tier: ONE WebSocket Connection Only
-
-When WebSocket testing is needed locally, stop Oracle Cloud first:
-```bash
-ssh ubuntu@146.235.228.116 "cd strategy-lab/vibe/trading_bot && docker compose down"
-```
-
 ### Permission Fixes
 
-```bash
-cd strategy-lab && sudo chown -R ubuntu:ubuntu .
-cd vibe/trading_bot && sudo chown -R 1000:1000 data logs
-```
+Container-read paths under `deploy/ibkr-docker/{data,logs,state}` must be owned by uid 1000
+(see `deploy/ibkr-docker/README.md`).
 
 ---
 

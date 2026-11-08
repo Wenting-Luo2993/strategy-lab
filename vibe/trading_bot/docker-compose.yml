@@ -1,3 +1,6 @@
+# LOCAL DEVELOPMENT ONLY. Not used in production.
+# Production: deploy/ibkr-docker/docker-compose.paper.yml via deploy/ibkr-docker/deploy.sh
+# (see .claude/skills/deploy-trading-bot/SKILL.md).
 version: '3.8'
 
 services:

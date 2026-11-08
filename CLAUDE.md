@@ -241,6 +241,16 @@ date = now.date().isoformat()
 
 ---
 
+## Production Deployment
+
+Production is the Docker Compose project `strategy-lab` (`deploy/ibkr-docker/docker-compose.paper.yml`) on the Oracle VM at `/opt/strategy-lab`. **Before any deploy, restart, health check, rollback, gateway upgrade or secret rotation, follow the [`deploy-trading-bot` skill](.claude/skills/deploy-trading-bot/SKILL.md).**
+
+- Code reaches production only via `main`, then `bash deploy/ibkr-docker/deploy.sh bot` on the VM.
+- Use only `deploy.sh` (`status | check | bot | gateway | rollback-bot`). Never use `systemctl`, `docker compose restart`, hand-typed compose commands, or the local-dev `vibe/trading_bot/docker-compose.yml`.
+- Never print secrets; stay outside 09:25–16:05 ET on weekdays; ask the user before production-changing commands.
+
+---
+
 ## File Organization
 
 ```
