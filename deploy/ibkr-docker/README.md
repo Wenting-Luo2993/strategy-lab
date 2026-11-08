@@ -58,6 +58,28 @@ The Supabase remote data publisher is part of the `trading-bot` process. When `D
 
 Do not add a separate publisher container for the first Phase 4 shadow stack. A standalone publisher can be introduced later if we add a dedicated worker entrypoint and intentionally share the outbox volume between services.
 
+## Updating a Deployment
+
+Run on the VM after changes are merged to `main`. Use `build` + `--force-recreate`: `docker compose restart` neither rebuilds the image (needed when Python dependencies change) nor re-reads `env_file`.
+
+```bash
+cd /opt/strategy-lab
+git fetch origin && git checkout main && git pull --ff-only
+docker compose -f deploy/ibkr-docker/docker-compose.paper.yml build trading-bot
+docker compose -f deploy/ibkr-docker/docker-compose.paper.yml up -d --force-recreate trading-bot
+docker compose -f deploy/ibkr-docker/docker-compose.paper.yml logs --since 5m trading-bot | grep -iE 'RemoteDataPublisher|ruleset|error'
+```
+
+A healthy start logs `Dashboard RemoteDataPublisher started` and no `Ruleset ... setting ignored by live trading` errors.
+
+One-time cleanup for hosts set up before the env template dropped unused keys (the bot never reads them):
+
+```bash
+F=deploy/ibkr-docker/secrets/trading-bot.env
+sudo cp -p "$F" "$F.bak.$(date +%F)"
+sudo sed -i '/^RESEARCH_SUPABASE_/d;/^DASHBOARD__SUPABASE_ANON_KEY=/d' "$F"
+```
+
 ## Rotating a Secret
 
 `rotate-env-key.sh` swaps one `KEY=value` line in `secrets/trading-bot.env` without echoing the secret. It backs up the file, reads the new value at a hidden prompt, shows the length and last 4 characters of the old and new values, and asks for confirmation. Only then does it replace the line atomically. It can then recreate the `trading-bot` container, which is required because `docker compose restart` does not re-read `env_file`.
