@@ -867,6 +867,34 @@ class InteractiveBrokersAPI:
             ib_order.ocaType = 1
         return ib_order
 
+    async def get_session_minute_bars(self, symbol: str, session_date: Any) -> List[Dict[str, Any]]:
+        """Regular-hours 1-minute TRADES bars for one session (reqHistoricalData)."""
+        contract = await self.qualify_contract(symbol)
+        end = f"{session_date.strftime('%Y%m%d')} 16:00:00 US/Eastern"
+        bars = await asyncio.wait_for(
+            self.ib.reqHistoricalDataAsync(
+                contract,
+                endDateTime=end,
+                durationStr="1 D",
+                barSizeSetting="1 min",
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=2,
+            ),
+            timeout=max(self.connect_timeout, 30.0),
+        )
+        return [
+            {
+                "timestamp": bar.date,
+                "open": float(bar.open),
+                "high": float(bar.high),
+                "low": float(bar.low),
+                "close": float(bar.close),
+                "volume": float(bar.volume),
+            }
+            for bar in bars or []
+        ]
+
     def order_status_snapshot(self, broker_order_id: str) -> Optional[str]:
         """Last IB status string seen for an order, without a network call."""
         trade = self._trades.get(str(broker_order_id))

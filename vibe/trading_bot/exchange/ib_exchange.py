@@ -623,6 +623,21 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             timestamp=account.timestamp,
         )
 
+    async def fetch_session_minute_bars(self, symbol: str, session_date: Any):
+        """The session's regular-hours 1-minute bars as a tz-aware OHLCV frame."""
+        import pandas as pd
+
+        fetch = getattr(self.broker, "get_session_minute_bars", None)
+        if fetch is None:
+            raise RuntimeError("broker cannot provide historical minute bars")
+        rows = await fetch(symbol, session_date)
+        if not rows:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+        frame = pd.DataFrame(rows)
+        index = pd.to_datetime(frame.pop("timestamp"), utc=True).dt.tz_convert("America/New_York")
+        frame.index = pd.DatetimeIndex(index)
+        return frame.sort_index()
+
     def has_submitted_entry(self, symbol: str, since: datetime) -> bool:
         """Whether a resting-stop entry for ``symbol`` was submitted at/after ``since``.
 

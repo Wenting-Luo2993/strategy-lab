@@ -877,6 +877,72 @@ class TradingOrchestrator:
         except Exception as exc:
             self.logger.warning("Dashboard fill metric persistence failed for %s: %s", event.execution_id, exc)
 
+    def record_parity_report(self, report: Any) -> None:
+        """Persist the daily parity report and publish its summary as metrics.
+
+        The full report is written as JSON next to the local databases; the
+        summary and per-symbol results go through the existing metrics store
+        and dashboard outbox (synced to Supabase), so no new remote table is
+        needed. Each metric is idempotent per session date.
+        """
+        session = report.session_date.isoformat()
+        try:
+            directory = Path(self.config.database_path).parent / "parity_reports"
+            directory.mkdir(parents=True, exist_ok=True)
+            import json
+
+            (directory / f"{session}.json").write_text(
+                json.dumps(report.to_dict(), indent=2, default=str), encoding="utf-8"
+            )
+        except Exception as exc:
+            self.logger.error("Failed to write parity report file: %s", exc, exc_info=True)
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        samples: List[tuple[str, float, Dict[str, Any]]] = [
+            ("parity_matched", float(report.matched), {}),
+            ("parity_mismatched", float(len(report.mismatched)), {}),
+            ("parity_gap_fills", float(report.gap_fills), {}),
+            ("parity_entry_fills", float(len(report.entry_slippage_ticks)), {}),
+        ]
+        if report.mean_slippage_ticks is not None:
+            samples.append(("parity_entry_slippage_ticks_mean", float(report.mean_slippage_ticks), {}))
+            samples.append(("parity_entry_slippage_ticks_median", float(report.median_slippage_ticks), {}))
+        for item in report.symbols:
+            samples.append((
+                "parity_symbol_matched",
+                1.0 if item.matched else 0.0,
+                {"symbol": item.symbol, "mismatches": ",".join(item.mismatches) or "none"},
+            ))
+        for metric_name, value, extra in samples:
+            dimensions = {"report": "daily_parity", "session_date": session, **extra}
+            aggregate_id = f"parity:{session}:{metric_name}:{extra.get('symbol', 'all')}"
+            try:
+                if self.operational_metrics_store is not None:
+                    self.operational_metrics_store.record_metric(
+                        metric_type=MetricType.TRADE.value,
+                        metric_name=metric_name,
+                        metric_value=value,
+                        dimensions=dimensions,
+                        timestamp=timestamp,
+                        idempotency_key=aggregate_id,
+                    )
+                self._enqueue_dashboard_event(
+                    event_id=f"metric:{aggregate_id}",
+                    event_type="upsert",
+                    aggregate_type="metric",
+                    aggregate_id=aggregate_id,
+                    payload={
+                        "metric_id": aggregate_id,
+                        "metric_name": metric_name,
+                        "metric_value": value,
+                        "dimensions": dimensions,
+                        "timestamp": timestamp,
+                    },
+                    original_event_timestamp=timestamp,
+                )
+            except Exception as exc:
+                self.logger.warning("Parity metric %s not recorded: %s", metric_name, exc)
+
     def _ingest_durable_ib_execution(self, execution: Dict[str, Any]) -> None:
         """Project one durable IB execution or commission correction idempotently."""
         if self.dashboard_store is None and self.operational_metrics_store is None:

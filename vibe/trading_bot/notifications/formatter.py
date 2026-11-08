@@ -1,7 +1,7 @@
 """Discord embed message formatter for order notifications."""
 
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from vibe.trading_bot.notifications.payloads import (
     OrderNotificationPayload,
     TradeClosedPayload,
@@ -9,6 +9,7 @@ from vibe.trading_bot.notifications.payloads import (
     SystemAlertPayload,
     ORBLevelsPayload,
     DailySummaryPayload,
+    ParityReportPayload,
     RiskAlertPayload,
 )
 
@@ -35,6 +36,8 @@ class DiscordNotificationFormatter:
         "SYSTEM_ERROR": 0xe74c3c,     # Red
         "DAILY_LOSS_LIMIT": 0xe74c3c,        # Red
         "EQUITY_SNAPSHOT_FAILED": 0xe74c3c,  # Red
+        "PARITY_MATCH": 0x2ecc71,     # Green
+        "PARITY_MISMATCH": 0xf39c12,  # Orange
     }
 
     STATUS_COLORS = {
@@ -463,6 +466,55 @@ class DiscordNotificationFormatter:
                 "title": titles[payload.event_type],
                 "description": payload.message,
                 "color": self.COLORS[payload.event_type],
+                "fields": fields,
+                "timestamp": payload.timestamp.isoformat(),
+                "footer": {"text": f"Trading Bot {payload.version}" if payload.version else "Trading Bot"},
+            }]
+        }
+
+    def format_parity_report(self, payload: ParityReportPayload) -> Dict[str, Any]:
+        """Format the daily live-vs-backtest parity and slippage report."""
+        clean = payload.mismatched == 0 and not payload.errors
+        color = self.COLORS["PARITY_MATCH" if clean else "PARITY_MISMATCH"]
+
+        def ticks(value: Optional[float]) -> str:
+            return "n/a" if value is None else f"{value:+.1f}"
+
+        fields: List[Dict[str, Any]] = [
+            {"name": "Matched", "value": str(payload.matched), "inline": True},
+            {"name": "Mismatched", "value": str(payload.mismatched), "inline": True},
+            {"name": "Gap Fills", "value": str(payload.gap_fills), "inline": True},
+            {"name": "Entry Fills", "value": str(payload.entry_fills), "inline": True},
+            {
+                "name": "Entry Slippage (ticks)",
+                "value": (
+                    f"mean {ticks(payload.mean_slippage_ticks)} / "
+                    f"median {ticks(payload.median_slippage_ticks)} "
+                    f"(modelled +{payload.modelled_slippage_ticks})"
+                ),
+                "inline": False,
+            },
+        ]
+        if payload.mismatch_lines:
+            fields.append({
+                "name": "Mismatches",
+                "value": "\n".join(payload.mismatch_lines)[:1000],
+                "inline": False,
+            })
+        if payload.errors:
+            fields.append({
+                "name": "Not Compared",
+                "value": "\n".join(f"{k}: {v}" for k, v in payload.errors.items())[:1000],
+                "inline": False,
+            })
+        return {
+            "embeds": [{
+                "title": "🔍 Live vs Backtest Parity",
+                "description": (
+                    f"Session {payload.session_date}: live trades replayed through the "
+                    "backtest resting-stop path with the same ruleset and session equity."
+                ),
+                "color": color,
                 "fields": fields,
                 "timestamp": payload.timestamp.isoformat(),
                 "footer": {"text": f"Trading Bot {payload.version}" if payload.version else "Trading Bot"},

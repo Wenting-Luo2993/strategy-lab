@@ -165,6 +165,12 @@ class CooldownPhaseManager(BasePhase):
         # We cannot execute trades after market close; this is a signal that EOD exit missed something
         self._warn_open_positions()
 
+        # Parity report before the publisher flush, so its metrics go out today.
+        try:
+            await self._run_parity_report()
+        except Exception as exc:
+            self.logger.error("Daily parity report failed: %s", exc, exc_info=True)
+
         try:
             await self._flush_dashboard_publisher()
             retention_maintenance = getattr(
@@ -190,6 +196,112 @@ class CooldownPhaseManager(BasePhase):
                     await self._rotate_tick_logs()
                 except Exception as exc:
                     self.logger.exception("Tick log rotation failed during cooldown: %s", exc)
+
+    async def _run_parity_report(self) -> Optional[Any]:
+        """Replay today's session through the backtester and diff it with live.
+
+        Runs for resting-stop rulesets only. For every active symbol the
+        session's 1-minute bars are fetched from the broker and replayed with
+        the live ruleset and session-start equity; live trades are rebuilt
+        from the durable execution journal. The report is persisted (local
+        JSON + metrics published to the dashboard) and sent to Discord.
+        """
+        ruleset = getattr(self.orchestrator, "ruleset", None)
+        policy = getattr(getattr(ruleset, "strategy", None), "entry_order", None)
+        if policy is None or policy.type != "resting_stop":
+            return None
+        exchange = self.orchestrator.exchange
+        list_executions = getattr(exchange, "list_durable_executions", None)
+        fetch_bars = getattr(exchange, "fetch_session_minute_bars", None)
+        if list_executions is None or fetch_bars is None:
+            self.logger.info("Parity report skipped: execution engine has no broker history")
+            return None
+
+        from vibe.common.risk.portfolio_sizing import net_liquidation
+        from vibe.trading_bot.parity.report import (
+            backtest_session,
+            build_report,
+            live_trades_from_executions,
+        )
+
+        now = get_market_now(self.market_scheduler)
+        session_date = now.date()
+        errors: dict[str, str] = {}
+        risk_manager = getattr(self.orchestrator, "portfolio_risk_manager", None)
+        session_equity = risk_manager.session_equity if risk_manager is not None else None
+        if session_equity is None:
+            session_equity = net_liquidation(await exchange.get_account())
+            errors["session_equity"] = "no session-start snapshot; replayed with current NLV"
+        if session_equity is None:
+            self.logger.error("Parity report skipped: no equity to replay with")
+            return None
+
+        live = live_trades_from_executions(
+            list_executions(), session_date, self.market_scheduler.timezone
+        )
+        backtests = {}
+        for symbol in self.orchestrator.active_symbols:
+            try:
+                bars = await fetch_bars(symbol, session_date)
+                backtests[symbol] = await asyncio.to_thread(
+                    backtest_session, ruleset, symbol, bars, session_equity
+                )
+            except Exception as exc:
+                self.logger.error("Parity replay failed for %s: %s", symbol, exc, exc_info=True)
+                errors[symbol] = str(exc)
+
+        report = build_report(
+            session_date,
+            self.orchestrator.active_symbols,
+            live,
+            backtests,
+            errors={k: v for k, v in errors.items() if k != "session_equity"},
+        )
+        report.errors.update(errors)
+        self.logger.info("[PARITY] %s", report.to_dict())
+
+        record = getattr(self.orchestrator, "record_parity_report", None)
+        if record is not None:
+            record(report)
+        await self._send_parity_report(report, len(live))
+        return report
+
+    async def _send_parity_report(self, report: Any, entry_fills: int) -> None:
+        webhook_url = getattr(self.config.notifications, "discord_webhook_url", None)
+        if not webhook_url:
+            return
+        from vibe.trading_bot.notifications.payloads import ParityReportPayload
+
+        lines = []
+        for item in report.mismatched:
+            d = item.details
+            lines.append(
+                f"{item.symbol}: {', '.join(item.mismatches)} "
+                f"(live {d.get('live_side', '-')} {d.get('live_qty', '-')} @ "
+                f"{d.get('live_entry_price', '-')}, backtest {d.get('backtest_side', '-')} "
+                f"{d.get('backtest_qty', '-')} @ {d.get('backtest_entry_price', '-')})"
+            )
+        payload = ParityReportPayload(
+            event_type="PARITY_REPORT",
+            timestamp=get_market_now(self.market_scheduler),
+            session_date=report.session_date.isoformat(),
+            matched=report.matched,
+            mismatched=len(report.mismatched),
+            mismatch_counts=report.mismatch_counts(),
+            mismatch_lines=lines,
+            entry_fills=entry_fills,
+            mean_slippage_ticks=report.mean_slippage_ticks,
+            median_slippage_ticks=report.median_slippage_ticks,
+            modelled_slippage_ticks=report.modelled_slippage_ticks,
+            gap_fills=report.gap_fills,
+            errors=report.errors,
+            version=BUILD_VERSION,
+        )
+        try:
+            async with discord_notification_context(webhook_url) as notifier:
+                await notifier.send_parity_report(payload)
+        except Exception as exc:
+            self.logger.error("Failed to send parity report: %s", exc, exc_info=True)
 
     def _warn_open_positions(self) -> None:
         """Log a warning if any positions are still open at market close.

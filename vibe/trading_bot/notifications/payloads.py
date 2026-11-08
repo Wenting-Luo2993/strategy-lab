@@ -329,6 +329,41 @@ class RiskAlertPayload:
 
 
 @dataclass
+class ParityReportPayload:
+    """Daily live-vs-backtest parity and entry-slippage summary (PARITY_REPORT)."""
+
+    event_type: str
+    timestamp: datetime
+    session_date: str
+    matched: int
+    mismatched: int
+    mismatch_counts: Dict[str, int]
+    mismatch_lines: list
+    """One human-readable line per mismatched symbol."""
+    entry_fills: int
+    mean_slippage_ticks: Optional[float]
+    median_slippage_ticks: Optional[float]
+    modelled_slippage_ticks: int
+    gap_fills: int
+    errors: Dict[str, str] = field(default_factory=dict)
+    version: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.event_type != "PARITY_REPORT":
+            raise ValueError(
+                f"Invalid event_type: {self.event_type}. Must be 'PARITY_REPORT'"
+            )
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["timestamp"] = self.timestamp.isoformat()
+        return data
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), default=str)
+
+
+@dataclass
 class DailySummaryPayload:
     """Notification payload for end-of-day trading summary.
 
