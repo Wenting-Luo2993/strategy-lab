@@ -588,6 +588,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             broker_cash=account.cash,
             broker_equity=account.net_liquidation,
             broker_buying_power=account.buying_power,
+            available_funds=getattr(account, "available_funds", None),
             timestamp=account.timestamp,
         )
 

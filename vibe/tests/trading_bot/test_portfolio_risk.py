@@ -409,7 +409,7 @@ async def test_daily_loss_limit_cancels_entries_flattens_blocks_and_alerts(
     await orchestrator._enforce_account_risk_limits()
     assert manager.halted_reason is None  # no loss yet
 
-    await exchange.set_price("AAA", 93.0)  # 20 x 100 = $2,000 at risk; loss 7%
+    await exchange.set_price("AAA", 80.0)  # 20 shares (20% cap) x $20 = $400 > $300
     await orchestrator._enforce_account_risk_limits()
 
     assert manager.entries_blocked_reason() == DAILY_LOSS_LIMIT

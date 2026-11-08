@@ -657,6 +657,7 @@ class InteractiveBrokersAPI:
         )
         cash, cash_currency = self._find_account_summary_value(values, "TotalCashValue", account_id)
         buying_power, buying_power_currency = self._find_account_summary_value(values, "BuyingPower", account_id)
+        available_funds, _ = self._find_account_summary_value(values, "AvailableFunds", account_id)
         # NetLiquidation may be reported in a ledger currency that is not the
         # account base. reqPnL has no currency field, so only an independently
         # configured/discovered base currency may label it.
@@ -679,6 +680,7 @@ class InteractiveBrokersAPI:
             realized_pnl_currency=account_currency if realized_pnl is not None else None,
             unrealized_pnl=unrealized_pnl,
             unrealized_pnl_currency=account_currency if unrealized_pnl is not None else None,
+            available_funds=self._parse_float(available_funds),
         )
 
     async def _request_account_summary(self) -> List[Any]:

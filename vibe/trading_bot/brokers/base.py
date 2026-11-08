@@ -167,6 +167,7 @@ class BrokerAccount:
     realized_pnl_currency: Optional[str] = None
     unrealized_pnl: Optional[float] = None
     unrealized_pnl_currency: Optional[str] = None
+    available_funds: Optional[float] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 

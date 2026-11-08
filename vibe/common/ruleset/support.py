@@ -73,6 +73,11 @@ def unsupported_settings(ruleset: StrategyRuleSet, context: Context) -> List[str
             f"position_size.method={ruleset.position_size.method!r} is not implemented "
             "(sizing is always max_loss_pct)"
         )
+    if ruleset.portfolio is not None and ruleset.position_size.max_position_pct is not None:
+        problems.append(
+            "position_size.max_position_pct is superseded by "
+            "portfolio.max_symbol_exposure_pct when a portfolio block is set"
+        )
 
     if exit_.stop_loss.method != "orb_level":
         problems.append(

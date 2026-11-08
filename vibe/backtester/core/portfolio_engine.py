@@ -141,6 +141,23 @@ class PortfolioSimulationConfig:
             "incomplete_session_policy": self.incomplete_session_policy.value,
         }
 
+    @classmethod
+    def from_ruleset(
+        cls,
+        ruleset: StrategyRuleSet,
+        incomplete_session_policy: IncompleteSessionPolicy = IncompleteSessionPolicy.FAIL,
+    ) -> "PortfolioSimulationConfig":
+        """Derive the simulation policy from a ruleset's ``portfolio:`` block."""
+        rules = ruleset.portfolio
+        if rules is None:
+            raise ValueError(f"Ruleset {ruleset.name!r} has no portfolio block")
+        return cls(
+            max_symbol_exposure_pct=rules.max_symbol_exposure_pct,
+            max_open_positions=rules.max_open_positions,
+            symbol_priority=tuple(rules.symbol_priority),
+            incomplete_session_policy=incomplete_session_policy,
+        )
+
 
 @dataclass(frozen=True)
 class RankedSignal:
@@ -244,7 +261,7 @@ class PortfolioBacktestEngine(BacktestEngine):
     def __init__(
         self,
         ruleset: StrategyRuleSet,
-        portfolio_config: PortfolioSimulationConfig,
+        portfolio_config: Optional[PortfolioSimulationConfig] = None,
         data_dir: Path | str | None = None,
         initial_capital: float = 10_000.0,
         slippage_ticks: int = 2,
@@ -273,9 +290,27 @@ class PortfolioBacktestEngine(BacktestEngine):
                 "Portfolio simulation does not set fill-anchored take-profits; "
                 "exit.take_profit.method='r_multiple' is single-symbol BacktestEngine only"
             )
+        if portfolio_config is None:
+            if ruleset.portfolio is None:
+                raise ValueError(
+                    "PortfolioBacktestEngine needs a portfolio_config or a ruleset "
+                    "with a portfolio block"
+                )
+            portfolio_config = PortfolioSimulationConfig.from_ruleset(ruleset)
+        elif ruleset.portfolio is not None:
+            derived = PortfolioSimulationConfig.from_ruleset(
+                ruleset, portfolio_config.incomplete_session_policy
+            )
+            if derived != portfolio_config:
+                raise ValueError(
+                    "portfolio_config disagrees with the ruleset's portfolio block: "
+                    f"{portfolio_config.identity()} != {derived.identity()}"
+                )
         self.portfolio_config = portfolio_config
         self._runner_factory = runner_factory
         self.ranker = CausalSignalRanker(portfolio_config.symbol_priority)
+        self._session_start_equity = initial_capital
+        self._current_equity = initial_capital
 
     def run(
         self,
@@ -373,6 +408,12 @@ class PortfolioBacktestEngine(BacktestEngine):
             "incomplete_symbol_sessions": incomplete_sessions,
         }
         self.sizing_caps = {}
+        # ``portfolio:`` block only: E0 per session and daily-loss halts.
+        self._last_bars = last_bars
+        self._session_start_equity = self.initial_capital
+        self.daily_loss_halts = 0
+        current_session: Optional[date] = None
+        halted_sessions: set[date] = set()
 
         for timestamp, event_symbols in timeline:
             now = timestamp.to_pydatetime()
@@ -398,6 +439,15 @@ class PortfolioBacktestEngine(BacktestEngine):
                 event_bars[symbol] = bar
                 last_bars[symbol] = bar
 
+            timeline_session = _exchange_date(timestamp)
+            if self.portfolio_rules is not None and timeline_session != current_session:
+                # Positions never survive a session, so this is the cash the
+                # live warm-up would snapshot as E0.
+                current_session = timeline_session
+                self._session_start_equity = self._mark_to_market_equity(
+                    portfolio, last_bars
+                )
+
             # Orders declared for this bar's open are allocated before any use
             # of this bar's high/low. An intrabar stop may free capital later,
             # but it cannot retroactively fund an earlier open.
@@ -422,11 +472,29 @@ class PortfolioBacktestEngine(BacktestEngine):
                 runner.close_position(symbol)
                 pending.pop(symbol, None)
 
+            if (
+                self.portfolio_rules is not None
+                and timeline_session not in halted_sessions
+                and self._daily_loss_limit_breached(
+                    portfolio, last_bars, self._session_start_equity
+                )
+            ):
+                halted_sessions.add(timeline_session)
+                self.daily_loss_halts += 1
+                for symbol in list(portfolio.positions):
+                    portfolio._close_at_bar_close(
+                        symbol, last_bars[symbol], clock, reason="DAILY_LOSS_LIMIT"
+                    )
+                    runner.close_position(symbol)
+                pending.clear()
+
             for symbol in event_symbols:
                 session = _exchange_date(timestamp)
                 is_warmup = graded_start is not None and session < graded_start
                 if is_warmup:
                     warmup_sessions.add(session)
+                    continue
+                if session in halted_sessions:
                     continue
                 # There is no same-session bar on which a newly emitted signal
                 # can be acted upon. Refusing it also prevents a close-policy
@@ -539,6 +607,11 @@ class PortfolioBacktestEngine(BacktestEngine):
                 )
             ),
             "warmup_sessions_excluded": float(len(warmup_sessions)),
+            **(
+                self._portfolio_rule_diagnostics()
+                if self.portfolio_rules is not None
+                else {}
+            ),
         }
         aggregate = PerformanceAnalyzer.analyze(
             trades=portfolio.trade_history,
@@ -693,8 +766,17 @@ class PortfolioBacktestEngine(BacktestEngine):
         if item.price_override is not None and use_price_override:
             entry_price = item.price_override
         buying_power = portfolio.available_buying_power(entry_price) or 0.0
+        if self.portfolio_rules is not None:
+            current_equity = self._mark_to_market_equity(portfolio, self._last_bars)
+            sizing_equity = (
+                self._session_start_equity
+                if self.portfolio_rules.sizing_equity_basis == "session_start"
+                else current_equity
+            )
+        else:
+            sizing_equity = portfolio.equity_basis()
         concentration_limit = (
-            portfolio.equity_basis()
+            sizing_equity
             * self.portfolio_config.max_symbol_exposure_pct
         )
         existing_notional = (
@@ -711,16 +793,23 @@ class PortfolioBacktestEngine(BacktestEngine):
             diagnostics["signals_rejected_no_buying_power"] += 1
             return True
 
-        quantity = (
-            int(item.remaining_quantity)
-            if item.remaining_quantity is not None
-            else self._position_size(
+        if item.remaining_quantity is not None:
+            quantity = int(item.remaining_quantity)
+        elif self.portfolio_rules is not None:
+            quantity = self._portfolio_position_size(
+                portfolio=portfolio,
+                entry_price=entry_price,
+                stop_price=item.stop_price,
+                session_start_equity=self._session_start_equity,
+                current_equity=current_equity,
+            )
+        else:
+            quantity = self._position_size(
                 capital=portfolio.equity_basis(),
                 entry_price=entry_price,
                 stop_price=item.stop_price,
                 buying_power=available,
             )
-        )
         if quantity <= 0:
             diagnostics["signals_rejected_no_buying_power"] += 1
             return True

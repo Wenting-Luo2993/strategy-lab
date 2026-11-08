@@ -591,14 +591,43 @@ StrategyRuleSet
 │   ├── volume_confirmation: bool
 │   └── volume_threshold: float
 │
-└── MTFValidationConfig
-    ├── enabled: bool
-    ├── timeframe: str
-    └── condition: str
+├── MTFValidationConfig
+│   ├── enabled: bool
+│   ├── timeframe: str
+│   └── condition: str
+│
+└── PortfolioConfig | None   — account-level sizing and risk (optional)
+    ├── sizing_equity_basis: "session_start" | "current"
+    ├── max_symbol_exposure_pct: float   (default 0.20)
+    ├── max_gross_leverage: float        (default 1.0)
+    ├── max_open_positions: int | None
+    ├── daily_loss_limit_pct: float | None
+    └── symbol_priority: list[str]
 ```
 
 All models use Pydantic v2 `BaseModel`. Cross-field validators (`@model_validator`) enforce
 business rules (e.g. `move_stop_to < at`, steps in ascending order) at load time, not at runtime.
+
+### `portfolio:` block
+
+Optional. When present, live trading and the backtester size every entry with the shared
+rule in `vibe/common/risk/portfolio_sizing.py` (`size_portfolio_entry`):
+
+```
+E          = session-start equity (live: NetLiquidation at warm-up; backtest: equity at
+             the session's first bar), or current equity when sizing_equity_basis=current
+risk_qty   = floor(position_size.value * E / |entry - stop|)
+cap_qty    = floor(max_symbol_exposure_pct * E / entry)
+room_qty   = floor((max_gross_leverage * NLV_now - gross_open - reserved_pending) / entry)
+broker_qty = floor(AvailableFunds / entry)          # live only
+qty        = min(...); the binding limit is recorded as capped_by
+```
+
+Live trading also enforces `max_open_positions` across symbols (pending entries count) and
+the daily loss limit (`NLV_now - E0 <= -daily_loss_limit_pct * E0`: cancel pending entries,
+flatten, block entries until the next session, Discord alert). A ruleset without the block
+keeps the historical per-symbol behaviour and its serialized form (and content hash) is
+unchanged.
 
 ---
 

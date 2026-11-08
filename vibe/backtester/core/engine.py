@@ -21,6 +21,11 @@ from vibe.backtester.core.resting_stop import (
 )
 from vibe.backtester.core.integrity import build_engine_integrity_report
 from vibe.common.risk.position_sizer import PositionSizer
+from vibe.common.risk.portfolio_sizing import (
+    CAPPED_BY_EQUITY_HEADROOM,
+    CAPPED_BY_SYMBOL_EXPOSURE,
+    size_portfolio_entry,
+)
 from vibe.common.indicators.daily_atr import add_daily_atr, daily_atr_column
 from vibe.backtester.core.execution.config import ExecutionConfig
 from vibe.backtester.core.execution.simulator import ExecutionSimulator
@@ -211,6 +216,10 @@ class BacktestEngine:
             max_position_size=getattr(config, "max_shares", None),
             max_position_pct=getattr(config, "max_position_pct", None),
         )
+        # Account-level rules from the ruleset's ``portfolio:`` block. None
+        # keeps every historical code path, and therefore every result, intact.
+        self.portfolio_rules = getattr(ruleset, "portfolio", None)
+        self.daily_loss_halts = 0
 
     def run(
         self,
@@ -346,6 +355,11 @@ class BacktestEngine:
         prev_date = None
         bar_index = 0  # Track bar index for latency support
         warmup_sessions_seen: set[date] = set()
+        # ``portfolio:`` block only: equity at each session's first bar (E0)
+        # and sessions halted by the daily loss limit.
+        session_start_equity = self.initial_capital
+        halted_sessions: set[date] = set()
+        self.daily_loss_halts = 0
 
         # The last bar of each session, so an open position is never carried
         # overnight. This is a correctness backstop, not a strategy rule: the
@@ -381,6 +395,9 @@ class BacktestEngine:
                 pending_order_meta.clear()
                 self.pending_orders = []
                 prev_date = current_date
+                # Positions never survive a session, so equity at the first
+                # bar is the account's cash: the live warm-up snapshot.
+                session_start_equity = portfolio.equity_basis()
             else:
                 bar_index += 1
 
@@ -400,6 +417,25 @@ class BacktestEngine:
             for closed_sym in open_before - set(portfolio.positions.keys()):
                 runner.close_position(closed_sym)
 
+            if (
+                self.portfolio_rules is not None
+                and current_date not in halted_sessions
+                and self._daily_loss_limit_breached(
+                    portfolio, current_bars, session_start_equity
+                )
+            ):
+                halted_sessions.add(current_date)
+                self.daily_loss_halts += 1
+                for halted_sym in list(portfolio.positions):
+                    portfolio._close_at_bar_close(
+                        halted_sym, current_bars[halted_sym], clock,
+                        reason="DAILY_LOSS_LIMIT",
+                    )
+                    runner.close_position(halted_sym)
+                pending_queue = PendingOrderQueue()
+                pending_order_meta.clear()
+                self.pending_orders = []
+
             # Generate entry signal only if no open position and no pending order.
             has_pending_symbol_order = any(o.symbol == symbol for o in self.pending_orders)
             resting_entry = None
@@ -408,6 +444,7 @@ class BacktestEngine:
                 not is_warmup
                 and symbol not in portfolio.positions
                 and not has_pending_symbol_order
+                and current_date not in halted_sessions
             ):
                 if resting_stop:
                     # The strategy's completed-bar signal is not consulted: a
@@ -495,12 +532,23 @@ class BacktestEngine:
                             else entry_bar.close - slippage
                         )
 
-                    quantity = self._position_size(
-                        capital=portfolio.cash,
-                        entry_price=entry_price,
-                        stop_price=stop_price,
-                        buying_power=portfolio.available_buying_power(entry_price),
-                    )
+                    if self.portfolio_rules is not None:
+                        quantity = self._portfolio_position_size(
+                            portfolio=portfolio,
+                            entry_price=entry_price,
+                            stop_price=stop_price,
+                            session_start_equity=session_start_equity,
+                            current_equity=self._mark_to_market_equity(
+                                portfolio, current_bars
+                            ),
+                        )
+                    else:
+                        quantity = self._position_size(
+                            capital=portfolio.cash,
+                            entry_price=entry_price,
+                            stop_price=stop_price,
+                            buying_power=portfolio.available_buying_power(entry_price),
+                        )
                     if quantity > 0:
                         # Create Order with signal_bar_index for latency tracking
                         order_price_override = (
@@ -749,6 +797,11 @@ class BacktestEngine:
                 # rather than trusting the caller's intent.
                 "warmup_sessions_excluded": float(len(warmup_sessions_seen)),
                 **(self._resting_stop_diagnostics() if resting_stop else {}),
+                **(
+                    self._portfolio_rule_diagnostics()
+                    if self.portfolio_rules is not None
+                    else {}
+                ),
             },
         )
         result.engine_integrity_report = build_engine_integrity_report(
@@ -780,6 +833,86 @@ class BacktestEngine:
             # resting order; reported so the omission is visible.
             "orb_body_pct_filter_ignored": float(body_pct or 0.0),
         }
+
+    def _portfolio_rule_diagnostics(self) -> dict[str, float]:
+        """Diagnostics published only when the ruleset has a ``portfolio:`` block."""
+        return {
+            "orders_capped_by_symbol_exposure": float(
+                self.sizing_caps.get(CAPPED_BY_SYMBOL_EXPOSURE, 0)
+            ),
+            "orders_capped_by_equity_headroom": float(
+                self.sizing_caps.get(CAPPED_BY_EQUITY_HEADROOM, 0)
+            ),
+            "daily_loss_limit_halts": float(self.daily_loss_halts),
+        }
+
+    @staticmethod
+    def _mark_to_market_equity(
+        portfolio: PortfolioManager, current_bars: dict[str, Bar]
+    ) -> float:
+        """Cash plus open positions at the latest observed close (live NLV)."""
+        equity = portfolio.cash
+        for symbol, position in portfolio.positions.items():
+            bar = current_bars.get(symbol)
+            price = bar.close if bar is not None else position.entry_price
+            signed = position.quantity if position.side == "buy" else -position.quantity
+            equity += signed * price
+        return equity
+
+    def _daily_loss_limit_breached(
+        self,
+        portfolio: PortfolioManager,
+        current_bars: dict[str, Bar],
+        session_start_equity: float,
+    ) -> bool:
+        limit_pct = self.portfolio_rules.daily_loss_limit_pct
+        if limit_pct is None or session_start_equity <= 0:
+            return False
+        pnl = self._mark_to_market_equity(portfolio, current_bars) - session_start_equity
+        return pnl <= -limit_pct * session_start_equity
+
+    def _portfolio_position_size(
+        self,
+        *,
+        portfolio: PortfolioManager,
+        entry_price: float,
+        stop_price: float,
+        session_start_equity: float,
+        current_equity: float,
+        reserved_pending_notional: float = 0.0,
+    ) -> int:
+        """Size with the shared rule live trading uses (``portfolio:`` block).
+
+        There is no broker here, so the live-only AvailableFunds clamp is
+        absent; the realism config's buying-power clamp still applies at fill.
+        """
+        rules = self.portfolio_rules
+        self._last_sizing_cap = None
+        if abs(entry_price - stop_price) <= 0:
+            return 0
+        sizing_equity = (
+            session_start_equity
+            if rules.sizing_equity_basis == "session_start"
+            else current_equity
+        )
+        decision = size_portfolio_entry(
+            entry_price=entry_price,
+            stop_price=stop_price,
+            sizing_equity=sizing_equity,
+            risk_pct=self.ruleset.position_size.value,
+            max_symbol_exposure_pct=rules.max_symbol_exposure_pct,
+            max_gross_leverage=rules.max_gross_leverage,
+            current_equity=current_equity,
+            gross_open_notional=portfolio.committed_notional(),
+            reserved_pending_notional=reserved_pending_notional,
+            max_shares=self.ruleset.position_size.max_shares,
+        )
+        if decision.capped_by is not None:
+            self._last_sizing_cap = decision.capped_by
+            self.sizing_caps[decision.capped_by] = (
+                self.sizing_caps.get(decision.capped_by, 0) + 1
+            )
+        return decision.quantity
 
     def _resting_stop_entry(
         self,

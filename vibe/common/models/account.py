@@ -39,6 +39,10 @@ class AccountState(BaseModel):
     broker_cash: Optional[float] = Field(default=None, description="Unmodified broker cash value")
     broker_equity: Optional[float] = Field(default=None, description="Unmodified broker net liquidation")
     broker_buying_power: Optional[float] = Field(default=None, description="Unmodified broker buying power")
+    available_funds: Optional[float] = Field(
+        default=None,
+        description="Broker AvailableFunds (funds for new positions without leverage); None when unknown",
+    )
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         description="Account state timestamp",

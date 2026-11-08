@@ -26,8 +26,12 @@ from vibe.common.risk import PositionSizer
 from vibe.common.risk.portfolio_sizing import (
     OpenExposure,
     PendingExposure,
+    PortfolioSizingDecision,
     equity_headroom,
+    gross_open_notional,
     open_and_pending_symbols,
+    reserved_pending_notional,
+    size_portfolio_entry,
 )
 from vibe.common.ruleset.models import PortfolioConfig
 from vibe.trading_bot.execution.trade_executor import (
@@ -232,6 +236,41 @@ class PortfolioRiskManager(SimpleRiskManager):
                 ),
             )
         return RiskCheckResult(passed=True, reason="Risk checks passed")
+
+    def size_entry(
+        self,
+        *,
+        entry_price: float,
+        stop_price: float,
+        current_equity: float,
+        positions: Dict[str, Position],
+        pending_entries: Iterable[PendingExposure] = (),
+        broker_available_funds: Optional[float] = None,
+        exclude_pending_group: Optional[str] = None,
+    ) -> PortfolioSizingDecision:
+        """Size one entry with the shared rule the backtester also uses."""
+        risk_pct = self.position_sizer.risk_pct
+        if risk_pct is None:
+            raise ValueError("portfolio sizing requires a percentage risk (max_loss_pct)")
+        exposures = [
+            OpenExposure(held, float(p.quantity), float(p.entry_price))
+            for held, p in positions.items()
+            if float(p.quantity or 0.0) != 0.0
+        ]
+        pending = [p for p in pending_entries if p.group != exclude_pending_group]
+        return size_portfolio_entry(
+            entry_price=entry_price,
+            stop_price=stop_price,
+            sizing_equity=self.sizing_equity(current_equity),
+            risk_pct=risk_pct,
+            max_symbol_exposure_pct=self.config.max_symbol_exposure_pct,
+            max_gross_leverage=self.config.max_gross_leverage,
+            current_equity=current_equity,
+            gross_open_notional=gross_open_notional(exposures),
+            reserved_pending_notional=reserved_pending_notional(pending),
+            broker_available_funds=broker_available_funds,
+            max_shares=self.position_sizer.max_position_size,
+        )
 
     def check_daily_loss(self, current_equity: float) -> DailyLossStatus:
         """Evaluate the daily loss limit against session-start equity.

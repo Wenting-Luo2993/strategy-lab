@@ -277,6 +277,20 @@ class TradingOrchestrator:
             return list(self.ruleset.instruments.symbols)
         return list(self.config.trading.symbols)
 
+    def _symbols_in_priority_order(self) -> List[str]:
+        """Active symbols ordered by ``portfolio.symbol_priority``.
+
+        Entries are sized one at a time against shared equity headroom, so
+        when several symbols signal in the same cycle the declared priority
+        decides which are funded first. Unlisted symbols keep their order.
+        """
+        symbols = self.active_symbols
+        portfolio = getattr(self.ruleset, "portfolio", None) if self.ruleset else None
+        if portfolio is None or not portfolio.symbol_priority:
+            return symbols
+        rank = {symbol: index for index, symbol in enumerate(portfolio.symbol_priority)}
+        return sorted(symbols, key=lambda symbol: rank.get(symbol, len(rank)))
+
     def _dashboard_enabled(self) -> bool:
         return bool(
             self.config.dashboard.enabled
@@ -3069,7 +3083,7 @@ class TradingOrchestrator:
                     f"Market is open and {self.active_provider.provider_name} is active - relying on real-time data"
                 )
 
-            for symbol in self.active_symbols:
+            for symbol in self._symbols_in_priority_order():
                 try:
                     # Fetch historical data from Yahoo (includes yesterday + today with staleness check)
                     # During market hours with a live provider, disable yfinance fallback
@@ -3288,35 +3302,8 @@ class TradingOrchestrator:
                         try:
                             entry_price = signal_metadata.get('current_price', 0.0)
                             stop_price = signal_metadata.get('stop_loss', 0.0)
-                            stop_distance = abs(entry_price - stop_price) if stop_price else 0
-                            risk_pct = 0.01
-                            max_shares = None
-                            max_position_pct = None
-                            if self.ruleset and self.ruleset.position_size:
-                                risk_pct = self.ruleset.position_size.value
-                                max_shares = self.ruleset.position_size.max_shares
-                                max_position_pct = self.ruleset.position_size.max_position_pct
-                            risk_amount = self.config.trading.initial_capital * risk_pct
-                            risk_shares = int(risk_amount / stop_distance) if stop_distance > 0 else 0
-                            est_shares = risk_shares
-                            cap_details = []
-                            if max_shares is not None and est_shares > max_shares:
-                                est_shares = max_shares
-                                cap_details.append(f"max_shares={max_shares}")
-                            if max_position_pct is not None and entry_price > 0:
-                                max_notional_shares = int(
-                                    (self.config.trading.initial_capital * max_position_pct) / entry_price
-                                )
-                                if est_shares > max_notional_shares:
-                                    est_shares = max_notional_shares
-                                    cap_details.append(f"max_position={max_position_pct * 100:.0f}%")
-                            cap_msg = f", caps={','.join(cap_details)}" if cap_details else ""
-                            self.logger.info(
-                                f"[SIZING] {symbol}: risk={risk_pct*100:.1f}% (${risk_amount:.0f}), "
-                                f"stop_distance=${stop_distance:.2f}, risk_shares={risk_shares}, "
-                                f"est_shares={est_shares}{cap_msg}, "
-                                f"est_cost=${est_shares * entry_price:.0f}"
-                            )
+                            # Sizing is logged by TradeExecutor ([SIZING]) from
+                            # the real sizer result, not estimated here.
                             entry_order_intent = self._build_entry_order_intent(
                                 signal_value=signal_value,
                                 current_bar=current_bar,

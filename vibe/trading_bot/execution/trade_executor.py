@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Literal, Optional
 
 from vibe.common.models import Order, OrderStatus, Position
 from vibe.common.risk import PositionSizer
+from vibe.common.risk.position_sizer import PositionSizeResult
 from vibe.common.risk.portfolio_sizing import PendingExposure
 from vibe.trading_bot.execution.order_manager import (
     OrderManager,
@@ -59,6 +60,9 @@ class ExecutionResult:
 
     pending: bool = False
     """Whether an accepted entry order is awaiting its first fill."""
+
+    capped_by: Optional[str] = None
+    """Limit that reduced the entry below its risk-implied size, if any."""
 
 
 @dataclass(frozen=True)
@@ -331,17 +335,50 @@ class TradeExecutor:
 
         # Calculate position size
         try:
-            size_result = self.position_sizer.calculate(
-                entry_price=sizing_entry_price,
-                stop_price=stop_price,
-                account_value=account.equity,
-                buying_power=account.buying_power,
+            if self.risk_manager.account_level:
+                decision = self.risk_manager.size_entry(
+                    entry_price=sizing_entry_price,
+                    stop_price=stop_price,
+                    current_equity=account.equity,
+                    positions=existing_positions,
+                    pending_entries=self.pending_exposures(),
+                    broker_available_funds=account.available_funds,
+                )
+                size_result = PositionSizeResult(
+                    size=decision.quantity,
+                    risk_amount=decision.risk_amount,
+                    requested_size=decision.risk_qty,
+                    capped_by=decision.capped_by,
+                    reasoning=decision.describe(),
+                )
+            else:
+                size_result = self.position_sizer.calculate(
+                    entry_price=sizing_entry_price,
+                    stop_price=stop_price,
+                    account_value=account.equity,
+                    buying_power=account.buying_power,
+                )
+            logger.info(
+                "[SIZING] %s %s entry=%.2f stop=%.2f -> %s shares (risk_qty=%s, capped_by=%s) | %s",
+                symbol,
+                side,
+                sizing_entry_price,
+                stop_price,
+                int(size_result.size),
+                int(size_result.requested_size),
+                size_result.capped_by or "none",
+                size_result.reasoning,
             )
 
             if size_result.size == 0:
                 result = ExecutionResult(
                     success=False,
-                    reason="Insufficient capital for position",
+                    reason=(
+                        "Insufficient capital for position"
+                        if size_result.capped_by is None
+                        else f"Position size below one share (capped_by={size_result.capped_by})"
+                    ),
+                    capped_by=size_result.capped_by,
                 )
                 if self._on_execution:
                     self._on_execution(result)
@@ -405,6 +442,7 @@ class TradeExecutor:
                 "quantity": int(size_result.size),
                 "trigger_price": order_intent.trigger_price,
                 "group": response.order_id,
+                "capped_by": size_result.capped_by,
             }
 
             if actual_filled == 0:
@@ -413,6 +451,7 @@ class TradeExecutor:
                     order_id=response.order_id,
                     reason=f"Entry order pending (status={response.status}): {response.order_id}",
                     pending=True,
+                    capped_by=size_result.capped_by,
                 )
                 if self._on_execution:
                     self._on_execution(result)
@@ -432,6 +471,7 @@ class TradeExecutor:
                 reason=f"Order submitted: {response.order_id}",
                 position_size=actual_filled,
                 avg_price=response.avg_price,
+                capped_by=size_result.capped_by,
             )
 
             was_open = symbol in self._open_trades

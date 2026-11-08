@@ -569,6 +569,7 @@ class MockExchange(ExecutionEngine):
             cash=self.cash,
             equity=equity,
             buying_power=self.cash,
+            available_funds=self.cash,
             portfolio_value=portfolio_value,
             base_currency="USD",
             cash_currency="USD",
