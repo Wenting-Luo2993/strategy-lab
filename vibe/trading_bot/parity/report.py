@@ -4,25 +4,39 @@ Paper trading measures execution, not edge, so every session is replayed
 through the backtester's resting-stop path with the live ruleset and the
 live session-start equity, and the two are diffed trade by trade:
 taken/not taken, side, entry minute, entry price, quantity, exit reason and R.
-Entry slippage is reported in ticks against the trigger level and compared
-with the 2 ticks the backtest models.
+
+Entry fills are split into three classes so the headline slippage measures
+only what the backtest models (2 ticks beyond a resting trigger):
+
+* ``normal``          -- measured against the live trigger; the headline.
+* ``market_gap``      -- the backtest itself filled away from the level (the
+  minute opened through it); measured against the backtest's base price.
+* ``late_placement``  -- the order was placed late (``placement_latency_s``
+  above ``LATE_PLACEMENT_S``) or filled as a gap the backtest did not see.
 
 Everything here is pure: callers supply executions, 1-minute bars and E0.
 """
 
 from __future__ import annotations
 
+import re
 import statistics
 import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional, Union
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from vibe.common.models import Trade
+from vibe.common.risk.portfolio_sizing import (
+    CAPPED_BY_BROKER_FUNDS,
+    CAPPED_BY_EQUITY_HEADROOM,
+    CAPPED_BY_SYMBOL_EXPOSURE,
+    size_portfolio_entry,
+)
 from vibe.common.ruleset.models import StrategyRuleSet
 
 MARKET_TZ = ZoneInfo("America/New_York")
@@ -35,6 +49,20 @@ MODELLED_ENTRY_SLIPPAGE_TICKS = 2
 ENTRY_PRICE_TOLERANCE_TICKS = 10
 R_TOLERANCE = 0.25
 
+# An entry order placed more than this long after the opening range closed
+# no longer measures a resting order; its fill is reported separately.
+LATE_PLACEMENT_S = 15.0
+# Bars short of a full regular session by more than this are not trusted.
+MAX_MISSING_RTH_MINUTES = 10
+
+FILL_NORMAL = "normal"
+FILL_MARKET_GAP = "market_gap"
+FILL_LATE_PLACEMENT = "late_placement"
+
+# Live caps that depend on the rest of the book (other symbols' positions or
+# the broker's funds), which a per-symbol replay cannot reproduce.
+_BOOK_DEPENDENT_CAPS = {CAPPED_BY_EQUITY_HEADROOM, CAPPED_BY_BROKER_FUNDS}
+
 MISMATCH_KINDS = (
     "taken_live_only",
     "taken_backtest_only",
@@ -44,6 +72,7 @@ MISMATCH_KINDS = (
     "qty",
     "exit_reason",
     "r",
+    "oca_overfill",
 )
 
 _EXIT_REASONS = {
@@ -70,6 +99,14 @@ def _r(side: str, entry: float, exit_: Optional[float], stop: Optional[float]) -
     return move / abs(entry - stop)
 
 
+def _signed_ticks(side: str, price: float, reference: Optional[float]) -> Optional[float]:
+    """Ticks ``price`` is beyond ``reference`` (positive = worse for ``side``)."""
+    if reference is None:
+        return None
+    signed = price - reference if side == "buy" else reference - price
+    return round(signed / TICK, 6)
+
+
 @dataclass(frozen=True)
 class LiveTrade:
     """One live round trip, rebuilt from broker executions."""
@@ -85,18 +122,15 @@ class LiveTrade:
     exit_reason: Optional[str] = None
     trigger_price: Optional[float] = None
     gap_fill: Optional[bool] = None
+    placement_latency_s: Optional[float] = None
+    capped_by: Optional[str] = None
+    oca_overfill_qty: float = 0.0
+    """Shares filled on the opposite OCA leg (both legs filled)."""
 
     @property
     def entry_slippage_ticks(self) -> Optional[float]:
         """Signed ticks beyond the trigger (positive = worse than the trigger)."""
-        if self.trigger_price is None:
-            return None
-        signed = (
-            self.entry_price - self.trigger_price
-            if self.side == "buy"
-            else self.trigger_price - self.entry_price
-        )
-        return round(signed / TICK, 6)
+        return _signed_ticks(self.side, self.entry_price, self.trigger_price)
 
     @property
     def r_multiple(self) -> Optional[float]:
@@ -116,6 +150,39 @@ def _vwap(items: list[Mapping[str, Any]]) -> tuple[float, float]:
     return quantity, (notional / quantity if quantity else 0.0)
 
 
+_EXEC_CORRECTION = re.compile(r"^(?P<base>[^.]+\.[^.]+\..+)\.(?P<revision>\d+)$")
+
+
+def dedupe_executions(executions: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """Collapse IBKR execution corrections onto their latest revision.
+
+    IBKR execIds look like ``0000e0d5.6577b2c1.01.01``; a correction re-sends
+    the execution with the final ``.NN`` incremented. Only the highest
+    revision of each execution is kept, so a corrected fill is counted once.
+    Ids without that shape are kept as they are.
+    """
+    kept: dict[str, tuple[int, Mapping[str, Any]]] = {}
+    order: list[str] = []
+    for index, execution in enumerate(executions):
+        execution_id = str(execution.get("execution_id") or "")
+        match = _EXEC_CORRECTION.match(execution_id)
+        if match:
+            key, revision = match["base"], int(match["revision"])
+        else:
+            key, revision = execution_id or f"__anonymous_{index}", -1
+        current = kept.get(key)
+        if current is None:
+            order.append(key)
+            kept[key] = (revision, execution)
+        elif revision > current[0]:
+            kept[key] = (revision, execution)
+    return [kept[key][1] for key in order]
+
+
+def _role(item: Mapping[str, Any]) -> Optional[str]:
+    return (item.get("order_metadata") or {}).get("order_role")
+
+
 def live_trades_from_executions(
     executions: Iterable[Mapping[str, Any]],
     session_date: date,
@@ -125,11 +192,14 @@ def live_trades_from_executions(
 
     Uses the order metadata journalled at submission (``order_role``,
     ``benchmark_price`` = trigger, ``strategy_stop_price``, ``gap_fill``,
-    ``exit_reason``). Symbols without an ``entry``-role execution are
-    ignored, so unrelated orders do not create phantom trades.
+    ``placement_latency_s``, ``capped_by``, ``exit_reason``). Symbols without
+    an ``entry``-role execution are ignored, so unrelated orders do not
+    create phantom trades. The trade's side is its first entry fill's side;
+    entry fills on the other OCA leg are reported as an overfill, never
+    merged into the entry or mistaken for the exit.
     """
     by_symbol: dict[str, list[Mapping[str, Any]]] = {}
-    for execution in executions:
+    for execution in dedupe_executions(executions):
         filled_at = _as_datetime(execution.get("filled_at"))
         if filled_at is None or filled_at.astimezone(tz).date() != session_date:
             continue
@@ -138,19 +208,20 @@ def live_trades_from_executions(
     trades: list[LiveTrade] = []
     for symbol, items in sorted(by_symbol.items()):
         items = sorted(items, key=lambda item: _as_datetime(item["filled_at"]))
-        entries = [
-            item for item in items
-            if (item.get("order_metadata") or {}).get("order_role") == "entry"
-        ]
-        if not entries:
+        all_entries = [item for item in items if _role(item) == "entry"]
+        if not all_entries:
             continue
-        side = str(entries[0]["side"])
+        side = str(all_entries[0]["side"])
+        entries = [item for item in all_entries if str(item["side"]) == side]
+        overfill = [item for item in all_entries if str(item["side"]) != side]
         entry_qty, entry_price = _vwap(entries)
         metadata = entries[0].get("order_metadata") or {}
         first_entry_at = _as_datetime(entries[0]["filled_at"])
         exits = [
             item for item in items
-            if str(item["side"]) != side and _as_datetime(item["filled_at"]) >= first_entry_at
+            if str(item["side"]) != side
+            and _role(item) != "entry"
+            and _as_datetime(item["filled_at"]) >= first_entry_at
         ]
         exit_meta = (exits[-1].get("order_metadata") or {}) if exits else {}
         exit_role = exit_meta.get("order_role")
@@ -160,6 +231,7 @@ def live_trades_from_executions(
             else exit_meta.get("exit_reason") or exit_role
         ) if exits else None
         gap_fill = metadata.get("gap_fill")
+        latency = metadata.get("placement_latency_s")
         trades.append(
             LiveTrade(
                 symbol=symbol,
@@ -173,9 +245,90 @@ def live_trades_from_executions(
                 exit_reason=exit_reason,
                 trigger_price=metadata.get("benchmark_price"),
                 gap_fill=None if gap_fill is None else bool(gap_fill),
+                placement_latency_s=None if latency is None else float(latency),
+                capped_by=metadata.get("capped_by"),
+                oca_overfill_qty=_vwap(overfill)[0] if overfill else 0.0,
             )
         )
     return trades
+
+
+@dataclass(frozen=True)
+class BacktestReplay:
+    """One symbol-session replayed through the backtester."""
+
+    trades: list
+    sizing_caps: dict = field(default_factory=dict)
+    or_high: Optional[float] = None
+    or_low: Optional[float] = None
+
+    def level(self, side: str) -> Optional[float]:
+        return self.or_high if side == "buy" else self.or_low
+
+
+def _market_time(session_date: date, hhmm: str) -> pd.Timestamp:
+    hours, minutes = map(int, hhmm.split(":"))
+    return pd.Timestamp(
+        datetime(session_date.year, session_date.month, session_date.day, hours, minutes),
+        tz=MARKET_TZ,
+    )
+
+
+def validate_session_bars(
+    ruleset: StrategyRuleSet,
+    minutes: Optional[pd.DataFrame],
+    session_date: Optional[date] = None,
+) -> pd.DataFrame:
+    """The session's bars as a sorted market-time OHLCV frame, or raise.
+
+    Historical-data errors come back from ib_insync as an empty list, so
+    missing, wrong-day or incomplete bars must fail loudly rather than
+    replay as "no trade". Raises when bars are empty, dated another day,
+    cover fewer than the session's RTH minutes (XNYS calendar, so half days
+    work) less ``MAX_MISSING_RTH_MINUTES``, or miss any opening-range minute.
+    """
+    if minutes is None or minutes.empty:
+        raise ValueError(f"no bars for {session_date or 'the session'}")
+    frame = minutes[["open", "high", "low", "close", "volume"]].astype(float).copy()
+    if frame.index.tz is None:
+        frame.index = frame.index.tz_localize(MARKET_TZ)
+    frame = frame.tz_convert(MARKET_TZ).sort_index()
+    frame = frame[~frame.index.duplicated(keep="last")]
+    days = sorted(set(frame.index.date))
+    session_date = session_date or days[0]
+    if days != [session_date]:
+        raise ValueError(
+            f"bars dated {', '.join(d.isoformat() for d in days)}; expected {session_date}"
+        )
+
+    import pandas_market_calendars as mcal
+
+    schedule = mcal.get_calendar("XNYS").schedule(
+        start_date=session_date.isoformat(), end_date=session_date.isoformat()
+    )
+    if schedule.empty:
+        raise ValueError(f"{session_date} is not an XNYS session")
+    market_open = schedule.iloc[0]["market_open"].tz_convert(MARKET_TZ)
+    market_close = schedule.iloc[0]["market_close"].tz_convert(MARKET_TZ)
+    expected = int((market_close - market_open) / pd.Timedelta(minutes=1))
+    present = int(((frame.index >= market_open) & (frame.index < market_close)).sum())
+    if present < expected - MAX_MISSING_RTH_MINUTES:
+        raise ValueError(f"only {present} of {expected} RTH minutes for {session_date}")
+
+    strategy = ruleset.strategy
+    window = pd.date_range(
+        _market_time(session_date, strategy.orb_start_time),
+        periods=int(strategy.orb_duration_minutes),
+        freq="1min",
+    )
+    missing = window.difference(frame.index)
+    if len(missing):
+        raise ValueError(
+            "opening-range minutes missing: "
+            + ", ".join(stamp.strftime("%H:%M") for stamp in missing)
+        )
+    frame.index.name = "ts_event"
+    return frame
 
 
 def backtest_session(
@@ -183,25 +336,27 @@ def backtest_session(
     symbol: str,
     minutes: pd.DataFrame,
     session_equity: float,
+    session_date: Optional[date] = None,
     slippage_ticks: int = MODELLED_ENTRY_SLIPPAGE_TICKS,
-) -> list[Trade]:
+) -> BacktestReplay:
     """Replay one symbol-session through the backtester's resting-stop path.
 
-    ``minutes`` are the session's 1-minute bars (tz-aware index, OHLCV). The
-    engine starts from ``session_equity`` so its session-start equity, and
-    therefore its sizing caps, are the live E0.
+    ``minutes`` are the session's 1-minute bars (tz-aware index, OHLCV),
+    validated by ``validate_session_bars``. The engine starts from
+    ``session_equity`` so its session-start equity, and therefore its
+    sizing caps, are the live E0.
     """
     from vibe.backtester.core.engine import BacktestEngine
     from vibe.backtester.core.execution_realism import ExecutionRealismConfig
 
-    if minutes.empty:
-        return []
-    frame = minutes[["open", "high", "low", "close", "volume"]].astype(float).copy()
-    if frame.index.tz is None:
-        frame.index = frame.index.tz_localize(MARKET_TZ)
-    frame = frame.tz_convert(MARKET_TZ).sort_index()
-    frame.index.name = "ts_event"
+    frame = validate_session_bars(ruleset, minutes, session_date)
     session = frame.index[0].date()
+    strategy = ruleset.strategy
+    window = frame.loc[
+        _market_time(session, strategy.orb_start_time):
+        _market_time(session, strategy.orb_start_time)
+        + pd.Timedelta(minutes=int(strategy.orb_duration_minutes) - 1)
+    ]
     with tempfile.TemporaryDirectory() as tmp:
         frame.to_parquet(Path(tmp) / f"{symbol}.parquet")
         engine = BacktestEngine(
@@ -216,7 +371,48 @@ def backtest_session(
             datetime(session.year, session.month, session.day, tzinfo=MARKET_TZ),
             datetime(session.year, session.month, session.day, 23, 59, tzinfo=MARKET_TZ),
         )
-    return list(result.trades)
+    return BacktestReplay(
+        trades=list(result.trades),
+        sizing_caps=dict(getattr(engine, "sizing_caps", {}) or {}),
+        or_high=float(window["high"].max()),
+        or_low=float(window["low"].min()),
+    )
+
+
+def _as_replay(value: Union[BacktestReplay, list, None]) -> BacktestReplay:
+    if isinstance(value, BacktestReplay):
+        return value
+    return BacktestReplay(trades=list(value or []))
+
+
+def backtest_base_price(trade: Trade, slippage_ticks: int = MODELLED_ENTRY_SLIPPAGE_TICKS) -> float:
+    """The price the backtest filled at before its modelled slippage."""
+    offset = slippage_ticks * TICK
+    base = trade.entry_price - offset if trade.side == "buy" else trade.entry_price + offset
+    return round(base, 6)
+
+
+def classify_fill(
+    live: LiveTrade,
+    backtest: Optional[Trade],
+    backtest_level: Optional[float],
+) -> tuple[str, Optional[float], str]:
+    """``(fill_class, slippage_ticks, reference)`` for one live entry fill.
+
+    A late placement is classed first: once the order was not resting at the
+    breakout, its fill says nothing about resting-stop slippage even if the
+    market also gapped.
+    """
+    if live.placement_latency_s is not None and live.placement_latency_s > LATE_PLACEMENT_S:
+        return FILL_LATE_PLACEMENT, live.entry_slippage_ticks, "trigger"
+    if backtest is not None and backtest.side == live.side and backtest_level is not None:
+        base = backtest_base_price(backtest)
+        gapped = base > backtest_level + 1e-9 if live.side == "buy" else base < backtest_level - 1e-9
+        if gapped:
+            return FILL_MARKET_GAP, _signed_ticks(live.side, live.entry_price, base), "backtest_base"
+    if live.gap_fill:
+        return FILL_LATE_PLACEMENT, live.entry_slippage_ticks, "trigger"
+    return FILL_NORMAL, live.entry_slippage_ticks, "trigger"
 
 
 @dataclass
@@ -232,9 +428,13 @@ class ParityReport:
     session_date: date
     symbols: list[SymbolParity]
     entry_slippage_ticks: list[float]
+    """Normal fills only: the headline the 2-tick model is judged against."""
     gap_fills: int
+    """Market-gap fills (the backtest also filled away from the level)."""
     modelled_slippage_ticks: int = MODELLED_ENTRY_SLIPPAGE_TICKS
     errors: dict[str, str] = field(default_factory=dict)
+    fills: list[dict[str, Any]] = field(default_factory=list)
+    """Every live entry fill with its class, slippage and reference price."""
 
     @property
     def traded(self) -> list[SymbolParity]:
@@ -248,6 +448,25 @@ class ParityReport:
     def mismatched(self) -> list[SymbolParity]:
         return [item for item in self.symbols if not item.matched]
 
+    def _class_ticks(self, fill_class: str) -> list[float]:
+        return [
+            fill["slippage_ticks"]
+            for fill in self.fills
+            if fill["fill_class"] == fill_class and fill["slippage_ticks"] is not None
+        ]
+
+    @property
+    def market_gap_slippage_ticks(self) -> list[float]:
+        return self._class_ticks(FILL_MARKET_GAP)
+
+    @property
+    def late_placement_slippage_ticks(self) -> list[float]:
+        return self._class_ticks(FILL_LATE_PLACEMENT)
+
+    @property
+    def late_placements(self) -> int:
+        return sum(1 for fill in self.fills if fill["fill_class"] == FILL_LATE_PLACEMENT)
+
     @property
     def mean_slippage_ticks(self) -> Optional[float]:
         return statistics.fmean(self.entry_slippage_ticks) if self.entry_slippage_ticks else None
@@ -255,6 +474,11 @@ class ParityReport:
     @property
     def median_slippage_ticks(self) -> Optional[float]:
         return statistics.median(self.entry_slippage_ticks) if self.entry_slippage_ticks else None
+
+    @property
+    def mean_gap_slippage_ticks(self) -> Optional[float]:
+        ticks = self.market_gap_slippage_ticks
+        return statistics.fmean(ticks) if ticks else None
 
     def mismatch_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -274,6 +498,12 @@ class ParityReport:
             "median_slippage_ticks": self.median_slippage_ticks,
             "modelled_slippage_ticks": self.modelled_slippage_ticks,
             "gap_fills": self.gap_fills,
+            "market_gap_slippage_ticks": self.market_gap_slippage_ticks,
+            "mean_gap_slippage_ticks": self.mean_gap_slippage_ticks,
+            "late_placements": self.late_placements,
+            "late_placement_slippage_ticks": self.late_placement_slippage_ticks,
+            "late_placement_threshold_s": LATE_PLACEMENT_S,
+            "fills": self.fills,
             "errors": self.errors,
             "symbols": [asdict(item) for item in self.symbols],
         }
@@ -290,12 +520,49 @@ def _backtest_stop(trade: Trade) -> Optional[float]:
     return trade.entry_price - per_share if trade.side == "buy" else trade.entry_price + per_share
 
 
+def _sized(
+    ruleset: Optional[StrategyRuleSet],
+    session_equity: Optional[float],
+    entry: Optional[float],
+    stop: Optional[float],
+) -> Optional[int]:
+    """The shared sizing rule on a flat book at E0, or None if not computable."""
+    portfolio = getattr(ruleset, "portfolio", None)
+    if portfolio is None or not session_equity or not entry or not stop or entry == stop:
+        return None
+    return size_portfolio_entry(
+        entry_price=float(entry),
+        stop_price=float(stop),
+        sizing_equity=float(session_equity),
+        risk_pct=float(ruleset.position_size.value),
+        max_symbol_exposure_pct=float(portfolio.max_symbol_exposure_pct),
+        max_gross_leverage=float(portfolio.max_gross_leverage),
+        current_equity=float(session_equity),
+        max_shares=ruleset.position_size.max_shares,
+    ).quantity
+
+
 def compare_symbol(
     symbol: str,
     live: Optional[LiveTrade],
     backtest: Optional[Trade],
+    *,
+    backtest_level: Optional[float] = None,
+    backtest_sizing_caps: Optional[Mapping[str, int]] = None,
+    ruleset: Optional[StrategyRuleSet] = None,
+    session_equity: Optional[float] = None,
 ) -> SymbolParity:
-    """Diff one symbol's live trade against its backtest replay."""
+    """Diff one symbol's live trade against its backtest replay.
+
+    Quantity is checked two ways. Live sizes at its trigger and the backtest
+    at its fill (trigger + 2 ticks), so (1) the live quantity must equal the
+    shared sizing rule evaluated at the live trigger and E0, and (2) the raw
+    live-vs-backtest difference may be as large as that sizing-price effect
+    (at least one share when the symbol-exposure cap binds). Neither check
+    applies when the live entry was capped by equity headroom or broker
+    funds, which depend on the rest of the book.
+    """
+    caps = dict(backtest_sizing_caps or {})
     if live is None and backtest is None:
         return SymbolParity(symbol, True, details={"traded": False})
     if live is None:
@@ -305,38 +572,64 @@ def compare_symbol(
                 "backtest_side": backtest.side,
                 "backtest_entry_time": backtest.entry_time.isoformat(),
                 "backtest_entry_price": backtest.entry_price,
+                "backtest_qty": backtest.quantity,
+                "backtest_sizing_caps": caps,
             },
         )
+    fill_class, class_ticks, reference = classify_fill(live, backtest, backtest_level)
+    live_details = {
+        "live_side": live.side,
+        "live_entry_time": live.entry_time.isoformat(),
+        "live_entry_price": live.entry_price,
+        "live_qty": live.quantity,
+        "live_capped_by": live.capped_by,
+        "gap_fill": live.gap_fill,
+        "placement_latency_s": live.placement_latency_s,
+        "fill_class": fill_class,
+        "fill_slippage_ticks": class_ticks,
+        "fill_reference": reference,
+        "oca_overfill_qty": live.oca_overfill_qty,
+    }
     if backtest is None:
-        return SymbolParity(
-            symbol, False, ["taken_live_only"],
-            {
-                "live_side": live.side,
-                "live_entry_time": live.entry_time.isoformat(),
-                "live_entry_price": live.entry_price,
-                "gap_fill": live.gap_fill,
-            },
-        )
+        mismatches = ["taken_live_only"]
+        if live.oca_overfill_qty:
+            mismatches.append("oca_overfill")
+        return SymbolParity(symbol, False, mismatches, live_details)
 
     backtest_r = _r(backtest.side, backtest.entry_price, backtest.exit_price, _backtest_stop(backtest))
     live_r = live.r_multiple
     entry_diff_ticks = round((live.entry_price - backtest.entry_price) / TICK, 6)
+    expected_live_qty = _sized(ruleset, session_equity, live.trigger_price, live.stop_price)
+    backtest_at_its_fill = _sized(
+        ruleset, session_equity, backtest.entry_price, _backtest_stop(backtest)
+    )
+    exposure_capped = (
+        CAPPED_BY_SYMBOL_EXPOSURE in caps or live.capped_by == CAPPED_BY_SYMBOL_EXPOSURE
+    )
+    qty_tolerance = max(
+        1 if exposure_capped else 0,
+        abs(expected_live_qty - backtest_at_its_fill)
+        if expected_live_qty is not None and backtest_at_its_fill is not None
+        else 0,
+    )
     details = {
-        "live_side": live.side,
+        **live_details,
         "backtest_side": backtest.side,
         "live_entry_minute": _minute(live.entry_time).isoformat(),
         "backtest_entry_minute": _minute(backtest.entry_time).isoformat(),
-        "live_entry_price": live.entry_price,
         "backtest_entry_price": backtest.entry_price,
+        "backtest_base_price": backtest_base_price(backtest),
+        "backtest_level": backtest_level,
         "entry_price_diff_ticks": entry_diff_ticks,
-        "live_qty": live.quantity,
         "backtest_qty": backtest.quantity,
+        "expected_live_qty": expected_live_qty,
+        "qty_tolerance": qty_tolerance,
+        "backtest_sizing_caps": caps,
         "live_exit_reason": live.exit_reason,
         "backtest_exit_reason": normalise_exit_reason(backtest.exit_reason),
         "live_r": live_r,
         "backtest_r": backtest_r,
         "entry_slippage_ticks": live.entry_slippage_ticks,
-        "gap_fill": live.gap_fill,
     }
     mismatches: list[str] = []
     if live.side != backtest.side:
@@ -345,12 +638,18 @@ def compare_symbol(
         mismatches.append("entry_minute")
     if abs(entry_diff_ticks) > ENTRY_PRICE_TOLERANCE_TICKS:
         mismatches.append("entry_price")
-    if int(round(live.quantity)) != int(round(backtest.quantity)):
+    live_qty = int(round(live.quantity))
+    if live.capped_by not in _BOOK_DEPENDENT_CAPS and (
+        (expected_live_qty is not None and live_qty != expected_live_qty)
+        or abs(live_qty - int(round(backtest.quantity))) > qty_tolerance
+    ):
         mismatches.append("qty")
     if live.exit_reason != normalise_exit_reason(backtest.exit_reason):
         mismatches.append("exit_reason")
     if live_r is None or backtest_r is None or abs(live_r - backtest_r) > R_TOLERANCE:
         mismatches.append("r")
+    if live.oca_overfill_qty:
+        mismatches.append("oca_overfill")
     return SymbolParity(symbol, not mismatches, mismatches, details)
 
 
@@ -358,43 +657,83 @@ def build_report(
     session_date: date,
     symbols: Iterable[str],
     live_trades: Iterable[LiveTrade],
-    backtest_trades: Mapping[str, list[Trade]],
+    backtest_trades: Mapping[str, Union[BacktestReplay, list]],
     errors: Optional[Mapping[str, str]] = None,
+    *,
+    ruleset: Optional[StrategyRuleSet] = None,
+    session_equity: Optional[float] = None,
 ) -> ParityReport:
     """Compare every symbol (traded live or not) and summarise the session.
 
     Symbols listed in ``errors`` (for example, bars unavailable) are reported
-    as errors rather than compared.
+    as errors rather than compared; their live fills are listed as
+    ``unclassified`` and kept out of every slippage figure.
     """
     live_trades = list(live_trades)
     live_by_symbol = {trade.symbol: trade for trade in live_trades}
-    results = []
+    errors = dict(errors or {})
+    results: list[SymbolParity] = []
+    fills: list[dict[str, Any]] = []
     for symbol in sorted(set(symbols) | set(live_by_symbol)):
-        if errors and symbol in errors:
+        live = live_by_symbol.get(symbol)
+        if symbol in errors:
+            if live is not None:
+                fills.append({
+                    "symbol": symbol, "fill_class": "unclassified",
+                    "slippage_ticks": live.entry_slippage_ticks, "reference": "trigger",
+                })
             continue
-        backtest = (backtest_trades.get(symbol) or [None])[0]
-        results.append(compare_symbol(symbol, live_by_symbol.get(symbol), backtest))
+        replay = _as_replay(backtest_trades.get(symbol))
+        backtest = replay.trades[0] if replay.trades else None
+        side = live.side if live is not None else backtest.side if backtest is not None else None
+        result = compare_symbol(
+            symbol,
+            live,
+            backtest,
+            backtest_level=replay.level(side) if side else None,
+            backtest_sizing_caps=replay.sizing_caps,
+            ruleset=ruleset,
+            session_equity=session_equity,
+        )
+        results.append(result)
+        if live is not None:
+            fills.append({
+                "symbol": symbol,
+                "fill_class": result.details["fill_class"],
+                "slippage_ticks": result.details["fill_slippage_ticks"],
+                "reference": result.details["fill_reference"],
+            })
     return ParityReport(
         session_date=session_date,
         symbols=results,
         entry_slippage_ticks=[
-            trade.entry_slippage_ticks
-            for trade in live_trades
-            if trade.entry_slippage_ticks is not None
+            fill["slippage_ticks"]
+            for fill in fills
+            if fill["fill_class"] == FILL_NORMAL and fill["slippage_ticks"] is not None
         ],
-        gap_fills=sum(1 for trade in live_trades if trade.gap_fill),
-        errors=dict(errors or {}),
+        gap_fills=sum(1 for fill in fills if fill["fill_class"] == FILL_MARKET_GAP),
+        errors=errors,
+        fills=fills,
     )
 
 
 __all__ = [
+    "BacktestReplay",
+    "FILL_LATE_PLACEMENT",
+    "FILL_MARKET_GAP",
+    "FILL_NORMAL",
+    "LATE_PLACEMENT_S",
     "LiveTrade",
     "MISMATCH_KINDS",
     "ParityReport",
     "SymbolParity",
+    "backtest_base_price",
     "backtest_session",
     "build_report",
+    "classify_fill",
     "compare_symbol",
+    "dedupe_executions",
     "live_trades_from_executions",
     "normalise_exit_reason",
+    "validate_session_bars",
 ]

@@ -286,6 +286,21 @@ Decisions made during implementation (beyond the plan):
   matches the formula above at the configured leverage of 1.0.
 - The parity report reads live trades from the durable IB execution
   journal, which holds order roles, triggers and gap-fill flags.
+- Entry fills are split into `normal` (the headline slippage, against the
+  live trigger), `market_gap` (the backtest also filled away from the level;
+  measured against the backtest's base price) and `late_placement` (placed
+  more than 15 s after OR end, or a live gap the backtest did not see).
+- Live quantity is checked against `size_portfolio_entry` at the live
+  trigger and E0; the raw live-vs-backtest quantity may differ by the effect
+  of the backtest sizing at its fill (at least one share under the symbol
+  cap). Book-dependent live caps (headroom, broker funds) skip the check.
+- The replay refuses empty, wrong-day or incomplete bars (XNYS calendar) and
+  any missing opening-range minute. The cooldown saves the IBKR bars it
+  replayed under `<data>/parity_reports/bars/`; the offline script replays
+  them with `--ib-bars-dir` (parquet bars are labelled not comparable).
+- Resting entries are placed about 2 s after OR end once a completed
+  real-time bar closes the window, with 5 s polling for five minutes after.
+  `placement_latency_s` and `capped_by` are journalled on every entry order.
 
 Pre-rollout checks that need the VM (not possible locally):
 

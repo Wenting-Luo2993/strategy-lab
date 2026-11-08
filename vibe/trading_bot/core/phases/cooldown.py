@@ -6,6 +6,7 @@ which processes final data, disconnects providers, and prepares for the next tra
 
 import asyncio
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from vibe.trading_bot.core.phases.base import BasePhase
@@ -243,8 +244,9 @@ class CooldownPhaseManager(BasePhase):
         for symbol in self.orchestrator.active_symbols:
             try:
                 bars = await fetch_bars(symbol, session_date)
+                self._save_session_bars(symbol, session_date, bars)
                 backtests[symbol] = await asyncio.to_thread(
-                    backtest_session, ruleset, symbol, bars, session_equity
+                    backtest_session, ruleset, symbol, bars, session_equity, session_date
                 )
             except Exception as exc:
                 self.logger.error("Parity replay failed for %s: %s", symbol, exc, exc_info=True)
@@ -256,6 +258,8 @@ class CooldownPhaseManager(BasePhase):
             live,
             backtests,
             errors={k: v for k, v in errors.items() if k != "session_equity"},
+            ruleset=ruleset,
+            session_equity=session_equity,
         )
         report.errors.update(errors)
         self.logger.info("[PARITY] %s", report.to_dict())
@@ -265,6 +269,24 @@ class CooldownPhaseManager(BasePhase):
             record(report)
         await self._send_parity_report(report, len(live))
         return report
+
+    def _save_session_bars(self, symbol: str, session_date: Any, bars: Any) -> None:
+        """Keep the IBKR bars the report replayed, for the offline script.
+
+        Written as ``<data>/parity_reports/bars/{SYMBOL}_{date}.csv`` so a
+        later offline recomputation replays exactly the same bars.
+        """
+        database_path = getattr(getattr(self.orchestrator, "config", None), "database_path", None)
+        if not database_path or bars is None or getattr(bars, "empty", True):
+            return
+        try:
+            directory = Path(database_path).parent / "parity_reports" / "bars"
+            directory.mkdir(parents=True, exist_ok=True)
+            frame = bars.copy()
+            frame.index.name = "timestamp"
+            frame.to_csv(directory / f"{symbol}_{session_date.isoformat()}.csv")
+        except Exception as exc:
+            self.logger.error("Failed to save parity bars for %s: %s", symbol, exc, exc_info=True)
 
     async def _send_parity_report(self, report: Any, entry_fills: int) -> None:
         webhook_url = getattr(self.config.notifications, "discord_webhook_url", None)
@@ -278,8 +300,10 @@ class CooldownPhaseManager(BasePhase):
             lines.append(
                 f"{item.symbol}: {', '.join(item.mismatches)} "
                 f"(live {d.get('live_side', '-')} {d.get('live_qty', '-')} @ "
-                f"{d.get('live_entry_price', '-')}, backtest {d.get('backtest_side', '-')} "
-                f"{d.get('backtest_qty', '-')} @ {d.get('backtest_entry_price', '-')})"
+                f"{d.get('live_entry_price', '-')} [{d.get('live_capped_by') or 'risk'}], "
+                f"backtest {d.get('backtest_side', '-')} "
+                f"{d.get('backtest_qty', '-')} @ {d.get('backtest_entry_price', '-')} "
+                f"[{','.join(d.get('backtest_sizing_caps') or {}) or 'risk'}])"
             )
         payload = ParityReportPayload(
             event_type="PARITY_REPORT",
@@ -296,6 +320,9 @@ class CooldownPhaseManager(BasePhase):
             gap_fills=report.gap_fills,
             errors=report.errors,
             version=BUILD_VERSION,
+            normal_fills=len(report.entry_slippage_ticks),
+            late_placements=report.late_placements,
+            mean_gap_slippage_ticks=report.mean_gap_slippage_ticks,
         )
         try:
             async with discord_notification_context(webhook_url) as notifier:

@@ -483,17 +483,27 @@ class DiscordNotificationFormatter:
         fields: List[Dict[str, Any]] = [
             {"name": "Matched", "value": str(payload.matched), "inline": True},
             {"name": "Mismatched", "value": str(payload.mismatched), "inline": True},
-            {"name": "Gap Fills", "value": str(payload.gap_fills), "inline": True},
             {"name": "Entry Fills", "value": str(payload.entry_fills), "inline": True},
             {
-                "name": "Entry Slippage (ticks)",
+                "name": "Entry Slippage (normal fills, ticks)",
                 "value": (
                     f"mean {ticks(payload.mean_slippage_ticks)} / "
                     f"median {ticks(payload.median_slippage_ticks)} "
-                    f"(modelled +{payload.modelled_slippage_ticks})"
+                    f"(modelled +{payload.modelled_slippage_ticks}"
+                    + (f", n={payload.normal_fills}" if payload.normal_fills is not None else "")
+                    + ")"
                 ),
                 "inline": False,
             },
+            {
+                "name": "Market Gaps",
+                "value": (
+                    f"{payload.gap_fills} (mean {ticks(payload.mean_gap_slippage_ticks)} "
+                    "vs backtest base)"
+                ),
+                "inline": True,
+            },
+            {"name": "Late Placements", "value": str(payload.late_placements), "inline": True},
         ]
         if payload.mismatch_lines:
             fields.append({

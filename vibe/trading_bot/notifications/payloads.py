@@ -347,6 +347,11 @@ class ParityReportPayload:
     gap_fills: int
     errors: Dict[str, str] = field(default_factory=dict)
     version: Optional[str] = None
+    normal_fills: Optional[int] = None
+    """Fills in the headline slippage (normal class only)."""
+    late_placements: int = 0
+    mean_gap_slippage_ticks: Optional[float] = None
+    """Market-gap fills, measured against the backtest's base price."""
 
     def __post_init__(self) -> None:
         if self.event_type != "PARITY_REPORT":

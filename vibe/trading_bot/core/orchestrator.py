@@ -924,12 +924,20 @@ class TradingOrchestrator:
             ("parity_matched", float(report.matched), {}),
             ("parity_mismatched", float(len(report.mismatched)), {}),
             ("parity_gap_fills", float(report.gap_fills), {}),
-            ("parity_entry_fills", float(len(report.entry_slippage_ticks)), {}),
+            ("parity_late_placements", float(report.late_placements), {}),
+            ("parity_entry_fills", float(len(report.fills)), {}),
+            ("parity_normal_fills", float(len(report.entry_slippage_ticks)), {}),
+            ("parity_errors", float(len(report.errors)), {}),
         ]
         if report.mean_slippage_ticks is not None:
             samples.append(("parity_entry_slippage_ticks_mean", float(report.mean_slippage_ticks), {}))
             samples.append(("parity_entry_slippage_ticks_median", float(report.median_slippage_ticks), {}))
-        for item in report.symbols:
+        if report.mean_gap_slippage_ticks is not None:
+            samples.append(
+                ("parity_gap_slippage_ticks_mean", float(report.mean_gap_slippage_ticks), {})
+            )
+        # Errored symbols are not in report.symbols; untraded ones say nothing.
+        for item in report.traded:
             samples.append((
                 "parity_symbol_matched",
                 1.0 if item.matched else 0.0,
