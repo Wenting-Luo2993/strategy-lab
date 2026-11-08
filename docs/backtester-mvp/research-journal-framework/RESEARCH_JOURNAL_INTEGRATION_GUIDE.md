@@ -14,7 +14,7 @@
 from datetime import datetime
 from pathlib import Path
 from vibe.backtester.core.engine import BacktestEngine
-from vibe.backtester.integration import wrap_backtest_engine
+from vibe.research_journal.integration import wrap_backtest_engine
 from vibe.research_journal.registry import ResearchRegistry
 from vibe.common.ruleset.models import StrategyRuleSet
 
@@ -54,8 +54,8 @@ result = tracked_engine.run(
 ### 2. Parameter Sweep with Lineage Tracking
 
 ```python
-from vibe.backtester.analysis.parameter_sweep import ParameterSweep, ParameterDefinition
-from vibe.backtester.integration import ParameterSweepExperimentTracker
+from vibe.research_pipeline.parameter_sweep import ParameterSweep, ParameterDefinition
+from vibe.research_journal.integration import ParameterSweepExperimentTracker
 
 # Setup tracking
 registry = ResearchRegistry()
@@ -234,7 +234,7 @@ result = tracked_engine.run(..., experiment_id=exp.id)
 Use tracker classes directly:
 
 ```python
-from vibe.backtester.integration import BacktestExperimentTracker
+from vibe.research_journal.integration import BacktestExperimentTracker
 
 tracker = BacktestExperimentTracker(registry)
 tracker.track_backtest_result(

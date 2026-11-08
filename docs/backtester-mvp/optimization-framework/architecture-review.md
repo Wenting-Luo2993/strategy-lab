@@ -31,7 +31,7 @@ The PRD proposes a **structured optimization framework** that fills a critical g
 
 ```python
 # Already works like this:
-from vibe.backtester.analysis.regime_research.features import FeatureEngine
+from vibe.research_pipeline.regime_research.features import FeatureEngine
 
 engine = FeatureEngine()
 features = engine.compute(df, features=["atr_14", "atr_pctile", "adx_14"])
@@ -55,7 +55,7 @@ features = engine.compute(df, features=["atr_14", "atr_pctile", "adx_14"])
 
 ```python
 # Already works like this:
-from vibe.backtester.analysis.parameter_sweep import ParameterSweep, ParameterDefinition
+from vibe.research_pipeline.parameter_sweep import ParameterSweep, ParameterDefinition
 
 sweep = ParameterSweep(
     base_ruleset_path="vibe/rulesets/orb_production.yaml",
@@ -532,3 +532,10 @@ Add section:
 **Estimated Time to MVP:** 8-10 weeks (if working full-time)
 
 **Estimated Time to Production:** 12-14 weeks (includes hardening + testing)
+# Historical architecture review
+
+> This document records the pre-cleanup design. As of 2026-10-18, the legacy
+> `OptimizationPipeline`, fixed-parameter walk-forward module, and
+> `scripts/optimize_strategy.py` have been deleted. Supported research
+> orchestration is under `vibe.research_pipeline`; see this directory's
+> `README.md` and the 2026-10-17 decision-boundaries plan.

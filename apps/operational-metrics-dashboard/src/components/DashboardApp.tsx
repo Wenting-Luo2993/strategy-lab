@@ -17,6 +17,7 @@ import {
 import { formatCurrency } from "@/data/formatters";
 import { performanceSummary } from "@/data/performanceSeries";
 import type { DashboardData, Position, PriceBar, StrategyAnnotation, StrategyConfigSummary } from "@/data/types";
+import { DashboardSectionMenu } from "./DashboardSectionMenu";
 import { EquityCurveChart, TradePnlChart } from "./PerformanceCharts";
 import { PriceChart } from "./PriceChart";
 
@@ -117,11 +118,21 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
 
   return (
     <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
+      <DashboardSectionMenu
+        current="live"
+        onThemeToggle={() => setDashboardTheme(theme === "dark" ? "light" : "dark")}
+        theme={theme}
+      />
       <header className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-5 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase text-[var(--muted)]">{scopedData.account?.broker ?? "Fixture"} · {scopedData.account?.mode ?? scopedData.source}</p>
-            <h1 className="mt-2 text-3xl font-bold">Live Trading Dashboard</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <h1 className="text-3xl font-bold">Live Trading</h1>
+              <span className="rounded-md border border-[var(--health)] px-3 py-1.5 text-xs font-semibold text-[var(--health)]">
+                READ ONLY
+              </span>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             {accounts.length > 1 && (
@@ -144,9 +155,6 @@ export function DashboardApp({ initialData, strategyConfig }: DashboardAppProps)
             <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${healthBadgeClass(health)}`}>
               {health.toUpperCase()}
             </span>
-            <button className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm" onClick={() => setDashboardTheme(theme === "dark" ? "light" : "dark")}>
-              {theme === "dark" ? "Light" : "Dark"}
-            </button>
           </div>
         </div>
       </header>
@@ -199,17 +207,28 @@ function getThemeServerSnapshot(): Theme {
 
 function setDashboardTheme(theme: Theme): void {
   window.localStorage.setItem(themeStorageKey, theme);
+  document.documentElement.dataset.theme = theme;
   window.dispatchEvent(new Event(themeChangeEvent));
 }
 
 function LoadingDashboard({ theme }: { theme: Theme }) {
   return (
     <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
+      <DashboardSectionMenu
+        current="live"
+        onThemeToggle={() => setDashboardTheme(theme === "dark" ? "light" : "dark")}
+        theme={theme}
+      />
       <header className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-5 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase text-[var(--muted)]">Supabase · live</p>
-            <h1 className="mt-2 text-3xl font-bold">Live Trading Dashboard</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <h1 className="text-3xl font-bold">Live Trading</h1>
+              <span className="rounded-md border border-[var(--health)] px-3 py-1.5 text-xs font-semibold text-[var(--health)]">
+                READ ONLY
+              </span>
+            </div>
           </div>
           <span className="rounded-md border border-[var(--muted)] px-3 py-2 text-sm font-semibold text-[var(--muted)]">LOADING</span>
         </div>
@@ -230,6 +249,11 @@ function LoadingDashboard({ theme }: { theme: Theme }) {
 function ErrorDashboard({ theme, message }: { theme: Theme; message: string }) {
   return (
     <main className="dashboard-shell min-h-screen text-[var(--foreground)]" data-theme={theme}>
+      <DashboardSectionMenu
+        current="live"
+        onThemeToggle={() => setDashboardTheme(theme === "dark" ? "light" : "dark")}
+        theme={theme}
+      />
       <div className="mx-auto grid min-h-screen w-full max-w-3xl place-items-center px-5 py-10">
         <section className="surface rounded-lg border p-6">
           <p className="text-xs font-semibold uppercase text-[var(--warning)]">Live data unavailable</p>

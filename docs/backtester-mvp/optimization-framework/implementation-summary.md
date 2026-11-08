@@ -416,7 +416,7 @@ Files created:
 from datetime import datetime
 from pathlib import Path
 from vibe.backtester.optimization import OptimizationPipeline
-from vibe.backtester.analysis.parameter_sweep import ParameterDefinition
+from vibe.research_pipeline.parameter_sweep import ParameterDefinition
 
 # Define parameters
 params = [
@@ -641,3 +641,10 @@ Successfully implemented a **production-ready optimization framework** that addr
 - Backward compatible (optional features)
 - Well-documented (docstrings + examples)
 - Follows existing codebase patterns
+# Historical implementation summary
+
+> This document describes the superseded optimization implementation. As of
+> 2026-10-18, the legacy `OptimizationPipeline`, fixed-parameter walk-forward
+> module, and `scripts/optimize_strategy.py` have been deleted. Use
+> `vibe.research_pipeline` and `scripts/run_nested_walk_forward.py`; see this
+> directory's `README.md` for current entry points.

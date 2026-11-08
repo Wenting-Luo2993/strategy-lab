@@ -1,0 +1,39 @@
+name: orb_edge_2026_or_60m
+version: "1.0.0"
+description: "orb_production with a 60-minute opening range (Step 4 duration sweep)"
+
+instruments:
+  symbols: [QQQ]
+  timeframe: 5m
+
+strategy:
+  type: orb
+  orb_start_time: "09:30"
+  orb_duration_minutes: 60
+  orb_body_pct_filter: 0.5
+  direction_mode: symmetric
+  entry_cutoff_time: "15:00"
+
+position_size:
+  method: max_loss_pct
+  value: 0.01
+
+exit:
+  eod: true
+  eod_time: "15:55"
+  
+  take_profit:
+    method: orb_range_multiple
+    multiplier: 0  # 0 = no take-profit; let winners run to EOD (ORB convexity, see HYP-003/EXP-032)
+  
+  stop_loss:
+    method: orb_level
+
+trade_filter:
+  volume_confirmation: false
+  volume_threshold: 1.5
+
+mtf_validation:
+  enabled: false
+  timeframe: 30m
+  condition: trend_aligned

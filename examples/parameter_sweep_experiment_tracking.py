@@ -6,8 +6,8 @@ Shows how to automatically track optimization iterations with lineage.
 
 from datetime import datetime
 from pathlib import Path
-from vibe.backtester.analysis.parameter_sweep import ParameterSweep, ParameterDefinition
-from vibe.backtester.integration.sweep_tracker import (
+from vibe.research_pipeline.parameter_sweep import ParameterSweep, ParameterDefinition
+from vibe.research_journal.integration.sweep_tracker import (
     ParameterSweepExperimentTracker,
     SweepResultExperimentLinker
 )

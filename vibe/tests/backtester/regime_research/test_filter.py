@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from vibe.backtester.analysis.regime_research.filter_evaluator import FilterEvaluator
+from vibe.research_pipeline.regime_research.filter_evaluator import FilterEvaluator
 
 
 # ---------------------------------------------------------------------------

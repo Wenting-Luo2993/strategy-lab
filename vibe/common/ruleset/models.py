@@ -33,7 +33,10 @@ class OrbRangeMultipleTakeProfit(BaseModel):
     """Take profit based on ORB range multiple."""
 
     method: Literal["orb_range_multiple"] = "orb_range_multiple"
-    multiplier: float = Field(default=2.0, description="TP = ORB_Range * multiplier (0.0 = disabled)")
+    multiplier: float = Field(
+        default=2.0,
+        description="TP = breakout level +/- ORB_Range * multiplier (0.0 = disabled)",
+    )
 
     @model_validator(mode="after")
     def multiplier_positive(self) -> "OrbRangeMultipleTakeProfit":
@@ -44,11 +47,15 @@ class OrbRangeMultipleTakeProfit(BaseModel):
 
 
 class ATRMultipleTakeProfit(BaseModel):
-    """Take profit based on ATR multiple from entry."""
+    """Take profit at a multiple of daily ATR beyond the breakout level.
+
+    ATR is the simple mean of the last ``period`` daily true ranges, known at
+    the session open (regular hours only).
+    """
 
     method: Literal["atr_multiple"] = "atr_multiple"
-    multiplier: float = Field(default=2.0, description="TP = Entry + (ATR * multiplier)")
-    period: int = Field(default=14, description="ATR period")
+    multiplier: float = Field(default=2.0, description="TP = breakout level +/- daily ATR * multiplier")
+    period: int = Field(default=14, description="Daily ATR period, in sessions")
 
     @model_validator(mode="after")
     def validate_multiplier_and_period(self) -> "ATRMultipleTakeProfit":
@@ -56,8 +63,26 @@ class ATRMultipleTakeProfit(BaseModel):
         return self
 
 
+class RMultipleTakeProfit(BaseModel):
+    """Take profit at a multiple of the trade's own initial risk.
+
+    Anchored at the entry *fill*: TP = fill +/- multiplier * |fill - stop|, so a
+    hit target books exactly ``multiplier`` R before exit costs. The target is
+    only known once the entry has filled (backtest only).
+    """
+
+    method: Literal["r_multiple"] = "r_multiple"
+    multiplier: float = Field(default=10.0, description="TP = fill +/- multiplier * initial risk")
+
+    @model_validator(mode="after")
+    def multiplier_positive(self) -> "RMultipleTakeProfit":
+        if self.multiplier <= 0:
+            raise ValueError("multiplier must be positive")
+        return self
+
+
 class FixedPctTakeProfit(BaseModel):
-    """Take profit based on fixed percentage from entry."""
+    """Take profit based on fixed percentage from entry (not supported by the ORB strategy)."""
 
     method: Literal["fixed_pct"] = "fixed_pct"
     value: float = Field(description="Percentage, e.g., 0.02 = 2%")
@@ -70,7 +95,12 @@ class FixedPctTakeProfit(BaseModel):
 
 
 TakeProfitConfig = Annotated[
-    Union[OrbRangeMultipleTakeProfit, ATRMultipleTakeProfit, FixedPctTakeProfit],
+    Union[
+        OrbRangeMultipleTakeProfit,
+        ATRMultipleTakeProfit,
+        RMultipleTakeProfit,
+        FixedPctTakeProfit,
+    ],
     Field(discriminator="method"),
 ]
 
@@ -262,6 +292,10 @@ class ORBStrategyParams(BaseModel):
         default=0.0,
         description="Minimum body percentage for valid breakout candle (0.0 = no filter)",
     )
+    direction_mode: Literal["symmetric", "long_only", "short_only"] = Field(
+        default="symmetric",
+        description="Which breakout directions are eligible to open a position",
+    )
     breakout_evaluation: Literal["wick", "body"] = Field(
         default="wick",
         description="Use candle wicks or body extremes to evaluate breakout levels",
@@ -269,7 +303,11 @@ class ORBStrategyParams(BaseModel):
     entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
     entry_mode: str = Field(
         default="no_validation_simple",
-        description="Entry validation mode",
+        description=(
+            "Entry mode. 'no_validation_simple' = ORB breakout. "
+            "'first_candle_direction' (backtest only) = trade in the direction of "
+            "the opening-range candle (close vs open) at its close; doji = no trade"
+        ),
     )
     one_trade_per_day: bool = Field(default=True, description="Max one trade per day")
     cancel_other_side: bool = Field(

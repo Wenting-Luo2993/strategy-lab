@@ -43,14 +43,14 @@ def test_custom_slippage_ticks():
     fill = sim.execute("QQQ", "buy", quantity=1, bar=_bar(close=200.0))
     assert fill.avg_price == pytest.approx(200.0 + 10 * TICK_SIZE)
 
-def test_next_bar_mode_uses_open():
-    sim = FillSimulator(slippage_ticks=5, fill_mode=1)
-    current = _bar(close=100.0)
-    next_bar = _bar(open_=102.0, close=103.0)
-    fill = sim.execute("QQQ", "buy", quantity=100, bar=current, next_bar=next_bar)
-    assert fill.avg_price == pytest.approx(102.0 + 5 * TICK_SIZE)
+def test_fills_price_off_whatever_bar_the_engine_hands_in():
+    """Next-bar-open fills are the engine's job, not this class's.
 
-def test_next_bar_mode_falls_back_to_close_when_no_next_bar():
-    sim = FillSimulator(slippage_ticks=5, fill_mode=1)
-    fill = sim.execute("QQQ", "buy", quantity=100, bar=_bar(close=100.0), next_bar=None)
-    assert fill.avg_price == pytest.approx(100.0 + 5 * TICK_SIZE)
+    The engine selects the bar via E6 ``EntryFillPolicy`` and passes one whose
+    ``close`` is the next bar's open. FillSimulator just prices off it, which
+    is why its removed ``fill_mode`` switch was redundant.
+    """
+    sim = FillSimulator(slippage_ticks=5)
+    next_bar_shaped = _bar(open_=102.0, close=102.0)
+    fill = sim.execute("QQQ", "buy", quantity=100, bar=next_bar_shaped)
+    assert fill.avg_price == pytest.approx(102.0 + 5 * TICK_SIZE)

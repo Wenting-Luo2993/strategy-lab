@@ -29,7 +29,11 @@ from vibe.research_journal.registry import ResearchRegistry
 def temp_registry():
     """Fixture providing temporary registry."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        yield ResearchRegistry(Path(tmpdir) / "research")
+        registry = ResearchRegistry(Path(tmpdir) / "research")
+        try:
+            yield registry
+        finally:
+            registry.close()
 
 
 class TestCreateHypothesis:

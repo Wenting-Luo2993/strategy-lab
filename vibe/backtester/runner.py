@@ -4,7 +4,23 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 from vibe.common.ruleset.models import StrategyRuleSet
-from vibe.common.strategies.orb import ORBStrategy, ORBStrategyConfig
+from vibe.common.ruleset.support import (
+    FIRST_CANDLE_DIRECTION,
+    UnsupportedRulesetSettingsError,
+    require_supported,
+)
+from vibe.common.strategies.orb import ORBStrategy, ORBStrategyConfig, take_profit_settings
+
+
+def _timeframe_minutes(timeframe: str) -> int:
+    """Minutes in a ruleset timeframe such as ``"5m"`` or ``"1h"``."""
+    unit = timeframe[-1].lower()
+    value = int(timeframe[:-1])
+    if unit == "m":
+        return value
+    if unit == "h":
+        return value * 60
+    raise ValueError(f"Unsupported timeframe {timeframe!r}")
 
 
 class RuleSetRunner:
@@ -15,32 +31,71 @@ class RuleSetRunner:
     to keep the strategy's internal state in sync with the portfolio.
     """
 
-    def __init__(self, ruleset: StrategyRuleSet) -> None:
+    def __init__(
+        self,
+        ruleset: StrategyRuleSet,
+        *,
+        reject_retraced_wick: bool = True,
+    ) -> None:
+        """
+        Args:
+            ruleset: Strategy configuration.
+            reject_retraced_wick: Whether a wick breakout that closed back
+                inside the ORB is discarded. This is one half of an execution
+                model and must match how the caller prices the entry fill --
+                see ``EntryFillPolicy``. The default matches live, which is
+                also what ``TradingOrchestrator`` passes.
+        """
+        require_supported(ruleset, "backtest")
         self.ruleset = ruleset
+        self.reject_retraced_wick = reject_retraced_wick
         self.strategy = self._build_strategy(ruleset)
 
     def _build_strategy(self, ruleset: StrategyRuleSet) -> ORBStrategy:
         s = ruleset.strategy
         exit_ = ruleset.exit
-
-        tp_multiplier = 0.0
-        if exit_.take_profit is not None and hasattr(exit_.take_profit, "multiplier"):
-            tp_multiplier = exit_.take_profit.multiplier
+        entry_mode = (
+            "first_candle_direction"
+            if s.entry_mode == FIRST_CANDLE_DIRECTION
+            else "breakout"
+        )
+        bar_minutes = (
+            _timeframe_minutes(ruleset.instruments.timeframe)
+            if entry_mode == "first_candle_direction"
+            else 5
+        )
+        if entry_mode == "first_candle_direction" and s.orb_duration_minutes % bar_minutes:
+            raise UnsupportedRulesetSettingsError(
+                f"Ruleset {ruleset.name!r}: entry_mode='first_candle_direction' needs "
+                f"orb_duration_minutes ({s.orb_duration_minutes}) to be a whole number "
+                f"of {ruleset.instruments.timeframe} bars"
+            )
 
         config = ORBStrategyConfig(
             name=ruleset.name,
             orb_start_time=s.orb_start_time,
             orb_duration_minutes=s.orb_duration_minutes,
             orb_body_pct_filter=getattr(s, "orb_body_pct_filter", 0.0),
+            direction_mode=getattr(s, "direction_mode", "symmetric"),
             breakout_evaluation=getattr(s, "breakout_evaluation", "wick"),
             entry_cutoff_time=s.entry_cutoff_time,
-            take_profit_multiplier=tp_multiplier,
+            **take_profit_settings(exit_.take_profit),
             stop_loss_at_level=(exit_.stop_loss.method == "orb_level"),
             use_volume_filter=ruleset.trade_filter.volume_confirmation,
             volume_threshold=ruleset.trade_filter.volume_threshold,
             market_close_time=exit_.eod_time if exit_.eod else "16:00",
+            entry_mode=entry_mode,
+            bar_minutes=bar_minutes,
         )
         return ORBStrategy(config=config)
+
+    @property
+    def take_profit_r_multiple(self) -> Optional[float]:
+        """The R multiple of a fill-anchored target, or None when not configured."""
+        cfg = self.strategy.config
+        if cfg.take_profit_method == "r_multiple" and cfg.take_profit_multiplier > 0:
+            return float(cfg.take_profit_multiplier)
+        return None
 
     def generate_signal(
         self,
@@ -57,6 +112,48 @@ class RuleSetRunner:
             symbol=symbol,
             current_bar=current_bar,
             df_context=df_context,
+            reject_retraced_wick=self.reject_retraced_wick,
+        )
+
+    def entry_stop_trigger(
+        self,
+        signal: int,
+        metadata: Dict[str, Any],
+    ) -> Optional[float]:
+        """Return the strategy's resting stop trigger, when it declares one."""
+        tick_size = 0.01
+        if signal == 1 and metadata.get("orb_high") is not None:
+            return float(metadata["orb_high"]) + tick_size
+        if signal == -1 and metadata.get("orb_low") is not None:
+            return float(metadata["orb_low"]) - tick_size
+        return None
+
+    def resting_stop_take_profit(
+        self,
+        *,
+        orb_high: float,
+        orb_low: float,
+        side: str,
+        df_context: pd.DataFrame,
+        symbol: str,
+        trading_date,
+    ) -> Optional[float]:
+        """The strategy's take-profit for an entry it did not signal itself.
+
+        Used by ``EntryFillPolicy.RESTING_STOP``, where the engine places the
+        entry from the opening range alone. The target depends only on the
+        range and the open-known daily ATR, so it is the same price the
+        strategy would have attached to a signalled entry.
+        """
+        from vibe.common.indicators.orb_levels import ORBLevels
+
+        levels = ORBLevels(high=orb_high, low=orb_low, range=orb_high - orb_low)
+        return self.strategy._take_profit_level(
+            levels,
+            "long" if side == "buy" else "short",
+            df_context,
+            symbol,
+            trading_date,
         )
 
     def track_position(

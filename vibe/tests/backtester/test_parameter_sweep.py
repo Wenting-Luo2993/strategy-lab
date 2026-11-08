@@ -4,7 +4,7 @@ Unit tests for parameter sensitivity testing framework.
 import pytest
 from pathlib import Path
 
-from vibe.backtester.analysis.parameter_sweep import ParameterDefinition, ParameterSweep
+from vibe.research_pipeline.parameter_sweep import ParameterDefinition, ParameterSweep
 
 
 def test_parameter_definition():
@@ -177,3 +177,165 @@ def test_generate_combinations():
     # Check a few specific combinations
     assert {"P1": 1, "P2": 10, "P3": 100} in combinations
     assert {"P1": 3, "P2": 20, "P3": 100} in combinations
+
+
+# ---------------------------------------------------------------------------
+# Inert sweep axes
+#
+# A parameter read only behind a disabled feature flag scores identically at
+# every value. Reporting that as "no sensitivity" reads as evidence the knob
+# does not matter, when in fact it was never consulted.
+# ---------------------------------------------------------------------------
+
+import yaml as _yaml
+
+from vibe.research_pipeline.parameter_sweep import ParameterDefinition
+from vibe.research_pipeline.sensitivity_runner import (
+    drop_inert_parameters,
+    get_base_ruleset_for_strategy,
+    get_parameters_for_strategy,
+)
+
+
+def _ruleset(tmp_path, confirmation):
+    path = tmp_path / "rs.yaml"
+    path.write_text(
+        _yaml.safe_dump(
+            {"trade_filter": {"volume_confirmation": confirmation, "volume_threshold": 1.5}}
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _gated():
+    return ParameterDefinition(
+        path="trade_filter.volume_threshold",
+        values=[1.0, 2.0],
+        name="Volume_Threshold",
+        requires="trade_filter.volume_confirmation",
+    )
+
+
+def _ungated():
+    return ParameterDefinition(
+        path="strategy.orb_duration_minutes", values=[5, 15], name="ORB_Duration"
+    )
+
+
+def test_gated_axis_dropped_when_flag_disabled(tmp_path):
+    live = drop_inert_parameters([_gated(), _ungated()], _ruleset(tmp_path, False))
+    assert [p.name for p in live] == ["ORB_Duration"]
+
+
+def test_gated_axis_kept_when_flag_enabled(tmp_path):
+    """The inverse direction, so a filter that drops everything cannot pass."""
+    live = drop_inert_parameters([_gated(), _ungated()], _ruleset(tmp_path, True))
+    assert [p.name for p in live] == ["Volume_Threshold", "ORB_Duration"]
+
+
+def test_missing_gate_path_treated_as_disabled(tmp_path):
+    path = tmp_path / "rs.yaml"
+    path.write_text(_yaml.safe_dump({"strategy": {}}), encoding="utf-8")
+    assert drop_inert_parameters([_gated()], path) == []
+
+
+def test_volume_threshold_is_gated_in_the_shipped_orb_definitions():
+    """Guards the tagging itself, not just the filter that reads it."""
+    for mode in ("quick", "full"):
+        by_name = {p.name: p for p in get_parameters_for_strategy("orb", mode)}
+        assert by_name["Volume_Threshold"].requires == "trade_filter.volume_confirmation"
+
+
+def test_shipped_orb_sweep_drops_volume_threshold_today():
+    """orb_production.yaml disables volume confirmation, so the axis is inert."""
+    base = get_base_ruleset_for_strategy("orb")
+    live = drop_inert_parameters(get_parameters_for_strategy("orb", "quick"), base)
+    assert "Volume_Threshold" not in {p.name for p in live}
+    assert "EOD_Time" in {p.name for p in live}
+
+
+# ---------------------------------------------------------------------------
+# --end names a session, not a midnight boundary.
+# ---------------------------------------------------------------------------
+
+def test_window_end_covers_the_whole_final_session():
+    from vibe.research_pipeline.sensitivity_runner import parse_window_end
+
+    end = parse_window_end("2022-03-31")
+    assert end.date().isoformat() == "2022-03-31"
+    assert (end.hour, end.minute) != (0, 0), (
+        "--end truncated to midnight drops the final trading session, which "
+        "disagrees with the inclusive exchange calendar and fails DATA-001"
+    )
+
+
+def test_the_run_window_agrees_with_the_exchange_calendar():
+    """The inverse check: count sessions both ways and require a match.
+
+    The midnight bug was a one-session discrepancy, so only a test that
+    actually counts can catch it.
+    """
+    from datetime import date
+
+    from vibe.research_pipeline.sensitivity_runner import (
+        parse_window_end,
+        parse_window_start,
+    )
+    from vibe.research_pipeline.splits.calendar import SessionCalendar
+
+    start, end = parse_window_start("2022-01-03"), parse_window_end("2022-03-31")
+    expected = SessionCalendar("XNYS").sessions_between(start.date(), end.date())
+
+    assert expected[0] == date(2022, 1, 3)
+    assert expected[-1] == date(2022, 3, 31), (
+        "the window excludes the session the user named on the command line"
+    )
+
+
+def test_no_runner_parses_a_cli_window_bound_as_midnight():
+    """Every CLI ``--start``/``--end`` must go through the shared parsers.
+
+    The midnight truncation was originally fixed in one runner while three
+    scripts kept private copies, so the same window meant different things
+    depending on which entry point produced it. This fails if any entry point
+    grows a private ``strptime(args.<bound>, "%Y-%m-%d")`` again.
+
+    It deliberately matches only ``args.*`` operands: parsing a stored date
+    string for display, or into a ``date`` for the session calendar, cannot
+    truncate a window and is not the defect being guarded.
+    """
+    import ast
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    offenders = []
+    for root in (repo / "scripts", repo / "vibe" / "backtester" / "analysis"):
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not (isinstance(func, ast.Attribute) and func.attr == "strptime"):
+                    continue
+                if not any(
+                    isinstance(a, ast.Constant) and a.value == "%Y-%m-%d"
+                    for a in node.args
+                ):
+                    continue
+                operand = node.args[0] if node.args else None
+                is_cli_bound = (
+                    isinstance(operand, ast.Attribute)
+                    and isinstance(operand.value, ast.Name)
+                    and operand.value.id == "args"
+                )
+                if is_cli_bound:
+                    offenders.append(
+                        f"{path.name}:{node.lineno} (args.{operand.attr})"
+                    )
+
+    assert not offenders, (
+        "these parse a CLI date bound directly and will truncate --end to "
+        f"midnight; use parse_window_start/parse_window_end instead: {offenders}"
+    )

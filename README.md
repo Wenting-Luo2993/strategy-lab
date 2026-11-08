@@ -147,6 +147,40 @@ pip install pre-commit
 pre-commit install
 ```
 
+### Flexible research analysis
+
+`/research` includes a read-only, adapter-neutral analyzer for terminal run
+summaries. Local research tooling uses
+`vibe.research_pipeline.analysis.SqliteAnalysisAdapter` against the SQLite
+authority; the static dashboard uses the same JSON-compatible query/result
+contract through fixtures or the bounded Supabase RPC. The field catalog drives
+parameters, datasets, validation, lineage, trust, and metrics, so newly
+published fields do not require a fixed compare UI.
+
+Legacy/pre-P2b results are excluded by default. Candidate rows, group
+cardinality, response rows/bytes, and chart marks are explicitly limited and
+reported. Trades, fills, raw bars, ledgers, artifact upload, and dataset
+distribution are outside this analysis surface.
+
+```python
+from vibe.research_pipeline.analysis import SqliteAnalysisAdapter
+
+adapter = SqliteAnalysisAdapter("path/to/research.sqlite3")
+result = adapter.query({
+    "population": {
+        "includeLegacy": False,
+        "trustStates": ["current_validated"],
+    },
+    "filters": {"op": "and", "children": []},
+    "screeningColumns": ["identity.display_alias", "metric.expectancy_r"],
+    "groupBy": ["parameter.opening_range_minutes"],
+    "measures": [{"field": "metric.expectancy_r", "aggregate": "mean"}],
+    "orderBy": [],
+    "chart": {"kind": "bar"},
+})
+adapter.close()
+```
+
 ---
 
 ## ✨ Key Features
@@ -154,12 +188,103 @@ pre-commit install
 ### Backtester (`vibe/backtester/`)
 
 - **Event-driven engine** — processes data bar-by-bar, matches live trading execution flow
+- **Engine integrity evidence** — single-symbol and shared-capital portfolio
+  results carry an immutable, versioned PASS/FAIL report for simulator-owned
+  arithmetic, accounting, execution, leverage, and session-end invariants.
 - **Realistic fills** — stop-market model: fills at trigger price on bar high/low, not bar close
 - **Configurable slippage** — `--slippage-ticks` CLI flag; defaults to 2 ticks
 - **Performance analytics** — Sharpe ratio, max drawdown, win rate, expectancy, R-multiples
 - **Market regime classification** — ADX-based trending vs ranging
 - **HTML reports** — equity curve, regime breakdown, convexity dashboard (Plotly)
 - **Parameter sensitivity** — `scripts/run_parameter_sensitivity.py`
+
+### Research registry (`vibe/research_journal/`, `vibe/research_pipeline/`)
+
+- **SQLite authority** — hypotheses, experiments, notes, artifacts, lineage, and
+  parameter-sweep journal records are written to `ResearchStore`; normal
+  operation creates no YAML/Markdown registry records.
+- **Legacy compatibility** — an existing YAML research tree is imported once
+  into SQLite with canonical-hash parity, `legacy-uncontrolled` methodology
+  stamping, terminal immutability, and pre-P2b execution results kept visibly
+  incomparable. After import, reads come from SQLite only.
+- **Execution identity** — new experiments retain the complete realistic
+  execution-model identity and version.
+- **Reliability Policy v1** — nested studies separately report procedure state
+  and deterministic `RELIABLE`, `REJECTED`, `INCONCLUSIVE`, or
+  `REVIEW_REQUIRED` research reliability. A completed simulation is not an
+  economic-certainty claim.
+- **Methodology freeze and final-holdout enforcement** — frozen definitions are
+  immutable, attributed to `Bloom`, and require a pre-authorized token that is
+  atomically claimed before any ruleset or holdout-data read. Authorization
+  follows `AUTHORIZED -> CLAIMED -> COMPLETED/INTERRUPTED`; consumed claims
+  cannot be retried or recreated.
+- **Explicit retention** — summaries are retained indefinitely. Detailed
+  evidence for frozen/final-holdout studies is protected; ordinary exploratory
+  trade/equity detail can be pruned only through the explicit CLI, never
+  automatically.
+- **Durable remote publication** — terminal summaries and registry identity
+  records enter a same-file SQLite outbox atomically, then publish to Supabase
+  in deterministic order with idempotent upserts, bounded retry, dead letters,
+  restart recovery, and explicit reconciliation/repair.
+- **Summary-only boundary** — remote payloads are built from allowlisted
+  aggregate columns. Trades, fills, ledgers, equity points/curves, raw bars,
+  and other event-level data are rejected recursively at storage and transport
+  boundaries; only aggregate counts and evidence checksums leave the device.
+
+The database path defaults outside the repository. Override it with
+`RESEARCH__DB_PATH`; do not place an active SQLite file in Git or a synced
+working tree.
+
+Review current and historical schema v10+ databases (the current writer schema
+is v12) with the dependency-light local
+viewer (Node.js 22.13.0+):
+
+```powershell
+node tools\backtest-research-viewer\server.mjs
+```
+
+The command resolves the same `RESEARCH__DB_PATH` / `RESEARCH__DATA_DIR`
+defaults as Python and serves `http://127.0.0.1:4178`. An explicit database can
+be selected only at process startup with `--db C:\local\research.sqlite3`.
+The server is read-only/query-only, rejects non-loopback binds and Host headers,
+and exposes only allowlisted, parameterized, paginated views. See
+`tools/backtest-research-viewer/README.md`.
+
+Research governance commands:
+
+```powershell
+# Freeze a predeclared study definition (defaults/validates authority as Bloom)
+python scripts\manage_research_study.py freeze --help
+
+# Pre-authorize, then execute the dedicated exactly-once final-holdout path.
+# The execution verifies the frozen ruleset, universe, datasets, candidate
+# axes, engine/metric versions, and lock hash, and records a full FINAL_OOS run.
+python scripts\manage_research_study.py authorize-final-holdout --help
+python scripts\manage_research_study.py final-holdout --help
+
+# Preview or explicitly confirm pruning of ordinary local detail
+python scripts\manage_research_retention.py --help
+```
+
+The final holdout remains governed by `config/final_holdout.yaml`. No command
+contacts Supabase or uploads market data unless separately configured and
+authorized.
+
+To enable trusted local publication, apply
+`docs/backtest-research-summaries/supabase-research-schema.sql`, then set
+`RESEARCH_SUPABASE_URL` and `RESEARCH_SUPABASE_SERVICE_ROLE_KEY`. The research
+service-role key must be distinct from live-trading credentials and must never
+use a `NEXT_PUBLIC_*` name. Browser/dashboard code receives read-only anonymous
+access through row-level security; it never receives the service-role key.
+
+```bash
+python scripts/publish_research.py status
+python scripts/publish_research.py flush
+python scripts/publish_research.py reconcile
+# Repairs are never automatic and only requeue records missing remotely.
+# Checksum-divergent immutable keys remain visible for administrative resolution.
+python scripts/publish_research.py reconcile --repair --reason "operator-approved"
+```
 
 ### Trading Bot (`vibe/trading_bot/`)
 

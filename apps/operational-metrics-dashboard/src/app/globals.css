@@ -20,7 +20,8 @@
 }
 
 :root[data-theme="dark"],
-.dashboard-shell[data-theme="dark"] {
+.dashboard-shell[data-theme="dark"],
+.dashboard-navigation[data-theme="dark"] {
   color-scheme: dark;
   --background: #151b18;
   --foreground: #eef5f1;
@@ -70,4 +71,24 @@ textarea {
   background: var(--surface);
   border-color: var(--border);
   box-shadow: var(--shadow);
+}
+
+.control {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--surface);
+  color: var(--foreground);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+
+.control:focus {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 1px;
+}
+
+.control option {
+  background: var(--surface);
+  color: var(--foreground);
 }

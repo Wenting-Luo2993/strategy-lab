@@ -10,6 +10,8 @@
     "test": "node --experimental-strip-types --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@fluentui/react-components": "^9.74.9",
+    "@fluentui/react-icons": "^2.0.344",
     "lightweight-charts": "^5.2.0",
     "next": "16.2.9",
     "react": "19.2.4",

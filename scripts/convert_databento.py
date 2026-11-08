@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 import pandas as pd
+import pandas_market_calendars as mcal
 import zstandard
 
 # Load .env if present (optional dependency — skip silently if not installed)
@@ -41,8 +42,7 @@ def _resolve(env_key: str, default: str) -> Path:
 DATABENTO_DIR = _resolve("BACKTEST__DATABENTO_DIR", "data/databento")
 PARQUET_DIR   = _resolve("BACKTEST__DATA_DIR",       "data/parquet")
 MARKET_TZ = "America/New_York"
-MARKET_OPEN = "09:30"
-MARKET_CLOSE = "15:59"  # inclusive upper bound for between_time
+MARKET_CALENDAR = "XNYS"
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -65,8 +65,45 @@ def _load_csv_zst(path: Path) -> pd.DataFrame:
         .dt.tz_convert(MARKET_TZ)
     )
     df = df.set_index("ts_event").sort_index()
-    df = df.between_time(MARKET_OPEN, MARKET_CLOSE)
-    return df
+    return _filter_exchange_sessions(df)
+
+
+def _filter_exchange_sessions(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only bars inside each actual XNYS session.
+
+    A fixed 09:30-15:59 filter retains bars after the close on half days. Those
+    bars look structurally valid but change resampling, indicators, and exits.
+    The exchange calendar is the authority for holidays and early closes.
+    """
+    if df.empty:
+        return df
+    if not isinstance(df.index, pd.DatetimeIndex) or df.index.tz is None:
+        raise ValueError("Databento bars require a timezone-aware DatetimeIndex")
+
+    calendar = mcal.get_calendar(MARKET_CALENDAR)
+    schedule = calendar.schedule(
+        start_date=df.index[0].date(),
+        end_date=df.index[-1].date(),
+    )
+    opens = {
+        session.date(): timestamp.tz_convert(MARKET_TZ).value
+        for session, timestamp in schedule["market_open"].items()
+    }
+    closes = {
+        session.date(): timestamp.tz_convert(MARKET_TZ).value
+        for session, timestamp in schedule["market_close"].items()
+    }
+    timestamps = df.index.to_series()
+    session_dates = timestamps.map(lambda timestamp: timestamp.date())
+    timestamp_ns = pd.Series(df.index.as_unit("ns").asi8, index=df.index)
+    market_opens = session_dates.map(opens).fillna(-1).astype("int64")
+    market_closes = session_dates.map(closes).fillna(-1).astype("int64")
+    in_session = (
+        market_opens.ge(0)
+        & timestamp_ns.ge(market_opens)
+        & timestamp_ns.lt(market_closes)
+    )
+    return df.loc[in_session.to_numpy()]
 
 
 # ── Split detection & adjustment ───────────────────────────────────────────────

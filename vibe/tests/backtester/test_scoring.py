@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 
-from vibe.backtester.analysis.scoring import (
+from vibe.research_pipeline.scoring import (
     calculate_tail_ratio,
     composite_score,
 )

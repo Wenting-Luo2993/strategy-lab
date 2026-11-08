@@ -31,6 +31,14 @@ class Trade(BaseModel):
     strategy: Optional[str] = Field(default=None, description="Strategy name")
     initial_risk: Optional[float] = Field(default=None, description="Dollar risk at entry: abs(entry_price - stop_loss) * quantity")
     exit_reason: Optional[str] = Field(default=None, description="Why the trade was closed: 'STOP' | 'TARGET' | 'EOD' | 'SIGNAL'")
+    mae_r: Optional[float] = Field(
+        default=None,
+        description="Maximum adverse excursion in initial-risk multiples (<= 0); not part of the ledger digest",
+    )
+    mfe_r: Optional[float] = Field(
+        default=None,
+        description="Maximum favourable excursion in initial-risk multiples (>= 0); not part of the ledger digest",
+    )
 
     @field_validator("side")
     @classmethod

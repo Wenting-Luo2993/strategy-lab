@@ -1,0 +1,16 @@
+status: example
+card_id: EXAMPLE
+journal_id: null
+programme: example_programme
+claim: EXAMPLE ONLY - not a real hypothesis. Replace every field when writing a card.
+rule: vibe/rulesets/orb_production.yaml
+prediction: Mean net R per trade exceeds the minimum edge on the confirmation set.
+min_edge_r: 0.05
+alpha_share: 0.0166
+analysis: fixed_rule pooled, day-clustered, two-sided
+expected_n_trades: 2000
+expected_sd_r: 1.2
+expected_design_effect: 1.0
+kill_criteria:
+  - Confidence interval upper bound is below the minimum edge.
+confirmation_data: Symbols and dates reserved for confirmation; not examined during exploration.

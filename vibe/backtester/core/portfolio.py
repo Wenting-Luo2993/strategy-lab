@@ -3,12 +3,36 @@ from datetime import datetime, time
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from vibe.backtester.core.execution_realism import (
+    BuyingPowerError,
+    ExecutionRealismConfig,
+    GapFillPolicy,
+    IntrabarExitResolution,
+    clamp_to_bar,
+)
 from vibe.backtester.core.fill_simulator import FillResult
+from vibe.backtester.core.exit_slippage import TICK_SIZE
+from vibe.backtester.core.reconciliation import CashLedgerEntry
 from vibe.common.models.bar import Bar
 from vibe.common.models.trade import Trade
 
 _ET = ZoneInfo("America/New_York")
+
+#: Fallback EOD cutoff, used only when a caller constructs a
+#: :class:`PortfolioManager` without supplying one. It matches the
+#: ``ExitConfig.eod_time`` default so an unconfigured manager behaves like a
+#: configured one carrying the default ruleset.
 _EOD_CUTOFF = time(15, 55)
+
+
+def parse_hhmm(value: str) -> time:
+    """Parse an ``"HH:MM"`` ruleset time into a :class:`datetime.time`.
+
+    ``ExitConfig`` already validates the format, so this is a conversion rather
+    than a second validation layer.
+    """
+    hour, minute = (int(part) for part in value.split(":"))
+    return time(hour, minute)
 
 
 @dataclass
@@ -22,6 +46,19 @@ class Position:
     entry_time: datetime
     initial_stop_price: float
     initial_risk_per_share: float
+    entry_commission: float = 0.0
+    """Commission paid to open, carried so the closed Trade reports the full
+    round trip rather than the exit leg alone."""
+    max_price: Optional[float] = None
+    min_price: Optional[float] = None
+    """Highest and lowest price observed while the position was open, used for
+    MAE/MFE. See ``PortfolioManager._observe_prices``."""
+
+    def __post_init__(self) -> None:
+        if self.max_price is None:
+            self.max_price = self.entry_price
+        if self.min_price is None:
+            self.min_price = self.entry_price
 
 
 class PortfolioManager:
@@ -30,17 +67,221 @@ class PortfolioManager:
     Records initial_risk and exit_reason on every closed Trade.
     """
 
-    def __init__(self, initial_capital: float, trailing_stop_config: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self,
+        initial_capital: float,
+        trailing_stop_config: Optional[Dict[str, Any]] = None,
+        execution_realism: Optional[ExecutionRealismConfig] = None,
+        eod_cutoff: Optional[time] = None,
+        eod_enabled: bool = True,
+    ) -> None:
         self.initial_capital = initial_capital
         self.cash = initial_capital
         self.positions: Dict[str, Position] = {}
         self.equity_curve: List[Tuple[datetime, float]] = []
         self.trade_history: List[Trade] = []
         self.trailing_stop_config = trailing_stop_config
+        # The EOD exit time is a ruleset decision (``exit.eod_time``), not a
+        # property of the simulator. It was previously a module constant, which
+        # silently pinned every backtest to 15:55 and made the sensitivity
+        # sweep's EOD_Time axis inert -- the sweep reported "no sensitivity"
+        # for a knob that was never read.
+        self.eod_cutoff = eod_cutoff if eod_cutoff is not None else _EOD_CUTOFF
+        self.eod_enabled = eod_enabled
+        # Defaults to legacy semantics per ADR-015, so existing results are
+        # reproduced exactly unless a caller opts in.
+        self.execution_realism = execution_realism or ExecutionRealismConfig.legacy()
+
+        # Always measured, in every mode. A legacy run still reports how much
+        # of its result rests on optimistic assumptions.
+        self.ambiguous_exit_bars = 0
+        self.gap_through_exits = 0
+        self.exit_slippage_events = 0
+        self.exit_slippage_cost = 0.0
+        """Money lost to exit slippage, in account currency.
+
+        Reported separately from ``total_costs`` because the two are
+        structurally different and must not be added to the same subtraction.
+        A commission is an explicit debit, so it sits outside ``gross_pnl`` and
+        the identity ``gross_pnl - total_costs == net_pnl`` holds. Slippage is
+        embedded in the fill price, so it has *already* reduced ``gross_pnl``
+        and subtracting it again would double-count.
+
+        It is measured anyway because leaving it implicit is misleading: on the
+        QQQ ORB baseline commission is $4,995 while exit slippage is $22,091,
+        so a reader looking only at ``total_costs`` would underestimate the
+        true cost of trading by more than four times.
+        """
+        self.min_cash = initial_capital
+        self.max_gross_exposure_ratio = 0.0
+        self.max_funded_entry_leverage = 0.0
+        self.max_single_symbol_concentration = 0.0
+        self.max_simultaneous_positions = 0
+        self.total_costs = 0.0
+
+        self.cash_ledger: List[CashLedgerEntry] = []
+        """Observed cash movement per fill, for accounting reconciliation.
+
+        Records cash *before* and *after* each fill rather than the delta the
+        portfolio intended, so the reconciliation check has something
+        independent to disagree with. Storing a computed delta would make the
+        identity pass by construction and assert nothing.
+        """
+
+    @property
+    def commission_model(self):
+        """Cost schedule for this run, taken from the realism config."""
+        return self.execution_realism.commission_model
+
+    def _charge_commission(self, quantity: float, price: float) -> float:
+        """Debit commission for one fill and return the amount charged.
+
+        Cash is reduced on both sides of a round trip: commission is an
+        outflow whether the fill opened or closed a position.
+        """
+        cost = self.commission_model.cost(quantity, price)
+        if cost:
+            self.cash -= cost
+            self.total_costs += cost
+        return cost
+
+    def _record_fill(
+        self,
+        *,
+        fill: FillResult,
+        commission: float,
+        cash_before: float,
+        timestamp: datetime,
+        kind: str,
+    ) -> None:
+        """Append the observed cash movement for one fill.
+
+        Called after cash has fully settled for the fill -- both the notional
+        and the commission -- so ``cash_after`` reflects the complete mutation
+        and not an intermediate state.
+        """
+        self.cash_ledger.append(
+            CashLedgerEntry(
+                timestamp=timestamp,
+                symbol=fill.symbol,
+                side=fill.side,
+                quantity=fill.filled_qty,
+                price=fill.avg_price,
+                commission=commission,
+                cash_before=cash_before,
+                cash_after=self.cash,
+                kind=kind,
+            )
+        )
+
+    def _record_cash(self) -> None:
+        self.min_cash = min(self.min_cash, self.cash)
+
+    def gross_exposure(self, prices: Dict[str, float]) -> float:
+        """Absolute market value of open positions."""
+        return sum(
+            abs(pos.quantity) * prices[sym]
+            for sym, pos in self.positions.items()
+            if sym in prices
+        )
+
+    def equity_basis(self) -> float:
+        """Equity used for funding decisions, marking positions at entry cost.
+
+        Entry cost is used rather than mark-to-market so the figure does not
+        move intrabar, which keeps a sizing decision and the assertion that
+        validates it from disagreeing within the same bar. Short sale proceeds
+        are offset by the entry-cost liability; otherwise opening a short would
+        manufacture equity and recursively increase buying power.
+        """
+        return self.cash + sum(
+            (
+                pos.quantity * pos.entry_price
+                if pos.side == "buy"
+                else -pos.quantity * pos.entry_price
+            )
+            for pos in self.positions.values()
+        )
+
+    def committed_notional(self) -> float:
+        """Absolute notional already committed to open positions, at cost."""
+        return sum(
+            abs(pos.quantity) * pos.entry_price for pos in self.positions.values()
+        )
+
+    def available_buying_power(
+        self, entry_price: Optional[float] = None
+    ) -> Optional[float]:
+        """Funds available for a new position, or None when unenforced.
+
+        ``None`` means "do not gate" rather than "zero available", so callers
+        must handle it explicitly instead of silently treating an unenforced
+        account as broke.
+
+        When ``entry_price`` is supplied, the result is net of the round-trip
+        commission the position will incur. Without that reserve the gate
+        funds the notional exactly and the account is then debited for costs
+        it never set aside, so a maximum-size order overdraws by the
+        commission -- a real effect measured at -$2.24 on the QQQ ORB
+        baseline. Reserving both legs is deliberate: the exit is not optional,
+        so treating it as free would let the gate approve a position the
+        account cannot actually close.
+        """
+        if not self.execution_realism.enforce_buying_power:
+            return None
+        limit = self.equity_basis() * self.execution_realism.max_gross_leverage
+        available = max(0.0, limit - self.committed_notional())
+
+        if entry_price is None or entry_price <= 0 or available <= 0:
+            return available
+
+        # Sized on the pre-reserve share count, so the reserve covers slightly
+        # more shares than will actually be bought. One pass, erring wide.
+        model = self.commission_model
+        if model.is_zero:
+            return available
+        round_trip = 2.0 * model.cost(available / entry_price, entry_price)
+        return max(0.0, available - round_trip)
+
+    def assert_buying_power(self, notional: float) -> None:
+        """Fail loudly on a position the account could not fund.
+
+        This is a backstop, not the gate. Sizing is expected to have already
+        clamped the order via ``available_buying_power``; reaching this error
+        means something bypassed sizing, so it must raise rather than clamp.
+        """
+        available = self.available_buying_power()
+        if available is None:
+            return
+        if notional > available + 1e-6:
+            raise BuyingPowerError(
+                f"Order notional {notional:,.2f} exceeds available buying power "
+                f"{available:,.2f} (equity {self.equity_basis():,.2f} x max "
+                f"leverage {self.execution_realism.max_gross_leverage}, less "
+                f"{self.committed_notional():,.2f} already committed). Position "
+                f"sizing should have clamped this order."
+            )
+
+    def _record_funded_entry_leverage(self, added_notional: float) -> None:
+        """Record leverage at the funding decision, before market-price drift."""
+        funding_equity = self.equity_basis()
+        if funding_equity <= 0:
+            return
+        leverage = (self.committed_notional() + abs(added_notional)) / funding_equity
+        self.max_funded_entry_leverage = max(
+            self.max_funded_entry_leverage, leverage
+        )
 
     def open_position(
         self, fill: FillResult, stop_price: float, timestamp: datetime, take_profit: Optional[float] = None
     ) -> None:
+        notional = abs(fill.filled_qty) * fill.avg_price
+        self.assert_buying_power(notional)
+        self._record_funded_entry_leverage(notional)
+        cash_before = self.cash
+        entry_commission = self._charge_commission(
+            fill.filled_qty, fill.avg_price
+        )
         self.positions[fill.symbol] = Position(
             symbol=fill.symbol,
             quantity=fill.filled_qty,
@@ -51,11 +292,17 @@ class PortfolioManager:
             entry_time=timestamp,
             initial_stop_price=stop_price,
             initial_risk_per_share=abs(fill.avg_price - stop_price),
+            entry_commission=entry_commission,
         )
         if fill.side == "buy":
             self.cash -= fill.filled_qty * fill.avg_price
         else:  # short (sell)
             self.cash += fill.filled_qty * fill.avg_price
+        self._record_cash()
+        self._record_fill(
+            fill=fill, commission=entry_commission, cash_before=cash_before,
+            timestamp=timestamp, kind="open",
+        )
 
     def add_to_position(
         self, fill: FillResult, timestamp: datetime
@@ -84,6 +331,10 @@ class PortfolioManager:
             raise ValueError(
                 f"Cannot add {fill.side} fill to existing {pos.side} position for {fill.symbol}"
             )
+
+        self._record_funded_entry_leverage(
+            abs(fill.filled_qty) * fill.avg_price
+        )
         
         # Calculate weighted average entry price
         old_value = pos.quantity * pos.entry_price
@@ -94,12 +345,24 @@ class PortfolioManager:
         # Update position (quantity and entry_price only; stop/TP unchanged)
         pos.quantity = total_quantity
         pos.entry_price = weighted_avg_price
+        self._observe_prices(pos, fill.avg_price)
+        # Each scale-in is a separate order and is billed as one.
+        cash_before = self.cash
+        add_commission = self._charge_commission(
+            fill.filled_qty, fill.avg_price
+        )
+        pos.entry_commission += add_commission
         
         # Update cash (same logic as open_position)
         if fill.side == "buy":
             self.cash -= fill.filled_qty * fill.avg_price
         else:  # short (sell)
             self.cash += fill.filled_qty * fill.avg_price
+        self._record_cash()
+        self._record_fill(
+            fill=fill, commission=add_commission, cash_before=cash_before,
+            timestamp=timestamp, kind="add",
+        )
 
     def close_position(
         self, fill: FillResult, exit_reason: str, timestamp: datetime
@@ -108,7 +371,13 @@ class PortfolioManager:
         # R-multiple denominator must remain anchored to entry-time risk.
         # Do not use the moved trailing stop at exit time.
         initial_risk = abs(pos.entry_price - pos.initial_stop_price) * pos.quantity
+        self._observe_prices(pos, fill.avg_price)
+        mae_r, mfe_r = self._excursions_r(pos)
 
+        cash_before = self.cash
+        exit_commission = self._charge_commission(
+            fill.filled_qty, fill.avg_price
+        )
         self.trade_history.append(Trade(
             symbol=fill.symbol,
             side=pos.side,
@@ -119,23 +388,46 @@ class PortfolioManager:
             exit_time=timestamp,
             initial_risk=initial_risk,
             exit_reason=exit_reason,
+            commission=pos.entry_commission + exit_commission,
+            mae_r=mae_r,
+            mfe_r=mfe_r,
         ))
         if fill.side == "sell":  # closing long
             self.cash += fill.filled_qty * fill.avg_price
         else:  # closing short (buy back)
             self.cash -= fill.filled_qty * fill.avg_price
+        self._record_cash()
+        self._record_fill(
+            fill=fill, commission=exit_commission, cash_before=cash_before,
+            timestamp=timestamp, kind="close",
+        )
 
     def check_exits(
         self, current_bars: Dict[str, Bar], clock
     ) -> None:
-        """
-        Check take-profit, stop-loss, and EOD exit for all open positions.
-        Exit priority: TP > Stop > EOD
-        Stop/TP trigger: bar.close must cross the level (not intrabar wick).
-        clock must have a .now() method returning a timezone-aware datetime.
+        """Check take-profit, stop-loss, and EOD exit for all open positions.
+
+        Triggers are **intrabar**: they use ``bar.high``/``bar.low``, not
+        ``bar.close``. A resting stop or limit order would have been hit by the
+        wick, so this is correct, but note that an earlier version of this
+        docstring claimed otherwise.
+
+        When a single bar touches both the stop and the target, the true order
+        of events is unknowable from OHLC. Resolution follows
+        ``execution_realism.intrabar_exit_resolution``; every such bar is
+        counted in ``ambiguous_exit_bars`` regardless of mode. "Touches the
+        target" means satisfies the take-profit trade-through condition, so a
+        bar that only reaches the limit price is neither a TP nor ambiguous.
+
+        Exit priority when unambiguous: TP/Stop (whichever triggered) > EOD.
+        The EOD cutoff comes from ``self.eod_cutoff`` (the ruleset's
+        ``exit.eod_time``), and EOD exits are skipped entirely when
+        ``exit.eod`` is disabled.
+        ``clock`` must have a ``.now()`` returning a timezone-aware datetime.
         """
         local_time = clock.now().astimezone(_ET).time()
-        is_eod = local_time >= _EOD_CUTOFF
+        is_eod = self.eod_enabled and local_time >= self.eod_cutoff
+        policy = self.execution_realism
 
         for symbol in list(self.positions.keys()):
             bar = current_bars.get(symbol)
@@ -144,51 +436,216 @@ class PortfolioManager:
             pos = self.positions[symbol]
 
             # Update stop from trailing rules before evaluating exits.
+            stop_before = pos.stop_price
             self._maybe_update_trailing_stop(pos=pos, bar=bar)
-
-            # Check take-profit first (highest priority)
-            if pos.take_profit is not None:
-                long_tp  = pos.side == "buy"  and bar.high >= pos.take_profit
-                short_tp = pos.side == "sell" and bar.low  <= pos.take_profit
-                
-                if long_tp:
-                    fill = FillResult(
-                        symbol=symbol, side="sell",
-                        filled_qty=pos.quantity, avg_price=pos.take_profit,
-                    )
-                    self.close_position(fill, exit_reason="TP", timestamp=clock.now())
-                    continue
-                elif short_tp:
-                    fill = FillResult(
-                        symbol=symbol, side="buy",
-                        filled_qty=pos.quantity, avg_price=pos.take_profit,
-                    )
-                    self.close_position(fill, exit_reason="TP", timestamp=clock.now())
-                    continue
-
-            # Check stop-loss
-            long_stop  = pos.side == "buy"  and bar.low  <= pos.stop_price
-            short_stop = pos.side == "sell" and bar.high >= pos.stop_price
-
-            if long_stop:
-                fill = FillResult(
-                    symbol=symbol, side="sell",
-                    filled_qty=pos.quantity, avg_price=pos.stop_price,
+            if pos.stop_price != stop_before:
+                # The trail only moves because this bar reached its favourable
+                # extreme, so that extreme counts toward MFE even if the same
+                # bar then hits the moved stop.
+                self._observe_prices(
+                    pos, bar.high if pos.side == "buy" else bar.low
                 )
-                self.close_position(fill, exit_reason="STOP", timestamp=clock.now())
-            elif short_stop:
-                fill = FillResult(
-                    symbol=symbol, side="buy",
-                    filled_qty=pos.quantity, avg_price=pos.stop_price,
+
+            is_long = pos.side == "buy"
+            tp_hit = self._take_profit_traded_through(pos, bar)
+            if is_long:
+                stop_hit = bar.low <= pos.stop_price
+            else:
+                stop_hit = bar.high >= pos.stop_price
+
+            if tp_hit and stop_hit:
+                self.ambiguous_exit_bars += 1
+                if policy.intrabar_exit_resolution is IntrabarExitResolution.OPTIMISTIC:
+                    stop_hit = False
+                else:
+                    tp_hit = False
+
+            if tp_hit:
+                self._observe_prices(pos, pos.take_profit)
+                self._close_at_level(
+                    pos=pos, bar=bar, level=pos.take_profit,
+                    reason="TP", clock=clock,
                 )
-                self.close_position(fill, exit_reason="STOP", timestamp=clock.now())
-            elif is_eod:
-                close_side = "sell" if pos.side == "buy" else "buy"
-                fill = FillResult(
-                    symbol=symbol, side=close_side,
-                    filled_qty=pos.quantity, avg_price=bar.close,
+                continue
+            if stop_hit:
+                self._observe_prices(pos, pos.stop_price)
+                self._close_at_level(
+                    pos=pos, bar=bar, level=pos.stop_price,
+                    reason="STOP", clock=clock,
                 )
-                self.close_position(fill, exit_reason="EOD", timestamp=clock.now())
+                continue
+            self._observe_prices(pos, bar.high, bar.low)
+            if is_eod:
+                self._close_at_bar_close(symbol, bar, clock, reason="EOD")
+
+    def _take_profit_traded_through(self, pos: Position, bar: Bar) -> bool:
+        """Whether a resting take-profit limit can be assumed filled on ``bar``.
+
+        A touch at the limit price does not prove a resting order was reached
+        in the queue, so the realistic profile requires price to trade
+        ``take_profit_trade_through_ticks`` beyond it. The fill itself is
+        still priced at the limit (or the open on a gap).
+        """
+        if pos.take_profit is None:
+            return False
+        ticks = self.execution_realism.take_profit_trade_through_ticks
+        if not ticks:
+            if pos.side == "buy":
+                return bar.high >= pos.take_profit
+            return bar.low <= pos.take_profit
+        # Half-tick tolerance absorbs float error in ``target + n * 0.01``.
+        through = ticks * TICK_SIZE - TICK_SIZE / 2
+        if pos.side == "buy":
+            return bar.high > pos.take_profit + through
+        return bar.low < pos.take_profit - through
+
+    def _observe_prices(self, pos: Position, *prices: float) -> None:
+        """Extend the position's observed price range.
+
+        Observed prices are the entry fill, every evaluated bar's high and low
+        while open, the trigger level on a STOP/TP bar (the order of high and
+        low inside that bar is unknowable and the path after the exit is
+        irrelevant), and the exit fill. The fill bar itself is excluded: exits
+        are checked before entries on the same bar and the part of that bar
+        after the fill cannot be recovered from OHLC, so MAE/MFE ignores it.
+        """
+        for price in prices:
+            if price > pos.max_price:
+                pos.max_price = price
+            if price < pos.min_price:
+                pos.min_price = price
+
+    @staticmethod
+    def _excursions_r(pos: Position) -> tuple[Optional[float], Optional[float]]:
+        """``(mae_r, mfe_r)`` in initial-risk multiples, or ``(None, None)``."""
+        risk = abs(pos.entry_price - pos.initial_stop_price)
+        if risk <= 0:
+            return None, None
+        if pos.side == "buy":
+            favourable = pos.max_price - pos.entry_price
+            adverse = pos.min_price - pos.entry_price
+        else:
+            favourable = pos.entry_price - pos.min_price
+            adverse = pos.entry_price - pos.max_price
+        return min(0.0, adverse / risk), max(0.0, favourable / risk)
+
+    def _close_at_bar_close(
+        self, symbol: str, bar: Bar, clock, *, reason: str
+    ) -> None:
+        """Flatten ``symbol`` at ``bar.close``, paying exit slippage."""
+        pos = self.positions[symbol]
+        close_side = "sell" if pos.side == "buy" else "buy"
+        self.close_position(
+            FillResult(
+                symbol=symbol, side=close_side,
+                filled_qty=pos.quantity,
+                avg_price=self._apply_exit_slippage(
+                    bar.close, reason=reason, side=close_side,
+                    quantity=pos.quantity, bar=bar,
+                ),
+            ),
+            exit_reason=reason,
+            timestamp=clock.now(),
+        )
+
+    def close_open_positions_at_session_end(
+        self, current_bars: Dict[str, Bar], clock
+    ) -> None:
+        """Flatten anything still open on the final bar of a session.
+
+        This is a correctness backstop, not a strategy rule, and the caller is
+        responsible for invoking it only on a session's last bar.
+        ``exit.eod_time`` is configurable and ``exit.eod`` can be switched off,
+        so the EOD rule cannot be relied upon to close an intraday position.
+        When it does not fire, the position survives into the next session,
+        blocks every subsequent entry (the engines only enter when flat), and
+        never reaches the trade ledger -- yielding a run that reports zero
+        trades while its equity curve still moves with the unrealized
+        position. The exit reason is ``EOD`` rather than a new category so
+        that existing exit-reason analysis keeps summing to the trade count.
+        """
+        for symbol in list(self.positions.keys()):
+            bar = current_bars.get(symbol)
+            if bar is None:
+                continue
+            self._close_at_bar_close(symbol, bar, clock, reason="EOD")
+
+    def _close_at_level(
+        self, pos: Position, bar: Bar, level: float, reason: str, clock
+    ) -> None:
+        """Close ``pos`` at ``level``, adjusted for gaps and clamped to the bar.
+
+        Filling exactly at the trigger price assumes the market paused there to
+        accommodate us. When the bar *opened* beyond the level, a resting order
+        would have filled at the open instead. For a stop that is materially
+        worse, and is the entire cost of gap risk.
+
+        The gap is counted in every mode, but only *repriced* under
+        ``GapFillPolicy.AT_OPEN``, so legacy runs stay bit-comparable while
+        still reporting how often the assumption mattered.
+        """
+        is_long = pos.side == "buy"
+        # For a long, a stop is below and a target above; inverted for a short.
+        level_is_below = (is_long and reason == "STOP") or (
+            not is_long and reason == "TP"
+        )
+        gapped_through = bar.open < level if level_is_below else bar.open > level
+
+        price = level
+        if gapped_through:
+            self.gap_through_exits += 1
+            if self.execution_realism.gap_fill_policy is GapFillPolicy.AT_OPEN:
+                # A fill outside the traded range is a price that never existed.
+                price = clamp_to_bar(bar.open, bar.low, bar.high)
+
+        price = self._apply_exit_slippage(
+            price, reason=reason, side="sell" if is_long else "buy",
+            quantity=pos.quantity, bar=bar,
+        )
+
+        self.close_position(
+            FillResult(
+                symbol=pos.symbol,
+                side="sell" if is_long else "buy",
+                filled_qty=pos.quantity,
+                avg_price=price,
+            ),
+            exit_reason=reason,
+            timestamp=clock.now(),
+        )
+
+    def _apply_exit_slippage(
+        self, price: float, *, reason: str, side: str, quantity: float, bar: Bar
+    ) -> float:
+        """Move an exit fill against us, then clamp it to the bar.
+
+        Slippage composes with the E2 gap reprice rather than replacing it,
+        because the two model different things: the gap reprice says *where
+        the market was* when our order became live, and slippage says what it
+        cost to cross the spread and get out. A stop that gaps through still
+        has to pay the spread on the way out, so applying only one of the two
+        would undercount.
+
+        The clamp is what keeps that composition honest. Whatever the two
+        adjustments compute between them, the fill must still be a price that
+        actually traded during the bar.
+
+        The clamp applies *only* when slippage actually moved the price. A
+        legacy run fills at the untraded trigger price by design -- that is
+        E2's defect, and correcting it here would silently change legacy
+        results and break the ADR-015 promise that they stay bit-identical.
+        Repricing a gap is opt-in through ``GapFillPolicy``; it is not this
+        method's business.
+        """
+        slipped = self.execution_realism.exit_slippage.adjust(
+            price, reason=reason, side=side, quantity=quantity, bar=bar
+        )
+        if slipped == price:
+            return price
+        self.exit_slippage_events += 1
+        filled = clamp_to_bar(slipped, bar.low, bar.high)
+        self.exit_slippage_cost += abs(filled - price) * abs(quantity)
+        return filled
 
     def _maybe_update_trailing_stop(self, pos: Position, bar: Bar) -> None:
         """Update stop price based on configured trailing stop logic."""
@@ -261,4 +718,27 @@ class PortfolioManager:
             for sym, pos in self.positions.items()
             if sym in current_bars
         )
-        self.equity_curve.append((timestamp, self.cash + position_value))
+        equity = self.cash + position_value
+        self.equity_curve.append((timestamp, equity))
+
+        # Peak leverage is evidence, not a setting. Recorded even when
+        # enforcement is off, so an unfunded strategy is visible after the fact.
+        if equity > 0:
+            prices = {sym: bar.close for sym, bar in current_bars.items()}
+            gross = self.gross_exposure(prices)
+            self.max_gross_exposure_ratio = max(
+                self.max_gross_exposure_ratio, gross / equity
+            )
+            symbol_exposures = [
+                abs(position.quantity) * prices[symbol] / equity
+                for symbol, position in self.positions.items()
+                if symbol in prices
+            ]
+            if symbol_exposures:
+                self.max_single_symbol_concentration = max(
+                    self.max_single_symbol_concentration,
+                    max(symbol_exposures),
+                )
+            self.max_simultaneous_positions = max(
+                self.max_simultaneous_positions, len(self.positions)
+            )

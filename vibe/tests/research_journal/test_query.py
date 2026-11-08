@@ -29,6 +29,7 @@ from pathlib import Path
 import tempfile
 import shutil
 import stat
+import gc
 
 
 @pytest.fixture
@@ -38,6 +39,7 @@ def temp_research_dir():
     research_root = Path(temp_dir) / "research"
     ensure_research_directories(research_root)
     yield research_root
+    gc.collect()
     
     # Make files writable before deleting (completed experiments are read-only)
     def handle_remove_readonly(func, path, exc):
@@ -126,13 +128,16 @@ def registry_with_experiments(temp_research_dir):
         tags=["exploration"]
     )
     
-    return registry, {
-        "parent": parent,
-        "child": child,
-        "exp2": exp2,
-        "hyp1": hyp,
-        "hyp2": hyp2
-    }
+    try:
+        yield registry, {
+            "parent": parent,
+            "child": child,
+            "exp2": exp2,
+            "hyp1": hyp,
+            "hyp2": hyp2
+        }
+    finally:
+        registry.close()
 
 
 class TestExperimentQueryBasic:

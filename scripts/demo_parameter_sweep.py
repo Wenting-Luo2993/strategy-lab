@@ -100,7 +100,7 @@ def main():
     print("✓ DEMO COMPLETE")
     print("=" * 80)
     print("\nTo run actual backtests:")
-    print("  python -m vibe.backtester.analysis.sensitivity_runner --strategy orb --mode quick")
+    print("  python -m vibe.research_pipeline.sensitivity_runner --strategy orb --mode quick")
     print()
 
 

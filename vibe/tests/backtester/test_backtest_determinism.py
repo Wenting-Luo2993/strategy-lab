@@ -12,7 +12,9 @@ import pandas as pd
 from vibe.backtester.core.engine import BacktestEngine
 from vibe.common.ruleset.loader import RuleSetLoader
 
-PARQUET_DIR = Path(__file__).resolve().parents[3] / "vibe" / "data" / "parquet"
+from vibe.backtester.data.paths import resolve_market_data_dir
+
+PARQUET_DIR = resolve_market_data_dir(require_exists=False)
 pytestmark = pytest.mark.skipif(
     not (PARQUET_DIR / "QQQ.parquet").exists(),
     reason="Parquet data not available",
@@ -91,7 +93,7 @@ def test_backtest_determinism_with_precomputed_features():
     This is critical for optimization framework where features are computed
     once and reused across parameter sweeps.
     """
-    from vibe.backtester.analysis.regime_research.features import FeatureEngine
+    from vibe.research_pipeline.regime_research.features import FeatureEngine
     from vibe.backtester.data.parquet_loader import ParquetLoader
     
     # Load ruleset

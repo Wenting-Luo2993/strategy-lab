@@ -264,11 +264,11 @@ If the CLI doesn't fit your workflow, use the modules directly:
 import pandas as pd
 from pathlib import Path
 
-from vibe.backtester.analysis.regime_research.features import FeatureEngine
-from vibe.backtester.analysis.regime_research.attribution import TradeAttributor
-from vibe.backtester.analysis.regime_research.labeler import DayRegimeLabeler, LabelerConfig
-from vibe.backtester.analysis.regime_research.filter_evaluator import FilterEvaluator
-from vibe.backtester.analysis.regime_research.reporting import ReportGenerator
+from vibe.research_pipeline.regime_research.features import FeatureEngine
+from vibe.research_pipeline.regime_research.attribution import TradeAttributor
+from vibe.research_pipeline.regime_research.labeler import DayRegimeLabeler, LabelerConfig
+from vibe.research_pipeline.regime_research.filter_evaluator import FilterEvaluator
+from vibe.research_pipeline.regime_research.reporting import ReportGenerator
 
 # 1. Load data
 ohlcv = pd.read_parquet("data/parquet/QQQ.parquet")

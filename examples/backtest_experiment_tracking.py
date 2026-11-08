@@ -7,7 +7,7 @@ Shows how to automatically track backtest experiments.
 from datetime import datetime
 from pathlib import Path
 from vibe.backtester.core.engine import BacktestEngine
-from vibe.backtester.integration.experiment_tracker import wrap_backtest_engine
+from vibe.research_journal.integration.experiment_tracker import wrap_backtest_engine
 from vibe.research_journal.registry import ResearchRegistry
 from vibe.common.ruleset.models import StrategyRuleSet
 import yaml

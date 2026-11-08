@@ -57,3 +57,14 @@ VNC is not published by the base Compose file. If manual GUI fallback is needed,
 The Supabase remote data publisher is part of the `trading-bot` process. When `DASHBOARD__ENABLED=true`, `DASHBOARD__REMOTE_PROVIDER=supabase`, and the Supabase URL/service key are configured, the orchestrator starts the in-process `RemoteDataPublisher` worker and drains the local dashboard outbox from `/app/data/local/publish_outbox.db`.
 
 Do not add a separate publisher container for the first Phase 4 shadow stack. A standalone publisher can be introduced later if we add a dedicated worker entrypoint and intentionally share the outbox volume between services.
+
+## Rotating a Secret
+
+`rotate-env-key.sh` swaps one `KEY=value` line in `secrets/trading-bot.env` without echoing the secret. It backs up the file, reads the new value at a hidden prompt, shows the length and last 4 characters of the old and new values, and asks for confirmation. Only then does it replace the line atomically. It can then recreate the `trading-bot` container, which is required because `docker compose restart` does not re-read `env_file`.
+
+```bash
+sudo bash deploy/ibkr-docker/rotate-env-key.sh DASHBOARD__SUPABASE_SERVICE_KEY      # bot write key
+sudo bash deploy/ibkr-docker/rotate-env-key.sh OPERATIONAL_METRICS__SUPABASE_ANON_KEY
+```
+
+`DASHBOARD__SUPABASE_SERVICE_KEY` is the bot's server-side write key; the browser dashboard uses only the anon key in its own config. Research publishing keys (`RESEARCH_SUPABASE_*`) live only in the research workstation's `.env` and are not deployed with the bot. Keep research and live-trading service keys separate; the script warns if two `*KEY` values match.

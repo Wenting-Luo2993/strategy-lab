@@ -5,9 +5,12 @@ from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from vibe.backtester.data.paths import resolve_market_data_dir
+
 ET = ZoneInfo("America/New_York")
 
-PARQUET_DIR = Path("vibe/data/parquet")
+PARQUET_DIR = resolve_market_data_dir(require_exists=False)
+
 pytestmark = pytest.mark.skipif(
     not (PARQUET_DIR / "QQQ.parquet").exists(),
     reason="Parquet data not available"

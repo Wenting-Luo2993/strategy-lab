@@ -19,7 +19,9 @@ from vibe.common.ruleset.loader import RuleSetLoader
 
 # Market timezone
 ET = ZoneInfo("America/New_York")
-PARQUET_DIR = Path("vibe/data/parquet")
+from vibe.backtester.data.paths import resolve_market_data_dir
+
+PARQUET_DIR = resolve_market_data_dir(require_exists=False)
 
 pytestmark = pytest.mark.skipif(
     not (PARQUET_DIR / "QQQ.parquet").exists(),

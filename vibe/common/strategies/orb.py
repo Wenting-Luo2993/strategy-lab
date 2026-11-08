@@ -2,7 +2,8 @@
 Opening Range Breakout (ORB) Strategy Implementation.
 
 Entry: Price breaks ORB_High (long) or ORB_Low (short)
-Exit: Take-profit at 2x ATR range, stop-loss at ORB level
+Exit: Optional take-profit beyond the breakout level (ORB-range or daily-ATR
+multiple), stop-loss at ORB level
 Time filter: No entries after 15:00
 End-of-day exit for open positions
 """
@@ -15,6 +16,7 @@ import numpy as np
 from pydantic import Field
 
 from vibe.common.strategies.base import StrategyBase, StrategyConfig
+from vibe.common.indicators.daily_atr import add_daily_atr, daily_atr_column
 from vibe.common.indicators.orb_levels import ORBCalculator, ORBLevels
 
 logger = logging.getLogger(__name__)
@@ -29,16 +31,76 @@ class ORBStrategyConfig(StrategyConfig):
         default=0.5,
         description="Minimum body percentage for valid breakout candle",
     )
+    direction_mode: Literal["symmetric", "long_only", "short_only"] = Field(
+        default="symmetric",
+        description="Which breakout directions may produce entry signals",
+    )
     breakout_evaluation: Literal["wick", "body"] = Field(
         default="wick",
         description="Breakout evaluation mode: wick or body",
     )
     entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
-    take_profit_multiplier: float = Field(default=2.0, description="TP = ORB_Range * multiplier")
+    take_profit_multiplier: float = Field(
+        default=2.0,
+        description="Target distance beyond the breakout level, in units set by take_profit_method (0 = no target)",
+    )
+    take_profit_method: Literal["orb_range_multiple", "atr_multiple", "r_multiple"] = Field(
+        default="orb_range_multiple",
+        description=(
+            "orb_range_multiple: target = breakout level +/- multiplier * ORB range. "
+            "atr_multiple: target = breakout level +/- multiplier * daily ATR known at the open. "
+            "r_multiple: target = entry fill +/- multiplier * initial risk, set by the "
+            "executor once the entry has filled (the strategy reports no price)"
+        ),
+    )
+    take_profit_atr_period: int = Field(
+        default=14, ge=1, description="Daily ATR period for take_profit_method='atr_multiple'",
+    )
     stop_loss_at_level: bool = Field(default=True, description="Stop-loss at ORB level")
     use_volume_filter: bool = Field(default=False, description="Require above-average volume")
     volume_threshold: float = Field(default=1.5, description="Volume must be > average * threshold")
     market_close_time: str = Field(default="16:00", description="Market close time")
+    entry_mode: Literal["breakout", "first_candle_direction"] = Field(
+        default="breakout",
+        description=(
+            "breakout: enter when price breaks the opening range. "
+            "first_candle_direction: at the close of the opening-range candle, go long "
+            "if it closed above its open, short if below, no trade on a doji "
+            "(Zarattini & Aziz 2023). Stop stays at the opposite ORB extreme"
+        ),
+    )
+    bar_minutes: int = Field(
+        default=5, ge=1,
+        description="Signal bar length; first_candle_direction fires on the bar ending the window",
+    )
+
+
+def take_profit_settings(take_profit: Any) -> Dict[str, Any]:
+    """Map a ruleset ``exit.take_profit`` block to ``ORBStrategyConfig`` fields.
+
+    Raises for methods the ORB strategy cannot honour, so a ruleset never
+    silently runs without the target it declares.
+    """
+    if take_profit is None:
+        return {"take_profit_multiplier": 0.0}
+    method = getattr(take_profit, "method", None)
+    if method == "orb_range_multiple":
+        return {
+            "take_profit_method": "orb_range_multiple",
+            "take_profit_multiplier": float(take_profit.multiplier),
+        }
+    if method == "atr_multiple":
+        return {
+            "take_profit_method": "atr_multiple",
+            "take_profit_multiplier": float(take_profit.multiplier),
+            "take_profit_atr_period": int(take_profit.period),
+        }
+    if method == "r_multiple":
+        return {
+            "take_profit_method": "r_multiple",
+            "take_profit_multiplier": float(take_profit.multiplier),
+        }
+    raise NotImplementedError(f"ORB strategy does not support take_profit method {method!r}")
 
 
 class ORBStrategy(StrategyBase):
@@ -51,7 +113,7 @@ class ORBStrategy(StrategyBase):
     - Optional volume confirmation
 
     Exit conditions:
-    - Take-profit at 2x ORB_Range
+    - Optional take-profit (see ``take_profit_method``)
     - Stop-loss at ORB level
     - End-of-day exit
     """
@@ -66,6 +128,8 @@ class ORBStrategy(StrategyBase):
         # Per-symbol ORB calculators - ORBCalculator caches by date only,
         # so a single shared instance would return the first symbol's levels for all symbols.
         self._orb_calculators: Dict[str, ORBCalculator] = {}
+        # Daily ATR injected by live trading, keyed by (symbol, trading date).
+        self._daily_atr_cache: Dict[tuple, float] = {}
         self._orb_calculator_config = {
             "start_time": config.orb_start_time,
             "duration_minutes": config.orb_duration_minutes,
@@ -106,7 +170,11 @@ class ORBStrategy(StrategyBase):
         Returns Series with signals: 1 (long), -1 (short), 0 (neutral)
         """
         signals = pd.Series(0, index=df.index)
-
+        if self.config.entry_mode != "breakout":
+            raise NotImplementedError(
+                f"generate_signals does not implement entry_mode={self.config.entry_mode!r}; "
+                "use generate_signal_incremental"
+            )
         if df.empty or "ATR_14" not in df.columns:
             return signals
 
@@ -140,6 +208,9 @@ class ORBStrategy(StrategyBase):
                     bar_high=float(row["high"]),
                     bar_low=float(row["low"]),
                     current_price=float(row["close"]),
+                )
+                long_broke, short_broke = self._apply_direction_mode(
+                    long_broke, short_broke
                 )
 
                 # Long breakout
@@ -178,6 +249,17 @@ class ORBStrategy(StrategyBase):
         if symbol not in self._orb_calculators:
             self._orb_calculators[symbol] = ORBCalculator(**self._orb_calculator_config)
         return self._orb_calculators[symbol]
+
+    def _apply_direction_mode(
+        self,
+        long_broke: bool,
+        short_broke: bool,
+    ) -> Tuple[bool, bool]:
+        if self.config.direction_mode == "long_only":
+            return long_broke, False
+        if self.config.direction_mode == "short_only":
+            return False, short_broke
+        return long_broke, short_broke
 
     def generate_signal_incremental(
         self,
@@ -223,8 +305,7 @@ class ORBStrategy(StrategyBase):
         current_time_local = current_time.astimezone(market_tz)
         bar_time = current_time_local.time()
 
-        # DEBUG: Log timestamp comparison details (using INFO level to ensure visibility)
-        logger.info(
+        logger.debug(
             f"[TIMESTAMP CHECK] {symbol}: "
             f"current_time={current_time} → market_time={current_time_local}, "
             f"bar_time={bar_time}, "
@@ -241,9 +322,9 @@ class ORBStrategy(StrategyBase):
         # orb_levels.py uses trading_date.date() to filter bars by date, and df["timestamp"].dt.date
         # returns dates in the stored timezone (Eastern for yfinance/Finnhub bars). Passing UTC here
         # causes a mismatch when pd.concat does NOT convert to UTC (e.g., same-tz concat stays Eastern).
-        logger.info(f"[ORB CALC] {symbol}: calling calculate() with {len(df_context)} bars, trading_date={current_time_local}")
+        logger.debug(f"[ORB CALC] {symbol}: calling calculate() with {len(df_context)} bars, trading_date={current_time_local}")
         levels = orb_calc.calculate(df_context, trading_date=current_time_local)
-        logger.info(f"[ORB CALC] {symbol}: result valid={levels.valid}, high=${levels.high:.2f}, low=${levels.low:.2f}")
+        logger.debug(f"[ORB CALC] {symbol}: result valid={levels.valid}, high=${levels.high:.2f}, low=${levels.low:.2f}")
 
         if not levels.valid:
             return 0, {"reason": "invalid_orb_levels", "reason_detail": levels.reason}
@@ -295,6 +376,12 @@ class ORBStrategy(StrategyBase):
         if self._traded_today.get(symbol) == trading_date:
             return 0, {**metadata, "reason": "already_traded_today"}
 
+        if self.config.entry_mode == "first_candle_direction":
+            return self._first_candle_signal(
+                orb_calc, df_context, current_time_local, levels, metadata,
+                symbol, trading_date,
+            )
+
         # Intrabar breakout detection: use the configured price source with a 1-tick offset.
         # QC places stop-market orders at OR_high+$0.01 (long) and OR_low-$0.01
         # (short), so merely touching OR_high does NOT trigger a fill.
@@ -307,6 +394,21 @@ class ORBStrategy(StrategyBase):
             bar_low=bar_low,
             current_price=current_price,
         )
+        unfiltered_long, unfiltered_short = long_broke, short_broke
+        long_broke, short_broke = self._apply_direction_mode(
+            long_broke, short_broke
+        )
+        if (
+            (unfiltered_long or unfiltered_short)
+            and not (long_broke or short_broke)
+        ):
+            metadata.update({
+                "reason": "direction_not_allowed",
+                "reason_detail": (
+                    f"Breakout suppressed by direction_mode="
+                    f"{self.config.direction_mode}"
+                ),
+            })
 
         # Live execution enters at the completed-bar market price, unlike the
         # backtester which models an intrabar resting stop fill at the ORB level.
@@ -349,11 +451,10 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = None
-            if self.config.take_profit_multiplier > 0:
-                tp = orb_calc.get_long_exit_level(
-                    levels, atr, multiplier=self.config.take_profit_multiplier,
-                )
+            tp = self._take_profit_level(levels, "long", df_context, symbol, trading_date)
+            if tp is None and self._missing_live_daily_atr(df_context):
+                metadata.update(self._daily_atr_unavailable_reason())
+                return 0, metadata
             sl = levels.low if self.config.stop_loss_at_level else current_price - atr
 
             metadata.update({
@@ -377,11 +478,10 @@ class ORBStrategy(StrategyBase):
 
             atr = df_context["ATR_14"].iloc[-1] if "ATR_14" in df_context.columns else levels.range / 2
 
-            tp = None
-            if self.config.take_profit_multiplier > 0:
-                tp = orb_calc.get_short_exit_level(
-                    levels, atr, multiplier=self.config.take_profit_multiplier,
-                )
+            tp = self._take_profit_level(levels, "short", df_context, symbol, trading_date)
+            if tp is None and self._missing_live_daily_atr(df_context):
+                metadata.update(self._daily_atr_unavailable_reason())
+                return 0, metadata
             sl = levels.high if self.config.stop_loss_at_level else current_price + atr
 
             metadata.update({
@@ -396,6 +496,173 @@ class ORBStrategy(StrategyBase):
         # No breakout
         metadata.setdefault("reason", "no_breakout")
         return 0, metadata
+
+    def _first_candle_signal(
+        self,
+        orb_calc: ORBCalculator,
+        df_context: pd.DataFrame,
+        current_time_local,
+        levels: ORBLevels,
+        metadata: Dict[str, Any],
+        symbol: str,
+        trading_date,
+    ) -> Tuple[int, Dict[str, Any]]:
+        """Zarattini & Aziz (2023) entry: trade the opening candle's direction.
+
+        Fires only on the bar that completes the opening window, so the
+        decision uses nothing beyond that bar's close; the executor fills it no
+        earlier than the next bar. The opening candle's open is the first
+        window bar's open, its close the completing bar's close, and its
+        extremes are the ORB levels -- so the stop is the opposite extreme.
+        """
+        start = orb_calc.start_time
+        window_end = start.hour * 60 + start.minute + self.config.orb_duration_minutes
+        bar_start = current_time_local.hour * 60 + current_time_local.minute
+        if bar_start + self.config.bar_minutes != window_end:
+            metadata.setdefault("reason", "not_opening_candle_close")
+            return 0, metadata
+
+        n_bars = -(-self.config.orb_duration_minutes // self.config.bar_minutes)
+        window = df_context.tail(n_bars)
+        timestamps = pd.DatetimeIndex(window["timestamp"])
+        if timestamps.tz is not None:
+            timestamps = timestamps.tz_convert("America/New_York")
+        first = timestamps[0]
+        complete = (
+            len(window) == n_bars
+            and all(ts.date() == trading_date for ts in timestamps)
+            and (first.hour, first.minute) == (start.hour, start.minute)
+            and all(orb_calc._is_in_opening_window(ts) for ts in timestamps)
+        )
+        if not complete:
+            metadata.update({
+                "reason": "incomplete_opening_candle",
+                "reason_detail": "Opening window bars missing; first-candle direction unknown",
+            })
+            return 0, metadata
+
+        candle_open = float(window["open"].iloc[0])
+        candle_close = float(window["close"].iloc[-1])
+        metadata.update({"first_candle_open": candle_open, "first_candle_close": candle_close})
+        if candle_close == candle_open:
+            metadata["reason"] = "first_candle_doji"
+            return 0, metadata
+
+        long_dir = candle_close > candle_open
+        allowed_long, allowed_short = self._apply_direction_mode(long_dir, not long_dir)
+        if not (allowed_long or allowed_short):
+            metadata.update({
+                "reason": "direction_not_allowed",
+                "reason_detail": f"First candle suppressed by direction_mode={self.config.direction_mode}",
+            })
+            return 0, metadata
+
+        side = "long" if long_dir else "short"
+        atr = df_context["ATR_14"].iloc[-1]
+        tp = self._take_profit_level(levels, side, df_context, symbol, trading_date)
+        if tp is None and self._missing_live_daily_atr(df_context):
+            metadata.update(self._daily_atr_unavailable_reason())
+            return 0, metadata
+        price = candle_close
+        if long_dir:
+            sl = levels.low if self.config.stop_loss_at_level else price - atr
+        else:
+            sl = levels.high if self.config.stop_loss_at_level else price + atr
+        metadata.update({
+            "signal": f"first_candle_{side}",
+            "take_profit": tp,
+            "stop_loss": sl,
+        })
+        return (1 if long_dir else -1), metadata
+
+    def _take_profit_level(
+        self,
+        levels: ORBLevels,
+        side: str,
+        df_context: pd.DataFrame,
+        symbol: Optional[str] = None,
+        trading_date=None,
+    ) -> Optional[float]:
+        """Target price beyond the breakout level, or None when disabled.
+
+        The target is anchored to the breakout level, not the fill, so it is a
+        fixed price at signal time in both backtest and live. With the stop at
+        the opposite side of the range, ``orb_range_multiple`` k is k R measured
+        from the trigger; fills often land well beyond the trigger (close-based
+        signal, next-bar entry), so the realised R of a hit target is lower.
+        """
+        multiplier = self.config.take_profit_multiplier
+        if multiplier <= 0 or self.config.take_profit_method == "r_multiple":
+            # r_multiple is anchored at the fill, which only the executor knows.
+            return None
+        if self.config.take_profit_method == "orb_range_multiple":
+            distance = levels.range * multiplier
+        else:
+            daily_atr = self._daily_atr_at_signal(df_context, symbol, trading_date)
+            if daily_atr is None:
+                return None
+            distance = daily_atr * multiplier
+        return levels.high + distance if side == "long" else levels.low - distance
+
+    @property
+    def needs_daily_atr(self) -> bool:
+        """True when the take-profit is a multiple of the daily ATR."""
+        return (
+            self.config.take_profit_method == "atr_multiple"
+            and self.config.take_profit_multiplier > 0
+        )
+
+    def set_daily_atr(self, symbol: str, trading_date, value: Optional[float]) -> None:
+        """Supply the open-known daily ATR for ``symbol`` on ``trading_date``.
+
+        Live context holds too few sessions to derive it, so the caller computes
+        it once per day from longer history.
+        """
+        if value is None or pd.isna(value) or value <= 0:
+            self._daily_atr_cache.pop((symbol, trading_date), None)
+            return
+        self._daily_atr_cache[(symbol, trading_date)] = float(value)
+
+    def has_daily_atr(self, symbol: str, trading_date) -> bool:
+        return (symbol, trading_date) in self._daily_atr_cache
+
+    def _daily_atr_at_signal(
+        self, df_context: pd.DataFrame, symbol: Optional[str] = None, trading_date=None
+    ) -> Optional[float]:
+        cached = self._daily_atr_cache.get((symbol, trading_date))
+        if cached is not None:
+            return cached
+        period = self.config.take_profit_atr_period
+        column = daily_atr_column(period)
+        if column not in df_context.columns:
+            # Live context has no precomputed column; derive it from history.
+            df_context = add_daily_atr(df_context, period)
+        value = df_context[column].iloc[-1]
+        if pd.isna(value) or value <= 0:
+            logger.warning(
+                "Daily ATR(%d) unavailable at signal; no take-profit set for this trade", period
+            )
+            return None
+        return float(value)
+
+    def _missing_live_daily_atr(self, df_context: pd.DataFrame) -> bool:
+        """An ATR target is configured but could not be set outside a backtest.
+
+        Backtests precompute the column, so a NaN there (the first sessions of
+        the data) keeps the historical behaviour of trading without a target.
+        Live trading must not silently drop the configured exit.
+        """
+        return (
+            self.needs_daily_atr
+            and daily_atr_column(self.config.take_profit_atr_period) not in df_context.columns
+        )
+
+    @staticmethod
+    def _daily_atr_unavailable_reason() -> Dict[str, Any]:
+        return {
+            "reason": "daily_atr_unavailable",
+            "reason_detail": "ATR take-profit configured but daily ATR unavailable; entry refused",
+        }
 
     def _calculate_body_percentage(self, bar: dict) -> float:
         """

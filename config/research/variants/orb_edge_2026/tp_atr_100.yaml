@@ -1,0 +1,40 @@
+name: orb_edge_2026_tp_atr_100
+version: "1.0.0"
+description: "orb_production + take-profit at breakout level + 1.0x daily ATR(14) (~4R median)"
+
+instruments:
+  symbols: [QQQ]
+  timeframe: 5m
+
+strategy:
+  type: orb
+  orb_start_time: "09:30"
+  orb_duration_minutes: 5
+  orb_body_pct_filter: 0.5
+  direction_mode: symmetric
+  entry_cutoff_time: "15:00"
+
+position_size:
+  method: max_loss_pct
+  value: 0.01
+
+exit:
+  eod: true
+  eod_time: "15:55"
+  
+  take_profit:
+    method: atr_multiple
+    multiplier: 1.0
+    period: 14
+  
+  stop_loss:
+    method: orb_level
+
+trade_filter:
+  volume_confirmation: false
+  volume_threshold: 1.5
+
+mtf_validation:
+  enabled: false
+  timeframe: 30m
+  condition: trend_aligned
