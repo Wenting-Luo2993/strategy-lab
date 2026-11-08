@@ -39,6 +39,33 @@ entries:
       "ORB baseline, Step 3 condition breakdowns" -- first pass over 6
       session conditions (one trial per condition looked at).
 
+  - id: supabase_only_2026_11
+    source: Supabase only (the rebuilt local research DB was lost)
+    phase: exploration
+    family: mixed
+    trials: 15
+    experiment_ids:
+      - 01a19e08-dfd9-737e-8379-5185a2f7ab0c
+      - 01a1a253-6a62-7475-8ccf-8ff1d65c8202
+      - 01a1a263-8056-7def-8d7b-05e25fe56c81
+      - 01a1a274-c8eb-714f-bd89-f374269a8851
+      - 01a1a284-c7db-70bb-8a93-037055ecbd27
+      - 01a1a27c-dd1a-7a29-8d5c-b21e0c709dbc
+      - 01a1a28c-66e4-7139-92ee-17a9bb7f34c0
+      - 01a1a29c-0591-7b90-8b52-876f1f672660
+      - 01a1a27c-f364-74f2-ba85-9ee78bb7c280
+      - 01a1a28c-7bf4-783a-98ae-018502e9a90d
+      - 01a1a29b-dd42-719a-915b-177859107b30
+      - 01a1a314-ed14-7d59-9f7b-c919c72f7603
+      - 01a1a31d-197d-7faf-aebd-d3f06d6e44e2
+      - 01a1a32e-1821-7c5b-a347-339fdd8c4c97
+    note: >-
+      The 14 experiments recorded 2026-11-02/03 (gap and trend conditions,
+      9 exit variants, 3 opening-range durations; n_trials sums to 15). They
+      are published to Supabase, but the local DB that recorded them no
+      longer exists, so later runs record into a new local DB
+      (%LOCALAPPDATA%\strategy-lab\orb_edge_2026.sqlite3) and count these here.
+
   - id: october_same_data_legacy
     source: same-data legacy runs (October 2026, pre-programme)
     phase: legacy

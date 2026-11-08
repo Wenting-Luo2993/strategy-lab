@@ -35,9 +35,12 @@ That document stays as the record of the platform build.
 | 4. Exit levers | Done (2026-11-03) | 9 experiments, listed in the research plan, Step 4 | Contradicted: break-even −0.041R, time exits −0.021R (12:00) and −0.007R (14:00), and take-profit −0.041R to −0.001R per session. Tighter exits hurt more; nothing beats holding to 15:55 |
 | 4. Opening-range duration | Done (2026-11-03) | `01a1a314-ed14-7d59-9f7b-c919c72f7603` (15 min), `01a1a31d-197d-7faf-aebd-d3f06d6e44e2` (30 min), `01a1a32e-1821-7c5b-a347-339fdd8c4c97` (60 min) | Not supported: +0.011R, +0.009R and +0.007R per session, all intervals include 0 (60 min: 4/7 years, 4/5 symbols). Flat at zero in R and worse than the baseline in dollars. Step 4 closes with no enhancement |
 | Panel review | Done (2026-11-03) | none | Numbers reproduce. "No edge" is overstated: it holds for next-bar-open market entry, but a lookahead-free resting-stop entry gives +0.06R [+0.01, +0.11]. See `orb-exploration-results.md` |
-| 5 onward | Decision pending | | Next: resting-stop entry, first-candle-direction replication, dollar/power reporting. Confirmation data stays untouched until hypotheses are registered |
+| Entry tests (2026-11-07) | Done | `01a1b8a6-43d6-7c52-a64f-4b52468d9112` (v7 baseline), `01a1b8a6-eefd-7c52-a22e-651d5a3c3fff` (resting stop), `01a1b8ab-3665-7d69-a3be-669c16e08420` (Zarattini & Aziz) | v7 baseline +0.003R [−0.042, +0.048]. Resting-stop entry +0.062R [+0.010, +0.115], tail-dependent. First-candle ORB +0.028R [−0.031, +0.087]; reproduces the paper only under near-zero costs. See `orb-exploration-results.md`, rows 9 to 11 |
+| Next | Decision pending | | Measure real stop-order slippage by paper-trading the resting-stop entry. Confirmation data stays untouched until hypotheses are registered |
 
-Trial ledger (`orb_edge_2026`): 22 trials:
+Trial ledger (`orb_edge_2026`): 100 trials, including 75 October legacy
+configurations; see `orb-exploration-results.md`, "Trial count". The
+breakdown below is the original 22 programme trials:
 
 - 1 baseline;
 - 6 conditions in the first pass;
@@ -193,7 +196,11 @@ excluded, and the power to detect it. That is a valid result.
 
 Local state that the branch does not carry:
 
-- Research DB: `tmp\research-viewer.sqlite3`.
+- Research DB: `%LOCALAPPDATA%\strategy-lab\orb_edge_2026.sqlite3` (pass
+  `--research-db`; from 2026-11-07, rows 9 onward). The DB that recorded rows
+  3 to 8 was lost; those experiments exist only in Supabase and are counted
+  through `config/research/trial_ledger_orb_edge_2026.yaml`. Rows 0 to 2 are
+  in `tmp\research-viewer.sqlite3` of the `reimagined-giggle` worktree.
 - Exploration data: `D:\development\strategy-lab\vibe\data\parquet\` (pass
   `--data-dir`).
 - Confirmation raw data: `D:\development\strategy-lab\vibe\data\core-universe`.
@@ -203,7 +210,7 @@ Commands are in the research plan, section "How to run Steps 0, 2, 3 and 4".
 Start the viewer with:
 
 ```powershell
-node tools\backtest-research-viewer\server.mjs --db tmp\research-viewer.sqlite3 --port 4180
+node tools\backtest-research-viewer\server.mjs --db $env:LOCALAPPDATA\strategy-lab\orb_edge_2026.sqlite3 --port 4180
 ```
 
 Open http://127.0.0.1:4180/, open an experiment, and read its study panel.
