@@ -46,6 +46,7 @@ from vibe.trading_bot.execution.portfolio_risk import (
     DAILY_LOSS_LIMIT,
     PortfolioRiskManager,
 )
+from vibe.common.risk.portfolio_sizing import net_liquidation
 from vibe.common.models import Trade
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
@@ -1755,6 +1756,7 @@ class TradingOrchestrator:
                             Path(self.config.database_path).parent
                             / "session_risk_state.json"
                         ),
+                        market_timezone=str(self.market_scheduler.timezone),
                     )
                     self.logger.info(
                         "Account-level risk enabled: %s",
@@ -3435,10 +3437,25 @@ class TradingOrchestrator:
         On breach: cancel every pending entry, flatten every position, block
         entries until the next session, and alert. While halted, any position
         that is still open (a close that did not complete) is retried.
+
+        Failures here never abort the trading cycle: exits must still run. A
+        failed evaluation blocks entries (fail-closed) until one succeeds.
         """
         risk_manager = self.portfolio_risk_manager
         if risk_manager is None or self.trade_executor is None:
             return
+        try:
+            await self._evaluate_account_risk_limits(risk_manager)
+            risk_manager.evaluation_error = None
+        except Exception as exc:
+            risk_manager.evaluation_error = str(exc)
+            self.logger.error(
+                "[RISK] Account risk evaluation failed; entries blocked until it succeeds: %s",
+                exc,
+                exc_info=True,
+            )
+
+    async def _evaluate_account_risk_limits(self, risk_manager: PortfolioRiskManager) -> None:
         from vibe.trading_bot.utils.datetime_utils import get_market_now
 
         now = get_market_now(self.market_scheduler)
@@ -3454,15 +3471,17 @@ class TradingOrchestrator:
 
         if risk_manager.config.daily_loss_limit_pct is None or risk_manager.session_equity is None:
             return
-        try:
-            account = await self.exchange.get_account()
-        except Exception as exc:
-            self.logger.error("Daily loss check skipped: account unavailable: %s", exc, exc_info=True)
+        account = await self.exchange.get_account()
+        current_equity = net_liquidation(account)
+        if current_equity is None:
+            # A missing NetLiquidation is a data problem, not a loss. Keep the
+            # current state; entries are blocked by the executor's NLV check.
+            self.logger.warning(
+                "[RISK] Daily loss check skipped: NetLiquidation unavailable (%r)",
+                account.broker_equity,
+            )
             return
-        current_equity = (
-            account.broker_equity if account.broker_equity is not None else account.equity
-        )
-        status = risk_manager.check_daily_loss(float(current_equity))
+        status = risk_manager.check_daily_loss(current_equity)
         if not status.triggered:
             return
 
@@ -3510,6 +3529,10 @@ class TradingOrchestrator:
             self.logger.error("Cannot list positions to flatten: %s", exc, exc_info=True)
             return flattened
         for symbol, position in positions.items():
+            if self.trade_executor.has_pending_close(symbol):
+                # A close is already in flight; resubmitting would only log a
+                # failure (and could re-notify) every cycle.
+                continue
             try:
                 tracked = self.strategy.get_position(symbol) if self.strategy else None
                 if tracked is not None:

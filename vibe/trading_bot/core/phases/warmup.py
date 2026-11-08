@@ -443,40 +443,61 @@ class WarmupPhaseManager(BasePhase):
 
         Only runs when the ruleset has a ``portfolio:`` block. A snapshot
         already persisted for today (bot restarted mid-session) is reused, so
-        the caps do not drift with intraday equity. On failure entries stay
-        blocked for the session and an alert is sent; there is no fallback
-        value.
+        the caps do not drift with intraday equity. E0 is only ever taken
+        before the session opens: a bot that starts after the open without a
+        persisted snapshot does not take a late one. On any failure entries
+        stay blocked for the session and one EQUITY_SNAPSHOT_FAILED alert is
+        sent; there is no fallback value. This step never raises.
         """
         risk_manager = getattr(self.orchestrator, "portfolio_risk_manager", None)
         if risk_manager is None:
             return True
 
-        from vibe.trading_bot.execution.portfolio_risk import SessionEquitySnapshot
+        from vibe.common.risk.portfolio_sizing import net_liquidation
+        from vibe.trading_bot.execution.portfolio_risk import (
+            SNAPSHOT_FAILED,
+            SessionEquitySnapshot,
+        )
 
         now = get_market_now(self.market_scheduler)
         session_date = now.date()
-        existing = risk_manager.begin_session(session_date)
-        if existing is not None:
-            self.logger.info(
-                "Step 4.6/6: Reusing session equity snapshot E0=$%.2f taken at %s",
-                existing.equity,
-                existing.taken_at.isoformat(),
-            )
-            return True
-
-        self.logger.info("Step 4.6/6: Taking session-start equity snapshot...")
         try:
+            existing = risk_manager.begin_session(session_date)
+            if existing is not None:
+                self.logger.info(
+                    "Step 4.6/6: Reusing session equity snapshot E0=$%.2f taken at %s",
+                    existing.equity,
+                    existing.taken_at.isoformat(),
+                )
+                return True
+
+            if risk_manager.halted_reason == SNAPSHOT_FAILED:
+                self.logger.error(
+                    "Step 4.6/6: Session equity snapshot already failed for %s; "
+                    "entries blocked: %s",
+                    session_date,
+                    risk_manager.halt_detail,
+                )
+                await self._alert_snapshot_failure(risk_manager, now)
+                return False
+
+            market_open = self.market_scheduler.get_open_time(now)
+            if market_open is not None and now >= market_open:
+                raise RuntimeError(
+                    "bot started after the session opened with no session-start "
+                    "snapshot; a late snapshot would size off intraday equity"
+                )
+
+            self.logger.info("Step 4.6/6: Taking session-start equity snapshot...")
             account = await self.orchestrator.exchange.get_account()
-            equity = (
-                account.broker_equity
-                if account.broker_equity is not None
-                else account.equity
-            )
-            if equity is None or equity <= 0:
-                raise ValueError(f"account equity unavailable or non-positive: {equity!r}")
+            equity = net_liquidation(account)
+            if equity is None:
+                raise ValueError(
+                    f"NetLiquidation unavailable or non-positive: {account.broker_equity!r}"
+                )
             snapshot = SessionEquitySnapshot(
                 session_date=session_date,
-                equity=float(equity),
+                equity=equity,
                 taken_at=now,
                 account_id=account.account_id,
             )
@@ -486,10 +507,6 @@ class WarmupPhaseManager(BasePhase):
                 snapshot.equity,
                 snapshot.account_id,
             )
-            persist = getattr(self.orchestrator, "_persist_dashboard_account_and_positions", None)
-            if persist is not None:
-                await persist(reason="session_start_equity", account=account)
-            return True
         except Exception as e:
             self.logger.error(
                 "   [!] Session equity snapshot failed; entries blocked for %s: %s",
@@ -497,22 +514,38 @@ class WarmupPhaseManager(BasePhase):
                 e,
                 exc_info=True,
             )
-            risk_manager.record_snapshot_failure(session_date, str(e))
-            await self._send_risk_alert(
-                RiskAlertPayload(
-                    event_type="EQUITY_SNAPSHOT_FAILED",
-                    timestamp=now,
-                    session_date=session_date.isoformat(),
-                    message=(
-                        "The session-start equity snapshot could not be taken, so "
-                        "position sizing has no basis. New entries are blocked for "
-                        "this session; open positions are still managed."
-                    ),
-                    error=str(e),
-                    version=BUILD_VERSION,
+            try:
+                risk_manager.record_snapshot_failure(session_date, str(e))
+            except Exception as record_error:
+                self.logger.error(
+                    "Could not record snapshot failure: %s", record_error, exc_info=True
                 )
-            )
+            await self._alert_snapshot_failure(risk_manager, now)
             return False
+
+        persist = getattr(self.orchestrator, "_persist_dashboard_account_and_positions", None)
+        if persist is not None:
+            await persist(reason="session_start_equity", account=account)
+        return True
+
+    async def _alert_snapshot_failure(self, risk_manager, now) -> None:
+        """Send EQUITY_SNAPSHOT_FAILED once per session."""
+        if not risk_manager.take_unsent_failure_alert():
+            return
+        await self._send_risk_alert(
+            RiskAlertPayload(
+                event_type="EQUITY_SNAPSHOT_FAILED",
+                timestamp=now,
+                session_date=now.date().isoformat(),
+                message=(
+                    "No session-start equity snapshot is available, so position "
+                    "sizing has no basis. New entries are blocked for this session; "
+                    "open positions are still managed."
+                ),
+                error=risk_manager.halt_detail or risk_manager.snapshot_error,
+                version=BUILD_VERSION,
+            )
+        )
 
     async def _send_risk_alert(self, payload: RiskAlertPayload) -> None:
         webhook_url = self.config.notifications.discord_webhook_url

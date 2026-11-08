@@ -78,6 +78,23 @@ def open_and_pending_symbols(
     return {item.symbol for item in positions} | {item.symbol for item in pending}
 
 
+def net_liquidation(account: object) -> Optional[float]:
+    """The broker's NetLiquidation, or None when it is missing or not positive.
+
+    Only the unmodified broker value (``broker_equity``) is used:
+    ``AccountState.equity`` is clamped to 0.0 when NetLiquidation is missing,
+    and reading that as a real account value would look like a total loss.
+    """
+    value = getattr(account, "broker_equity", None)
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 def exposures_from_mapping(
     positions: Mapping[str, object],
 ) -> list[OpenExposure]:
@@ -232,6 +249,7 @@ __all__ = [
     "equity_headroom",
     "exposures_from_mapping",
     "gross_open_notional",
+    "net_liquidation",
     "open_and_pending_symbols",
     "reserved_pending_notional",
     "size_portfolio_entry",

@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Literal, Optional
 from vibe.common.models import Order, OrderStatus, Position
 from vibe.common.risk import PositionSizer
 from vibe.common.risk.position_sizer import PositionSizeResult
-from vibe.common.risk.portfolio_sizing import PendingExposure
+from vibe.common.risk.portfolio_sizing import PendingExposure, net_liquidation
 from vibe.trading_bot.execution.order_manager import (
     OrderManager,
     OrderRetryPolicy,
@@ -297,14 +297,16 @@ class TradeExecutor:
             # just this symbol's: the open-position cap and the equity
             # headroom are properties of the account.
             existing_positions = await self.account_positions()
+            pending_entries = self.pending_exposures(existing_positions)
+            account_value = net_liquidation(account)
             risk_check = self.risk_manager.pre_trade_check(
                 symbol=symbol,
                 side=side,
                 quantity=1,  # Placeholder, will be sized
                 entry_price=sizing_entry_price,
-                current_account_value=account.equity,
+                current_account_value=account_value,
                 existing_positions=existing_positions,
-                pending_entries=self.pending_exposures(),
+                pending_entries=pending_entries,
             )
         else:
             # Check if we already have a position in this symbol
@@ -339,9 +341,9 @@ class TradeExecutor:
                 decision = self.risk_manager.size_entry(
                     entry_price=sizing_entry_price,
                     stop_price=stop_price,
-                    current_equity=account.equity,
+                    current_equity=account_value,
                     positions=existing_positions,
-                    pending_entries=self.pending_exposures(),
+                    pending_entries=pending_entries,
                     broker_available_funds=account.available_funds,
                 )
                 size_result = PositionSizeResult(
@@ -651,17 +653,25 @@ class TradeExecutor:
             for context in self._pending_entries.values()
         )
 
-    def pending_exposures(self) -> list[PendingExposure]:
+    def pending_exposures(
+        self,
+        positions: Optional[Dict[str, Position]] = None,
+    ) -> list[PendingExposure]:
         """Resting entries as account-level reservations.
 
-        Only the unfilled remainder is reserved: a filled share is already an
-        open position, and the context lingers until the fill is projected.
+        ``positions`` is the positions snapshot the caller will use alongside
+        these reservations. A fill is subtracted only when that snapshot
+        already holds its symbol; otherwise the fill may have landed after the
+        snapshot was taken, and dropping it would count the shares nowhere.
+        The full quantity stays reserved (and the symbol occupied) until the
+        snapshot shows the position.
         """
+        held = set(positions or {})
         exposures = []
         for order_id, context in self._pending_entries.items():
             quantity = float(context.get("quantity") or 0.0)
             managed = self.order_manager.get_order(order_id)
-            if managed is not None:
+            if managed is not None and context["symbol"] in held:
                 quantity -= float(managed.filled_qty or 0.0)
             price = float(context.get("trigger_price") or 0.0)
             if quantity <= 0 or price <= 0:
@@ -794,6 +804,10 @@ class TradeExecutor:
     def clear_pending_entry(self, order_id: str) -> None:
         """Forget entry context after its first fill is projected or cancellation."""
         self._pending_entries.pop(order_id, None)
+
+    def has_pending_close(self, symbol: str) -> bool:
+        """Whether a close order for ``symbol`` is already in flight."""
+        return symbol in self._pending_closes
 
     def clear_pending_close(
         self,

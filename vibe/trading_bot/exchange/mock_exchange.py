@@ -570,6 +570,8 @@ class MockExchange(ExecutionEngine):
             equity=equity,
             buying_power=self.cash,
             available_funds=self.cash,
+            # The simulated broker's NetLiquidation.
+            broker_equity=equity,
             portfolio_value=portfolio_value,
             base_currency="USD",
             cash_currency="USD",

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Dict, Iterable, Optional
+from zoneinfo import ZoneInfo
 
 from vibe.common.models import Position
 from vibe.common.risk import PositionSizer
@@ -29,6 +30,7 @@ from vibe.common.risk.portfolio_sizing import (
     PortfolioSizingDecision,
     equity_headroom,
     gross_open_notional,
+    net_liquidation,
     open_and_pending_symbols,
     reserved_pending_notional,
     size_portfolio_entry,
@@ -44,6 +46,8 @@ logger = logging.getLogger(__name__)
 SNAPSHOT_MISSING = "session_equity_snapshot_missing"
 SNAPSHOT_FAILED = "session_equity_snapshot_failed"
 DAILY_LOSS_LIMIT = "daily_loss_limit"
+RISK_EVALUATION_FAILED = "risk_evaluation_failed"
+NET_LIQUIDATION_UNAVAILABLE = "net_liquidation_unavailable"
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,7 @@ class PortfolioRiskManager(SimpleRiskManager):
         config: PortfolioConfig,
         position_sizer: PositionSizer,
         state_path: Optional[Path] = None,
+        market_timezone: str = "America/New_York",
     ) -> None:
         super().__init__(
             position_sizer=position_sizer,
@@ -89,11 +94,16 @@ class PortfolioRiskManager(SimpleRiskManager):
         )
         self.config = config
         self.state_path = Path(state_path) if state_path is not None else None
+        self.market_timezone = ZoneInfo(str(market_timezone))
         self.session_date: Optional[date] = None
         self.snapshot: Optional[SessionEquitySnapshot] = None
         self.snapshot_error: Optional[str] = None
         self.halted_reason: Optional[str] = None
         self.halt_detail: Optional[str] = None
+        self.failure_alerted = False
+        # Transient, never persisted: the last risk evaluation could not run
+        # (broker or state error). Entries are blocked until one succeeds.
+        self.evaluation_error: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -111,6 +121,8 @@ class PortfolioRiskManager(SimpleRiskManager):
             self.snapshot_error = None
             self.halted_reason = None
             self.halt_detail = None
+            self.failure_alerted = False
+            self.evaluation_error = None
             self._load_state(session_date)
         return self.snapshot
 
@@ -126,12 +138,23 @@ class PortfolioRiskManager(SimpleRiskManager):
         self._save_state()
 
     def record_snapshot_failure(self, session_date: date, error: str) -> None:
+        """Block entries for the session; the first failure arms one alert."""
         self.begin_session(session_date)
+        if self.snapshot is None and self.halted_reason != SNAPSHOT_FAILED:
+            self.failure_alerted = False
         self.snapshot_error = error
         if self.snapshot is None:
             self.halted_reason = SNAPSHOT_FAILED
             self.halt_detail = error
         self._save_state()
+
+    def take_unsent_failure_alert(self) -> bool:
+        """True exactly once per session for a snapshot failure needing an alert."""
+        if self.halted_reason != SNAPSHOT_FAILED or self.failure_alerted:
+            return False
+        self.failure_alerted = True
+        self._save_state()
+        return True
 
     def halt(self, reason: str, detail: Optional[str] = None) -> None:
         """Block new entries until the next session."""
@@ -151,6 +174,8 @@ class PortfolioRiskManager(SimpleRiskManager):
             or self.config.daily_loss_limit_pct is not None
         ) and self.snapshot is None:
             return SNAPSHOT_MISSING
+        if self.evaluation_error is not None:
+            return RISK_EVALUATION_FAILED
         return None
 
     def sizing_equity(self, current_equity: float) -> float:
@@ -186,6 +211,10 @@ class PortfolioRiskManager(SimpleRiskManager):
         blocked = self.entries_blocked_reason()
         if blocked is not None:
             return RiskCheckResult(passed=False, reason=f"Entries blocked: {blocked}")
+        if current_account_value is None or current_account_value <= 0:
+            return RiskCheckResult(
+                passed=False, reason=f"Entries blocked: {NET_LIQUIDATION_UNAVAILABLE}"
+            )
         if quantity <= 0:
             return RiskCheckResult(passed=False, reason="Quantity must be positive")
 
@@ -249,6 +278,8 @@ class PortfolioRiskManager(SimpleRiskManager):
         exclude_pending_group: Optional[str] = None,
     ) -> PortfolioSizingDecision:
         """Size one entry with the shared rule the backtester also uses."""
+        if current_equity is None or current_equity <= 0:
+            raise ValueError(NET_LIQUIDATION_UNAVAILABLE)
         risk_pct = self.position_sizer.risk_pct
         if risk_pct is None:
             raise ValueError("portfolio sizing requires a percentage risk (max_loss_pct)")
@@ -281,8 +312,9 @@ class PortfolioRiskManager(SimpleRiskManager):
         """
         e0 = self.session_equity
         limit_pct = self.config.daily_loss_limit_pct
-        if e0 is None or limit_pct is None:
-            return DailyLossStatus(False, 0.0, 0.0, e0 or 0.0, current_equity)
+        if e0 is None or limit_pct is None or current_equity is None or current_equity <= 0:
+            # No basis, no limit, or no valid NLV: never read as a loss.
+            return DailyLossStatus(False, 0.0, 0.0, e0 or 0.0, current_equity or 0.0)
         pnl = current_equity - e0
         limit = -limit_pct * e0
         return DailyLossStatus(pnl <= limit, pnl, limit, e0, current_equity)
@@ -292,25 +324,58 @@ class PortfolioRiskManager(SimpleRiskManager):
     # ------------------------------------------------------------------
 
     def _load_state(self, session_date: date) -> None:
+        """Restore today's persisted state; an unreadable file today fails closed.
+
+        A file that cannot be parsed may have held today's E0 or a daily-loss
+        halt. If it was written today (market date of its mtime), the session
+        is treated as a failed snapshot: entries blocked, one alert, and no
+        late re-basing on intraday equity.
+        """
         if self.state_path is None or not self.state_path.is_file():
             return
         try:
             data = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            logger.error("Unreadable session risk state %s: %s", self.state_path, exc, exc_info=True)
-            return
-        if data.get("session_date") != session_date.isoformat():
-            return
-        if data.get("equity") is not None:
-            self.snapshot = SessionEquitySnapshot(
-                session_date=session_date,
-                equity=float(data["equity"]),
-                taken_at=datetime.fromisoformat(data["taken_at"]),
-                account_id=data.get("account_id"),
+            if not isinstance(data, dict):
+                raise ValueError(f"expected a JSON object, got {type(data).__name__}")
+            if data.get("session_date") != session_date.isoformat():
+                return
+            snapshot = None
+            if data.get("equity") is not None:
+                equity = float(data["equity"])
+                if equity <= 0:
+                    raise ValueError(f"non-positive persisted equity {equity}")
+                snapshot = SessionEquitySnapshot(
+                    session_date=session_date,
+                    equity=equity,
+                    taken_at=datetime.fromisoformat(str(data["taken_at"])),
+                    account_id=data.get("account_id"),
+                )
+            self.snapshot = snapshot
+            self.snapshot_error = data.get("snapshot_error")
+            self.halted_reason = data.get("halted_reason")
+            self.halt_detail = data.get("halt_detail")
+            self.failure_alerted = bool(data.get("failure_alerted", False))
+        except Exception as exc:
+            logger.error(
+                "Unreadable session risk state %s: %s", self.state_path, exc, exc_info=True
             )
-        self.snapshot_error = data.get("snapshot_error")
-        self.halted_reason = data.get("halted_reason")
-        self.halt_detail = data.get("halt_detail")
+            self.snapshot = None
+            self.halted_reason = None
+            self.halt_detail = None
+            if self._state_file_written_on(session_date):
+                error = f"session risk state unreadable: {exc}"
+                self.snapshot_error = error
+                self.halted_reason = SNAPSHOT_FAILED
+                self.halt_detail = error
+                self.failure_alerted = False
+                self._save_state()
+
+    def _state_file_written_on(self, session_date: date) -> bool:
+        try:
+            mtime = datetime.fromtimestamp(self.state_path.stat().st_mtime, tz=self.market_timezone)
+        except OSError:
+            return True  # cannot tell: fail closed
+        return mtime.date() == session_date
 
     def _save_state(self) -> None:
         if self.state_path is None or self.session_date is None:
@@ -323,6 +388,7 @@ class PortfolioRiskManager(SimpleRiskManager):
             "snapshot_error": self.snapshot_error,
             "halted_reason": self.halted_reason,
             "halt_detail": self.halt_detail,
+            "failure_alerted": self.failure_alerted,
         }
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -330,5 +396,5 @@ class PortfolioRiskManager(SimpleRiskManager):
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(data, handle, indent=2)
             os.replace(tmp, self.state_path)
-        except OSError as exc:
+        except Exception as exc:
             logger.error("Failed to persist session risk state: %s", exc, exc_info=True)

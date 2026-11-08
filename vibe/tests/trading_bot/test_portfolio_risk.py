@@ -32,6 +32,8 @@ from vibe.trading_bot.exchange.mock_exchange import MockExchange
 from vibe.trading_bot.execution.order_manager import OrderManager
 from vibe.trading_bot.execution.portfolio_risk import (
     DAILY_LOSS_LIMIT,
+    NET_LIQUIDATION_UNAVAILABLE,
+    RISK_EVALUATION_FAILED,
     SNAPSHOT_FAILED,
     SNAPSHOT_MISSING,
     PortfolioRiskManager,
@@ -451,3 +453,285 @@ def test_risk_alert_embed_follows_notification_standard():
         RiskAlertPayload(
             event_type="NOPE", timestamp=payload.timestamp, session_date="x", message="m"
         )
+
+
+# ---------------------------------------------------------------------------
+# Milestone A review fixes
+# ---------------------------------------------------------------------------
+
+def _capture_alerts(monkeypatch, module):
+    sent = []
+
+    class FakeNotifier:
+        async def send_risk_alert(self, payload):
+            sent.append(payload)
+            return True
+
+    @asynccontextmanager
+    async def fake_context(_url):
+        yield FakeNotifier()
+
+    monkeypatch.setattr(module, "discord_notification_context", fake_context)
+    return sent
+
+
+class NoNetLiquidationExchange(MockExchange):
+    """IB reported no NetLiquidation: AccountState.equity is clamped to 0."""
+
+    async def get_account(self):
+        account = await super().get_account()
+        return account.model_copy(update={"broker_equity": None, "equity": 0.0})
+
+
+async def _wired_orchestrator(tmp_path, monkeypatch, exchange_cls=MockExchange, **config):
+    import vibe.trading_bot.core.orchestrator as orchestrator_module
+
+    sent = _capture_alerts(monkeypatch, orchestrator_module)
+    orchestrator = _orchestrator(tmp_path)
+    manager = _manager(**config)
+    manager.record_snapshot(_snapshot(10_000.0))
+    exchange = exchange_cls(initial_capital=10_000.0, commission_pct=0.0, partial_fill_probability=0.0)
+    executor = TradeExecutor(
+        exchange=exchange,
+        order_manager=OrderManager(exchange=exchange),
+        position_sizer=PositionSizer(risk_pct=0.01),
+        risk_manager=manager,
+    )
+    orchestrator.exchange = exchange
+    orchestrator.trade_executor = executor
+    orchestrator.portfolio_risk_manager = manager
+    return orchestrator, manager, executor, exchange, sent
+
+
+@pytest.mark.asyncio
+async def test_missing_net_liquidation_never_triggers_the_daily_loss_limit(tmp_path, monkeypatch):
+    orchestrator, manager, executor, exchange, sent = await _wired_orchestrator(
+        tmp_path, monkeypatch, exchange_cls=NoNetLiquidationExchange
+    )
+    await exchange.set_price("AAA", 100.0)
+    await exchange.submit_order("AAA", "buy", 10, order_type="market", price=100.0)
+
+    await orchestrator._enforce_account_risk_limits()
+
+    assert manager.halted_reason is None
+    assert sent == []
+    assert "AAA" in await executor.account_positions()
+    blocked = await executor.execute_signal("AAA", -1, 100.0, 101.0)
+    assert not blocked.success and NET_LIQUIDATION_UNAVAILABLE in blocked.reason
+
+
+def test_daily_loss_ignores_non_positive_equity():
+    manager = _manager()
+    manager.record_snapshot(_snapshot(10_000.0))
+    assert not manager.check_daily_loss(0.0).triggered
+    assert not manager.check_daily_loss(None).triggered
+
+
+@pytest.mark.asyncio
+async def test_risk_evaluation_errors_fail_closed_without_aborting(tmp_path, monkeypatch):
+    orchestrator, manager, executor, exchange, _sent = await _wired_orchestrator(
+        tmp_path, monkeypatch
+    )
+    manager.halt(DAILY_LOSS_LIMIT, "earlier breach")
+
+    async def broken_positions():
+        raise TimeoutError("IB positions timed out")
+
+    monkeypatch.setattr(executor, "account_positions", broken_positions)
+
+    await orchestrator._enforce_account_risk_limits()  # must not raise
+    assert manager.evaluation_error is not None
+
+    manager.halted_reason = None
+    assert manager.entries_blocked_reason() == RISK_EVALUATION_FAILED
+
+    monkeypatch.undo()
+    await orchestrator._enforce_account_risk_limits()
+    assert manager.evaluation_error is None
+    assert manager.entries_blocked_reason() is None
+
+
+@pytest.mark.asyncio
+async def test_trading_cycle_still_monitors_exits_when_risk_evaluation_fails(tmp_path, monkeypatch):
+    orchestrator, manager, executor, exchange, _sent = await _wired_orchestrator(
+        tmp_path, monkeypatch
+    )
+
+    async def broken_get_account():
+        raise TimeoutError("account summary timed out")
+
+    monitored = []
+
+    async def monitor():
+        monitored.append(True)
+
+    async def noop():
+        return None
+
+    orchestrator.data_manager = SimpleNamespace()
+    orchestrator.active_provider = None
+    orchestrator.ruleset.instruments.symbols = []
+    monkeypatch.setattr(exchange, "get_account", broken_get_account)
+    monkeypatch.setattr(orchestrator, "_monitor_open_positions", monitor)
+    monkeypatch.setattr(orchestrator, "_check_and_send_orb_notification", noop)
+    monkeypatch.setattr(orchestrator, "_flush_elapsed_bars", noop)
+
+    await orchestrator._trading_cycle()
+
+    assert monitored == [True]
+    assert manager.evaluation_error is not None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "[1, 2, 3]",
+        '{"session_date": "TODAY", "equity": 5000, "taken_at": null}',
+        '{"session_date": "TODAY", "equity": "abc"}',
+        "{not json",
+    ],
+)
+def test_corrupt_state_written_today_fails_closed_and_alerts_once(tmp_path, content):
+    today = datetime.now(ET).date()
+    path = tmp_path / "session_risk_state.json"
+    path.write_text(content.replace("TODAY", today.isoformat()), encoding="utf-8")
+    manager = _manager(state_path=path)
+
+    assert manager.begin_session(today) is None  # never raises
+    assert manager.entries_blocked_reason() == SNAPSHOT_FAILED
+    assert manager.take_unsent_failure_alert() is True
+    assert manager.take_unsent_failure_alert() is False
+
+    restarted = _manager(state_path=path)
+    restarted.begin_session(today)
+    assert restarted.entries_blocked_reason() == SNAPSHOT_FAILED
+    assert restarted.take_unsent_failure_alert() is False
+
+
+def test_corrupt_state_from_an_earlier_day_is_ignored(tmp_path):
+    import os
+
+    path = tmp_path / "session_risk_state.json"
+    path.write_text("{not json", encoding="utf-8")
+    old = datetime(2026, 7, 17, 12, 0, tzinfo=ET).timestamp()
+    os.utime(path, (old, old))
+    manager = _manager(state_path=path)
+
+    manager.begin_session(SESSION)
+
+    assert manager.halted_reason is None
+    assert manager.entries_blocked_reason() == SNAPSHOT_MISSING
+
+
+@pytest.mark.asyncio
+async def test_pending_fill_missing_from_positions_snapshot_stays_reserved():
+    manager = _manager(max_open_positions=2)
+    manager.record_snapshot(_snapshot())
+    executor, exchange = await _executor(manager)
+    await exchange.set_price("BBB", 100.0)
+    pending = await executor.execute_signal(
+        "BBB", 1, 101.0, 99.0,
+        entry_order=EntryOrderIntent(order_type="stop", trigger_price=101.0),
+    )
+    assert pending.pending
+    order_id = pending.order_id
+    reserved = executor.pending_exposures({})[0].notional
+
+    # The stop fills after the caller's positions snapshot was taken.
+    executor.order_manager.get_order(order_id).filled_qty = float(
+        executor.get_pending_entry(order_id)["quantity"]
+    )
+
+    stale_snapshot = executor.pending_exposures({})
+    assert [p.symbol for p in stale_snapshot] == ["BBB"]
+    assert stale_snapshot[0].notional == pytest.approx(reserved)
+
+    bbb = _position("BBB", "long", 10, 101.0)
+    assert executor.pending_exposures({"BBB": bbb}) == []
+
+
+@pytest.mark.asyncio
+async def test_halted_flatten_skips_symbols_with_a_close_in_flight(tmp_path, monkeypatch):
+    orchestrator, manager, executor, exchange, sent = await _wired_orchestrator(
+        tmp_path, monkeypatch
+    )
+    await exchange.set_price("AAA", 100.0)
+    await exchange.submit_order("AAA", "buy", 10, order_type="market", price=100.0)
+    manager.halt(DAILY_LOSS_LIMIT, "earlier breach")
+    executor._pending_closes["AAA"] = "close-1"
+    attempts = []
+
+    async def record_close(symbol, **kwargs):
+        attempts.append(symbol)
+        raise AssertionError("must not resubmit a close in flight")
+
+    monkeypatch.setattr(executor, "_close_position", record_close)
+
+    for _ in range(3):
+        await orchestrator._enforce_account_risk_limits()
+
+    assert attempts == []
+    assert manager.evaluation_error is None
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_mid_session_start_takes_no_late_snapshot_and_alerts_once(monkeypatch):
+    import vibe.trading_bot.core.phases.warmup as warmup_module
+
+    sent = _capture_alerts(monkeypatch, warmup_module)
+
+    class Exchange:
+        calls = 0
+
+        async def get_account(self):
+            Exchange.calls += 1
+            return SimpleNamespace(broker_equity=9_000.0, equity=9_000.0, account_id="DU1")
+
+    manager = _manager()
+    orchestrator = SimpleNamespace(
+        config=SimpleNamespace(
+            notifications=SimpleNamespace(discord_webhook_url="https://discord.invalid/hook")
+        ),
+        market_scheduler=MockMarketScheduler(
+            initial_date=datetime(2026, 7, 20, 10, 30), timezone="America/New_York"
+        ),
+        portfolio_risk_manager=manager,
+        exchange=Exchange(),
+    )
+    phase = WarmupPhaseManager(orchestrator)
+
+    assert await phase._take_session_equity_snapshot() is False
+    assert await phase._take_session_equity_snapshot() is False
+
+    assert Exchange.calls == 0
+    assert manager.session_equity is None
+    assert manager.entries_blocked_reason() == SNAPSHOT_FAILED
+    assert [p.event_type for p in sent] == ["EQUITY_SNAPSHOT_FAILED"]
+
+
+@pytest.mark.asyncio
+async def test_warmup_snapshot_rejects_missing_net_liquidation(monkeypatch):
+    import vibe.trading_bot.core.phases.warmup as warmup_module
+
+    sent = _capture_alerts(monkeypatch, warmup_module)
+
+    class Exchange:
+        async def get_account(self):
+            return SimpleNamespace(broker_equity=None, equity=0.0, account_id="DU1")
+
+    manager = _manager()
+    orchestrator = SimpleNamespace(
+        config=SimpleNamespace(
+            notifications=SimpleNamespace(discord_webhook_url="https://discord.invalid/hook")
+        ),
+        market_scheduler=MockMarketScheduler(
+            initial_date=datetime(2026, 7, 20, 9, 25), timezone="America/New_York"
+        ),
+        portfolio_risk_manager=manager,
+        exchange=Exchange(),
+    )
+
+    assert await WarmupPhaseManager(orchestrator)._take_session_equity_snapshot() is False
+    assert manager.entries_blocked_reason() == SNAPSHOT_FAILED
+    assert len(sent) == 1
