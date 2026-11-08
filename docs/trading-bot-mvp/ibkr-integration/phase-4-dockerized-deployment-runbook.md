@@ -1,159 +1,70 @@
 # Phase 4 Dockerized Deployment Runbook
 
-**Status:** Started 2026-07-27<br>
-**Scope:** Define and validate a Docker Compose deployment for the IBKR paper stack without cutting over production from the current Oracle VM/systemd services.
+**Status:** Production since 2026-11-08 (cut over from systemd on the Oracle VM)<br>
+**Scope:** Run the IBKR paper stack as a Docker Compose project so deploys are identical across hosts, operators and coding agents, and the stack can move to another cloud with only Docker installed.
+
+Day-to-day procedures (fresh host setup, deploys, secret rotation, gateway upgrades, VNC fallback, rollback) live in [`deploy/ibkr-docker/README.md`](../../../deploy/ibkr-docker/README.md). This document records the design and the cutover evidence.
 
 ---
 
-## Objective
+## Architecture
 
-Package the paper trading stack into two operational containers while preserving the current security and recovery model:
+Compose project `strategy-lab` (`deploy/ibkr-docker/docker-compose.paper.yml`) with two services on the default bridge network:
 
-- `ib-gateway`: IB Gateway + IBC + Xvfb + optional localhost-only VNC fallback. The base Compose file does not publish VNC; add a temporary local override only when manual GUI fallback is needed.
-- `trading-bot`: Strategy orchestration, IB broker adapter, health API, SQLite stores, Discord notifications, and the in-process Supabase dashboard publisher worker.
+| Service | Image | Role |
+|---|---|---|
+| `ib-gateway` | `ghcr.io/gnzsnz/ib-gateway:10.50.1f`, pinned by digest | IB Gateway + IBC + Xvfb + socat. Logs in with credentials from `secrets/`, restarts daily at 04:00 UTC. |
+| `trading-bot` | `strategy-lab-trading-bot:local`, built from `vibe/trading_bot/Dockerfile` | Strategy orchestrator, IB broker adapter, health API, SQLite stores, Discord notifications and the in-process Supabase `RemoteDataPublisher`. |
 
-The first Phase 4 milestone is a local/VM shadow deployment that can start Gateway, expose the API only inside the Compose boundary, start the bot after Gateway is API-ready, and preserve data/logs across restarts. Production remains on the existing systemd services until Phase 3 recovery runbooks and multi-session burn-in are complete.
+Key decisions:
 
-The remote data publisher does not need its own container for this milestone. The current application starts `RemoteDataPublisher` inside the orchestrator when dashboard publishing is enabled and Supabase credentials are configured. Splitting it into a standalone worker would require a dedicated entrypoint plus a deliberately shared outbox volume; that is useful later, but it is not required for the first Docker shadow stack.
-
----
-
-## Key Design Decision
-
-The `trading-bot` service uses `network_mode: "service:ib-gateway"` in the Phase 4 scaffold. This makes the bot share the Gateway container's network namespace, so the bot can keep connecting to `127.0.0.1:4002` just like it does on the VM today.
-
-Benefits:
-
-- Keeps IB Gateway API binding effectively localhost-only from the container pair's point of view.
-- Avoids exposing `4002` on the Docker host.
-- Avoids binding the VM's existing fallback VNC port unless VNC is explicitly enabled through a local override.
-- Avoids adding Docker bridge CIDRs to Gateway trusted IP settings during the first containerization pass.
-
-Tradeoff:
-
-- Ports for both containers are published from the `ib-gateway` service definition. For example, the bot health API on `8080` is published by the `ib-gateway` service because both processes share the same network namespace.
+- **Maintained gateway image instead of a homemade one.** `gnzsnz/ib-gateway` is widely used, bundles IBC and is configured entirely through environment variables. We pin both the tag and the digest, so an upgrade is a deliberate one-line change (see the README's "Upgrading IB Gateway").
+- **Compose network, not a shared network namespace.** Inside the gateway container, socat relays the paper API port `4002` to `4004`. The bot connects to `ib-gateway:4004`. Because socat connects from `127.0.0.1`, Gateway's trusted-IP list needs no Docker CIDRs. No IB port is published to the host.
+- **Gateway healthcheck probes `4002`, not `4004`.** socat listens on `4004` immediately, so only `4002` shows that Gateway has logged in and the API is up. The bot `depends_on` the gateway being healthy.
+- **Secrets stay out of images and compose.** The username is in `secrets/ib-gateway.env`. The password is a Docker secret file (`secrets/tws_password`, uid 1000, mode 400) read through `TWS_PASSWORD_FILE`. Bot secrets are in `secrets/trading-bot.env`. All are git-ignored.
+- **Non-secret runtime settings live in compose `environment`**, mirroring the former systemd unit. Compose `environment` overrides `env_file`, so dashboard keys are kept only in the env file to avoid silent drift.
+- **Persistent state is bind-mounted** under `deploy/ibkr-docker/`: `data/trading-bot` → `/app/data`, `logs/trading-bot` → `/app/logs`, `state/tws_settings` → Gateway settings. Container logs use json-file rotation (20 MB × 5).
+- **Bot health API** is published on `127.0.0.1:8080` only.
+- **`RemoteDataPublisher` stays in-process** in `trading-bot`. A standalone worker would need its own entrypoint and a shared outbox volume. It isn't needed yet.
 
 ---
 
-## Files
+## Scripts
 
-Phase 4 scaffold:
-
-```text
-deploy/ibkr-docker/
-├── README.md
-├── docker-compose.paper.yml
-├── ib-gateway/
-│   ├── Dockerfile
-│   ├── entrypoint.sh
-│   └── healthcheck.sh
-├── secrets/
-│   ├── ibc.env.example
-│   └── trading-bot.env.example
-└── .gitignore
-```
-
-Ignored runtime paths under `deploy/ibkr-docker/`:
-
-- `runtime/` for operator-provided IB Gateway and IBC installs.
-- `secrets/*.env` and `secrets/config.ini` for real credentials/config.
-- `data/`, `logs/`, and `state/` for persistent local outputs.
+| Script | Purpose |
+|---|---|
+| `import-ibkr-credentials.sh` | Writes `secrets/ib-gateway.env` and `secrets/tws_password` from `/etc/ibkr/config.ini`, or from hidden prompts with `--prompt`. It prints only lengths. |
+| `cutover-systemd-to-docker.sh` | Pre-pulls and builds while systemd is still running, asks for confirmation, then stops and disables the four systemd units. It backs up `/opt/strategy-lab/data`, copies bot data into the Docker volume, installs the bot env, runs `up -d` and waits for the bot to be healthy. |
+| `rollback-to-systemd.sh` | Runs `compose down`, optionally copies Docker bot data back, then re-enables the systemd units. |
+| `rotate-env-key.sh` | Rotates one key in `secrets/trading-bot.env` with a backup, a last-4-character check and a confirmation, then recreates the bot. |
 
 ---
 
-## Prepare Runtime Inputs
+## Cutover Evidence (2026-11-08, Oracle VM)
 
-Do not commit IBKR credentials, IBC config, or installed Gateway binaries. On a Phase 4 test host, populate:
+- VM checked out `main` at `d7f8057`. Stale containers and images from an earlier shadow attempt were removed.
+- `cutover-systemd-to-docker.sh` completed. Data backup: `/var/backups/strategy-lab/data-20261108-024555.tgz`.
+- Gateway: IBC login completed on the first attempt, then `Read-Only API checkbox is now set to: false`. The container is healthy.
+- Bot: `Connected to IB at ib-gateway:4004`, `Reconciled 1 durable execution publish events`, `Dashboard RemoteDataPublisher started`, outbox pruning OK, `Trading loop started`. Weekend sleep until the 2026-11-09 14:25 UTC warm-up. No errors.
+- `/api/health` returns 200. `/health/ready` returns 503 by design until the warm-up sets the heartbeat (`core/phases/warmup.py`).
+- Memory on the 1 GB VM: 501 MiB used, 303 MiB available, 488 MiB of 4 GiB swap used.
 
-```text
-deploy/ibkr-docker/runtime/ibgateway/   # IB Gateway installation/settings path
-deploy/ibkr-docker/runtime/IBC/         # IBC installation path
-deploy/ibkr-docker/secrets/config.ini   # IBC config with credentials, chmod 600
-deploy/ibkr-docker/secrets/ibc.env      # IBC environment, chmod 600
-deploy/ibkr-docker/secrets/trading-bot.env
-```
+---
 
-Start by copying the checked-in examples:
+## Remaining Validation
+
+- [ ] First trading session under Docker (2026-11-09): warm-up readiness turns green, ORB levels and order notifications fire, and the end-of-day Supabase publish succeeds.
+- [ ] Gateway survives its daily 04:00 UTC restart, and the bot reconnects through the Compose DNS name.
+- [ ] VM reboot test: both containers return via `restart: unless-stopped` and the bot reconnects.
+- [ ] After a few stable sessions, remove legacy artifacts (`deploy/ibkr-docker/runtime/`, old `secrets/config.ini`/`ibc.env`, the systemd units, `/opt/ibkr`, `/opt/IBC`, `/etc/ibkr`) and the secret `.bak` files.
+
+---
+
+## Rollback
 
 ```bash
-cd deploy/ibkr-docker
-cp secrets/ibc.env.example secrets/ibc.env
-cp secrets/trading-bot.env.example secrets/trading-bot.env
-chmod 600 secrets/ibc.env secrets/trading-bot.env
+cd /opt/strategy-lab
+sudo bash deploy/ibkr-docker/rollback-to-systemd.sh
 ```
 
-Then edit the copied files on the deployment host. Do not paste secret values into chat or logs.
-
-The Compose file intentionally overrides `JAVA_PATH=/opt/java/openjdk/bin` for IBC. IBC expects `JAVA_PATH` to be a directory containing `java`; if an inherited VM env file uses the executable path instead, the container will fail with `No java executable found in supplied path .../java`.
-
----
-
-## Build And Start Shadow Stack
-
-From repo root:
-
-```bash
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml config
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml build
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml up -d ib-gateway
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml ps
-```
-
-After Gateway is healthy, start the bot:
-
-```bash
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml up -d trading-bot
-```
-
-Health checks:
-
-```bash
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml ps
-curl -fsS http://127.0.0.1:8080/api/health
-curl -fsS http://127.0.0.1:8080/health/ready
-```
-
-IB API port `4002` is intentionally not published to the Docker host. Use an exec probe if needed:
-
-```bash
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml exec ib-gateway bash -lc 'timeout 2 bash -c "</dev/tcp/127.0.0.1/4002" && echo open'
-```
-
----
-
-## Validation Gates
-
-Do not use this stack for production paper trading until these gates pass:
-
-- `docker compose config` succeeds with no secret values printed.
-- `ib-gateway` health check reports healthy after cold start.
-- VNC fallback is reachable only through localhost/SSH tunnel when enabled.
-- `trading-bot` starts only after Gateway API readiness.
-- Bot health API reports `alive` and `ready`.
-- Read-only IB probe confirms expected paper account ID, positions, and open orders.
-- A tiny paper order smoke test can submit, fill, and reconcile to the expected final position.
-- Stage 5 dashboard validation passes with Supabase publishing enabled.
-- Logs show `Dashboard RemoteDataPublisher started` inside the `trading-bot` container when Supabase service-key publishing is configured.
-- Container restart test preserves Gateway settings, local SQLite files, logs, and dashboard outbox state.
-
----
-
-## Production Cutover Rules
-
-Phase 4 cutover is blocked until:
-
-- Phase 3 restart/reconciliation runbook exists and has been exercised.
-- Gateway authentication prompt handling and operator alerting are proven.
-- Log rotation is configured for Gateway, IBC, and bot container logs.
-- Multi-session paper burn-in shows stable Gateway, bot, dashboard publisher, and final reconciliation.
-- The old VM/systemd path has a rollback plan and current config/data backup.
-
----
-
-## Current Status
-
-Started on 2026-07-27:
-
-- Added Docker Compose paper-stack scaffold under `deploy/ibkr-docker/`.
-- Kept production on VM/systemd.
-- Preserved current bot-to-Gateway localhost contract through shared container network namespace.
+The systemd unit files are kept, only disabled. Secrets rotated while running under Docker are **not** copied back to `/etc/strategy-lab/`; update them there before rolling back.
