@@ -58,9 +58,42 @@ The Supabase remote data publisher is part of the `trading-bot` process. When `D
 
 Do not add a separate publisher container for the first Phase 4 shadow stack. A standalone publisher can be introduced later if we add a dedicated worker entrypoint and intentionally share the outbox volume between services.
 
-## Updating a Deployment
+## Updating Production (systemd, current)
 
-Run on the VM after changes are merged to `main`. Use `build` + `--force-recreate`: `docker compose restart` neither rebuilds the image (needed when Python dependencies change) nor re-reads `env_file`.
+The live Oracle VM runs natively under systemd, not this Compose stack:
+
+| Unit | Role |
+|------|------|
+| `xvfb-ibkr` | Virtual display for IB Gateway |
+| `ibc-gateway` | IBC + IB Gateway, API on `:4002` |
+| `x11vnc-ibkr` | VNC fallback on `:5901` |
+| `trading-bot-phase2` | `.venv/bin/python -m vibe.trading_bot.main run`, health on `:8080` |
+
+The bot's environment comes from `/etc/strategy-lab/trading-bot-phase2.env` (`EnvironmentFile=` in the unit). `secrets/trading-bot.env` is not read by the live bot.
+
+Do not `docker compose up` this stack on the production VM: it collides on port 8080 and would start a second IB Gateway login.
+
+```bash
+cd /opt/strategy-lab
+git fetch origin && git checkout main && git pull --ff-only
+.venv/bin/pip install -q -r vibe/trading_bot/requirements.txt   # when dependencies change
+sudo systemctl restart trading-bot-phase2
+systemctl is-active trading-bot-phase2
+sudo journalctl -u trading-bot-phase2 -n 80 --no-pager -o cat | grep -iE 'RemoteDataPublisher|ruleset|Connected to IB|error'
+```
+
+A healthy start logs `Connected to IB at 127.0.0.1:4002`, `Dashboard RemoteDataPublisher started`, and `Trading loop started`.
+
+Rotate a bot secret on the VM by passing the systemd env file to the rotation script (answer `N` to its Docker recreate prompt), then restart the service:
+
+```bash
+sudo bash deploy/ibkr-docker/rotate-env-key.sh DASHBOARD__SUPABASE_SERVICE_KEY /etc/strategy-lab/trading-bot-phase2.env
+sudo systemctl restart trading-bot-phase2
+```
+
+## Updating a Docker Deployment (Phase 4 shadow stack)
+
+Run on a Docker host after changes are merged to `main`. Use `build` + `--force-recreate`: `docker compose restart` neither rebuilds the image (needed when Python dependencies change) nor re-reads `env_file`.
 
 ```bash
 cd /opt/strategy-lab
