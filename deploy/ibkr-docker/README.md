@@ -9,14 +9,25 @@ This is the production deployment for the paper-trading bot. It runs two contain
 
 The bot connects to `ib-gateway:4004` over the Compose network. `4004` is the image's socat relay to the in-container paper API on `4002`. No IB port is published to the host. The bot health API is published on `127.0.0.1:8080` only.
 
-Every host and every coding agent deploys the same way: `git pull` and then `docker compose`. Do not hand-install IB Gateway, IBC or a Python venv on a host.
+Every host and every coding agent deploys the same way: merge to `main`, then run [`deploy.sh`](deploy.sh) on the host as the deploy user (no sudo). It preflights, pulls `main`, rebuilds, recreates, verifies and logs to `deploys.log`. Do not hand-type `docker compose`/`systemctl` commands for routine operations, and do not hand-install IB Gateway, IBC or a Python venv on a host. Coding agents follow the [`deploy-trading-bot` skill](../../.claude/skills/deploy-trading-bot/SKILL.md).
+
+| Task | Command (from `/opt/strategy-lab`) |
+|------|-------------------------------------|
+| Health report (read-only) | `bash deploy/ibkr-docker/deploy.sh status` |
+| Preflight only | `bash deploy/ibkr-docker/deploy.sh check` |
+| Ship a code change | `bash deploy/ibkr-docker/deploy.sh bot` |
+| Gateway image/settings or IBKR password change | `bash deploy/ibkr-docker/deploy.sh gateway` |
+| Undo the last bot deploy | `bash deploy/ibkr-docker/deploy.sh rollback-bot` |
+
+`deploy.sh` refuses to change anything Mon–Fri 09:25–16:05 ET unless `--allow-market-hours` is given, and prompts before changing production unless `--yes` is given.
 
 ## Layout
 
 ```text
 deploy/ibkr-docker/
 ├── docker-compose.paper.yml
-├── import-ibkr-credentials.sh     # IBKR login -> secrets/, never echoes values
+├── deploy.sh                      # status | check | bot | gateway | rollback-bot
+├── import-ibkr-credentials.sh      # IBKR login -> secrets/, never echoes values
 ├── cutover-systemd-to-docker.sh   # one-time migration from the legacy systemd stack
 ├── rollback-to-systemd.sh         # undo the cutover
 ├── rotate-env-key.sh              # swap one secret in secrets/trading-bot.env
@@ -35,6 +46,7 @@ These paths are git-ignored and exist only on the host:
 | `data/trading-bot/` | bot SQLite DBs (`/app/data`) | uid `1000` |
 | `logs/trading-bot/` | bot file logs (`/app/logs`) | uid `1000` |
 | `state/tws_settings/` | IB Gateway settings (`jts.ini`) | uid `1000` |
+| `deploys.log` | one line per `deploy.sh` change: time, action, result, sha, user | deploy user |
 
 Both images run as uid `1000`. That is why the container-read paths are chowned to `1000`, whatever that uid is called on the host.
 
@@ -46,22 +58,21 @@ Prerequisites are Docker Engine with the Compose v2 plugin, a checkout at `/opt/
 cd /opt/strategy-lab/deploy/ibkr-docker
 sudo bash import-ibkr-credentials.sh --prompt          # hidden prompts
 cp secrets/trading-bot.env.example secrets/trading-bot.env && chmod 600 secrets/trading-bot.env
-sudo bash rotate-env-key.sh DASHBOARD__SUPABASE_SERVICE_KEY   # repeat for each secret, answer N to recreate
+sudo bash rotate-env-key.sh DASHBOARD__SUPABASE_SERVICE_KEY   # repeat for each secret
 sudo mkdir -p data/trading-bot logs/trading-bot state/tws_settings
 sudo chown -R 1000:1000 data/trading-bot logs/trading-bot state/tws_settings
-docker compose -f docker-compose.paper.yml up -d --build
+bash deploy.sh check
+bash deploy.sh gateway        # first start: brings up ib-gateway, then the bot
 ```
 
 ## Health Checks
 
 ```bash
 cd /opt/strategy-lab
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml ps        # both services "healthy"
-curl -fsS http://127.0.0.1:8080/api/health
-curl -fsS http://127.0.0.1:8080/health/ready
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml logs --since 10m trading-bot \
-  | grep -iE 'Connected to IB|RemoteDataPublisher|Trading loop|error'
+bash deploy/ibkr-docker/deploy.sh status
 ```
+
+`status` is read-only. It shows the host sha vs `origin/main`, container health, `/api/health` and `/health/ready` codes (`503` from `/health/ready` is normal outside warm-up and trading), legacy systemd unit state, recent bot milestones, memory/disk and the last deploys.
 
 A healthy start logs `Connected to IB at ib-gateway:4004`, `Dashboard RemoteDataPublisher started` and `Trading loop started`. The gateway is healthy once its API port `4002` accepts connections, which takes about 1–2 minutes after start while IBC logs in.
 
@@ -69,23 +80,32 @@ IB Gateway restarts itself daily at 04:00 UTC (`AUTO_RESTART_TIME` / `TWS_COLD_R
 
 ## Deploying Code Changes
 
-Run this after changes are merged to `main`. Use `build` plus `up -d`, not `docker compose restart`: `restart` neither rebuilds the image nor re-reads `env_file`.
+Run this after changes are merged to `main`:
 
 ```bash
 cd /opt/strategy-lab
-git fetch origin && git checkout main && git pull --ff-only
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml build trading-bot
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml up -d trading-bot
-docker compose -f deploy/ibkr-docker/docker-compose.paper.yml logs --since 5m trading-bot | grep -iE 'Connected to IB|RemoteDataPublisher|ruleset|error'
+bash deploy/ibkr-docker/deploy.sh bot
 ```
 
-`up -d trading-bot` recreates only the bot; the gateway session stays logged in. Avoid deploying during market hours (09:25–16:05 ET) unless it is an incident fix. Reclaim disk occasionally with `docker image prune -f`.
+`bot` does, in order:
+
+1. Preflight. It requires a non-root docker user; a clean `main` checkout with no commits that are missing from `origin/main`; no legacy systemd units and no foreign containers running; all secrets present; a valid compose config; at least 2 GB free disk; and the time outside market hours.
+2. `git pull --ff-only origin main`, then lists the new commits.
+3. Asks for confirmation.
+4. Tags the current image `strategy-lab-trading-bot:previous`, then builds the new one.
+5. Recreates only `trading-bot` (`--no-deps`), so the gateway session stays logged in.
+6. Verifies the container is healthy, the log contains `Connected to IB at ib-gateway:4004` and `Trading loop started`, and `/api/health` returns 200.
+7. Records the result in `deploys.log`.
+
+If verification fails, `deploy.sh rollback-bot` restores the `:previous` image. Then revert the bad change on `main` and run `bot` again so the checkout and the running image match. The script also warns when the pulled compose file changes the gateway, which `bot` does not apply. Reclaim disk occasionally with `docker image prune -f`.
+
+Do not use `docker compose restart`: it neither rebuilds the image nor re-reads `env_file`.
 
 ## Upgrading IB Gateway
 
 1. Choose a `gnzsnz/ib-gateway` stable tag. Get its digest with `docker buildx imagetools inspect ghcr.io/gnzsnz/ib-gateway:<tag>`.
 2. Update the `image:` tag and digest in `docker-compose.paper.yml` and merge to `main`.
-3. Outside market hours, on the host: `git pull`, then `docker compose -f deploy/ibkr-docker/docker-compose.paper.yml up -d`. The gateway is recreated, and the bot reconnects once it is healthy.
+3. Outside market hours, on the host: `bash deploy/ibkr-docker/deploy.sh gateway`. It pulls `main` and the new image, recreates `ib-gateway`, and waits up to 7 minutes for it to be healthy. It then recreates `trading-bot` against the new gateway and verifies it.
 
 ## Rotating a Secret
 
@@ -94,19 +114,19 @@ docker compose -f deploy/ibkr-docker/docker-compose.paper.yml logs --since 5m tr
 1. backs up the file;
 2. reads the new value at a hidden prompt;
 3. shows the length and last 4 characters of the old and new values;
-4. asks for confirmation, then replaces the line atomically;
-5. offers to recreate the `trading-bot` container.
+4. asks for confirmation, then replaces the line atomically.
 
-The recreate is required because `docker compose restart` does not re-read `env_file`.
+The running container keeps the old value until it is recreated, so finish with `deploy.sh bot` as the deploy user. `docker compose restart` would not re-read `env_file`.
 
 ```bash
 sudo bash deploy/ibkr-docker/rotate-env-key.sh DASHBOARD__SUPABASE_SERVICE_KEY      # bot write key
 sudo bash deploy/ibkr-docker/rotate-env-key.sh OPERATIONAL_METRICS__SUPABASE_ANON_KEY
+bash deploy/ibkr-docker/deploy.sh bot
 ```
 
 The rotation script leaves `.bak.*` copies of the env file in `secrets/`. Delete them once the new key is confirmed working.
 
-To change the IBKR password, rerun `sudo bash deploy/ibkr-docker/import-ibkr-credentials.sh --prompt`. Then run `docker compose -f deploy/ibkr-docker/docker-compose.paper.yml up -d --force-recreate ib-gateway`.
+To change the IBKR password, rerun `sudo bash deploy/ibkr-docker/import-ibkr-credentials.sh --prompt`. Then run `bash deploy/ibkr-docker/deploy.sh gateway`.
 
 `DASHBOARD__SUPABASE_SERVICE_KEY` is the bot's server-side write key; the browser dashboard uses only the anon key in its own config. Research publishing keys (`RESEARCH_SUPABASE_*`) live only in the research workstation's `.env` and are not deployed with the bot. Keep research and live-trading service keys separate; the script warns if two `*KEY` values match.
 

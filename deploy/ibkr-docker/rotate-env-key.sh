@@ -9,8 +9,8 @@
 #   sudo bash rotate-env-key.sh DASHBOARD__SUPABASE_SERVICE_KEY /opt/strategy-lab/deploy/ibkr-docker/secrets/trading-bot.env
 #
 # Flow: backup -> hidden prompt for new value -> staged copy -> show old/new
-# length and last 4 chars -> confirm -> atomic replace -> optional container
-# recreate. Declining at the confirm step leaves the original file untouched.
+# length and last 4 chars -> confirm -> atomic replace. Apply afterwards with
+# `bash deploy.sh bot`. Declining at the confirm step leaves the file untouched.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,15 +79,8 @@ mv -f "$tmp" "$FILE"
 echo "Replaced ${VAR} in $FILE. Now: $(summary "$FILE")"
 echo "Rollback if needed: sudo cp -p '$backup' '$FILE'"
 
-if [[ -f "$COMPOSE_FILE" ]] && command -v docker >/dev/null 2>&1; then
-  read -rp "Recreate '${SERVICE}' container now so it loads the new value? [y/N] " answer
-  if [[ "$answer" =~ ^[Yy]$ ]]; then
-    docker compose -f "$COMPOSE_FILE" up -d --force-recreate "$SERVICE"
-    echo "Waiting 20s for startup logs..."
-    sleep 20
-    docker compose -f "$COMPOSE_FILE" logs --since 2m "$SERVICE" \
-      | grep -iE 'RemoteDataPublisher|supabase|401|403' || echo "(no matching log lines yet)"
-  else
-    echo "Remember: docker compose -f $COMPOSE_FILE up -d --force-recreate $SERVICE"
-  fi
+if [[ -f "$COMPOSE_FILE" ]]; then
+  echo
+  echo "The running '${SERVICE}' container still has the old value. Apply it (as the deploy user, not sudo):"
+  echo "  bash $SCRIPT_DIR/deploy.sh bot"
 fi

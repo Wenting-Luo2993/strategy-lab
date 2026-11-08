@@ -18,6 +18,8 @@
 
 **Full guidelines**: See `memory-bank/README.md` for complete memory bank usage.
 
+**For production deploys / VM operations** → Follow `.claude/skills/deploy-trading-bot/SKILL.md` and use only `deploy/ibkr-docker/deploy.sh` (never `systemctl` or hand-typed `docker compose`)
+
 ---
 
 ## Python Code Guidelines

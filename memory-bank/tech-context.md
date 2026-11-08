@@ -177,9 +177,11 @@ python -m vibe.trading_bot.main --config config/local.yaml --mode paper
 - **Format**: `v{major}.{minor}.{patch}` (e.g., `v1.1.0`)
 - **Bump**: Update version before release, include in Discord footer
 
-### Cloud Deployment (Future)
+### Cloud Deployment
 
-**Current Status**: Local development, cloud deployment planned
+**Current Status**: Live paper trading on an Oracle Cloud VM as the Docker Compose project
+`strategy-lab` (`deploy/ibkr-docker/`: pinned IB Gateway image + bot). All deploys go through
+`deploy/ibkr-docker/deploy.sh`; agents follow `.claude/skills/deploy-trading-bot/SKILL.md`.
 
 **Design Principle**: Cloud-agnostic implementation for portability
 
