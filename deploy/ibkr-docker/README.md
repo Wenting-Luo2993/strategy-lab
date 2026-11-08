@@ -64,7 +64,7 @@ Do not add a separate publisher container for the first Phase 4 shadow stack. A 
 
 ```bash
 sudo bash deploy/ibkr-docker/rotate-env-key.sh DASHBOARD__SUPABASE_SERVICE_KEY      # bot write key
-sudo bash deploy/ibkr-docker/rotate-env-key.sh RESEARCH_SUPABASE_SERVICE_ROLE_KEY   # research publisher key
+sudo bash deploy/ibkr-docker/rotate-env-key.sh OPERATIONAL_METRICS__SUPABASE_ANON_KEY
 ```
 
-`DASHBOARD__SUPABASE_SERVICE_KEY` is the bot's server-side write key. The browser dashboard uses only the anon key. Keep the research and live-trading service keys separate; the script warns if they match.
+`DASHBOARD__SUPABASE_SERVICE_KEY` is the bot's server-side write key; the browser dashboard uses only the anon key in its own config. Research publishing keys (`RESEARCH_SUPABASE_*`) live only in the research workstation's `.env` and are not deployed with the bot. Keep research and live-trading service keys separate; the script warns if two `*KEY` values match.

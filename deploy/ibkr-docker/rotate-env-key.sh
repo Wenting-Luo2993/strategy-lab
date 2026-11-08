@@ -5,7 +5,7 @@
 #   sudo bash rotate-env-key.sh <VAR_NAME> [ENV_FILE]
 #
 # Examples:
-#   sudo bash rotate-env-key.sh RESEARCH_SUPABASE_SERVICE_ROLE_KEY
+#   sudo bash rotate-env-key.sh DASHBOARD__SUPABASE_SERVICE_KEY
 #   sudo bash rotate-env-key.sh DASHBOARD__SUPABASE_SERVICE_KEY /opt/strategy-lab/deploy/ibkr-docker/secrets/trading-bot.env
 #
 # Flow: backup -> hidden prompt for new value -> staged copy -> show old/new
