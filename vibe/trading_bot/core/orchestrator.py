@@ -2,8 +2,10 @@
 
 import asyncio
 import logging
+import math
 import time
 import uuid
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -101,6 +103,13 @@ class TradingOrchestrator:
     Manages initialization, main trading loop, graceful shutdown, and component
     integration for complete trading system lifecycle.
     """
+
+    RESTING_WAKE_DELAY_S = 2
+    """Seconds after the opening range ends at which resting entries are placed."""
+    RESTING_FAST_POLL_S = 5
+    """Polling cadence while a resting pair is due right after the range ends."""
+    RESTING_FAST_POLL_WINDOW_S = 300
+    """How long after the range end the fast cadence lasts."""
 
     def __init__(
         self,
@@ -614,6 +623,18 @@ class TradingOrchestrator:
     async def _sync_open_trade_after_entry_fill(self, order: Any) -> None:
         """Project later entry/retry fills onto the existing logical trade."""
         position = await self.exchange.get_position(order.symbol)
+        if (
+            position is None
+            and getattr(order, "order_role", None) == "entry"
+            and float(order.filled_qty or 0.0) > 0
+            and float(order.avg_price or 0.0) > 0
+        ):
+            # The broker position can lag the execution; the fill itself is
+            # authoritative, and dropping it would leave the position without
+            # EOD handling and leak the pending-entry context.
+            position = SimpleNamespace(
+                quantity=float(order.filled_qty), entry_price=float(order.avg_price)
+            )
         if position is None:
             return
         tracked = self.strategy.get_position(order.symbol) if self.strategy is not None else None
@@ -1832,6 +1853,7 @@ class TradingOrchestrator:
                     on_order_created=self._on_order_created,
                     on_order_filled=self._on_order_filled,
                     on_order_cancelled=self._on_order_cancelled,
+                    on_alert=self._send_operator_alert,
                 )
 
                 # Create trade executor
@@ -1855,6 +1877,7 @@ class TradingOrchestrator:
                     position_sizer=position_sizer,
                     risk_manager=self.portfolio_risk_manager,
                 )
+                self.trade_executor.on_alert = self._send_operator_alert
                 self.logger.info("Trade executor initialized")
             except Exception as e:
                 self.logger.error(f"Failed to initialize trade executor: {e}")
@@ -2210,6 +2233,15 @@ class TradingOrchestrator:
         cutoff = self._market_datetime(trading_date, strategy_cfg.entry_cutoff_time)
         if now >= cutoff:
             return
+        or_end = self._market_datetime(
+            trading_date, strategy_cfg.orb_start_time
+        ) + timedelta(minutes=strategy_cfg.orb_duration_minutes)
+        if now < or_end:
+            # Levels from a partial opening range would rest the pair at the
+            # wrong prices for the whole session.
+            return
+        if not self._opening_range_complete(symbol, or_end, now):
+            return
         if self._entry_attempt_count(symbol, trading_date) >= 1:
             return
         if self.trade_executor.has_pending_entry(symbol):
@@ -2230,9 +2262,7 @@ class TradingOrchestrator:
             return
 
         direction = strategy_cfg.direction_mode
-        or_end = self._market_datetime(
-            trading_date, strategy_cfg.orb_start_time
-        ) + timedelta(minutes=strategy_cfg.orb_duration_minutes)
+        placed_at = get_market_now(self.market_scheduler)
         result = await self.trade_executor.place_resting_stop_entries(
             symbol,
             long_level=orb_high if direction != "short_only" else None,
@@ -2242,8 +2272,12 @@ class TradingOrchestrator:
             cancel_after_seconds=max((cutoff - now).total_seconds(), 1.0),
             strategy_name=self.strategy.config.name if self.strategy else "ORB",
             signal_timestamp=or_end,
+            placement_latency_s=(placed_at - or_end).total_seconds(),
+            reference_price=self._latest_bar_prices.get(symbol),
+            tick_size=strategy_cfg.entry_order.tick_size,
         )
-        if result.order_id:
+        if result.order_id or result.broker_contacted:
+            # Even a failed submission may have reached IBKR: never retry it.
             self._record_entry_attempt(symbol, trading_date)
             self.logger.info(
                 "[RESTING ENTRY] %s: OR %.2f-%.2f, cancel at %s (%s)",
@@ -2251,6 +2285,33 @@ class TradingOrchestrator:
             )
         else:
             self.logger.warning("[RESTING ENTRY] %s not placed: %s", symbol, result.reason)
+
+    def _opening_range_complete(self, symbol: str, or_end: datetime, now: datetime) -> bool:
+        """Whether the bar ending the opening window is complete.
+
+        A completed real-time bar (the aggregator only stores finished bars)
+        proves it. Without one -- e.g. after a mid-session restart -- delayed
+        or in-progress third-party bars are trusted only once two further
+        bars have passed.
+        """
+        bar = pd.Timedelta(self._bar_interval)
+        last_window_bar = pd.Timestamp(or_end - bar.to_pytimedelta())
+        realtime = self._realtime_bars.get(symbol)
+        if realtime is not None and not realtime.empty and "timestamp" in realtime:
+            stamps = pd.to_datetime(realtime["timestamp"], utc=True)
+            if (stamps == last_window_bar.tz_convert("UTC")).any():
+                return True
+        return now >= or_end + 2 * bar.to_pytimedelta()
+
+    def _resting_window(self, now: datetime) -> Optional[tuple[datetime, datetime]]:
+        """Today's (OR end, entry cutoff) for a resting-stop ruleset, else None."""
+        if not self._resting_stop_policy():
+            return None
+        strategy_cfg = self.ruleset.strategy
+        or_end = self._market_datetime(now.date(), strategy_cfg.orb_start_time) + timedelta(
+            minutes=strategy_cfg.orb_duration_minutes
+        )
+        return or_end, self._market_datetime(now.date(), strategy_cfg.entry_cutoff_time)
 
     def _build_entry_order_intent(
         self,
@@ -3028,16 +3089,33 @@ class TradingOrchestrator:
     def _has_active_positions(self) -> bool:
         """Check if we have any active positions.
 
+        Engines with a synchronous position list (mock) are asked directly;
+        otherwise (IBKR, whose positions are async) local state decides:
+        tracked positions, broker-side stops, pending entries and closes.
+
         Returns:
             True if any positions are open, False otherwise
         """
-        try:
-            positions = self.exchange.get_positions()
-            return len(positions) > 0
-        except Exception as e:
-            self.logger.debug(f"Error checking positions: {e}")
-            # On error, assume we have positions (conservative approach)
-            return True
+        get_positions = getattr(self.exchange, "get_positions", None)
+        if get_positions is not None:
+            try:
+                return len(get_positions()) > 0
+            except Exception as e:
+                self.logger.debug(f"Error checking positions: {e}")
+                # On error, assume we have positions (conservative approach)
+                return True
+        executor = self.trade_executor
+        return bool(
+            (self.strategy is not None and self.strategy.positions)
+            or (
+                executor is not None
+                and (
+                    executor._active_protective
+                    or executor._pending_entries
+                    or executor._pending_closes
+                )
+            )
+        )
 
     def _log_strategy_events(
         self,
@@ -3177,19 +3255,34 @@ class TradingOrchestrator:
             )
             return int(backoff)
 
-        # No failures - choose interval based on position status
+        # No failures - choose the interval deliberately.
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        now = get_market_now(self.market_scheduler)
+        window = self._resting_window(now)
+        if window is not None and self._resting_entries_due():
+            or_end, _cutoff = window
+            if now < or_end:
+                # Wake right after the opening range ends: placement latency
+                # turns ordinary breakouts into late fills.
+                return max(
+                    1,
+                    min(
+                        self._idle_cycle_interval,
+                        math.ceil((or_end - now).total_seconds()) + self.RESTING_WAKE_DELAY_S,
+                    ),
+                )
+            if now < or_end + timedelta(seconds=self.RESTING_FAST_POLL_WINDOW_S):
+                return 1 if self._testing_mode else self.RESTING_FAST_POLL_S
+
         has_positions = self._has_active_positions()
 
         if has_positions:
             self.logger.debug(f"Active positions detected, using {self._base_cycle_interval}s interval")
             return self._base_cycle_interval
-        if self._resting_entries_due():
-            # A resting pair is placed on the first cycle after the opening
-            # range completes; idling 5 minutes would let price run through
-            # a level the backtest's order was already resting at.
-            self.logger.debug(
-                "Resting entries due, using %ss interval", self._base_cycle_interval
-            )
+        if window is None and self.market_scheduler.is_market_open():
+            # Signal-driven rulesets evaluate every completed bar; they have
+            # always polled at the base cadence while the market is open.
             return self._base_cycle_interval
         else:
             self.logger.info(
@@ -3268,6 +3361,10 @@ class TradingOrchestrator:
             # (Yahoo is 15-min delayed and would interfere with real-time data)
             market_open = self.market_scheduler.is_market_open()
             await self._enforce_account_risk_limits()
+            if self._resting_entries_due():
+                # Complete the bar that ends the opening range now rather than
+                # at the end of this cycle, so the pair can go out immediately.
+                await self._flush_elapsed_bars()
             realtime_provider_active = bool(
                 self.active_provider
                 and self.active_provider.connected
@@ -3809,10 +3906,12 @@ class TradingOrchestrator:
 
         Called every trading cycle. Uses current bar prices captured during the cycle.
         """
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        if self._resting_stop_policy():
+            await self._monitor_untracked_positions(get_market_now(self.market_scheduler))
         if not self.strategy or not self.strategy.positions:
             return
-
-        from vibe.trading_bot.utils.datetime_utils import get_market_now
 
         now = get_market_now(self.market_scheduler)
         bar_time_str = now.strftime("%H:%M")
@@ -3865,6 +3964,36 @@ class TradingOrchestrator:
             )
             await self._close_position_with_notification(symbol, pos, current_price, exit_signal.exit_type)
 
+    def _resting_stop_policy(self) -> bool:
+        policy = getattr(getattr(self.ruleset, "strategy", None), "entry_order", None)
+        return policy is not None and policy.type == "resting_stop"
+
+    async def _monitor_untracked_positions(self, now: datetime) -> None:
+        """EOD-flatten positions the strategy is not tracking (resting-stop rulesets).
+
+        A fill whose projection was missed, or a protective stop whose symbol
+        lost its strategy state, must still be closed at EOD rather than held
+        overnight under a DAY stop that expires.
+        """
+        if self.trade_executor is None or self.strategy is None:
+            return
+        eod_time_str = self.ruleset.exit.eod_time or "15:55"
+        if now.strftime("%H:%M") < eod_time_str:
+            return
+        try:
+            broker_symbols = set(await self.trade_executor.account_positions())
+        except Exception as exc:
+            self.logger.error("Untracked-position check failed: %s", exc, exc_info=True)
+            return
+        candidates = (broker_symbols | set(self.trade_executor._active_protective)) - set(
+            self.strategy.positions
+        )
+        for symbol in sorted(candidates):
+            if symbol not in broker_symbols or self.trade_executor.has_pending_close(symbol):
+                continue
+            self.logger.warning("[EXIT TRIGGERED] %s: untracked position at EOD", symbol)
+            await self._flatten_symbol(symbol, "time_exit")
+
     async def _monitor_broker_protected_position(
         self,
         symbol: str,
@@ -3876,8 +4005,24 @@ class TradingOrchestrator:
         The broker stop is the stop-loss: the client never sends its own stop
         exit, so it cannot double-exit a position the stop already closed.
         Broker positions are the source of truth; a flat broker position
-        clears local state. Only the EOD exit is client-side.
+        clears local state. Only the EOD exit is client-side. The stop's own
+        status is checked every cycle: one the broker cancelled or rejected is
+        replaced (or handed to the client-side stop) at once.
         """
+        protective_id = self.trade_executor.protective_stop_order_id(symbol)
+        protective = await self.exchange.get_order(protective_id) if protective_id else None
+        if (
+            protective is not None
+            and protective.status == OrderStatus.CANCELLED
+            and float(protective.filled_qty or 0.0) < float(protective.quantity)
+        ):
+            outcome = await self.trade_executor.handle_protective_stop_ended(protective)
+            self.logger.warning(
+                "[POSITION] %s protective stop %s ended at the broker: %s",
+                symbol, protective_id, outcome,
+            )
+            if not self.trade_executor.has_protective_stop(symbol):
+                return  # the client-side stop path takes over next cycle
         snapshot_getter = getattr(self.exchange, "get_position_snapshot", None)
         if snapshot_getter is not None:
             broker_position = await snapshot_getter(symbol)
@@ -4001,8 +4146,10 @@ class TradingOrchestrator:
         role = getattr(order, "order_role", None) if order is not None else None
         if order is not None and self.trade_executor is not None:
             if role == "entry":
-                # Activates the attached protective stop; voids OCA siblings.
-                self.trade_executor.mark_entry_filled(order_id)
+                if float(order.filled_qty or 0.0) >= float(order.quantity):
+                    # Only a complete parent activates its attached stop at
+                    # IBKR; until then the client-side stop protects the fill.
+                    self.trade_executor.mark_entry_filled(order_id)
             elif role == "protective_stop":
                 self._pending_exit_reasons.setdefault(order.symbol, "stop_loss")
                 if float(order.filled_qty or 0.0) >= float(order.quantity):
@@ -4017,14 +4164,56 @@ class TradingOrchestrator:
     async def _on_order_cancelled(self, order_id: str) -> None:
         """Record ORDER_CANCELLED events."""
         if self.trade_executor is not None:
-            self.trade_executor.clear_pending_entry(order_id)
             order = await self.exchange.get_order(order_id)
-            if order is not None and getattr(order, "order_role", None) not in (
-                "entry",
-                "protective_stop",
-            ):
+            role = getattr(order, "order_role", None) if order is not None else None
+            if role == "entry":
+                outcome = await self.trade_executor.handle_entry_cancelled(order)
+                if outcome == "unprotected":
+                    await self._flatten_symbol(order.symbol, "unprotected_partial_entry")
+            elif role == "protective_stop":
+                await self.trade_executor.handle_protective_stop_ended(order)
+            self.trade_executor.clear_pending_entry(order_id)
+            if order is not None and role not in ("entry", "protective_stop"):
                 self.trade_executor.clear_pending_close(symbol=order.symbol)
         await self._record_dashboard_order_event("ORDER_CANCELLED", order_id)
+
+    async def _flatten_symbol(self, symbol: str, exit_reason: str) -> None:
+        """Close one symbol's position at market (tracked or not)."""
+        tracked = self.strategy.get_position(symbol) if self.strategy else None
+        if tracked is not None:
+            price = self._latest_bar_prices.get(symbol) or float(tracked["entry_price"])
+            await self._close_position_with_notification(symbol, tracked, price, exit_reason)
+            return
+        self._pending_exit_reasons[symbol] = exit_reason
+        result = await self.trade_executor._close_position(symbol, exit_reason=exit_reason)
+        if not result.order_id:
+            self._pending_exit_reasons.pop(symbol, None)
+            self.logger.error("[RISK] Flatten %s failed: %s", symbol, result.reason)
+
+    async def _send_operator_alert(self, title: str, message: str) -> None:
+        """Discord SYSTEM_ERROR for conditions that need operator attention."""
+        webhook_url = self.config.notifications.discord_webhook_url
+        if not webhook_url:
+            return
+        from vibe.trading_bot.notifications.payloads import SystemAlertPayload
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        try:
+            async with discord_notification_context(webhook_url) as notifier:
+                await notifier.send_system_alert(
+                    SystemAlertPayload(
+                        event_type="SYSTEM_ERROR",
+                        timestamp=get_market_now(self.market_scheduler),
+                        severity="critical",
+                        title=title,
+                        message=message,
+                        component="execution",
+                        action_required="Check the IBKR position and working orders.",
+                        version=BUILD_VERSION,
+                    )
+                )
+        except Exception as exc:
+            self.logger.error("Failed to send operator alert: %s", exc, exc_info=True)
 
     async def _close_position_with_notification(
         self,

@@ -125,6 +125,9 @@ def orchestrator(tmp_path):
     orchestrator.data_manager = SimpleNamespace(get_data=get_data)
     orchestrator.indicator_engine = SimpleNamespace(update=lambda df, **kwargs: df)
     orchestrator.active_provider = None
+    for symbol in SYMBOLS:
+        # The aggregator's completed 09:30 bar proves the range is complete.
+        orchestrator._realtime_bars[symbol] = _bars().iloc[:1].drop(columns=["ATR_14"])
     return orchestrator
 
 
@@ -184,12 +187,17 @@ def test_cycle_timing_warns_when_the_loop_eats_half_a_bar(orchestrator, caplog):
     assert record.levelno == logging.WARNING
 
 
-def test_cycle_uses_the_active_interval_while_resting_entries_are_due(orchestrator):
+def test_cycle_wakes_at_or_end_and_polls_fast_while_resting_entries_are_due(orchestrator):
     orchestrator._base_cycle_interval = 60
     orchestrator._idle_cycle_interval = 300
+    orchestrator._testing_mode = False
     orchestrator._has_active_positions = lambda: False
 
-    assert orchestrator._calculate_sleep_interval() == 60
+    orchestrator.market_scheduler.set_time(9, 33, 10)
+    assert orchestrator._calculate_sleep_interval() == 110 + 2  # wake 2 s after 09:35
+
+    orchestrator.market_scheduler.set_time(9, 36)
+    assert orchestrator._calculate_sleep_interval() == orchestrator.RESTING_FAST_POLL_S
 
     for symbol in SYMBOLS:
         orchestrator._record_entry_attempt(symbol, SESSION)
@@ -198,3 +206,28 @@ def test_cycle_uses_the_active_interval_while_resting_entries_are_due(orchestrat
     orchestrator._entry_attempts.clear()
     orchestrator.market_scheduler.set_time(15, 0)
     assert orchestrator._calculate_sleep_interval() == 300
+
+
+def test_signal_driven_rulesets_keep_the_base_cadence_while_open(tmp_path):
+    orchestrator = TradingOrchestrator(
+        config=AppSettings(
+            environment="test",
+            database_path=str(tmp_path / "trades.db"),
+            broker={"broker_type": "mock", "mode": "paper"},
+            trading={"symbols": ["QQQ"]},
+            dashboard={"enabled": False},
+            operational_metrics={"enabled": False},
+        ),
+        ruleset=RuleSetLoader.from_name("orb_exp073_paper_burn_in"),
+        market_scheduler=MockMarketScheduler(
+            initial_date=datetime(2026, 7, 20, 10, 0), timezone="America/New_York"
+        ),
+        testing_mode=False,
+    )
+    # IBKR-like engine: no synchronous position list.
+    orchestrator.exchange = SimpleNamespace()
+    orchestrator.trade_executor = None
+
+    assert orchestrator._has_active_positions() is False
+    assert orchestrator._calculate_sleep_interval() == 60
+    orchestrator.trade_store.close()

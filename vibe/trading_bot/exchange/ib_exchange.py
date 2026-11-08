@@ -87,6 +87,8 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                         oca_group=restored.oca_group,
                         parent_order_id=restored.parent_order_id,
                         gap_fill=restored.gap_fill,
+                        placement_latency_s=restored.placement_latency_s,
+                        capped_by=restored.capped_by,
                     )
                     self._orders[order_id] = order
                 else:
@@ -186,6 +188,8 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 gap_fill=(
                     None if metadata.get("gap_fill") is None else bool(metadata.get("gap_fill"))
                 ),
+                placement_latency_s=metadata.get("placement_latency_s"),
+                capped_by=metadata.get("capped_by"),
             )
             self._orders[broker_order_id] = order
 
@@ -663,18 +667,22 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             "oca_group": order.oca_group,
             "gap_fill": order.gap_fill,
             "benchmark_type": order.benchmark_type,
+            "placement_latency_s": order.placement_latency_s,
         }
 
     async def get_order(self, order_id: str) -> Optional[Order]:
         order = self._orders.get(order_id)
-        if order is not None and order.status in {
+        if order is not None and (
+            order.order_role in ("entry", "protective_stop") or order.oca_group
+        ) and order.status in {
             OrderStatus.CREATED,
             OrderStatus.PENDING,
             OrderStatus.SUBMITTED,
             OrderStatus.PARTIAL,
         }:
-            # The broker can end an order on its own: an OCA sibling filled,
-            # a bracket parent was cancelled, or the day order expired.
+            # Linked (OCA / bracket) orders can be ended by the broker on its
+            # own: an OCA sibling filled, a bracket parent was cancelled, or
+            # the order was rejected. Other orders keep their historical path.
             snapshot = getattr(self.broker, "order_status_snapshot", None)
             raw_status = snapshot(order_id) if snapshot is not None else None
             if (
@@ -708,17 +716,9 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         qualified_contract = (
             await qualify_contract(symbol) if qualify_contract is not None else None
         )
-        reference_price: Optional[float] = None
-        try:
-            quote = (
-                await self.broker.get_market_data(symbol, qualified_contract=qualified_contract)
-                if qualified_contract is not None
-                else await self.broker.get_market_data(symbol)
-            )
-            reference_price = quote.last or quote.market_price
-        except Exception:
-            # Gap-fill detection is diagnostic; the orders must still rest.
-            reference_price = None
+        # The caller's latest observed price; no quote request here, because
+        # every second between the range end and placement costs fills.
+        reference_price: Optional[float] = metadata.get("reference_price")
 
         def broker_order(leg: RestingEntryLeg, role: str) -> BrokerOrder:
             entry = role == "entry"
@@ -744,6 +744,8 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 order_role=role,
                 oca_group=oca_group if entry else None,
                 gap_fill=leg.triggered_by(reference_price) if entry else None,
+                placement_latency_s=metadata.get("placement_latency_s") if entry else None,
+                capped_by=leg.capped_by if entry else None,
             )
 
         brackets = [(broker_order(leg, "entry"), broker_order(leg, "protective_stop")) for leg in legs]
@@ -776,8 +778,61 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                     oca_group=bo.oca_group,
                     parent_order_id=parent_id,
                     gap_fill=bo.gap_fill,
+                    placement_latency_s=bo.placement_latency_s,
+                    capped_by=bo.capped_by,
                 )
                 self._orders[order_id] = order
                 pair.append(order)
             placed.append((pair[0], pair[1]))
         return placed
+
+    async def submit_protective_stop(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float,
+        strategy_name: Optional[str] = None,
+    ) -> Order:
+        """Place a standalone protective stop (replaces a lost bracket child)."""
+        submit = getattr(self.broker, "submit_standalone_stop", None)
+        if submit is None:
+            raise RuntimeError("broker cannot place a standalone stop")
+        now = datetime.now(timezone.utc)
+        broker_order = BrokerOrder(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            order_type="stop",
+            expected_price=stop_price,
+            stop_price=stop_price,
+            decision_at=now,
+            benchmark_type="stop_trigger",
+            benchmark_price=stop_price,
+            strategy_name=strategy_name,
+            strategy_stop_price=stop_price,
+            exit_reason="protective_stop",
+            order_role="protective_stop",
+        )
+        order_id = await submit(broker_order)
+        order = Order(
+            order_id=str(order_id),
+            symbol=symbol,
+            side=side,
+            quantity=float(quantity),
+            price=float(stop_price),
+            order_type="stop",
+            status=OrderStatus.SUBMITTED,
+            decision_at=now,
+            submitted_at=datetime.now(timezone.utc),
+            benchmark_type="stop_trigger",
+            benchmark_price=stop_price,
+            stop_price=stop_price,
+            benchmark_version=2,
+            benchmark_valid=True,
+            strategy_name=strategy_name,
+            strategy_stop_price=stop_price,
+            order_role="protective_stop",
+        )
+        self._orders[order.order_id] = order
+        return order

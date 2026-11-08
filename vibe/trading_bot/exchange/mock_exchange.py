@@ -487,7 +487,7 @@ class MockExchange(ExecutionEngine):
         ``gap_fill``.
         """
         metadata = lifecycle_metadata or {}
-        reference = self._prices.get(symbol)
+        reference = metadata.get("reference_price") or self._prices.get(symbol)
         now = datetime.now(timezone.utc)
         placed = []
         for leg in legs:
@@ -515,6 +515,8 @@ class MockExchange(ExecutionEngine):
                 order_role="entry",
                 oca_group=oca_group,
                 gap_fill=leg.triggered_by(reference),
+                placement_latency_s=metadata.get("placement_latency_s"),
+                capped_by=leg.capped_by,
             )
             stop = Order(
                 order_id=f"ord_{uuid.uuid4().hex[:8]}",
@@ -546,6 +548,42 @@ class MockExchange(ExecutionEngine):
             await self.process_pending_orders()
         return placed
 
+    async def submit_protective_stop(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: float,
+        strategy_name: Optional[str] = None,
+    ) -> Order:
+        """Place a standalone resting protective stop (no parent)."""
+        now = datetime.now(timezone.utc)
+        stop = Order(
+            order_id=f"ord_{uuid.uuid4().hex[:8]}",
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=stop_price,
+            order_type="stop",
+            status=OrderStatus.PENDING,
+            decision_at=now,
+            submitted_at=now,
+            benchmark_type="stop_trigger",
+            benchmark_price=stop_price,
+            stop_price=stop_price,
+            benchmark_version=2,
+            benchmark_valid=True,
+            trade_currency="USD",
+            commission_currency="USD",
+            strategy_name=strategy_name,
+            order_role="protective_stop",
+        )
+        self._orders[stop.order_id] = ManagedOrder(order=stop)
+        self._pending_orders.append(stop.order_id)
+        if symbol in self._prices:
+            await self.process_pending_orders()
+        return stop
+
     def has_submitted_entry(self, symbol: str, since: datetime) -> bool:
         """Whether a resting-stop entry for ``symbol`` was submitted at/after ``since``."""
         return any(
@@ -568,7 +606,12 @@ class MockExchange(ExecutionEngine):
             ):
                 self._cancel_quietly(sibling.order_id)
         child_id = self._children.get(order_id)
-        if child_id is not None and child_id not in self._pending_orders:
+        if (
+            child_id is not None
+            and child_id not in self._pending_orders
+            and order.filled_qty >= order.quantity
+        ):
+            # IBKR activates an attached child only once its parent is complete.
             self._orders[child_id].order.status = OrderStatus.PENDING
             self._pending_orders.append(child_id)
 
@@ -582,7 +625,7 @@ class MockExchange(ExecutionEngine):
             self._pending_orders.remove(order_id)
         self._cancelled_orders.append(order_id)
         child_id = self._children.get(order_id)
-        if child_id is not None and order.filled_qty == 0:
+        if child_id is not None and order.filled_qty < order.quantity:
             self._cancel_quietly(child_id)
 
     async def cancel_order(self, order_id: str) -> OrderResponse:
@@ -617,8 +660,8 @@ class MockExchange(ExecutionEngine):
             self._pending_orders.remove(order_id)
         self._cancelled_orders.append(order_id)
         child_id = self._children.get(order_id)
-        if child_id is not None and order.filled_qty == 0:
-            # IBKR cancels attached orders with an unfilled parent.
+        if child_id is not None and order.filled_qty < order.quantity:
+            # IBKR cancels attached orders with a parent that is not complete.
             self._cancel_quietly(child_id)
 
         return OrderResponse(

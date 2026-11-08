@@ -487,15 +487,28 @@ def _orchestrator(tmp_path, hhmm=(9, 36)) -> TradingOrchestrator:
     exchange = _mock()
     orchestrator.exchange = exchange
     orchestrator.trade_executor = _executor(exchange)
+    orchestrator._realtime_bars["AAA"] = _completed_or_bar()
+    positions = {}
     orchestrator.strategy = SimpleNamespace(
         config=SimpleNamespace(name="ORB"),
         _traded_today={},
-        positions={},
+        positions=positions,
+        get_position=positions.get,
     )
     return orchestrator
 
 
 ORB = {"orb_high": 101.0, "orb_low": 99.0, "orb_trading_date": SESSION}
+
+
+def _completed_or_bar(day: date = SESSION):
+    """The real-time aggregator's completed 09:30 bar (it stores finished bars only)."""
+    import pandas as pd
+
+    return pd.DataFrame({
+        "timestamp": [pd.Timestamp(datetime(day.year, day.month, day.day, 9, 30, tzinfo=ET))],
+        "open": [100.0], "high": [101.0], "low": [99.0], "close": [100.2], "volume": [5e4],
+    })
 
 
 @pytest.mark.asyncio
@@ -779,4 +792,583 @@ async def test_fill_callbacks_drive_the_bracket_lifecycle_end_to_end(tmp_path):
     assert await wait_for(lambda: orchestrator.strategy.get_position("AAA") is None)
     assert not executor.has_protective_stop("AAA")
     assert await exchange.get_position("AAA") is None
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_confirmed_stop_fill_never_sends_an_exit_even_with_a_stale_position(monkeypatch):
+    exchange = _mock()
+    await exchange.set_price("AAA", 100.0)
+    executor = _executor(exchange)
+    await _place(executor)
+    await exchange.set_price("AAA", 101.2)
+    await exchange.process_pending_orders()
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+    executor.mark_entry_filled(buy.order_id)
+    stale = await exchange.get_position("AAA")
+    await exchange.set_price("AAA", 98.9)
+    await exchange.process_pending_orders()  # the stop fills at the broker
+
+    async def lagging_position(symbol):
+        return stale  # broker portfolio not yet updated
+
+    monkeypatch.setattr(exchange, "get_position", lagging_position)
+    orders_before = len(exchange.get_all_orders())
+
+    result = await executor._close_position("AAA", exit_reason="time_exit")
+
+    assert not result.success and "protective stop" in result.reason
+    assert len(exchange.get_all_orders()) == orders_before
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_partially_filled_stop_caps_the_close_at_its_remainder(monkeypatch):
+    exchange = _mock()
+    await exchange.set_price("AAA", 100.0)
+    executor = _executor(exchange)
+    await _place(executor)
+    await exchange.set_price("AAA", 101.2)
+    await exchange.process_pending_orders()
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+    executor.mark_entry_filled(buy.order_id)
+    stop = await exchange.get_order(executor.protective_stop_order_id("AAA"))
+    stop.filled_qty = 40.0  # the broker filled part of the stop
+    full = await exchange.get_position("AAA")
+    remainder = full.model_copy(update={"quantity": full.quantity - 40})
+    reads = iter([full, remainder])  # the broker catches up on the second read
+
+    async def lagging_position(symbol):
+        return next(reads, remainder)
+
+    monkeypatch.setattr(exchange, "get_position", lagging_position)
+    executor.position_agreement_timeout_s = 2.0
+    submitted = []
+    original = executor.order_manager.submit_order
+
+    async def record(**kwargs):
+        submitted.append(kwargs["quantity"])
+        return await original(**kwargs)
+
+    monkeypatch.setattr(executor.order_manager, "submit_order", record)
+
+    await executor._close_position("AAA", exit_reason="time_exit")
+
+    assert submitted == [int(stop.quantity) - 40]
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_partial_stop_close_aborts_and_alerts_when_the_broker_disagrees(monkeypatch):
+    exchange = _mock()
+    await exchange.set_price("AAA", 100.0)
+    executor = _executor(exchange)
+    alerts = []
+
+    async def on_alert(title, message):
+        alerts.append(title)
+
+    executor.on_alert = on_alert
+    await _place(executor)
+    await exchange.set_price("AAA", 101.2)
+    await exchange.process_pending_orders()
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+    executor.mark_entry_filled(buy.order_id)
+    stop = await exchange.get_order(executor.protective_stop_order_id("AAA"))
+    stop.filled_qty = 40.0
+    stale = await exchange.get_position("AAA")
+
+    async def lagging_position(symbol):
+        return stale
+
+    monkeypatch.setattr(exchange, "get_position", lagging_position)
+    executor.position_agreement_timeout_s = 0.0
+    orders_before = len(exchange.get_all_orders())
+
+    result = await executor._close_position("AAA", exit_reason="time_exit")
+
+    assert not result.success and "disagrees" in result.reason
+    assert len(exchange.get_all_orders()) == orders_before
+    assert alerts == ["Close aborted"]
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_no_pair_is_placed_from_a_partial_opening_range(tmp_path):
+    orchestrator = _orchestrator(tmp_path, (9, 33))
+    await orchestrator.exchange.set_price("AAA", 100.0)
+
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+
+    assert _orders(orchestrator.exchange, "entry") == []
+    assert orchestrator._entry_attempt_count("AAA", SESSION) == 0
+
+
+@pytest.mark.asyncio
+async def test_s5_or_end_without_a_completed_bar_waits(tmp_path):
+    orchestrator = _orchestrator(tmp_path, (9, 35, 5))
+    orchestrator._realtime_bars.pop("AAA")  # the 09:34 bar has not been aggregated yet
+    await orchestrator.exchange.set_price("AAA", 100.0)
+
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+    assert _orders(orchestrator.exchange, "entry") == []
+
+    orchestrator.market_scheduler.set_time(9, 45)  # two 5m bars later: third-party bars are final
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+    assert len(_orders(orchestrator.exchange, "entry")) == 2
+    await orchestrator.trade_executor.order_manager.shutdown()
+    data = RuleSetLoader.from_name("orb_resting_stop_paper").model_dump()
+    data["strategy"]["orb_duration_minutes"] = 7
+    with pytest.raises(ValueError, match="whole number"):
+        StrategyRuleSet.model_validate(data)
+    data["strategy"]["orb_duration_minutes"] = 15
+    assert unsupported_settings(StrategyRuleSet.model_validate(data), "live") == []
+
+
+# ---------------------------------------------------------------------------
+# Milestone B review fixes
+# ---------------------------------------------------------------------------
+
+async def _filled_long(exchange, executor):
+    await exchange.set_price("AAA", 100.0)
+    await _place(executor)
+    await exchange.set_price("AAA", 101.2)
+    await exchange.process_pending_orders()
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+    executor.mark_entry_filled(buy.order_id)
+    return buy
+
+
+@pytest.mark.asyncio
+async def test_b1_broker_cancelled_stop_is_replaced_for_the_open_quantity():
+    exchange = _mock()
+    executor = _executor(exchange)
+    buy = await _filled_long(exchange, executor)
+    lost = await exchange.get_order(executor.protective_stop_order_id("AAA"))
+    exchange._cancel_quietly(lost.order_id)  # IBKR rejected / cancelled it
+
+    outcome = await executor.handle_protective_stop_ended(lost)
+
+    assert outcome == "replaced"
+    replacement = await exchange.get_order(executor.protective_stop_order_id("AAA"))
+    assert replacement.order_id != lost.order_id
+    assert replacement.parent_order_id is None and replacement.order_role == "protective_stop"
+    assert (replacement.side, replacement.quantity, replacement.stop_price) == (
+        "sell", buy.quantity, lost.stop_price,
+    )
+    assert executor.order_manager.get_order(replacement.order_id).persistent
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_b1_failed_replacement_hands_over_to_the_client_stop_and_alerts(monkeypatch):
+    exchange = _mock()
+    executor = _executor(exchange)
+    alerts = []
+
+    async def on_alert(title, message):
+        alerts.append(title)
+
+    executor.on_alert = on_alert
+    await _filled_long(exchange, executor)
+    lost = await exchange.get_order(executor.protective_stop_order_id("AAA"))
+    exchange._cancel_quietly(lost.order_id)
+
+    async def refuse(*args, **kwargs):
+        raise RuntimeError("IBKR error 201")
+
+    monkeypatch.setattr(exchange, "submit_protective_stop", refuse)
+
+    assert await executor.handle_protective_stop_ended(lost) == "unprotected"
+    assert not executor.has_protective_stop("AAA")
+    assert alerts == ["Protective stop lost"]
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_b1_our_own_cancel_is_not_mistaken_for_a_lost_stop():
+    exchange = _mock()
+    executor = _executor(exchange)
+    await _filled_long(exchange, executor)
+
+    result = await executor._close_position("AAA", exit_reason="time_exit")
+
+    assert result.success
+    assert not executor.has_protective_stop("AAA")
+    standalone = [
+        o for o in _orders(exchange, "protective_stop")
+        if o.parent_order_id is None and o.status != OrderStatus.CANCELLED
+    ]
+    assert standalone == []
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_b1_monitor_checks_the_stop_status_every_cycle(tmp_path):
+    orchestrator = _orchestrator(tmp_path, (11, 0))
+    exchange = orchestrator.exchange
+    executor = orchestrator.trade_executor
+    buy = await _filled_long(exchange, executor)
+    tracked = {"AAA": {"side": "buy", "entry_price": 101.0, "stop_loss": 99.0, "quantity": buy.quantity}}
+    orchestrator.strategy = SimpleNamespace(
+        config=SimpleNamespace(name="ORB"), _traded_today={}, positions=tracked,
+        get_position=lambda s: tracked.get(s), close_position=lambda s: tracked.pop(s, None),
+    )
+    lost_id = executor.protective_stop_order_id("AAA")
+    exchange._cancel_quietly(lost_id)
+
+    await orchestrator._monitor_open_positions()
+
+    assert executor.protective_stop_order_id("AAA") not in (None, lost_id)
+    assert "AAA" in tracked  # the broker position is still open
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_b2_partial_parent_fill_stays_under_the_client_stop(tmp_path):
+    orchestrator = _orchestrator(tmp_path, (9, 40))
+    exchange = orchestrator.exchange
+    executor = orchestrator.trade_executor
+    await exchange.set_price("AAA", 100.0)
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+    buy.filled_qty = 30.0  # IBKR filled part of the parent
+    buy.status = OrderStatus.PARTIAL
+
+    await orchestrator._on_order_filled(buy.order_id)
+
+    assert not executor.has_protective_stop("AAA")  # the attached child is still inactive
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_b2_partial_entry_cancelled_at_cutoff_gets_a_standalone_stop(tmp_path):
+    orchestrator = _orchestrator(tmp_path, (9, 40))
+    exchange = orchestrator.exchange
+    executor = orchestrator.trade_executor
+    await exchange.set_price("AAA", 100.0)
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+    buy.filled_qty = 30.0
+    await exchange.cancel_order(buy.order_id)  # cutoff; IBKR also drops the child
+
+    await orchestrator._on_order_cancelled(buy.order_id)
+
+    stop = await exchange.get_order(executor.protective_stop_order_id("AAA"))
+    assert stop.parent_order_id is None
+    assert (stop.side, stop.quantity, stop.stop_price) == ("sell", 30.0, 99.0)
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_b2_unprotectable_partial_entry_is_flattened_and_alerted(tmp_path, monkeypatch):
+    orchestrator = _orchestrator(tmp_path, (9, 40))
+    exchange = orchestrator.exchange
+    executor = orchestrator.trade_executor
+    alerts, flattened = [], []
+
+    async def on_alert(title, message):
+        alerts.append(title)
+
+    async def refuse(*args, **kwargs):
+        raise RuntimeError("IBKR error 110")
+
+    async def record_flatten(symbol, reason):
+        flattened.append((symbol, reason))
+
+    executor.on_alert = on_alert
+    monkeypatch.setattr(exchange, "submit_protective_stop", refuse)
+    monkeypatch.setattr(orchestrator, "_flatten_symbol", record_flatten)
+    await exchange.set_price("AAA", 100.0)
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+    buy.filled_qty = 30.0
+    await exchange.cancel_order(buy.order_id)
+
+    await orchestrator._on_order_cancelled(buy.order_id)
+
+    assert flattened == [("AAA", "unprotected_partial_entry")]
+    assert alerts == ["Partial entry unprotected"]
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_s3_unconfirmed_deadline_cancel_keeps_monitoring_and_retries(monkeypatch):
+    exchange = _mock()
+    await exchange.set_price("AAA", 100.0)
+    alerts = []
+
+    async def on_alert(title, message):
+        alerts.append(title)
+
+    manager = OrderManager(exchange=exchange, on_alert=on_alert)
+    manager.CANCEL_ALERT_AFTER = 2
+    manager.CANCEL_RETRY_BASE_S = 0.1
+    executor = TradeExecutor(
+        exchange=exchange, order_manager=manager,
+        position_sizer=PositionSizer(risk_pct=0.01), risk_manager=_risk_manager(),
+    )
+    real_cancel = exchange.cancel_order
+    failures = {}
+
+    async def flaky_cancel(order_id):
+        if failures.get(order_id, 0) < 2:
+            failures[order_id] = failures.get(order_id, 0) + 1
+            raise TimeoutError("Timed out waiting for terminal cancellation status")
+        return await real_cancel(order_id)
+
+    monkeypatch.setattr(exchange, "cancel_order", flaky_cancel)
+    await _place(executor, cancel_after=0.05)
+    entry_ids = [o.order_id for o in _orders(exchange, "entry")]
+
+    for _ in range(80):
+        await asyncio.sleep(0.1)
+        if all(manager.get_order(i).terminal_status for i in entry_ids):
+            break
+
+    assert all(manager.get_order(i).terminal_status == OrderStatus.CANCELLED for i in entry_ids)
+    assert "Order cancel unconfirmed" in alerts
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_s4_placed_legs_are_registered_even_if_a_later_leg_fails(tmp_path, monkeypatch):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    monkeypatch.setattr(
+        ib_module, "StopOrder",
+        lambda action, qty, stop, **kw: _FakeIBOrder("STP", action, qty, stop, **kw),
+    )
+    api = _ib_api(tmp_path)
+    calls = {"n": 0}
+    real_place = api.ib.placeOrder
+
+    def flaky_place(contract, order):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise ConnectionError("socket closed")
+        return real_place(contract, order)
+
+    api.ib.placeOrder = flaky_place
+
+    with pytest.raises(ConnectionError):
+        await api.submit_oca_brackets(
+            [_bracket("buy", 101.0, 99.0), _bracket("sell", 99.0, 101.0)],
+            qualified_contract=object(),
+        )
+
+    assert len(api._trades) == 2 and len(api._submitted_orders) == 2
+
+
+@pytest.mark.asyncio
+async def test_s4_journal_failure_does_not_hide_live_orders(tmp_path, monkeypatch):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    monkeypatch.setattr(
+        ib_module, "StopOrder",
+        lambda action, qty, stop, **kw: _FakeIBOrder("STP", action, qty, stop, **kw),
+    )
+    api = _ib_api(tmp_path)
+
+    def broken_journal(payload):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(api.execution_store, "upsert_submitted_order", broken_journal)
+
+    ids = await api.submit_oca_brackets([_bracket("buy", 101.0, 99.0)], qualified_contract=object())
+
+    assert len(ids) == 1 and len(api._trades) == 2
+
+
+@pytest.mark.asyncio
+async def test_s4_failed_submission_still_counts_as_todays_attempt(tmp_path, monkeypatch):
+    orchestrator = _orchestrator(tmp_path, (9, 36))
+    await orchestrator.exchange.set_price("AAA", 100.0)
+
+    async def broken_submit(*args, **kwargs):
+        raise ConnectionError("lost after placeOrder")
+
+    monkeypatch.setattr(orchestrator.exchange, "submit_resting_entry_pair", broken_submit)
+
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+
+    assert orchestrator._entry_attempt_count("AAA", SESSION) == 1
+
+
+@pytest.mark.asyncio
+async def test_s6_levels_are_rounded_to_the_tick_conservatively():
+    exchange = _mock()
+    await exchange.set_price("AAA", 100.0)
+    executor = _executor(exchange)
+
+    await _place(
+        executor, long_level=101.004, short_level=98.996, long_stop=98.996, short_stop=101.004
+    )
+
+    entries = {o.side: o for o in _orders(exchange, "entry")}
+    stops = {s.parent_order_id: s for s in _orders(exchange, "protective_stop")}
+    assert entries["buy"].stop_price == 101.01  # buy trigger rounded up
+    assert entries["sell"].stop_price == 98.99  # sell trigger rounded down
+    assert stops[entries["buy"].order_id].stop_price == 99.0  # long's stop rounded up (tighter)
+    assert stops[entries["sell"].order_id].stop_price == 101.0  # short's stop rounded down
+
+
+@pytest.mark.asyncio
+async def test_s7_entry_orders_record_placement_latency(tmp_path):
+    orchestrator = _orchestrator(tmp_path, (9, 35))
+    orchestrator.market_scheduler.set_time(9, 35, 4)
+    await orchestrator.exchange.set_price("AAA", 100.0)
+
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+
+    latencies = [o.placement_latency_s for o in _orders(orchestrator.exchange, "entry")]
+    assert latencies == [pytest.approx(4.0)] * 2
+    await orchestrator.trade_executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_s8_non_linked_orders_keep_the_cancel_and_resubmit_path():
+    from vibe.common.execution.base import OrderResponse
+    from vibe.trading_bot.execution.order_manager import OrderRetryPolicy
+
+    class Exchange:
+        def __init__(self):
+            self.orders = {
+                "m1": Order(
+                    order_id="m1", symbol="AAA", side="sell", quantity=10, price=100.0,
+                    order_type="market", status=OrderStatus.CANCELLED, filled_qty=4.0,
+                    avg_price=100.0,
+                )
+            }
+            self.cancels, self.submitted = [], []
+
+        async def get_order(self, order_id):
+            return self.orders.get(order_id)
+
+        async def cancel_order(self, order_id):
+            self.cancels.append(order_id)
+            return OrderResponse(order_id, OrderStatus.CANCELLED, 4.0, 100.0, 6.0)
+
+        async def submit_order(self, **kwargs):
+            self.submitted.append(kwargs["quantity"])
+            order = Order(
+                order_id="m2", symbol="AAA", side="sell", quantity=kwargs["quantity"],
+                price=100.0, order_type="market", status=OrderStatus.FILLED,
+                filled_qty=kwargs["quantity"], avg_price=100.0,
+            )
+            self.orders["m2"] = order
+            return OrderResponse("m2", OrderStatus.FILLED, order.quantity, 100.0, 0.0)
+
+    exchange = Exchange()
+    cancelled = []
+
+    async def on_cancelled(order_id):
+        cancelled.append(order_id)
+
+    manager = OrderManager(
+        exchange=exchange,
+        retry_policy=OrderRetryPolicy(base_delay_seconds=0.0, cancel_after_seconds=600),
+        on_order_cancelled=on_cancelled,
+    )
+    from vibe.trading_bot.execution.order_manager import ManagedOrder
+
+    manager._orders["m1"] = ManagedOrder(order_id="m1", order=exchange.orders["m1"])
+    await manager._monitor_order("m1")
+
+    # The broker-cancel shortcut is for linked orders only: the remainder is resubmitted.
+    assert exchange.submitted == [6.0]
+    assert cancelled == []
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_s8_ib_status_refresh_only_touches_linked_orders():
+    from vibe.trading_bot.exchange.ib_exchange import InteractiveBrokersExecutionEngine
+
+    broker = SimpleNamespace(
+        order_status_snapshot=lambda order_id: "Cancelled",
+        add_execution_listener=lambda listener: None,
+    )
+    engine = InteractiveBrokersExecutionEngine(broker)
+    plain = Order(order_id="1", symbol="AAA", side="sell", quantity=10, price=100.0,
+                  order_type="market", status=OrderStatus.SUBMITTED)
+    linked = _restored("2", "sell", "protective_stop", 99.0, parent="9")
+    engine._orders = {"1": plain, "2": linked}
+
+    assert (await engine.get_order("1")).status == OrderStatus.SUBMITTED
+    assert (await engine.get_order("2")).status == OrderStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_s2_entry_fill_is_tracked_even_when_the_broker_position_lags(tmp_path, monkeypatch):
+    from vibe.common.strategies import ORBStrategy
+    from vibe.common.strategies.orb import ORBStrategyConfig
+
+    orchestrator = _orchestrator(tmp_path, (9, 40))
+    exchange = orchestrator.exchange
+    orchestrator.strategy = ORBStrategy(config=ORBStrategyConfig(name="ORB"))
+    await exchange.set_price("AAA", 100.0)
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+    await exchange.set_price("AAA", 101.2)
+    await exchange.process_pending_orders()
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+
+    async def lagging(symbol):
+        return None  # ib.portfolio() has not caught up with the execution
+
+    monkeypatch.setattr(exchange, "get_position", lagging)
+
+    await orchestrator._sync_open_trade_after_entry_fill(buy)
+
+    tracked = orchestrator.strategy.get_position("AAA")
+    assert tracked is not None
+    assert (tracked["side"], tracked["quantity"], tracked["entry_price"]) == (
+        "buy", buy.filled_qty, buy.avg_price,
+    )
+    assert orchestrator.trade_executor.get_pending_entry(buy.order_id) is None
+    await orchestrator.trade_executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_s2_untracked_broker_position_is_flattened_at_eod(tmp_path, monkeypatch):
+    orchestrator = _orchestrator(tmp_path, (15, 56))
+    executor = orchestrator.trade_executor
+    flattened = []
+
+    async def positions():
+        return {"AAA": 50.0, "BBB": 10.0}
+
+    async def record_flatten(symbol, reason):
+        flattened.append((symbol, reason))
+
+    monkeypatch.setattr(executor, "account_positions", positions)
+    monkeypatch.setattr(orchestrator, "_flatten_symbol", record_flatten)
+    orchestrator.strategy.positions["BBB"] = {"side": "buy"}  # tracked: normal EOD path
+
+    await orchestrator._monitor_untracked_positions(
+        orchestrator.market_scheduler.now()
+    )
+
+    assert flattened == [("AAA", "time_exit")]
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_s2_untracked_positions_are_left_alone_before_eod(tmp_path, monkeypatch):
+    orchestrator = _orchestrator(tmp_path, (14, 0))
+    executor = orchestrator.trade_executor
+    flattened = []
+
+    async def positions():
+        return {"AAA": 50.0}
+
+    async def record_flatten(symbol, reason):
+        flattened.append(symbol)
+
+    monkeypatch.setattr(executor, "account_positions", positions)
+    monkeypatch.setattr(orchestrator, "_flatten_symbol", record_flatten)
+
+    await orchestrator._monitor_untracked_positions(orchestrator.market_scheduler.now())
+
+    assert flattened == []
     await executor.order_manager.shutdown()

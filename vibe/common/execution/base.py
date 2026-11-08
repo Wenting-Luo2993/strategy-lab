@@ -29,6 +29,7 @@ class RestingEntryLeg:
     quantity: int
     trigger_price: float
     protective_stop_price: float
+    capped_by: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.side not in ("buy", "sell"):

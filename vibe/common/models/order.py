@@ -78,6 +78,13 @@ class Order(BaseModel):
         default=None,
         description="Entry level was already traded through when the order was placed",
     )
+    placement_latency_s: Optional[float] = Field(
+        default=None,
+        description="Seconds between the opening range ending and a resting entry reaching the broker",
+    )
+    capped_by: Optional[str] = Field(
+        default=None, description="Sizing limit that reduced this entry, if any"
+    )
 
     @field_validator("side")
     @classmethod

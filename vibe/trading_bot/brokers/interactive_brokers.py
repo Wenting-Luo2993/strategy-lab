@@ -476,6 +476,8 @@ class InteractiveBrokersAPI:
                 gap_fill=(
                     None if stored.get("gap_fill") is None else bool(stored.get("gap_fill"))
                 ),
+                placement_latency_s=stored.get("placement_latency_s"),
+                capped_by=stored.get("capped_by"),
             )
             self._trades[broker_order_id] = trade
             self._submitted_orders[broker_order_id] = restored
@@ -939,46 +941,70 @@ class InteractiveBrokersAPI:
             child.transmit = True
             placed.append((parent, entry, child, stop))
 
-        trades = []
-        for parent, entry, child, stop in placed:
-            trades.append((self.ib.placeOrder(contract, parent), entry, True))
-            trades.append((self.ib.placeOrder(contract, child), stop, False))
-
+        # Each leg is registered the moment placeOrder returns, before the
+        # next leg is sent, so a failure part-way through can never leave a
+        # live broker order this process does not know about.
         ids: List[tuple[str, str]] = []
+        registered: List[tuple[Any, BrokerOrder]] = []
         parent_id: Optional[str] = None
-        for trade, order, is_parent in trades:
-            broker_order_id = str(trade.order.orderId)
-            submitted = replace(
-                order,
-                broker_order_id=broker_order_id,
-                status="submitted",
-                submitted_at=submitted_at,
-                parent_order_id=None if is_parent else parent_id,
-            )
-            self._trades[broker_order_id] = trade
-            self._submitted_orders[broker_order_id] = submitted
-            self.execution_store.upsert_submitted_order(
-                self._submitted_order_payload(
-                    submitted,
-                    permanent_order_id=getattr(trade.order, "permId", None),
+        for parent, entry, child, stop in placed:
+            for ib_order, order, is_parent in ((parent, entry, True), (child, stop, False)):
+                trade = self.ib.placeOrder(contract, ib_order)
+                broker_order_id = str(trade.order.orderId)
+                submitted = replace(
+                    order,
+                    broker_order_id=broker_order_id,
+                    status="submitted",
+                    submitted_at=submitted_at,
+                    parent_order_id=None if is_parent else parent_id,
                 )
-            )
-            if is_parent:
-                parent_id = broker_order_id
-            else:
-                ids.append((parent_id, broker_order_id))
+                self._trades[broker_order_id] = trade
+                self._submitted_orders[broker_order_id] = submitted
+                registered.append((trade, submitted))
+                if is_parent:
+                    parent_id = broker_order_id
+                else:
+                    ids.append((parent_id, broker_order_id))
+
+        for trade, submitted in registered:
+            try:
+                self.execution_store.upsert_submitted_order(
+                    self._submitted_order_payload(
+                        submitted,
+                        permanent_order_id=getattr(trade.order, "permId", None),
+                    )
+                )
+            except Exception as exc:
+                # The orders are live at the broker; a journal failure must not
+                # hide them from the caller (which records the attempt).
+                logger.error(
+                    "Failed to journal IB order %s: %s",
+                    submitted.broker_order_id,
+                    exc,
+                    exc_info=True,
+                )
             logger.info(
                 "Submitted IB %s order %s %s %s %s @ %s (oca=%s parent=%s)",
-                order.order_role,
-                broker_order_id,
-                order.side,
-                order.quantity,
-                order.symbol,
-                order.stop_price,
-                order.oca_group,
+                submitted.order_role,
+                submitted.broker_order_id,
+                submitted.side,
+                submitted.quantity,
+                submitted.symbol,
+                submitted.stop_price,
+                submitted.oca_group,
                 submitted.parent_order_id,
             )
         return ids
+
+    async def submit_standalone_stop(
+        self,
+        order: BrokerOrder,
+        qualified_contract: Any = None,
+    ) -> str:
+        """Place one stop with no parent (a replacement protective stop)."""
+        if order.order_type != "stop":
+            raise ValueError("standalone protective orders must be stops")
+        return await self.submit_order(order, qualified_contract=qualified_contract)
 
     def _require_trade(self, broker_order_id: str):
         trade = self._trades.get(broker_order_id)
@@ -1268,4 +1294,6 @@ class InteractiveBrokersAPI:
             "oca_group": order.oca_group,
             "parent_order_id": order.parent_order_id,
             "gap_fill": order.gap_fill,
+            "placement_latency_s": order.placement_latency_s,
+            "capped_by": order.capped_by,
         }

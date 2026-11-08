@@ -59,6 +59,8 @@ class BrokerOrder:
     oca_group: Optional[str] = None
     parent_order_id: Optional[str] = None
     gap_fill: Optional[bool] = None
+    placement_latency_s: Optional[float] = None
+    capped_by: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:

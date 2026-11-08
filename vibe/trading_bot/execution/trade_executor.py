@@ -3,11 +3,13 @@ Trade executor that coordinates signal-to-order conversion with risk management.
 Integrates Position Sizer, Stop Loss Manager, Order Manager, and Exchange.
 """
 
+import asyncio
 import logging
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Literal, Optional
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 from vibe.common.execution.base import RestingEntryLeg
 from vibe.common.models import Order, OrderStatus, Position
@@ -65,6 +67,16 @@ class ExecutionResult:
 
     capped_by: Optional[str] = None
     """Limit that reduced the entry below its risk-implied size, if any."""
+
+    broker_contacted: bool = False
+    """Whether an order submission reached (or may have reached) the broker."""
+
+
+def round_to_tick(price: float, tick_size: float, direction: str) -> float:
+    """Round ``price`` to a multiple of ``tick_size`` (``up`` or ``down``)."""
+    ticks = float(price) / tick_size
+    whole = math.ceil(ticks - 1e-9) if direction == "up" else math.floor(ticks + 1e-9)
+    return round(whole * tick_size, 10)
 
 
 @dataclass(frozen=True)
@@ -229,6 +241,13 @@ class TradeExecutor:
         # id, and symbol -> the stop protecting its open position.
         self._protective_by_entry: Dict[str, str] = {}
         self._active_protective: Dict[str, str] = {}
+        # Protective stops this executor is cancelling itself (not broker-ended).
+        self._cancelling: set[str] = set()
+        # Symbols whose position is being closed by the client right now.
+        self._closing: set[str] = set()
+        self.on_alert: Optional[Callable[[str, str], Awaitable[None]]] = None
+        # How long a partial-stop close waits for the broker position to agree.
+        self.position_agreement_timeout_s = 5.0
 
     async def place_resting_stop_entries(
         self,
@@ -242,18 +261,32 @@ class TradeExecutor:
         strategy_name: str = "Unknown",
         signal_timestamp: Optional[datetime] = None,
         oca_group: Optional[str] = None,
+        placement_latency_s: Optional[float] = None,
+        reference_price: Optional[float] = None,
+        tick_size: float = 0.01,
     ) -> ExecutionResult:
         """Rest a buy stop and/or a sell stop in one OCA group with attached stops.
 
         Each side is sized on its own by the shared rule against the same
         account state (only one can fill, so the pair reserves the larger side
-        once). Sides that size below one share are dropped.
+        once). Sides that size below one share are dropped. Prices are rounded
+        to ``tick_size`` so the broker never rejects a sub-penny level: entry
+        triggers away from the market (buy up, sell down), protective stops
+        towards the entry (the conservative side).
         """
         legs_spec = []
         if long_level is not None and long_stop is not None:
-            legs_spec.append(("buy", float(long_level), float(long_stop)))
+            legs_spec.append((
+                "buy",
+                round_to_tick(long_level, tick_size, "up"),
+                round_to_tick(long_stop, tick_size, "up"),
+            ))
         if short_level is not None and short_stop is not None:
-            legs_spec.append(("sell", float(short_level), float(short_stop)))
+            legs_spec.append((
+                "sell",
+                round_to_tick(short_level, tick_size, "down"),
+                round_to_tick(short_stop, tick_size, "down"),
+            ))
         if not legs_spec:
             return ExecutionResult(success=False, reason="No resting entry side enabled")
         if any(context["symbol"] == symbol for context in self._pending_entries.values()):
@@ -324,7 +357,7 @@ class TradeExecutor:
             if quantity < 1:
                 reasons.append(f"{side}: size below one share (capped_by={capped_by})")
                 continue
-            legs.append(RestingEntryLeg(side, int(quantity), level, protective))
+            legs.append(RestingEntryLeg(side, int(quantity), level, protective, capped_by))
             capped[side] = capped_by
 
         if not legs:
@@ -342,11 +375,19 @@ class TradeExecutor:
                     "strategy_name": strategy_name,
                     "entry_cancel_after_seconds": cancel_after_seconds,
                     "entry_signal_bar_timestamp": signal_timestamp,
+                    "placement_latency_s": placement_latency_s,
+                    "reference_price": reference_price,
                 },
             )
         except Exception as exc:
             logger.error("Resting entry submission failed for %s: %s", symbol, exc, exc_info=True)
-            return ExecutionResult(success=False, reason=f"Order submission error: {exc}")
+            # Orders may be live even though the call failed; the caller must
+            # not try again this session.
+            return ExecutionResult(
+                success=False,
+                reason=f"Order submission error: {exc}",
+                broker_contacted=True,
+            )
 
         entries = [entry for entry, _ in placed]
         stops = [stop for _, stop in placed]
@@ -367,13 +408,15 @@ class TradeExecutor:
                 "capped_by": capped.get(entry.side),
                 "protective_order_id": stop.order_id,
                 "gap_fill": entry.gap_fill,
+                "placement_latency_s": placement_latency_s,
             }
         self.order_manager.track_orders(entries, cancel_after_seconds=cancel_after_seconds)
         self.order_manager.track_orders(stops, persistent=True)
         logger.info(
-            "[RESTING ENTRY] %s oca=%s %s",
+            "[RESTING ENTRY] %s oca=%s latency=%ss %s",
             symbol,
             group,
+            None if placement_latency_s is None else round(placement_latency_s, 1),
             ", ".join(
                 f"{e.side} {e.quantity:.0f} @ {e.stop_price:.2f} (stop {s.stop_price:.2f}, "
                 f"gap_fill={e.gap_fill})"
@@ -386,13 +429,19 @@ class TradeExecutor:
             reason=f"Resting entries placed in OCA group {group}",
             pending=True,
             capped_by=next((c for c in capped.values() if c), None),
+            broker_contacted=True,
         )
         if self._on_execution:
             self._on_execution(result)
         return result
 
     def mark_entry_filled(self, order_id: str) -> None:
-        """An entry filled: its protective stop is live, its OCA siblings are void."""
+        """An entry filled completely: its attached stop is live, its OCA siblings are void.
+
+        Call only once the parent is completely filled: IBKR activates an
+        attached child only then, so until that point the position must stay
+        under the client-side stop.
+        """
         context = self._pending_entries.get(order_id)
         if context is None:
             return
@@ -405,6 +454,109 @@ class TradeExecutor:
                 if other_id != order_id and other.get("group") == group:
                     # Cancelled by the broker's OCA group.
                     self._pending_entries.pop(other_id, None)
+
+    async def _alert(self, title: str, message: str) -> None:
+        logger.error("[ALERT] %s: %s", title, message)
+        if self.on_alert is None:
+            return
+        try:
+            await self.on_alert(title, message)
+        except Exception as exc:
+            logger.error("Alert callback failed: %s", exc, exc_info=True)
+
+    async def _place_standalone_protective(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        stop_price: Optional[float],
+        strategy_name: Optional[str] = None,
+    ) -> bool:
+        """Place and monitor a standalone protective stop; True on success."""
+        submit = getattr(self.exchange, "submit_protective_stop", None)
+        if submit is None or not stop_price or int(quantity) < 1:
+            return False
+        try:
+            stop = await submit(symbol, side, int(quantity), float(stop_price), strategy_name)
+        except Exception as exc:
+            logger.error(
+                "Standalone protective stop for %s failed: %s", symbol, exc, exc_info=True
+            )
+            return False
+        self._active_protective[symbol] = stop.order_id
+        self.order_manager.track_orders([stop], persistent=True)
+        logger.info(
+            "[PROTECTIVE STOP] %s %s %s @ %.2f (order %s)",
+            symbol, side, int(quantity), float(stop_price), stop.order_id,
+        )
+        return True
+
+    async def handle_entry_cancelled(self, order: Order) -> str:
+        """An entry ended at its deadline or by the broker.
+
+        Returns ``none`` (nothing filled), ``protected`` (the filled shares
+        rest under a stop) or ``unprotected`` (the caller must flatten and
+        alert). A partially filled bracket parent takes its attached stop with
+        it when cancelled, so the filled shares get a standalone stop sized to
+        exactly what filled -- never more than the open position.
+        """
+        context = self._pending_entries.pop(order.order_id, None) or {}
+        self._protective_by_entry.pop(order.order_id, None)
+        filled = float(order.filled_qty or 0.0)
+        if filled <= 0 or order.order_role != "entry":
+            return "none"
+        if order.symbol in self._closing:
+            return "closing"
+        if order.symbol in self._active_protective:
+            return "protected"
+        side = "sell" if order.side == "buy" else "buy"
+        stop_price = context.get("stop_price") or order.strategy_stop_price
+        if await self._place_standalone_protective(
+            order.symbol, side, filled, stop_price, order.strategy_name
+        ):
+            return "protected"
+        await self._alert(
+            "Partial entry unprotected",
+            f"{order.symbol}: {filled:.0f} shares filled before the entry was cancelled "
+            "and no protective stop could be placed; flattening.",
+        )
+        return "unprotected"
+
+    async def handle_protective_stop_ended(self, order: Order) -> str:
+        """The broker cancelled or rejected the active protective stop.
+
+        Returns ``ignored`` (not the active stop, or our own cancel),
+        ``replaced`` or ``unprotected`` (client-side stop takes over; alerted).
+        """
+        symbol = order.symbol
+        if (
+            self._active_protective.get(symbol) != order.order_id
+            or order.order_id in self._cancelling
+        ):
+            return "ignored"
+        self._active_protective.pop(symbol, None)
+        remaining = float(order.quantity) - float(order.filled_qty or 0.0)
+        position = await self.exchange.get_position(symbol)
+        if position is not None and position.quantity:
+            # Never protect more than is open.
+            remaining = min(remaining, float(position.quantity))
+        if remaining < 1 or position is None:
+            logger.warning(
+                "Protective stop %s for %s ended; no open position to re-protect",
+                order.order_id, symbol,
+            )
+            return "ignored"
+        if await self._place_standalone_protective(
+            symbol, order.side, remaining, order.stop_price, order.strategy_name
+        ):
+            return "replaced"
+        await self._alert(
+            "Protective stop lost",
+            f"{symbol}: the broker ended protective stop {order.order_id} and a "
+            "replacement could not be placed; the client-side stop now manages the "
+            "position.",
+        )
+        return "unprotected"
 
     def has_protective_stop(self, symbol: str) -> bool:
         return symbol in self._active_protective
@@ -420,6 +572,13 @@ class TradeExecutor:
         order_id = self._active_protective.get(symbol)
         if order_id is None:
             return "cancelled"
+        self._cancelling.add(order_id)
+        try:
+            return await self._cancel_protective_stop_inner(symbol, order_id)
+        finally:
+            self._cancelling.discard(order_id)
+
+    async def _cancel_protective_stop_inner(self, symbol: str, order_id: str) -> str:
         try:
             current = await self.exchange.get_order(order_id)
             if current is not None and current.status == OrderStatus.FILLED:
@@ -742,6 +901,18 @@ class TradeExecutor:
             logger.error(f"Order submission error: {e}")
             return result
 
+    async def _broker_position_at_most(self, symbol: str, quantity: float) -> bool:
+        """Poll briefly until the broker position is at most ``quantity``."""
+        deadline = asyncio.get_running_loop().time() + self.position_agreement_timeout_s
+        while True:
+            position = await self.exchange.get_position(symbol)
+            held = float(position.quantity) if position is not None else 0.0
+            if held <= quantity + 1e-9:
+                return True
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.5)
+
     async def _close_position(
         self,
         symbol: str,
@@ -766,10 +937,46 @@ class TradeExecutor:
                 reason=f"Close order already pending for {symbol}: {pending_close}",
             )
 
+        # A partially filled resting entry may still be working: cancel it
+        # first, or it could reopen the position after the close. Its filled
+        # shares are about to be closed, so no standalone stop is placed.
+        working_entries = [
+            order_id
+            for order_id, context in self._pending_entries.items()
+            if context["symbol"] == symbol and context.get("protective_order_id")
+        ]
+        if working_entries:
+            self._closing.add(symbol)
+            try:
+                for order_id in working_entries:
+                    current = await self.exchange.get_order(order_id)
+                    if current is not None and current.status in (
+                        OrderStatus.FILLED,
+                        OrderStatus.CANCELLED,
+                    ):
+                        continue
+                    try:
+                        await self.order_manager.cancel_order(order_id)
+                    except Exception as exc:
+                        logger.error(
+                            "Failed to cancel working entry %s before closing %s: %s",
+                            order_id, symbol, exc, exc_info=True,
+                        )
+                        return ExecutionResult(
+                            success=False,
+                            reason=f"Working entry for {symbol} could not be cancelled; not closing",
+                        )
+                    self._pending_entries.pop(order_id, None)
+            finally:
+                self._closing.discard(symbol)
+
         # A broker-side protective stop must be cancelled (and confirmed) before
         # a market close, or both could fill and flip the position. If the stop
-        # filled first, the broker already closed the position.
+        # filled, the broker closed the position: a broker position read can
+        # lag that fill, so it must not be used to send a second exit.
+        max_close_quantity: Optional[float] = None
         if symbol in self._active_protective:
+            stop_id = self._active_protective[symbol]
             outcome = await self._cancel_protective_stop(symbol)
             if outcome == "error":
                 return ExecutionResult(
@@ -777,11 +984,32 @@ class TradeExecutor:
                     reason=f"Protective stop for {symbol} could not be cancelled; not closing",
                 )
             if outcome == "filled":
-                remaining = await self.exchange.get_position(symbol)
-                if remaining is None or remaining.quantity == 0:
+                return ExecutionResult(
+                    success=False,
+                    reason=f"Position in {symbol} already closed by its protective stop",
+                )
+            stop_order = await self.exchange.get_order(stop_id)
+            stop_filled = float(getattr(stop_order, "filled_qty", 0.0) or 0.0)
+            if stop_order is not None and stop_filled > 0:
+                # Partially filled stop: only its unfilled remainder is still
+                # open. Size the close from fills, and send it only once the
+                # broker position agrees, or a lagging read could flip it.
+                max_close_quantity = max(float(stop_order.quantity) - stop_filled, 0.0)
+                if max_close_quantity <= 0:
                     return ExecutionResult(
                         success=False,
                         reason=f"Position in {symbol} already closed by its protective stop",
+                    )
+                if not await self._broker_position_at_most(symbol, max_close_quantity):
+                    await self._alert(
+                        "Close aborted",
+                        f"{symbol}: protective stop filled {stop_filled:.0f} shares but the "
+                        f"broker position does not yet show at most {max_close_quantity:.0f} "
+                        "open; not sending a market close.",
+                    )
+                    return ExecutionResult(
+                        success=False,
+                        reason=f"Broker position for {symbol} disagrees with stop fills; not closing",
                     )
 
         position = await self.exchange.get_position(symbol)
@@ -809,6 +1037,8 @@ class TradeExecutor:
         # Submit close order
         try:
             quantity = abs(int(position.quantity))
+            if max_close_quantity is not None:
+                quantity = min(quantity, int(max_close_quantity))
             response = await self.order_manager.submit_order(
                 symbol=symbol,
                 side=close_side,

@@ -613,6 +613,20 @@ class StrategyRuleSet(BaseModel):
                 raise ValueError(
                     f"portfolio.symbol_priority lists symbols not traded: {sorted(unknown)}"
                 )
+        entry_order = getattr(self.strategy, "entry_order", None)
+        if entry_order is not None and entry_order.type == "resting_stop":
+            timeframe = self.instruments.timeframe
+            bar_minutes = (
+                int(timeframe[:-1])
+                if timeframe.endswith("m") and timeframe[:-1].isdigit()
+                else None
+            )
+            if not bar_minutes or self.strategy.orb_duration_minutes % bar_minutes:
+                raise ValueError(
+                    f"resting_stop needs orb_duration_minutes "
+                    f"({self.strategy.orb_duration_minutes}) to be a whole number of "
+                    f"{timeframe} bars, or live cannot tell when the opening range is complete"
+                )
         return self
 
     @model_serializer(mode="wrap")

@@ -116,6 +116,12 @@ class ManagedOrder:
     """Part of an OCA group or bracket: never cancel-and-resubmit a partial fill,
     because a replacement order would not inherit the broker-side links."""
 
+    cancel_attempts: int = 0
+    """Unconfirmed deadline-cancel attempts so far."""
+
+    next_cancel_attempt_at: Optional[datetime] = None
+    """Earliest time of the next deadline-cancel retry."""
+
 
 class OrderManager:
     """
@@ -129,6 +135,10 @@ class OrderManager:
     - Track order history
     """
 
+    CANCEL_ALERT_AFTER = 5
+    CANCEL_RETRY_BASE_S = 2.0
+    """Unconfirmed deadline-cancel attempts before an operator alert."""
+
     def __init__(
         self,
         exchange: ExecutionEngine,
@@ -136,6 +146,7 @@ class OrderManager:
         on_order_created: Optional[Callable[[str], Awaitable[None]]] = None,
         on_order_filled: Optional[Callable[[str], Awaitable[None]]] = None,
         on_order_cancelled: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_alert: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ):
         """
         Initialize order manager.
@@ -154,6 +165,7 @@ class OrderManager:
         self._on_order_created = on_order_created
         self._on_order_filled = on_order_filled
         self._on_order_cancelled = on_order_cancelled
+        self._on_alert = on_alert
 
         # Order tracking
         self._orders: Dict[str, ManagedOrder] = {}
@@ -357,9 +369,10 @@ class OrderManager:
                 logger.info(f"Order filled: {order_id}")
                 break
 
-            # The broker ended the order itself (OCA sibling filled, bracket
-            # parent cancelled, day order expired).
-            if order.status == OrderStatus.CANCELLED:
+            # The broker ended a linked order itself (OCA sibling filled,
+            # bracket parent cancelled, rejected). Other orders keep the
+            # historical cancel-and-resubmit path below.
+            if managed.linked and order.status == OrderStatus.CANCELLED:
                 managed.completed_at = datetime.now()
                 managed.terminal_status = OrderStatus.CANCELLED
                 await self._emit_callback_ordered(self._on_order_cancelled, order_id)
@@ -371,12 +384,16 @@ class OrderManager:
                 # protective stop never times out; only an explicit
                 # cancel_order (or the entry deadline) ends them.
                 cancel_after_seconds = managed.cancel_after_seconds
-                if (
+                due = (
                     not managed.persistent
                     and cancel_after_seconds is not None
                     and elapsed >= cancel_after_seconds
-                ):
-                    await self._cancel_on_deadline(managed, order)
+                    and (
+                        managed.next_cancel_attempt_at is None
+                        or datetime.now() >= managed.next_cancel_attempt_at
+                    )
+                )
+                if due and await self._cancel_on_deadline(managed, order):
                     break
                 await asyncio.sleep(1.0)
                 continue
@@ -542,10 +559,32 @@ class OrderManager:
                 )
                 await asyncio.sleep(min(delay, 5.0))  # Max 5s wait
 
-    async def _cancel_on_deadline(self, managed: ManagedOrder, order: Order) -> None:
-        """Cancel a linked order at its deadline, honouring a racing fill."""
+    async def _cancel_on_deadline(self, managed: ManagedOrder, order: Order) -> bool:
+        """Cancel a linked order at its deadline, honouring a racing fill.
+
+        Returns True once the order is terminal. An unconfirmed cancel (for
+        example an IB timeout) is retried with backoff while monitoring
+        continues, so a fill that lands meanwhile is still seen; after
+        ``CANCEL_ALERT_AFTER`` failures an alert is raised.
+        """
         order_id = managed.order_id
-        cancellation = await self.exchange.cancel_order(order_id)
+        try:
+            cancellation = await self.exchange.cancel_order(order_id)
+        except Exception as exc:
+            managed.cancel_attempts += 1
+            delay = min(self.CANCEL_RETRY_BASE_S * 2 ** (managed.cancel_attempts - 1), 30)
+            managed.next_cancel_attempt_at = datetime.now() + timedelta(seconds=delay)
+            logger.error(
+                "Deadline cancel of %s not confirmed (attempt %s, retry in %ss): %s",
+                order_id, managed.cancel_attempts, delay, exc, exc_info=True,
+            )
+            if managed.cancel_attempts == self.CANCEL_ALERT_AFTER and self._on_alert is not None:
+                await self._emit_alert(
+                    "Order cancel unconfirmed",
+                    f"Cancelling {order.symbol} order {order_id} at its deadline failed "
+                    f"{managed.cancel_attempts} times: {exc}. Still retrying.",
+                )
+            return False
         refreshed = await self.exchange.get_order(order_id)
         terminal_order = refreshed or order
         confirmed_filled = max(
@@ -561,10 +600,17 @@ class OrderManager:
             or confirmed_filled >= float(terminal_order.quantity)
         ):
             managed.terminal_status = OrderStatus.FILLED
-            return
+            return True
         managed.terminal_status = OrderStatus.CANCELLED
         await self._emit_callback_ordered(self._on_order_cancelled, order_id)
         logger.info("Order cancelled at its deadline: %s", order_id)
+        return True
+
+    async def _emit_alert(self, title: str, message: str) -> None:
+        try:
+            await self._on_alert(title, message)
+        except Exception as exc:
+            logger.error("Alert callback failed: %s", exc, exc_info=True)
 
     def get_order(self, order_id: str) -> Optional[ManagedOrder]:
         """

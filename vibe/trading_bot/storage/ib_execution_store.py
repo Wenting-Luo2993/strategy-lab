@@ -73,6 +73,8 @@ class IBExecutionStore:
                 oca_group TEXT,
                 parent_order_id TEXT,
                 gap_fill INTEGER,
+                placement_latency_s REAL,
+                capped_by TEXT,
                 benchmark_version INTEGER NOT NULL DEFAULT 2,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -127,6 +129,8 @@ class IBExecutionStore:
                 "oca_group": "TEXT",
                 "parent_order_id": "TEXT",
                 "gap_fill": "INTEGER",
+                "placement_latency_s": "REAL",
+                "capped_by": "TEXT",
                 "benchmark_version": "INTEGER NOT NULL DEFAULT 1",
                 "created_at": "TEXT",
                 "updated_at": "TEXT",
@@ -176,8 +180,9 @@ class IBExecutionStore:
                     exit_reason, entry_cancel_after_seconds, entry_expiry_bars,
                     entry_signal_bar_timestamp, entry_bar_interval_seconds,
                     order_role, oca_group, parent_order_id, gap_fill,
+                    placement_latency_s, capped_by,
                     benchmark_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(broker_order_id) DO UPDATE SET
                     permanent_order_id = COALESCE(excluded.permanent_order_id, permanent_order_id),
                     account_id = COALESCE(excluded.account_id, account_id),
@@ -206,6 +211,8 @@ class IBExecutionStore:
                     oca_group = COALESCE(excluded.oca_group, oca_group),
                     parent_order_id = COALESCE(excluded.parent_order_id, parent_order_id),
                     gap_fill = COALESCE(excluded.gap_fill, gap_fill),
+                    placement_latency_s = COALESCE(excluded.placement_latency_s, placement_latency_s),
+                    capped_by = COALESCE(excluded.capped_by, capped_by),
                     benchmark_version = excluded.benchmark_version,
                     updated_at = excluded.updated_at
                 """,
@@ -238,6 +245,8 @@ class IBExecutionStore:
                     payload.get("oca_group"),
                     payload.get("parent_order_id"),
                     None if payload.get("gap_fill") is None else int(bool(payload.get("gap_fill"))),
+                    payload.get("placement_latency_s"),
+                    payload.get("capped_by"),
                     int(payload.get("benchmark_version") or 2),
                     now,
                     now,
