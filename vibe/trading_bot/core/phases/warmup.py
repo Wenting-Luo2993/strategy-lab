@@ -14,7 +14,11 @@ from vibe.trading_bot.data.providers.types import WebSocketDataProvider
 from vibe.trading_bot.api.health import set_health_state
 from vibe.trading_bot.notifications.discord import DiscordNotifier
 from vibe.trading_bot.notifications.helper import discord_notification_context
-from vibe.trading_bot.notifications.payloads import SystemAlertPayload, SystemStatusPayload
+from vibe.trading_bot.notifications.payloads import (
+    RiskAlertPayload,
+    SystemAlertPayload,
+    SystemStatusPayload,
+)
 from vibe.trading_bot.utils.datetime_utils import get_market_now
 from vibe.trading_bot.version import BUILD_VERSION
 from vibe.common.models import Position
@@ -86,6 +90,11 @@ class WarmupPhaseManager(BasePhase):
 
         # Step 4.5: Apply strategy-specific carryover position policy before entries are allowed
         warmup_success &= await self._apply_carryover_position_policy(send_notification=send_notification)
+
+        # Step 4.6: Session-start equity snapshot (E0) for account-level risk.
+        # A failure blocks entries for the session but not exits, so it does
+        # not fail the warm-up.
+        await self._take_session_equity_snapshot()
 
         # Step 5: Run health checks
         health_status, all_healthy = await self._run_health_checks()
@@ -428,6 +437,93 @@ class WarmupPhaseManager(BasePhase):
             self.logger.error("   [!] Interactive Brokers health check failed: %s", e, exc_info=True)
             await self._send_critical_broker_alert(e)
             return False
+
+    async def _take_session_equity_snapshot(self) -> bool:
+        """Capture E0, the account equity every sizing cap uses for the session.
+
+        Only runs when the ruleset has a ``portfolio:`` block. A snapshot
+        already persisted for today (bot restarted mid-session) is reused, so
+        the caps do not drift with intraday equity. On failure entries stay
+        blocked for the session and an alert is sent; there is no fallback
+        value.
+        """
+        risk_manager = getattr(self.orchestrator, "portfolio_risk_manager", None)
+        if risk_manager is None:
+            return True
+
+        from vibe.trading_bot.execution.portfolio_risk import SessionEquitySnapshot
+
+        now = get_market_now(self.market_scheduler)
+        session_date = now.date()
+        existing = risk_manager.begin_session(session_date)
+        if existing is not None:
+            self.logger.info(
+                "Step 4.6/6: Reusing session equity snapshot E0=$%.2f taken at %s",
+                existing.equity,
+                existing.taken_at.isoformat(),
+            )
+            return True
+
+        self.logger.info("Step 4.6/6: Taking session-start equity snapshot...")
+        try:
+            account = await self.orchestrator.exchange.get_account()
+            equity = (
+                account.broker_equity
+                if account.broker_equity is not None
+                else account.equity
+            )
+            if equity is None or equity <= 0:
+                raise ValueError(f"account equity unavailable or non-positive: {equity!r}")
+            snapshot = SessionEquitySnapshot(
+                session_date=session_date,
+                equity=float(equity),
+                taken_at=now,
+                account_id=account.account_id,
+            )
+            risk_manager.record_snapshot(snapshot)
+            self.logger.info(
+                "   [OK] Session equity E0=$%.2f (account=%s)",
+                snapshot.equity,
+                snapshot.account_id,
+            )
+            persist = getattr(self.orchestrator, "_persist_dashboard_account_and_positions", None)
+            if persist is not None:
+                await persist(reason="session_start_equity", account=account)
+            return True
+        except Exception as e:
+            self.logger.error(
+                "   [!] Session equity snapshot failed; entries blocked for %s: %s",
+                session_date,
+                e,
+                exc_info=True,
+            )
+            risk_manager.record_snapshot_failure(session_date, str(e))
+            await self._send_risk_alert(
+                RiskAlertPayload(
+                    event_type="EQUITY_SNAPSHOT_FAILED",
+                    timestamp=now,
+                    session_date=session_date.isoformat(),
+                    message=(
+                        "The session-start equity snapshot could not be taken, so "
+                        "position sizing has no basis. New entries are blocked for "
+                        "this session; open positions are still managed."
+                    ),
+                    error=str(e),
+                    version=BUILD_VERSION,
+                )
+            )
+            return False
+
+    async def _send_risk_alert(self, payload: RiskAlertPayload) -> None:
+        webhook_url = self.config.notifications.discord_webhook_url
+        if not webhook_url:
+            self.logger.warning("Risk alert not sent to Discord: webhook not configured")
+            return
+        try:
+            async with discord_notification_context(webhook_url) as notifier:
+                await notifier.send_risk_alert(payload)
+        except Exception as e:
+            self.logger.error("Failed to send risk alert: %s", e, exc_info=True)
 
     async def _send_critical_broker_alert(self, error: Exception) -> None:
         """Notify operators when all IB warm-up connection attempts fail."""

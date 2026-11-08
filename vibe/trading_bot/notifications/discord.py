@@ -12,6 +12,7 @@ from vibe.trading_bot.notifications.payloads import (
     SystemStatusPayload,
     SystemAlertPayload,
     ORBLevelsPayload,
+    RiskAlertPayload,
 )
 from vibe.trading_bot.notifications.formatter import DiscordNotificationFormatter
 from vibe.trading_bot.notifications.rate_limiter import TokenBucketRateLimiter
@@ -269,6 +270,33 @@ class DiscordNotifier:
 
         except Exception as e:
             logger.error(f"Error sending system alert: {e}", exc_info=True)
+            return False
+
+    async def send_risk_alert(self, payload: RiskAlertPayload) -> bool:
+        """Send an account-level risk alert immediately (bypasses the queue)."""
+        if not self._session:
+            logger.error("Session not initialized")
+            return False
+
+        try:
+            message = self.formatter.format_risk_alert(payload)
+            await self.rate_limiter.acquire()
+            async with self._session.post(
+                self.webhook_url,
+                json=message,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status in self.SUCCESS_STATUS_CODES:
+                    logger.info("Risk alert notification sent: %s", payload.event_type)
+                    return True
+                logger.error(
+                    "Failed to send risk alert: %s (text: %s)",
+                    response.status,
+                    await response.text(),
+                )
+                return False
+        except Exception as e:
+            logger.error(f"Error sending risk alert: {e}", exc_info=True)
             return False
 
     async def _worker(self) -> None:

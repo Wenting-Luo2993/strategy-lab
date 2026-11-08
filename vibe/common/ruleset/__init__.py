@@ -10,6 +10,7 @@ from vibe.common.ruleset.models import (
     ExitConfig,
     TradeFilterConfig,
     MTFValidationConfig,
+    PortfolioConfig,
     # Take Profit configs
     TakeProfitConfig,
     OrbRangeMultipleTakeProfit,
@@ -41,6 +42,7 @@ __all__ = [
     "ExitConfig",
     "TradeFilterConfig",
     "MTFValidationConfig",
+    "PortfolioConfig",
     # Take Profit configs
     "TakeProfitConfig",
     "OrbRangeMultipleTakeProfit",

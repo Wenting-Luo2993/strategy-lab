@@ -51,6 +51,8 @@ async with discord_notification_context(webhook_url) as notifier:
 | `OrderNotificationPayload` | `ORDER_SENT` | Order submitted | Blue (0x3498db) |
 | `OrderNotificationPayload` | `ORDER_FILLED` | Order filled | Green (0x2ecc71) |
 | `OrderNotificationPayload` | `ORDER_CANCELLED` | Order cancelled | Red (0xe74c3c) |
+| `RiskAlertPayload` | `DAILY_LOSS_LIMIT` | Account daily loss limit hit (entries cancelled, flattened, halted) | Red (0xe74c3c) |
+| `RiskAlertPayload` | `EQUITY_SNAPSHOT_FAILED` | Warm-up equity snapshot failed (entries blocked for the session) | Red (0xe74c3c) |
 
 ### Message Format Standards
 
@@ -180,7 +182,7 @@ if should_run_my_phase():
 
 | Phase | Class | When | Duration | Purpose |
 |-------|-------|------|----------|---------|
-| Warmup | `WarmupPhaseManager` | 9:25-9:30 AM EST | ~5 min | Prefetch data, connect provider, health checks |
+| Warmup | `WarmupPhaseManager` | 9:25-9:30 AM EST | ~5 min | Prefetch data, connect provider, health checks, session equity snapshot (E0, `portfolio:` rulesets) |
 | Trading | (inline in orchestrator) | 9:30 AM-4:00 PM EST | Market hours | Execute trading strategy |
 | Cooldown | `CooldownPhaseManager` | 4:00-4:05 PM EST | 5 min | Process final data, disconnect provider |
 

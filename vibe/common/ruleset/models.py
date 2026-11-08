@@ -1,7 +1,7 @@
 """Pydantic models for strategy ruleset configuration."""
 
 from typing import Optional, List, Literal, Union, Annotated
-from pydantic import BaseModel, Field, model_validator, ConfigDict
+from pydantic import BaseModel, Field, model_validator, model_serializer, ConfigDict
 
 
 # ============================================================================
@@ -489,6 +489,65 @@ class InstrumentConfig(BaseModel):
 
 
 # ============================================================================
+# Portfolio (account-level) Configuration
+# ============================================================================
+
+class PortfolioConfig(BaseModel):
+    """Account-level sizing and risk limits shared by live trading and backtests.
+
+    Field names mirror ``PortfolioSimulationConfig`` where they exist. A
+    ruleset without this block keeps the historical per-symbol behaviour.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    sizing_equity_basis: Literal["session_start", "current"] = Field(
+        default="session_start",
+        description=(
+            "Equity used for risk and per-position caps: the snapshot taken at "
+            "session start, or current net liquidation"
+        ),
+    )
+    max_symbol_exposure_pct: float = Field(
+        default=0.20,
+        description="Per-position notional cap as a fraction of sizing equity",
+    )
+    max_gross_leverage: float = Field(
+        default=1.0,
+        description="Gross open + reserved + new notional may not exceed this x current equity",
+    )
+    max_open_positions: Optional[int] = Field(
+        default=None,
+        description="Maximum open positions plus pending entries across all symbols",
+    )
+    daily_loss_limit_pct: Optional[float] = Field(
+        default=None,
+        description=(
+            "Flatten and stop for the session when realized + unrealized P&L "
+            "reaches -this fraction of session-start equity"
+        ),
+    )
+    symbol_priority: List[str] = Field(
+        default_factory=list,
+        description="Order in which simultaneous entries are evaluated",
+    )
+
+    @model_validator(mode="after")
+    def validate_limits(self) -> "PortfolioConfig":
+        if not 0 < self.max_symbol_exposure_pct <= 1:
+            raise ValueError("max_symbol_exposure_pct must be in (0, 1]")
+        if self.max_gross_leverage <= 0:
+            raise ValueError("max_gross_leverage must be positive")
+        if self.max_open_positions is not None and self.max_open_positions <= 0:
+            raise ValueError("max_open_positions must be positive when provided")
+        if self.daily_loss_limit_pct is not None and not 0 < self.daily_loss_limit_pct < 1:
+            raise ValueError("daily_loss_limit_pct must be in (0, 1)")
+        if len(set(self.symbol_priority)) != len(self.symbol_priority):
+            raise ValueError("symbol_priority cannot contain duplicates")
+        return self
+
+
+# ============================================================================
 # Main Strategy Ruleset
 # ============================================================================
 
@@ -521,9 +580,27 @@ class StrategyRuleSet(BaseModel):
         default_factory=MTFValidationConfig,
         description="Multi-timeframe validation configuration",
     )
+    portfolio: Optional[PortfolioConfig] = Field(
+        default=None,
+        description="Account-level sizing and risk limits (optional)",
+    )
 
     @model_validator(mode="after")
     def validate_all(self) -> "StrategyRuleSet":
         """Cross-field validation."""
-        # Add any cross-field checks here
+        if self.portfolio is not None:
+            unknown = set(self.portfolio.symbol_priority) - set(self.instruments.symbols)
+            if unknown:
+                raise ValueError(
+                    f"portfolio.symbol_priority lists symbols not traded: {sorted(unknown)}"
+                )
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_portfolio(self, handler):
+        # Run identities hash the serialized ruleset. Omitting the key when the
+        # block is absent keeps every existing ruleset's hash unchanged.
+        data = handler(self)
+        if self.portfolio is None and isinstance(data, dict):
+            data.pop("portfolio", None)
+        return data

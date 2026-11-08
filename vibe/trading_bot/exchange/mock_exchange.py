@@ -528,6 +528,15 @@ class MockExchange(ExecutionEngine):
             current_price=current_price,
         )
 
+    async def list_positions(self) -> list[Position]:
+        """Every open position of the account."""
+        positions = []
+        for symbol in list(self._positions):
+            position = await self.get_position(symbol)
+            if position is not None and position.quantity > 0:
+                positions.append(position)
+        return positions
+
     async def get_account(self) -> AccountState:
         """
         Get current account state.

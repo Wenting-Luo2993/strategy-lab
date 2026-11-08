@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, Literal, Optional
 
 from vibe.common.models import Order, OrderStatus, Position
 from vibe.common.risk import PositionSizer
+from vibe.common.risk.portfolio_sizing import PendingExposure
 from vibe.trading_bot.execution.order_manager import (
     OrderManager,
     OrderRetryPolicy,
@@ -87,6 +88,9 @@ class SimpleRiskManager:
     - Maximum positions limit
     - Drawdown limits
     """
+
+    account_level = False
+    """Whether ``pre_trade_check`` expects every account position and pending entry."""
 
     def __init__(
         self,
@@ -284,21 +288,36 @@ class TradeExecutor:
         # Get account state
         account = await self.exchange.get_account()
 
-        # Check if we already have a position in this symbol
-        existing_position = await self.exchange.get_position(symbol)
-        existing_positions = {}
-        if existing_position is not None:
-            existing_positions[symbol] = existing_position
+        if self.risk_manager.account_level:
+            # Account-level rules need every position and resting entry, not
+            # just this symbol's: the open-position cap and the equity
+            # headroom are properties of the account.
+            existing_positions = await self.account_positions()
+            risk_check = self.risk_manager.pre_trade_check(
+                symbol=symbol,
+                side=side,
+                quantity=1,  # Placeholder, will be sized
+                entry_price=sizing_entry_price,
+                current_account_value=account.equity,
+                existing_positions=existing_positions,
+                pending_entries=self.pending_exposures(),
+            )
+        else:
+            # Check if we already have a position in this symbol
+            existing_position = await self.exchange.get_position(symbol)
+            existing_positions = {}
+            if existing_position is not None:
+                existing_positions[symbol] = existing_position
 
-        # Risk validation
-        risk_check = self.risk_manager.pre_trade_check(
-            symbol=symbol,
-            side=side,
-            quantity=1,  # Placeholder, will be sized
-            entry_price=sizing_entry_price,
-            current_account_value=account.equity,
-            existing_positions=existing_positions,
-        )
+            # Risk validation
+            risk_check = self.risk_manager.pre_trade_check(
+                symbol=symbol,
+                side=side,
+                quantity=1,  # Placeholder, will be sized
+                entry_price=sizing_entry_price,
+                current_account_value=account.equity,
+                existing_positions=existing_positions,
+            )
 
         if not risk_check.passed:
             result = ExecutionResult(
@@ -383,6 +402,9 @@ class TradeExecutor:
                 "expiry_bars": order_intent.expiry_bars,
                 "bars_elapsed": 0,
                 "last_bar_timestamp": order_intent.signal_bar_timestamp,
+                "quantity": int(size_result.size),
+                "trigger_price": order_intent.trigger_price,
+                "group": response.order_id,
             }
 
             if actual_filled == 0:
@@ -589,6 +611,59 @@ class TradeExecutor:
             for context in self._pending_entries.values()
         )
 
+    def pending_exposures(self) -> list[PendingExposure]:
+        """Resting entries as account-level reservations.
+
+        Only the unfilled remainder is reserved: a filled share is already an
+        open position, and the context lingers until the fill is projected.
+        """
+        exposures = []
+        for order_id, context in self._pending_entries.items():
+            quantity = float(context.get("quantity") or 0.0)
+            managed = self.order_manager.get_order(order_id)
+            if managed is not None:
+                quantity -= float(managed.filled_qty or 0.0)
+            price = float(context.get("trigger_price") or 0.0)
+            if quantity <= 0 or price <= 0:
+                continue
+            exposures.append(
+                PendingExposure(
+                    symbol=context["symbol"],
+                    quantity=quantity,
+                    price=price,
+                    group=str(context.get("group") or order_id),
+                )
+            )
+        return exposures
+
+    async def account_positions(self) -> Dict[str, Position]:
+        """Every open broker position of the account, keyed by symbol."""
+        list_positions = getattr(self.exchange, "list_positions", None)
+        if list_positions is None:
+            raise RuntimeError(
+                f"{type(self.exchange).__name__} cannot list account positions; "
+                "account-level risk checks require it"
+            )
+        return {
+            position.symbol: position
+            for position in await list_positions()
+            if position.quantity != 0
+        }
+
+    async def cancel_all_pending_entries(self) -> list[str]:
+        """Cancel every resting entry order; returns the cancelled order ids."""
+        cancelled: list[str] = []
+        for order_id in list(self._pending_entries):
+            try:
+                if await self.order_manager.cancel_order(order_id):
+                    cancelled.append(order_id)
+                    self._pending_entries.pop(order_id, None)
+            except Exception as exc:
+                logger.error(
+                    "Failed to cancel pending entry %s: %s", order_id, exc, exc_info=True
+                )
+        return cancelled
+
     def restore_pending_entries(self, orders: list[Order]) -> int:
         """Restore entry context required to project fills after a restart."""
         restored = 0
@@ -629,6 +704,9 @@ class TradeExecutor:
                 "expiry_bars": order.entry_expiry_bars,
                 "bars_elapsed": bars_elapsed,
                 "last_bar_timestamp": last_bar_timestamp,
+                "quantity": float(order.quantity),
+                "trigger_price": float(order.stop_price or order.price),
+                "group": order.order_id,
             }
             restored += 1
         return restored

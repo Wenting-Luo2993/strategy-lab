@@ -536,6 +536,35 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             None,
         )
 
+    async def list_positions(self) -> List[Position]:
+        """Every non-flat stock position of the account.
+
+        Prices come from the broker's portfolio marks (or the last fill), never
+        from a fresh market-data request, so this is cheap enough to call
+        before every entry.
+        """
+        positions: List[Position] = []
+        for broker_position in await self.broker.get_positions():
+            if broker_position.quantity == 0:
+                continue
+            current_price = (
+                broker_position.market_price
+                or self._prices.get(broker_position.symbol)
+                or broker_position.avg_cost
+            )
+            positions.append(
+                Position(
+                    symbol=broker_position.symbol,
+                    side="long" if broker_position.quantity > 0 else "short",
+                    quantity=abs(broker_position.quantity),
+                    entry_price=broker_position.avg_cost,
+                    current_price=current_price,
+                    instrument_currency=broker_position.instrument_currency,
+                    unrealized_pnl_currency=broker_position.instrument_currency,
+                )
+            )
+        return positions
+
     async def get_account(self) -> AccountState:
         account = await self.broker.get_account_info()
         equity = account.net_liquidation if account.net_liquidation is not None else 0.0

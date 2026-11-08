@@ -42,6 +42,10 @@ from vibe.trading_bot.execution.trade_executor import (
     ExecutionResult,
     TradeExecutor,
 )
+from vibe.trading_bot.execution.portfolio_risk import (
+    DAILY_LOSS_LIMIT,
+    PortfolioRiskManager,
+)
 from vibe.common.models import Trade
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
@@ -50,6 +54,7 @@ from vibe.common.indicators.engine import IncrementalIndicatorEngine
 from vibe.trading_bot.notifications.discord import DiscordNotifier
 from vibe.trading_bot.notifications.payloads import (
     OrderNotificationPayload,
+    RiskAlertPayload,
     TradeClosedPayload,
     SystemStatusPayload,
 )
@@ -178,6 +183,9 @@ class TradingOrchestrator:
         if add_execution_listener is not None:
             add_execution_listener(self._ingest_durable_ib_execution)
         self.trade_executor: Optional[TradeExecutor] = None
+        # Set when the ruleset declares a ``portfolio:`` block; owns the
+        # session-start equity snapshot (E0) and the daily loss halt.
+        self.portfolio_risk_manager: Optional[PortfolioRiskManager] = None
         self.strategy: Optional[ORBStrategy] = None
         self.indicator_engine: Optional[IncrementalIndicatorEngine] = None
 
@@ -1182,13 +1190,23 @@ class TradingOrchestrator:
         except Exception as exc:
             self.logger.warning("Dashboard price bar persistence failed for %s: %s", symbol, exc)
 
-    async def _persist_dashboard_account_and_positions(self, reason: str = "poll") -> None:
+    async def _persist_dashboard_account_and_positions(
+        self,
+        reason: str = "poll",
+        account: Any = None,
+    ) -> None:
+        """Persist and publish one account/position snapshot.
+
+        ``account`` lets a caller publish the exact broker state it acted on,
+        e.g. the session-start equity snapshot (``reason="session_start_equity"``).
+        """
         if not self._dashboard_enabled():
             return
         account_id = self._dashboard_account_id()
         broker_name = self._dashboard_broker_name()
         try:
-            account = await self.exchange.get_account()
+            if account is None:
+                account = await self.exchange.get_account()
             if getattr(account, "account_id", None):
                 self._resolved_dashboard_account_id = account.account_id
             account_id = self._dashboard_account_id()
@@ -1715,10 +1733,24 @@ class TradingOrchestrator:
                 )
 
                 # Create trade executor
+                if self.ruleset is not None and self.ruleset.portfolio is not None:
+                    self.portfolio_risk_manager = PortfolioRiskManager(
+                        config=self.ruleset.portfolio,
+                        position_sizer=position_sizer,
+                        state_path=(
+                            Path(self.config.database_path).parent
+                            / "session_risk_state.json"
+                        ),
+                    )
+                    self.logger.info(
+                        "Account-level risk enabled: %s",
+                        self.ruleset.portfolio.model_dump(),
+                    )
                 self.trade_executor = TradeExecutor(
                     exchange=self.exchange,
                     order_manager=order_manager,
                     position_sizer=position_sizer,
+                    risk_manager=self.portfolio_risk_manager,
                 )
                 self.logger.info("Trade executor initialized")
             except Exception as e:
@@ -3023,6 +3055,7 @@ class TradingOrchestrator:
             # During market hours with a live provider active, don't use Yahoo Finance fallback
             # (Yahoo is 15-min delayed and would interfere with real-time data)
             market_open = self.market_scheduler.is_market_open()
+            await self._enforce_account_risk_limits()
             realtime_provider_active = bool(
                 self.active_provider
                 and self.active_provider.connected
@@ -3409,6 +3442,110 @@ class TradingOrchestrator:
             self.logger.error(f"Trading cycle error: {e}", exc_info=True)
             return False
 
+    async def _enforce_account_risk_limits(self) -> None:
+        """Apply the account-level daily loss limit (``portfolio:`` rulesets only).
+
+        On breach: cancel every pending entry, flatten every position, block
+        entries until the next session, and alert. While halted, any position
+        that is still open (a close that did not complete) is retried.
+        """
+        risk_manager = self.portfolio_risk_manager
+        if risk_manager is None or self.trade_executor is None:
+            return
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        now = get_market_now(self.market_scheduler)
+        # A new date without a warm-up drops yesterday's E0, which blocks
+        # entries rather than sizing today off a stale snapshot.
+        risk_manager.begin_session(now.date())
+
+        if risk_manager.halted_reason == DAILY_LOSS_LIMIT:
+            if await self.trade_executor.account_positions():
+                await self.trade_executor.cancel_all_pending_entries()
+                await self._flatten_all_positions(DAILY_LOSS_LIMIT)
+            return
+
+        if risk_manager.config.daily_loss_limit_pct is None or risk_manager.session_equity is None:
+            return
+        try:
+            account = await self.exchange.get_account()
+        except Exception as exc:
+            self.logger.error("Daily loss check skipped: account unavailable: %s", exc, exc_info=True)
+            return
+        current_equity = (
+            account.broker_equity if account.broker_equity is not None else account.equity
+        )
+        status = risk_manager.check_daily_loss(float(current_equity))
+        if not status.triggered:
+            return
+
+        detail = (
+            f"session P&L ${status.pnl:+,.2f} <= limit ${status.limit:+,.2f} "
+            f"(E0 ${status.session_equity:,.2f}, NLV ${status.current_equity:,.2f})"
+        )
+        self.logger.error("[RISK] Daily loss limit reached: %s", detail)
+        risk_manager.halt(DAILY_LOSS_LIMIT, detail)
+        cancelled = await self.trade_executor.cancel_all_pending_entries()
+        flattened = await self._flatten_all_positions(DAILY_LOSS_LIMIT)
+
+        webhook_url = self.config.notifications.discord_webhook_url
+        if not webhook_url:
+            return
+        try:
+            async with discord_notification_context(webhook_url) as notifier:
+                await notifier.send_risk_alert(
+                    RiskAlertPayload(
+                        event_type="DAILY_LOSS_LIMIT",
+                        timestamp=now,
+                        session_date=now.date().isoformat(),
+                        message=(
+                            "The session loss reached the daily limit. Pending entries "
+                            "were cancelled and all positions flattened."
+                        ),
+                        session_equity=status.session_equity,
+                        current_equity=status.current_equity,
+                        pnl=status.pnl,
+                        limit=status.limit,
+                        cancelled_entries=len(cancelled),
+                        flattened_symbols=flattened,
+                        version=BUILD_VERSION,
+                    )
+                )
+        except Exception as exc:
+            self.logger.error("Failed to send daily loss alert: %s", exc, exc_info=True)
+
+    async def _flatten_all_positions(self, exit_reason: str) -> List[str]:
+        """Close every open broker position at market; returns symbols submitted."""
+        flattened: List[str] = []
+        try:
+            positions = await self.trade_executor.account_positions()
+        except Exception as exc:
+            self.logger.error("Cannot list positions to flatten: %s", exc, exc_info=True)
+            return flattened
+        for symbol, position in positions.items():
+            try:
+                tracked = self.strategy.get_position(symbol) if self.strategy else None
+                if tracked is not None:
+                    await self._close_position_with_notification(
+                        symbol,
+                        tracked,
+                        float(position.current_price),
+                        exit_reason,
+                    )
+                else:
+                    self._pending_exit_reasons[symbol] = exit_reason
+                    result = await self.trade_executor._close_position(
+                        symbol, exit_reason=exit_reason
+                    )
+                    if not result.order_id:
+                        self._pending_exit_reasons.pop(symbol, None)
+                        self.logger.error("[RISK] Flatten %s failed: %s", symbol, result.reason)
+                        continue
+                flattened.append(symbol)
+            except Exception as exc:
+                self.logger.error("[RISK] Flatten %s failed: %s", symbol, exc, exc_info=True)
+        return flattened
+
     async def _monitor_open_positions(self) -> None:
         """Check all open positions for stop-loss, take-profit, and EOD exit triggers.
 
@@ -3794,11 +3931,23 @@ class TradingOrchestrator:
 
     def get_status(self) -> Dict[str, Any]:
         """Get trading bot status."""
-        return {
+        status = {
             "running": self._running,
             "market_open": self.market_scheduler.is_market_open(),
             "health": self.health_monitor.get_status_summary(),
         }
+        risk_manager = self.portfolio_risk_manager
+        if risk_manager is not None:
+            status["portfolio_risk"] = {
+                "session_date": (
+                    risk_manager.session_date.isoformat()
+                    if risk_manager.session_date
+                    else None
+                ),
+                "session_equity": risk_manager.session_equity,
+                "entries_blocked_reason": risk_manager.entries_blocked_reason(),
+            }
+        return status
 
     async def run_backtest(
         self,

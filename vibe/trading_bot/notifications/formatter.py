@@ -9,6 +9,7 @@ from vibe.trading_bot.notifications.payloads import (
     SystemAlertPayload,
     ORBLevelsPayload,
     DailySummaryPayload,
+    RiskAlertPayload,
 )
 
 
@@ -32,6 +33,8 @@ class DiscordNotificationFormatter:
         "ORB_ESTABLISHED": 0x9b59b6,  # Purple
         "SYSTEM_WARNING": 0xf39c12,   # Orange
         "SYSTEM_ERROR": 0xe74c3c,     # Red
+        "DAILY_LOSS_LIMIT": 0xe74c3c,        # Red
+        "EQUITY_SNAPSHOT_FAILED": 0xe74c3c,  # Red
     }
 
     STATUS_COLORS = {
@@ -417,6 +420,54 @@ class DiscordNotificationFormatter:
             "footer": {"text": footer_text},
         }
         return {"embeds": [embed]}
+
+    def format_risk_alert(self, payload: RiskAlertPayload) -> Dict[str, Any]:
+        """Format an account-level risk event (daily loss limit, snapshot failure)."""
+        titles = {
+            "DAILY_LOSS_LIMIT": "🛑 Daily Loss Limit Reached",
+            "EQUITY_SNAPSHOT_FAILED": "🛑 Session Equity Snapshot Failed",
+        }
+        fields: List[Dict[str, Any]] = [
+            {"name": "Session", "value": payload.session_date, "inline": True},
+        ]
+        if payload.session_equity is not None:
+            fields.append(
+                {"name": "Session Equity", "value": f"${payload.session_equity:,.2f}", "inline": True}
+            )
+        if payload.current_equity is not None:
+            fields.append(
+                {"name": "Current Equity", "value": f"${payload.current_equity:,.2f}", "inline": True}
+            )
+        if payload.pnl is not None:
+            fields.append({"name": "Session P&L", "value": f"${payload.pnl:+,.2f}", "inline": True})
+        if payload.limit is not None:
+            fields.append({"name": "Limit", "value": f"${payload.limit:+,.2f}", "inline": True})
+        if payload.event_type == "DAILY_LOSS_LIMIT":
+            fields.append(
+                {"name": "Cancelled Entries", "value": str(payload.cancelled_entries), "inline": True}
+            )
+            fields.append(
+                {
+                    "name": "Flattened",
+                    "value": ", ".join(payload.flattened_symbols) or "none",
+                    "inline": False,
+                }
+            )
+        if payload.error:
+            fields.append({"name": "Error", "value": payload.error[:1000], "inline": False})
+        fields.append(
+            {"name": "Action", "value": "New entries blocked until the next session", "inline": False}
+        )
+        return {
+            "embeds": [{
+                "title": titles[payload.event_type],
+                "description": payload.message,
+                "color": self.COLORS[payload.event_type],
+                "fields": fields,
+                "timestamp": payload.timestamp.isoformat(),
+                "footer": {"text": f"Trading Bot {payload.version}" if payload.version else "Trading Bot"},
+            }]
+        }
 
     def format_orb_levels(self, payload: ORBLevelsPayload) -> Dict[str, Any]:
         """Format ORB levels payload into Discord webhook message.

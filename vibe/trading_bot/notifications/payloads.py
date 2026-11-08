@@ -288,6 +288,47 @@ class SystemAlertPayload:
 
 
 @dataclass
+class RiskAlertPayload:
+    """Notification payload for account-level risk events.
+
+    ``DAILY_LOSS_LIMIT``: the session's loss reached the configured limit; the
+    bot cancelled pending entries, flattened, and blocks entries until the
+    next session. ``EQUITY_SNAPSHOT_FAILED``: the warm-up equity snapshot
+    could not be taken, so entries are blocked for the session.
+    """
+
+    event_type: str
+    timestamp: datetime
+    session_date: str
+    message: str
+    session_equity: Optional[float] = None
+    current_equity: Optional[float] = None
+    pnl: Optional[float] = None
+    limit: Optional[float] = None
+    cancelled_entries: int = 0
+    flattened_symbols: list = field(default_factory=list)
+    error: Optional[str] = None
+    version: Optional[str] = None
+
+    VALID_EVENT_TYPES = ("DAILY_LOSS_LIMIT", "EQUITY_SNAPSHOT_FAILED")
+
+    def __post_init__(self) -> None:
+        if self.event_type not in self.VALID_EVENT_TYPES:
+            raise ValueError(
+                f"Invalid event_type: {self.event_type}. "
+                f"Must be one of {set(self.VALID_EVENT_TYPES)}"
+            )
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["timestamp"] = self.timestamp.isoformat()
+        return data
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), default=str)
+
+
+@dataclass
 class DailySummaryPayload:
     """Notification payload for end-of-day trading summary.
 
