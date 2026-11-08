@@ -288,19 +288,32 @@ Decisions made during implementation (beyond the plan):
   journal, which holds order roles, triggers and gap-fill flags.
 - Entry fills are split into `normal` (the headline slippage, against the
   live trigger), `market_gap` (the backtest also filled away from the level;
-  measured against the backtest's base price) and `late_placement` (placed
-  more than 15 s after OR end, or a live gap the backtest did not see).
+  measured against the backtest's base price) and `late_placement` (the
+  replay's 1-minute bars show the level traded before the order reached
+  IBKR: the touching minute ended before `submitted_at`, or the fill came
+  within 1 s of submission in that minute).
 - Live quantity is checked against `size_portfolio_entry` at the live
-  trigger and E0; the raw live-vs-backtest quantity may differ by the effect
-  of the backtest sizing at its fill (at least one share under the symbol
-  cap). Book-dependent live caps (headroom, broker funds) skip the check.
+  trigger and E0, and the live trigger/stop against the replay's OR edges
+  (`level` mismatch, 1 tick). Book-dependent live caps (headroom, broker
+  funds) skip the quantity check.
 - The replay refuses empty, wrong-day or incomplete bars (XNYS calendar) and
   any missing opening-range minute. The cooldown saves the IBKR bars it
   replayed under `<data>/parity_reports/bars/`; the offline script replays
   them with `--ib-bars-dir` (parquet bars are labelled not comparable).
-- Resting entries are placed about 2 s after OR end once a completed
-  real-time bar closes the window, with 5 s polling for five minutes after.
-  `placement_latency_s` and `capped_by` are journalled on every entry order.
+- The opening range of a resting-stop ruleset comes only from IBKR's
+  1-minute TRADES bars (RTH) for the window, the same source the parity
+  replay uses; the real-time aggregator's snapshot bars are never used. The
+  cycle wakes about 2 s after OR end and retries every 5 s; if IBKR has not
+  served every OR minute by OR end + 60 s the symbol sits the day out with
+  one alert. `or_source`, `or_high`, `or_low`, `placement_latency_s`
+  (measured at submission) and `capped_by` are journalled on every entry.
+- Executions corrected by IBKR (same execId apart from the final `.NN`)
+  are collapsed onto their latest revision under the first revision's id,
+  in the position rebuild, dashboard ingestion and the parity report.
+- Each symbol's close and protective-stop re-protection are serialised; a
+  protective stop working on a flat account (broker and today's fills) is
+  cancelled with an alert, and closes of a resting position are sized from
+  today's fills when the broker position lags them.
 
 Pre-rollout checks that need the VM (not possible locally):
 

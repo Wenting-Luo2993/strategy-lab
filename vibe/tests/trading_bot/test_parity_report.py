@@ -99,6 +99,7 @@ def _live_like(trade) -> LiveTrade:
         gap_fill=False,
         placement_latency_s=3.0,
         capped_by="max_symbol_exposure",
+        submitted_at=_ts("09:35") + timedelta(seconds=3),
     )
 
 
@@ -140,8 +141,7 @@ def test_each_mismatch_kind_is_reported(replay, backtest_trade, kind, change):
     live = change(_live_like(backtest_trade))
 
     result = compare_symbol(
-        "AAA", live, backtest_trade, backtest_level=101.0,
-        backtest_sizing_caps=replay.sizing_caps, ruleset=_ruleset(), session_equity=E0,
+        "AAA", live, backtest_trade, replay=replay, ruleset=_ruleset(), session_equity=E0,
     )
 
     assert not result.matched
@@ -176,6 +176,7 @@ def test_live_trades_rebuilt_from_executions():
     entry_meta = {
         "order_role": "entry", "benchmark_price": 101.0, "strategy_stop_price": 99.0,
         "gap_fill": 1, "oca_group": "ORB-AAA-1",
+        "submitted_at": "2026-07-20T13:35:02.500000+00:00",
     }
     stop_meta = {"order_role": "protective_stop", "benchmark_price": 99.0}
     executions = [
@@ -192,15 +193,20 @@ def test_live_trades_rebuilt_from_executions():
     assert trade.entry_price == pytest.approx((30 * 101.03 + 20 * 101.05) / 50)
     assert trade.entry_slippage_ticks == pytest.approx(3.8)
     assert trade.gap_fill is True
+    assert trade.submitted_at == datetime(2026, 7, 20, 13, 35, 2, 500000, tzinfo=timezone.utc)
     assert trade.exit_reason == "STOP"
     assert trade.r_multiple == pytest.approx((98.97 - trade.entry_price) / (trade.entry_price - 99.0))
 
 
 def test_report_headline_counts_normal_fills_only(replay, backtest_trade):
     fast = _live_like(backtest_trade)
-    # BBB filled as a gap live while the backtest filled at the level: the
-    # order was not resting at the breakout, so it is a late placement.
-    late = replace(fast, symbol="BBB", entry_price=101.30, gap_fill=True)
+    # BBB's order reached IBKR after the 09:40 minute that first traded the
+    # level: it was not resting at the breakout, so it is a late placement.
+    late = replace(
+        fast, symbol="BBB", entry_price=101.30,
+        submitted_at=_ts("09:41") + timedelta(seconds=5),
+        entry_time=_ts("09:41") + timedelta(seconds=5.2),
+    )
     report = _report(
         [fast, late], {"AAA": replay, "BBB": replay}, symbols=("AAA", "BBB", "CCC"),
         errors={"CCC": "no bars"},
@@ -211,7 +217,7 @@ def test_report_headline_counts_normal_fills_only(replay, backtest_trade):
     assert report.gap_fills == 0 and report.late_placements == 1
     assert report.late_placement_slippage_ticks == [pytest.approx(30.0)]
     assert report.errors == {"CCC": "no bars"}
-    assert report.to_dict()["mismatch_counts"] == {"entry_price": 1}
+    assert report.to_dict()["mismatch_counts"] == {"entry_price": 1, "entry_minute": 1}
 
 
 def test_parity_embed_follows_notification_standard():
@@ -526,13 +532,33 @@ def test_market_gap_is_measured_against_the_backtest_base_and_kept_out_of_the_he
     assert report.gap_fills == 1 and report.mean_gap_slippage_ticks == pytest.approx(1.0)
 
 
-def test_late_placement_is_its_own_class(backtest_trade, replay):
-    slow = replace(_live_like(backtest_trade), placement_latency_s=40.0)
+@pytest.mark.parametrize(
+    "submitted, filled, fill_class",
+    [
+        ("09:41:05", "09:41:05.3", FILL_LATE_PLACEMENT),  # touching minute already over
+        ("09:40:30", "09:40:30.4", FILL_LATE_PLACEMENT),  # same minute, filled on arrival
+        ("09:40:30", "09:40:45", FILL_NORMAL),  # same minute, then rested
+        ("09:35:03", "09:40:12", FILL_NORMAL),  # rested minutes before the breakout
+    ],
+)
+def test_late_placement_is_read_from_the_bars_not_a_latency_threshold(
+    backtest_trade, replay, submitted, filled, fill_class
+):
+    def at(text):
+        hhmm, seconds = text[:5], float(text[6:])
+        return _ts(hhmm) + timedelta(seconds=seconds)
 
-    report = _report([slow], {"AAA": replay})
+    # A 40 s placement latency alone does not make a fill late.
+    live = replace(
+        _live_like(backtest_trade), submitted_at=at(submitted), entry_time=at(filled),
+        placement_latency_s=40.0,
+    )
 
-    assert report.fills[0]["fill_class"] == FILL_LATE_PLACEMENT
-    assert report.late_placements == 1 and report.entry_slippage_ticks == []
+    report = _report([live], {"AAA": replay})
+
+    assert replay.first_touch["buy"] == _ts("09:40")
+    assert report.fills[0]["fill_class"] == fill_class
+    assert (report.late_placements == 1) is (fill_class == FILL_LATE_PLACEMENT)
 
 
 def test_normal_fill_is_the_headline(backtest_trade, replay):
@@ -565,16 +591,49 @@ def test_book_dependent_live_caps_skip_the_qty_check(backtest_trade, replay):
     assert result.details["backtest_sizing_caps"] == {"max_symbol_exposure": 1}
 
 
-def test_raw_qty_tolerates_one_share_under_the_symbol_cap(backtest_trade):
-    live = _live_like(backtest_trade)  # 198 vs backtest 197
+def test_raw_qty_difference_is_not_a_mismatch_when_sizing_matches(backtest_trade, replay):
+    live = _live_like(backtest_trade)  # 198 at the trigger vs backtest 197 at its fill
 
-    capped = compare_symbol(
-        "AAA", live, backtest_trade, backtest_sizing_caps={"max_symbol_exposure": 1}
+    result = compare_symbol(
+        "AAA", live, backtest_trade, replay=replay, ruleset=_ruleset(), session_equity=E0
     )
+
+    assert "qty" not in result.mismatches
+    assert result.details["backtest_qty"] == 197
+
+
+def test_without_a_ruleset_raw_qty_allows_one_share_under_the_symbol_cap(backtest_trade, replay):
+    live = _live_like(backtest_trade)
+
+    capped = compare_symbol("AAA", live, backtest_trade, replay=replay)
     uncapped = compare_symbol("AAA", replace(live, capped_by=None), backtest_trade)
 
     assert "qty" not in capped.mismatches
     assert "qty" in uncapped.mismatches
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda t: replace(t, trigger_price=101.03),  # trigger off the replay's OR high
+        lambda t: replace(t, stop_price=98.95),  # stop off the replay's OR low
+    ],
+)
+def test_live_levels_must_match_the_replay_opening_range(backtest_trade, replay, change):
+    live = change(_live_like(backtest_trade))
+
+    result = compare_symbol("AAA", live, backtest_trade, replay=replay)
+
+    assert "level" in result.mismatches and "level" in MISMATCH_KINDS
+
+
+def test_live_levels_within_one_tick_of_the_replay_match(backtest_trade, replay):
+    live = replace(_live_like(backtest_trade), trigger_price=101.01, stop_price=98.99)
+
+    result = compare_symbol("AAA", live, backtest_trade, replay=replay)
+
+    assert "level" not in result.mismatches
+    assert result.details["trigger_vs_replay_ticks"] == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -640,8 +699,10 @@ def test_execution_corrections_count_once():
     deduped = dedupe_executions(executions)
     (trade,) = live_trades_from_executions(executions, DAY)
 
+    # Each fill keeps the id of its first revision, with its latest data.
     assert [e["execution_id"] for e in deduped] == [
-        "0000e0d5.6577b2c1.01.02", "0000e0d5.6577b2c1.02.01",
+        "0000e0d5.6577b2c1.01.01", "0000e0d5.6577b2c1.02.01",
     ]
+    assert deduped[0]["price"] == 101.03
     assert trade.quantity == 150
     assert trade.entry_price == pytest.approx((100 * 101.03 + 50 * 101.04) / 150)
