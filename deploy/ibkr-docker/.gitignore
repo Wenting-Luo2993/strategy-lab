@@ -1,8 +1,7 @@
-# Real runtime inputs and outputs for the IBKR Docker scaffold.
-runtime/
-state/
+# Real runtime inputs and outputs for the IBKR Docker stack.
 data/
 logs/
-secrets/*.env
-secrets/config.ini
+state/
+runtime/
+secrets/*
 !secrets/*.example
