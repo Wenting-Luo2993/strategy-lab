@@ -6,7 +6,7 @@ and running health checks.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any
 
 from vibe.trading_bot.core.phases.base import BasePhase
@@ -21,7 +21,7 @@ from vibe.trading_bot.notifications.payloads import (
 )
 from vibe.trading_bot.utils.datetime_utils import get_market_now
 from vibe.trading_bot.version import BUILD_VERSION
-from vibe.common.models import Position
+from vibe.common.models import OrderStatus, Position
 
 
 class WarmupPhaseManager(BasePhase):
@@ -443,11 +443,12 @@ class WarmupPhaseManager(BasePhase):
 
         Only runs when the ruleset has a ``portfolio:`` block. A snapshot
         already persisted for today (bot restarted mid-session) is reused, so
-        the caps do not drift with intraday equity. E0 is only ever taken
-        before the session opens: a bot that starts after the open without a
-        persisted snapshot does not take a late one. On any failure entries
-        stay blocked for the session and one EQUITY_SNAPSHOT_FAILED alert is
-        sent; there is no fallback value. This step never raises.
+        the caps do not drift with intraday equity. After the open a snapshot
+        is only taken from a provably untouched account (flat, no working
+        orders, no fills today), whose NLV still equals session-start equity;
+        it is flagged ``late`` for audit. Otherwise, and on any failure,
+        entries stay blocked for the session and one EQUITY_SNAPSHOT_FAILED
+        alert is sent; there is no fallback value. This step never raises.
         """
         risk_manager = getattr(self.orchestrator, "portfolio_risk_manager", None)
         if risk_manager is None:
@@ -482,13 +483,22 @@ class WarmupPhaseManager(BasePhase):
                 return False
 
             market_open = self.market_scheduler.get_open_time(now)
-            if market_open is not None and now >= market_open:
-                raise RuntimeError(
-                    "bot started after the session opened with no session-start "
-                    "snapshot; a late snapshot would size off intraday equity"
-                )
+            late = market_open is not None and now >= market_open
+            if late:
+                # After the open, NLV equals session-start equity only if the
+                # account has not been touched today.
+                untouched, detail = await self._session_untouched(session_date)
+                if not untouched:
+                    raise RuntimeError(
+                        "no session-start snapshot and the account traded or holds "
+                        f"orders/positions this session ({detail}); a late snapshot "
+                        "would size off intraday equity"
+                    )
 
-            self.logger.info("Step 4.6/6: Taking session-start equity snapshot...")
+            self.logger.info(
+                "Step 4.6/6: Taking session-start equity snapshot%s...",
+                " (late: account flat with no fills today)" if late else "",
+            )
             account = await self.orchestrator.exchange.get_account()
             equity = net_liquidation(account)
             if equity is None:
@@ -500,12 +510,14 @@ class WarmupPhaseManager(BasePhase):
                 equity=equity,
                 taken_at=now,
                 account_id=account.account_id,
+                late=late,
             )
             risk_manager.record_snapshot(snapshot)
             self.logger.info(
-                "   [OK] Session equity E0=$%.2f (account=%s)",
+                "   [OK] Session equity E0=$%.2f (account=%s, late=%s)",
                 snapshot.equity,
                 snapshot.account_id,
+                snapshot.late,
             )
         except Exception as e:
             self.logger.error(
@@ -527,6 +539,78 @@ class WarmupPhaseManager(BasePhase):
         if persist is not None:
             await persist(reason="session_start_equity", account=account)
         return True
+
+    async def _session_untouched(self, session_date) -> tuple[bool, str]:
+        """Whether the account is flat, has no working orders and no fills today.
+
+        Only then is current NetLiquidation the session-start equity, so a
+        snapshot taken after the open is still exact. Any doubt (a source
+        that cannot be read) counts as touched.
+        """
+        exchange = self.orchestrator.exchange
+        list_positions = getattr(exchange, "list_positions", None)
+        if list_positions is None:
+            return False, "positions cannot be listed"
+        positions = [p for p in await list_positions() if float(p.quantity) != 0]
+        if positions:
+            return False, "open positions: " + ", ".join(sorted(p.symbol for p in positions))
+
+        working = []
+        list_open_orders = getattr(exchange, "list_open_orders", None)
+        if list_open_orders is not None:
+            working = [order.order_id for order in list_open_orders()]
+        elif hasattr(exchange, "get_all_orders"):
+            working = [
+                order.order_id
+                for order in exchange.get_all_orders().values()
+                if order.status in (
+                    OrderStatus.CREATED,
+                    OrderStatus.PENDING,
+                    OrderStatus.SUBMITTED,
+                    OrderStatus.PARTIAL,
+                )
+            ]
+        else:
+            return False, "open orders cannot be listed"
+        trade_executor = getattr(self.orchestrator, "trade_executor", None)
+        pending_entries = getattr(trade_executor, "_pending_entries", {}) or {}
+        working.extend(pending_entries)
+        if working:
+            return False, f"working orders: {', '.join(sorted(set(map(str, working))))}"
+
+        list_executions = getattr(exchange, "list_durable_executions", None)
+        if list_executions is not None:
+            executions = list_executions()
+        elif hasattr(exchange, "get_all_orders"):
+            executions = [
+                execution
+                for order in exchange.get_all_orders().values()
+                for execution in order.executions
+            ]
+        else:
+            return False, "executions cannot be listed"
+        tz = self.market_scheduler.timezone
+        today = [
+            execution
+            for execution in executions
+            if self._execution_market_date(execution.get("filled_at"), tz) in (session_date, None)
+        ]
+        if today:
+            return False, f"{len(today)} execution(s) today"
+        return True, "flat, no working orders, no fills today"
+
+    @staticmethod
+    def _execution_market_date(value, tz):
+        """Market date of an execution timestamp; None when unparseable (counts as today)."""
+        if value is None:
+            return None
+        try:
+            filled_at = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        if filled_at.tzinfo is None:
+            filled_at = filled_at.replace(tzinfo=timezone.utc)
+        return filled_at.astimezone(tz).date()
 
     async def _alert_snapshot_failure(self, risk_manager, now) -> None:
         """Send EQUITY_SNAPSHOT_FAILED once per session."""

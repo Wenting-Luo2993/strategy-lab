@@ -58,6 +58,8 @@ class SessionEquitySnapshot:
     equity: float
     taken_at: datetime
     account_id: Optional[str] = None
+    late: bool = False
+    """Taken after the open from a provably untouched (flat, no fills) account."""
 
 
 @dataclass(frozen=True)
@@ -349,6 +351,7 @@ class PortfolioRiskManager(SimpleRiskManager):
                     equity=equity,
                     taken_at=datetime.fromisoformat(str(data["taken_at"])),
                     account_id=data.get("account_id"),
+                    late=bool(data.get("late_snapshot", False)),
                 )
             self.snapshot = snapshot
             self.snapshot_error = data.get("snapshot_error")
@@ -385,6 +388,7 @@ class PortfolioRiskManager(SimpleRiskManager):
             "equity": self.snapshot.equity if self.snapshot else None,
             "taken_at": self.snapshot.taken_at.isoformat() if self.snapshot else None,
             "account_id": self.snapshot.account_id if self.snapshot else None,
+            "late_snapshot": self.snapshot.late if self.snapshot else None,
             "snapshot_error": self.snapshot_error,
             "halted_reason": self.halted_reason,
             "halt_detail": self.halt_detail,

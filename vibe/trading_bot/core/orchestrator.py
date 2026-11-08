@@ -44,6 +44,7 @@ from vibe.trading_bot.execution.trade_executor import (
 )
 from vibe.trading_bot.execution.portfolio_risk import (
     DAILY_LOSS_LIMIT,
+    NET_LIQUIDATION_UNAVAILABLE,
     PortfolioRiskManager,
 )
 from vibe.common.risk.portfolio_sizing import net_liquidation
@@ -3445,8 +3446,9 @@ class TradingOrchestrator:
         if risk_manager is None or self.trade_executor is None:
             return
         try:
-            await self._evaluate_account_risk_limits(risk_manager)
-            risk_manager.evaluation_error = None
+            risk_manager.evaluation_error = await self._evaluate_account_risk_limits(
+                risk_manager
+            )
         except Exception as exc:
             risk_manager.evaluation_error = str(exc)
             self.logger.error(
@@ -3455,7 +3457,10 @@ class TradingOrchestrator:
                 exc_info=True,
             )
 
-    async def _evaluate_account_risk_limits(self, risk_manager: PortfolioRiskManager) -> None:
+    async def _evaluate_account_risk_limits(
+        self, risk_manager: PortfolioRiskManager
+    ) -> Optional[str]:
+        """One daily-loss evaluation; returns why it could not run, else None."""
         from vibe.trading_bot.utils.datetime_utils import get_market_now
 
         now = get_market_now(self.market_scheduler)
@@ -3475,12 +3480,13 @@ class TradingOrchestrator:
         current_equity = net_liquidation(account)
         if current_equity is None:
             # A missing NetLiquidation is a data problem, not a loss. Keep the
-            # current state; entries are blocked by the executor's NLV check.
+            # current state, and keep entries blocked until a cycle actually
+            # evaluates the limit.
             self.logger.warning(
                 "[RISK] Daily loss check skipped: NetLiquidation unavailable (%r)",
                 account.broker_equity,
             )
-            return
+            return NET_LIQUIDATION_UNAVAILABLE
         status = risk_manager.check_daily_loss(current_equity)
         if not status.triggered:
             return

@@ -517,6 +517,12 @@ async def test_missing_net_liquidation_never_triggers_the_daily_loss_limit(tmp_p
     assert sent == []
     assert "AAA" in await executor.account_positions()
     blocked = await executor.execute_signal("AAA", -1, 100.0, 101.0)
+    assert not blocked.success and RISK_EVALUATION_FAILED in blocked.reason
+
+    # Independently of the evaluation flag, the executor refuses to size
+    # without NetLiquidation.
+    manager.evaluation_error = None
+    blocked = await executor.execute_signal("AAA", -1, 100.0, 101.0)
     assert not blocked.success and NET_LIQUIDATION_UNAVAILABLE in blocked.reason
 
 
@@ -675,40 +681,149 @@ async def test_halted_flatten_skips_symbols_with_a_close_in_flight(tmp_path, mon
     assert sent == []
 
 
-@pytest.mark.asyncio
-async def test_mid_session_start_takes_no_late_snapshot_and_alerts_once(monkeypatch):
-    import vibe.trading_bot.core.phases.warmup as warmup_module
-
-    sent = _capture_alerts(monkeypatch, warmup_module)
-
-    class Exchange:
-        calls = 0
-
-        async def get_account(self):
-            Exchange.calls += 1
-            return SimpleNamespace(broker_equity=9_000.0, equity=9_000.0, account_id="DU1")
-
-    manager = _manager()
-    orchestrator = SimpleNamespace(
+def _warmup_orchestrator(exchange, manager, hhmm=(9, 31), trade_executor=None):
+    return SimpleNamespace(
         config=SimpleNamespace(
             notifications=SimpleNamespace(discord_webhook_url="https://discord.invalid/hook")
         ),
         market_scheduler=MockMarketScheduler(
-            initial_date=datetime(2026, 7, 20, 10, 30), timezone="America/New_York"
+            initial_date=datetime(2026, 7, 20, *hhmm), timezone="America/New_York"
         ),
         portfolio_risk_manager=manager,
-        exchange=Exchange(),
+        exchange=exchange,
+        trade_executor=trade_executor,
     )
-    phase = WarmupPhaseManager(orchestrator)
+
+
+def _flat_mock() -> MockExchange:
+    return MockExchange(initial_capital=10_000.0, commission_pct=0.0, partial_fill_probability=0.0)
+
+
+@pytest.mark.asyncio
+async def test_slow_warmup_crossing_the_open_with_a_flat_book_takes_a_late_snapshot(monkeypatch):
+    import vibe.trading_bot.core.phases.warmup as warmup_module
+
+    sent = _capture_alerts(monkeypatch, warmup_module)
+    manager = _manager()
+    phase = WarmupPhaseManager(_warmup_orchestrator(_flat_mock(), manager, (9, 31)))
+
+    assert await phase._take_session_equity_snapshot() is True
+
+    assert manager.session_equity == 10_000.0
+    assert manager.snapshot.late is True
+    assert manager.snapshot.taken_at.hour == 9 and manager.snapshot.taken_at.minute == 31
+    assert manager.entries_blocked_reason() is None
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_late_snapshot_flag_survives_a_restart(tmp_path):
+    path = tmp_path / "session_risk_state.json"
+    manager = _manager(state_path=path)
+    phase = WarmupPhaseManager(_warmup_orchestrator(_flat_mock(), manager, (10, 0)))
+    assert await phase._take_session_equity_snapshot() is True
+
+    restarted = _manager(state_path=path)
+    restored = restarted.begin_session(SESSION)
+    assert restored.late is True and restored.equity == 10_000.0
+
+
+@pytest.mark.asyncio
+async def test_restart_with_an_open_position_takes_no_late_snapshot_and_alerts_once(monkeypatch):
+    import vibe.trading_bot.core.phases.warmup as warmup_module
+
+    sent = _capture_alerts(monkeypatch, warmup_module)
+    exchange = _flat_mock()
+    await exchange.set_price("AAA", 100.0)
+    await exchange.submit_order("AAA", "buy", 10, order_type="market", price=100.0)
+    manager = _manager()
+    phase = WarmupPhaseManager(_warmup_orchestrator(exchange, manager, (10, 30)))
 
     assert await phase._take_session_equity_snapshot() is False
     assert await phase._take_session_equity_snapshot() is False
 
-    assert Exchange.calls == 0
     assert manager.session_equity is None
     assert manager.entries_blocked_reason() == SNAPSHOT_FAILED
+    assert "open positions: AAA" in manager.halt_detail
     assert [p.event_type for p in sent] == ["EQUITY_SNAPSHOT_FAILED"]
 
+
+@pytest.mark.asyncio
+async def test_restart_after_a_fill_today_takes_no_late_snapshot(monkeypatch):
+    import vibe.trading_bot.core.phases.warmup as warmup_module
+
+    sent = _capture_alerts(monkeypatch, warmup_module)
+    exchange = _flat_mock()
+    await exchange.set_price("AAA", 100.0)
+    await exchange.submit_order("AAA", "buy", 10, order_type="market", price=100.0)
+    await exchange.submit_order("AAA", "sell", 10, order_type="market", price=100.0)
+    assert await exchange.list_positions() == []  # flat, but it traded today
+    manager = _manager()
+    # Executions are stamped with the real clock, so use today's market date.
+    now = datetime.now(ET)
+    orchestrator = _warmup_orchestrator(exchange, manager, (10, 30))
+    orchestrator.market_scheduler = MockMarketScheduler(
+        initial_date=datetime(now.year, now.month, now.day, 23, 59),
+        timezone="America/New_York",
+    )
+
+    assert await WarmupPhaseManager(orchestrator)._take_session_equity_snapshot() is False
+    assert "execution(s) today" in manager.halt_detail
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_with_only_cancelled_orders_today_takes_a_late_snapshot(monkeypatch):
+    import vibe.trading_bot.core.phases.warmup as warmup_module
+
+    sent = _capture_alerts(monkeypatch, warmup_module)
+    exchange = _flat_mock()
+    await exchange.set_price("AAA", 100.0)
+    resting = await exchange.submit_order(
+        "AAA", "buy", 10, order_type="stop", price=105.0, stop_price=105.0
+    )
+    await exchange.cancel_order(resting.order_id)
+    manager = _manager()
+
+    phase = WarmupPhaseManager(_warmup_orchestrator(exchange, manager, (10, 30)))
+
+    assert await phase._take_session_equity_snapshot() is True
+    assert manager.snapshot.late is True
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_restart_with_a_working_order_takes_no_late_snapshot(monkeypatch):
+    import vibe.trading_bot.core.phases.warmup as warmup_module
+
+    _capture_alerts(monkeypatch, warmup_module)
+    exchange = _flat_mock()
+    await exchange.set_price("AAA", 100.0)
+    await exchange.submit_order("AAA", "buy", 10, order_type="stop", price=105.0, stop_price=105.0)
+    manager = _manager()
+
+    phase = WarmupPhaseManager(_warmup_orchestrator(exchange, manager, (10, 30)))
+
+    assert await phase._take_session_equity_snapshot() is False
+    assert "working orders" in manager.halt_detail
+
+
+@pytest.mark.asyncio
+async def test_skipped_daily_loss_evaluation_keeps_entries_blocked(tmp_path, monkeypatch):
+    orchestrator, manager, executor, exchange, sent = await _wired_orchestrator(
+        tmp_path, monkeypatch, exchange_cls=NoNetLiquidationExchange
+    )
+
+    await orchestrator._enforce_account_risk_limits()
+
+    assert manager.evaluation_error == NET_LIQUIDATION_UNAVAILABLE
+    assert manager.entries_blocked_reason() == RISK_EVALUATION_FAILED
+
+    orchestrator.exchange = MockExchange(
+        initial_capital=10_000.0, commission_pct=0.0, partial_fill_probability=0.0
+    )
+    await orchestrator._enforce_account_risk_limits()
+    assert manager.evaluation_error is None
 
 @pytest.mark.asyncio
 async def test_warmup_snapshot_rejects_missing_net_liquidation(monkeypatch):
