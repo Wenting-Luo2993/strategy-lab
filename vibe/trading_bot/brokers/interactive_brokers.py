@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from vibe.common.execution.base import PartialPlacementError
 from vibe.trading_bot.brokers.base import (
     BrokerAccount,
     BrokerOrder,
@@ -279,33 +280,14 @@ class InteractiveBrokersAPI:
         trade = self.ib.placeOrder(contract, ib_order)
         broker_order_id = str(trade.order.orderId)
 
-        submitted_order = BrokerOrder(
-            symbol=order.symbol,
-            side=order.side,
-            quantity=order.quantity,
-            order_type=order.order_type,
-            expected_price=order.expected_price,
-            limit_price=order.limit_price,
-            stop_price=order.stop_price,
-            strategy_order_id=order.strategy_order_id,
+        # Every lifecycle field (role, OCA group, parent, gap-fill, latency,
+        # sizing cap, opening range) must reach the journal: a restart rebuilds
+        # protective stops from it.
+        submitted_order = replace(
+            order,
             broker_order_id=broker_order_id,
             status="submitted",
-            decision_at=order.decision_at,
             submitted_at=submitted_at,
-            benchmark_type=order.benchmark_type,
-            benchmark_price=order.benchmark_price,
-            quote_bid=order.quote_bid,
-            quote_ask=order.quote_ask,
-            quote_midpoint=order.quote_midpoint,
-            benchmark_version=order.benchmark_version,
-            strategy_name=order.strategy_name,
-            strategy_stop_price=order.strategy_stop_price,
-            take_profit=order.take_profit,
-            exit_reason=order.exit_reason,
-            entry_cancel_after_seconds=order.entry_cancel_after_seconds,
-            entry_expiry_bars=order.entry_expiry_bars,
-            entry_signal_bar_timestamp=order.entry_signal_bar_timestamp,
-            entry_bar_interval_seconds=order.entry_bar_interval_seconds,
         )
         self._trades[broker_order_id] = trade
         self._submitted_orders[broker_order_id] = submitted_order
@@ -478,6 +460,9 @@ class InteractiveBrokersAPI:
                 ),
                 placement_latency_s=stored.get("placement_latency_s"),
                 capped_by=stored.get("capped_by"),
+                or_source=stored.get("or_source"),
+                or_high=stored.get("or_high"),
+                or_low=stored.get("or_low"),
             )
             self._trades[broker_order_id] = trade
             self._submitted_orders[broker_order_id] = restored
@@ -897,6 +882,37 @@ class InteractiveBrokersAPI:
             for bar in bars or []
         ]
 
+    async def get_minute_bars_between(
+        self, symbol: str, start: datetime, end: datetime, timeout_s: float = 10.0
+    ) -> List[Dict[str, Any]]:
+        """Regular-hours 1-minute TRADES bars covering ``[start, end)`` (reqHistoricalData)."""
+        contract = await self.qualify_contract(symbol)
+        seconds = max(int((end - start).total_seconds()), 60)
+        bars = await asyncio.wait_for(
+            self.ib.reqHistoricalDataAsync(
+                contract,
+                # yyyymmdd-hh:mm:ss is read as UTC by the TWS API.
+                endDateTime=end.astimezone(timezone.utc).strftime("%Y%m%d-%H:%M:%S"),
+                durationStr=f"{seconds} S",
+                barSizeSetting="1 min",
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=2,
+            ),
+            timeout=timeout_s,
+        )
+        return [
+            {
+                "timestamp": bar.date,
+                "open": float(bar.open),
+                "high": float(bar.high),
+                "low": float(bar.low),
+                "close": float(bar.close),
+                "volume": float(bar.volume),
+            }
+            for bar in bars or []
+        ]
+
     def order_status_snapshot(self, broker_order_id: str) -> Optional[str]:
         """Last IB status string seen for an order, without a network call."""
         trade = self._trades.get(str(broker_order_id))
@@ -947,24 +963,40 @@ class InteractiveBrokersAPI:
         ids: List[tuple[str, str]] = []
         registered: List[tuple[Any, BrokerOrder]] = []
         parent_id: Optional[str] = None
-        for parent, entry, child, stop in placed:
-            for ib_order, order, is_parent in ((parent, entry, True), (child, stop, False)):
-                trade = self.ib.placeOrder(contract, ib_order)
-                broker_order_id = str(trade.order.orderId)
-                submitted = replace(
-                    order,
-                    broker_order_id=broker_order_id,
-                    status="submitted",
-                    submitted_at=submitted_at,
-                    parent_order_id=None if is_parent else parent_id,
-                )
-                self._trades[broker_order_id] = trade
-                self._submitted_orders[broker_order_id] = submitted
-                registered.append((trade, submitted))
-                if is_parent:
-                    parent_id = broker_order_id
-                else:
-                    ids.append((parent_id, broker_order_id))
+        failure: Optional[BaseException] = None
+        try:
+            for parent, entry, child, stop in placed:
+                for ib_order, order, is_parent in ((parent, entry, True), (child, stop, False)):
+                    trade = self.ib.placeOrder(contract, ib_order)
+                    broker_order_id = str(trade.order.orderId)
+                    submitted = replace(
+                        order,
+                        broker_order_id=broker_order_id,
+                        status="submitted",
+                        submitted_at=submitted_at,
+                        parent_order_id=None if is_parent else parent_id,
+                    )
+                    self._trades[broker_order_id] = trade
+                    self._submitted_orders[broker_order_id] = submitted
+                    registered.append((trade, submitted))
+                    if is_parent:
+                        parent_id = broker_order_id
+                    else:
+                        ids.append((parent_id, broker_order_id))
+        except Exception as exc:
+            failure = exc
+            # A parent is only transmitted with its child; one left without a
+            # child is cancelled so it can never go live unprotected.
+            complete = {order_id for pair in ids for order_id in pair}
+            for trade, submitted in registered:
+                if submitted.broker_order_id not in complete:
+                    try:
+                        self.ib.cancelOrder(trade.order)
+                    except Exception as cancel_exc:
+                        logger.error(
+                            "Failed to cancel orphan IB order %s: %s",
+                            submitted.broker_order_id, cancel_exc, exc_info=True,
+                        )
 
         for trade, submitted in registered:
             try:
@@ -994,6 +1026,11 @@ class InteractiveBrokersAPI:
                 submitted.oca_group,
                 submitted.parent_order_id,
             )
+        if failure is not None:
+            raise PartialPlacementError(
+                f"OCA placement failed after {len(ids)} complete bracket(s): {failure}",
+                ids,
+            ) from failure
         return ids
 
     async def submit_standalone_stop(
@@ -1296,4 +1333,7 @@ class InteractiveBrokersAPI:
             "gap_fill": order.gap_fill,
             "placement_latency_s": order.placement_latency_s,
             "capped_by": order.capped_by,
+            "or_source": order.or_source,
+            "or_high": order.or_high,
+            "or_low": order.or_low,
         }

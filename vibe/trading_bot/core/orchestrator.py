@@ -104,6 +104,9 @@ class TradingOrchestrator:
     integration for complete trading system lifecycle.
     """
 
+    OR_SOURCE = "ibkr_historical_1m"
+    OR_SOURCE_DEADLINE_S = 60
+    OR_FETCH_TIMEOUT_S = 10
     RESTING_WAKE_DELAY_S = 2
     """Seconds after the opening range ends at which resting entries are placed."""
     RESTING_FAST_POLL_S = 5
@@ -239,6 +242,8 @@ class TradingOrchestrator:
 
         # Latest close price per symbol (updated each trading cycle for position monitoring)
         self._latest_bar_prices: Dict[str, float] = {}
+        # Symbols with a broker position at the last resting-stop sweep.
+        self._broker_position_symbols: set[str] = set()
 
         # Daily-ATR fetch attempts per (symbol, trading date), for ATR take-profits
         self._daily_atr_attempts: Dict[tuple, int] = {}
@@ -620,6 +625,21 @@ class TradingOrchestrator:
         except Exception as exc:
             self.logger.warning("Dashboard trade exit persistence failed for %s: %s", order_id, exc)
 
+    def _clear_pending_entry_if_complete(self, order: Any) -> None:
+        """Drop an entry's pending context once it can no longer fill.
+
+        A partially filled resting entry keeps its context: the completing fill
+        activates its bracket stop through it, and a close must still find and
+        cancel the working remainder.
+        """
+        if self.trade_executor is None:
+            return
+        if getattr(order, "order_role", None) == "entry" and float(order.filled_qty or 0.0) < float(
+            order.quantity
+        ):
+            return
+        self.trade_executor.clear_pending_entry(order.order_id)
+
     async def _sync_open_trade_after_entry_fill(self, order: Any) -> None:
         """Project later entry/retry fills onto the existing logical trade."""
         position = await self.exchange.get_position(order.symbol)
@@ -695,7 +715,7 @@ class TradingOrchestrator:
 
         if not self.config.dashboard.enabled:
             if pending_entry is not None and self.trade_executor is not None:
-                self.trade_executor.clear_pending_entry(order.order_id)
+                self._clear_pending_entry_if_complete(order)
             return
         if row is None:
             await self._persist_dashboard_trade_entry(
@@ -707,7 +727,7 @@ class TradingOrchestrator:
                 entry_time=order.filled_at or datetime.now(timezone.utc),
             )
             if pending_entry is not None and self.trade_executor is not None:
-                self.trade_executor.clear_pending_entry(order.order_id)
+                self._clear_pending_entry_if_complete(order)
             return
         row_id = int(row["id"])
         trade_id = row.get("trade_id")
@@ -726,7 +746,7 @@ class TradingOrchestrator:
                 order.filled_at or datetime.now(timezone.utc),
             )
         if pending_entry is not None and self.trade_executor is not None:
-            self.trade_executor.clear_pending_entry(order.order_id)
+            self._clear_pending_entry_if_complete(order)
 
     async def _sync_open_trade_after_exit_fill(self, order: Any) -> None:
         """Apply asynchronous close/retry fills and close state only when flat."""
@@ -1957,6 +1977,7 @@ class TradingOrchestrator:
                 list_open_orders = getattr(self.exchange, "list_open_orders", None)
                 if list_open_orders is not None and self.trade_executor is not None:
                     open_orders = list_open_orders()
+                    await self._adopt_restored_protective_stops(open_orders)
                     restored_count = self.trade_executor.order_manager.restore_open_orders(
                         open_orders
                     )
@@ -2193,6 +2214,39 @@ class TradingOrchestrator:
             0,
         )
 
+    async def _adopt_restored_protective_stops(self, orders: List[Any]) -> None:
+        """Treat a restored role-less stop that closes an open position as protective.
+
+        A protective stop must never be mistaken for a pending entry after a
+        restart: that would reserve exposure on the wrong side and let the
+        timeout policy cancel the live stop. Journals written before every
+        lifecycle field was carried (or any other gap) are covered by this
+        broker-position check.
+        """
+        for order in orders:
+            if getattr(order, "order_role", None) is not None or order.order_type != "stop":
+                continue
+            try:
+                position = await self.exchange.get_position(order.symbol)
+            except Exception as exc:
+                self.logger.error(
+                    "Could not read %s position to classify restored stop %s: %s",
+                    order.symbol, order.order_id, exc, exc_info=True,
+                )
+                continue
+            if position is None or not float(position.quantity or 0.0):
+                continue
+            closes = (position.side == "long" and order.side == "sell") or (
+                position.side == "short" and order.side == "buy"
+            )
+            if closes and float(order.quantity) <= float(position.quantity) + 1e-9:
+                order.order_role = "protective_stop"
+                self.logger.warning(
+                    "[RESTORE] %s stop %s (%s %s) closes the open position; treating it "
+                    "as its protective stop",
+                    order.symbol, order.order_id, order.side, order.quantity,
+                )
+
     def _record_entry_attempt(self, symbol: str, trading_date: Any) -> None:
         key = self._entry_attempt_key(symbol, trading_date)
         self._entry_attempts[key] = self._entry_attempts.get(key, 0) + 1
@@ -2211,44 +2265,91 @@ class TradingOrchestrator:
             else naive.replace(tzinfo=market_timezone)
         )
 
+    async def _place_due_resting_entries(self) -> None:
+        """Place today's resting pairs for every symbol still awaiting one.
+
+        Runs at the start of each cycle, independent of the per-symbol data
+        and signal loop: the opening range comes from IBKR's own historical
+        bars, not from the real-time aggregator.
+        """
+        if not self.market_scheduler.is_market_open():
+            return
+        for symbol in self._symbols_in_priority_order():
+            try:
+                await self._maybe_place_resting_entries(symbol)
+            except Exception as exc:
+                self.logger.error(
+                    "[RESTING ENTRY] %s placement failed: %s", symbol, exc, exc_info=True
+                )
+
+    async def _opening_range_from_broker(
+        self, symbol: str, or_start: datetime, or_end: datetime
+    ) -> tuple[Optional[tuple[float, float]], str]:
+        """``((high, low), "")`` from IBKR 1-minute bars covering the whole window.
+
+        This is the only accepted source: snapshot-built bars sit inside the
+        true range. Returns ``(None, reason)`` while any minute is missing.
+        """
+        fetch = getattr(self.exchange, "fetch_opening_range_bars", None)
+        if fetch is None:
+            return None, f"{type(self.exchange).__name__} has no historical minute bars"
+        try:
+            bars = await asyncio.wait_for(
+                fetch(symbol, or_start, or_end), timeout=self.OR_FETCH_TIMEOUT_S
+            )
+        except Exception as exc:
+            return None, f"historical bars unavailable: {exc}"
+        if not self._opening_range_complete(bars, or_start, or_end):
+            have = 0 if bars is None else len(bars)
+            return None, f"{have} of {int((or_end - or_start).total_seconds() // 60)} OR minutes"
+        high, low = float(bars["high"].max()), float(bars["low"].min())
+        if not high > low:
+            return None, f"degenerate opening range {low}-{high}"
+        return (high, low), ""
+
+    @staticmethod
+    def _opening_range_complete(bars: Any, or_start: datetime, or_end: datetime) -> bool:
+        """Whether ``bars`` hold a 1-minute bar for every minute of ``[or_start, or_end)``."""
+        if bars is None or len(bars) == 0:
+            return False
+        expected = pd.date_range(
+            pd.Timestamp(or_start), pd.Timestamp(or_end), freq="1min", inclusive="left"
+        )
+        index = pd.DatetimeIndex(bars.index)
+        if index.tz is None:
+            return False
+        return expected.tz_convert("UTC").isin(index.tz_convert("UTC")).all()
+
     async def _maybe_place_resting_entries(
         self,
         symbol: str,
-        metadata: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Rest the session's OCA entry pair once the opening range is complete.
+        """Rest the session's OCA entry pair once IBKR's opening range is complete.
 
         At most one pair per symbol per session: the in-memory attempt count,
         a pending entry, an open position, today's traded flag and the
         durable submission journal (which survives restarts) all block it.
+        If IBKR's bars for the window are not complete by ``or_end`` +
+        ``OR_SOURCE_DEADLINE_S`` the symbol sits the session out, alerted.
+        ``metadata`` is accepted for the signal-loop call shape; its levels
+        are not used.
         """
         if self.trade_executor is None:
-            return
-        orb_high = metadata.get("orb_high")
-        orb_low = metadata.get("orb_low")
-        trading_date = metadata.get("orb_trading_date")
-        if orb_high is None or orb_low is None or trading_date is None:
-            return
-        orb_high, orb_low = float(orb_high), float(orb_low)
-        if orb_high <= orb_low:
             return
         from vibe.trading_bot.utils.datetime_utils import get_market_now
 
         now = get_market_now(self.market_scheduler)
-        if trading_date != now.date():
-            return
+        trading_date = now.date()
         strategy_cfg = self.ruleset.strategy
         cutoff = self._market_datetime(trading_date, strategy_cfg.entry_cutoff_time)
         if now >= cutoff:
             return
-        or_end = self._market_datetime(
-            trading_date, strategy_cfg.orb_start_time
-        ) + timedelta(minutes=strategy_cfg.orb_duration_minutes)
+        or_start = self._market_datetime(trading_date, strategy_cfg.orb_start_time)
+        or_end = or_start + timedelta(minutes=strategy_cfg.orb_duration_minutes)
         if now < or_end:
             # Levels from a partial opening range would rest the pair at the
             # wrong prices for the whole session.
-            return
-        if not self._opening_range_complete(symbol, or_end, now):
             return
         if self._entry_attempt_count(symbol, trading_date) >= 1:
             return
@@ -2269,8 +2370,30 @@ class TradingOrchestrator:
             )
             return
 
+        levels, why = await self._opening_range_from_broker(symbol, or_start, or_end)
+        if levels is None:
+            now = get_market_now(self.market_scheduler)
+            if now >= or_end + timedelta(seconds=self.OR_SOURCE_DEADLINE_S):
+                # Never place late from sampled data: sit the session out.
+                self._record_entry_attempt(symbol, trading_date)
+                self.logger.error(
+                    "[RESTING ENTRY] %s: IBKR opening range unavailable (%s); "
+                    "skipping today", symbol, why,
+                )
+                await self._send_operator_alert(
+                    "Opening range unavailable",
+                    f"{symbol}: IBKR 1-minute bars for {or_start.strftime('%H:%M')}-"
+                    f"{or_end.strftime('%H:%M')} were not available by "
+                    f"{(or_end + timedelta(seconds=self.OR_SOURCE_DEADLINE_S)).strftime('%H:%M:%S')}"
+                    f" ({why}); no resting entry today.",
+                )
+            else:
+                self.logger.info("[RESTING ENTRY] %s waiting for IBKR OR bars: %s", symbol, why)
+            return
+        orb_high, orb_low = levels
+        or_source = getattr(self.exchange, "opening_range_source", self.OR_SOURCE)
+
         direction = strategy_cfg.direction_mode
-        placed_at = get_market_now(self.market_scheduler)
         result = await self.trade_executor.place_resting_stop_entries(
             symbol,
             long_level=orb_high if direction != "short_only" else None,
@@ -2280,36 +2403,25 @@ class TradingOrchestrator:
             cancel_after_seconds=max((cutoff - now).total_seconds(), 1.0),
             strategy_name=self.strategy.config.name if self.strategy else "ORB",
             signal_timestamp=or_end,
-            placement_latency_s=(placed_at - or_end).total_seconds(),
-            reference_price=self._latest_bar_prices.get(symbol),
             tick_size=strategy_cfg.entry_order.tick_size,
+            placement_metadata={
+                "or_end": or_end,
+                "clock": lambda: get_market_now(self.market_scheduler),
+                "or_source": or_source,
+                "or_high": orb_high,
+                "or_low": orb_low,
+            },
         )
         if result.order_id or result.broker_contacted:
             # Even a failed submission may have reached IBKR: never retry it.
             self._record_entry_attempt(symbol, trading_date)
             self.logger.info(
-                "[RESTING ENTRY] %s: OR %.2f-%.2f, cancel at %s (%s)",
-                symbol, orb_low, orb_high, cutoff.strftime("%H:%M"), result.reason,
+                "[RESTING ENTRY] %s: OR %.2f-%.2f (%s), cancel at %s (%s)",
+                symbol, orb_low, orb_high, or_source, cutoff.strftime("%H:%M"),
+                result.reason,
             )
         else:
             self.logger.warning("[RESTING ENTRY] %s not placed: %s", symbol, result.reason)
-
-    def _opening_range_complete(self, symbol: str, or_end: datetime, now: datetime) -> bool:
-        """Whether the bar ending the opening window is complete.
-
-        A completed real-time bar (the aggregator only stores finished bars)
-        proves it. Without one -- e.g. after a mid-session restart -- delayed
-        or in-progress third-party bars are trusted only once two further
-        bars have passed.
-        """
-        bar = pd.Timedelta(self._bar_interval)
-        last_window_bar = pd.Timestamp(or_end - bar.to_pytimedelta())
-        realtime = self._realtime_bars.get(symbol)
-        if realtime is not None and not realtime.empty and "timestamp" in realtime:
-            stamps = pd.to_datetime(realtime["timestamp"], utc=True)
-            if (stamps == last_window_bar.tz_convert("UTC")).any():
-                return True
-        return now >= or_end + 2 * bar.to_pytimedelta()
 
     def _resting_window(self, now: datetime) -> Optional[tuple[datetime, datetime]]:
         """Today's (OR end, entry cutoff) for a resting-stop ruleset, else None."""
@@ -3099,7 +3211,8 @@ class TradingOrchestrator:
 
         Engines with a synchronous position list (mock) are asked directly;
         otherwise (IBKR, whose positions are async) local state decides:
-        tracked positions, broker-side stops, pending entries and closes.
+        tracked positions, broker positions seen this cycle (including
+        untracked ones), broker-side stops, pending entries and closes.
 
         Returns:
             True if any positions are open, False otherwise
@@ -3115,6 +3228,7 @@ class TradingOrchestrator:
         executor = self.trade_executor
         return bool(
             (self.strategy is not None and self.strategy.positions)
+            or self._broker_position_symbols
             or (
                 executor is not None
                 and (
@@ -3370,9 +3484,7 @@ class TradingOrchestrator:
             market_open = self.market_scheduler.is_market_open()
             await self._enforce_account_risk_limits()
             if self._resting_entries_due():
-                # Complete the bar that ends the opening range now rather than
-                # at the end of this cycle, so the pair can go out immediately.
-                await self._flush_elapsed_bars()
+                await self._place_due_resting_entries()
             realtime_provider_active = bool(
                 self.active_provider
                 and self.active_provider.connected
@@ -3550,8 +3662,8 @@ class TradingOrchestrator:
                     )
                     if entry_policy is not None and entry_policy.type == "resting_stop":
                         # Resting stops never act on a completed-bar signal:
-                        # both edges rest from the end of the opening range.
-                        await self._maybe_place_resting_entries(symbol, signal_metadata)
+                        # both edges rest from the end of the opening range
+                        # (placed by _place_due_resting_entries).
                         continue
 
                     # 4. Execute trade if we have a signal
@@ -3977,21 +4089,29 @@ class TradingOrchestrator:
         return policy is not None and policy.type == "resting_stop"
 
     async def _monitor_untracked_positions(self, now: datetime) -> None:
-        """EOD-flatten positions the strategy is not tracking (resting-stop rulesets).
+        """Every cycle: orphan-stop sweep; at EOD: flatten untracked positions.
 
-        A fill whose projection was missed, or a protective stop whose symbol
-        lost its strategy state, must still be closed at EOD rather than held
-        overnight under a DAY stop that expires.
+        Resting-stop rulesets only. A fill whose projection was missed, or a
+        protective stop whose symbol lost its strategy state, must still be
+        closed at EOD rather than held overnight under a DAY stop that
+        expires. A protective stop left working on a flat account is
+        cancelled. The broker's position symbols are cached so the cycle
+        cadence stays active while any (even untracked) position is open.
         """
         if self.trade_executor is None or self.strategy is None:
-            return
-        eod_time_str = self.ruleset.exit.eod_time or "15:55"
-        if now.strftime("%H:%M") < eod_time_str:
             return
         try:
             broker_symbols = set(await self.trade_executor.account_positions())
         except Exception as exc:
             self.logger.error("Untracked-position check failed: %s", exc, exc_info=True)
+            return
+        self._broker_position_symbols = broker_symbols
+        try:
+            await self.trade_executor.sweep_orphan_protective_stops()
+        except Exception as exc:
+            self.logger.error("Orphan protective-stop sweep failed: %s", exc, exc_info=True)
+        eod_time_str = self.ruleset.exit.eod_time or "15:55"
+        if now.strftime("%H:%M") < eod_time_str:
             return
         candidates = (broker_symbols | set(self.trade_executor._active_protective)) - set(
             self.strategy.positions
@@ -4157,7 +4277,7 @@ class TradingOrchestrator:
                 if float(order.filled_qty or 0.0) >= float(order.quantity):
                     # Only a complete parent activates its attached stop at
                     # IBKR; until then the client-side stop protects the fill.
-                    self.trade_executor.mark_entry_filled(order_id)
+                    self.trade_executor.mark_entry_filled(order_id, order.symbol)
             elif role == "protective_stop":
                 self._pending_exit_reasons.setdefault(order.symbol, "stop_loss")
                 if float(order.filled_qty or 0.0) >= float(order.quantity):

@@ -61,6 +61,9 @@ class BrokerOrder:
     gap_fill: Optional[bool] = None
     placement_latency_s: Optional[float] = None
     capped_by: Optional[str] = None
+    or_source: Optional[str] = None
+    or_high: Optional[float] = None
+    or_low: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:

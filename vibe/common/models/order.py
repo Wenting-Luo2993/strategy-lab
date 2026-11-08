@@ -85,6 +85,11 @@ class Order(BaseModel):
     capped_by: Optional[str] = Field(
         default=None, description="Sizing limit that reduced this entry, if any"
     )
+    or_source: Optional[str] = Field(
+        default=None, description="Where the opening range of a resting entry came from"
+    )
+    or_high: Optional[float] = Field(default=None, description="Opening-range high used")
+    or_low: Optional[float] = Field(default=None, description="Opening-range low used")
 
     @field_validator("side")
     @classmethod

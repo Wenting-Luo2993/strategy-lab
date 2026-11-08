@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from vibe.common.execution.base import ExecutionEngine, OrderResponse, RestingEntryLeg
+from vibe.common.execution.base import (
+    ExecutionEngine,
+    OrderResponse,
+    PartialPlacementError,
+    RestingEntryLeg,
+)
 from vibe.common.models import AccountState, Order, OrderStatus, Position
 from vibe.trading_bot.brokers.base import BrokerOrder, BrokerPosition
 from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
+from vibe.trading_bot.storage.ib_execution_store import (
+    canonical_execution,
+    dedupe_corrections,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class InteractiveBrokersExecutionEngine(ExecutionEngine):
@@ -83,12 +97,22 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                         entry_expiry_bars=restored.entry_expiry_bars,
                         entry_signal_bar_timestamp=restored.entry_signal_bar_timestamp,
                         entry_bar_interval_seconds=restored.entry_bar_interval_seconds,
-                        order_role=restored.order_role,
+                        # Journals written before submit_order carried the role
+                        # still mark a protective stop through its exit reason.
+                        order_role=restored.order_role or (
+                            "protective_stop"
+                            if restored.order_type == "stop"
+                            and restored.exit_reason == "protective_stop"
+                            else None
+                        ),
                         oca_group=restored.oca_group,
                         parent_order_id=restored.parent_order_id,
                         gap_fill=restored.gap_fill,
                         placement_latency_s=restored.placement_latency_s,
                         capped_by=restored.capped_by,
+                        or_source=restored.or_source,
+                        or_high=restored.or_high,
+                        or_low=restored.or_low,
                     )
                     self._orders[order_id] = order
                 else:
@@ -110,8 +134,9 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         self._execution_listeners.append(listener)
 
     def list_durable_executions(self) -> List[Dict[str, Any]]:
+        """Durable executions, each IBKR correction collapsed onto its latest revision."""
         list_executions = getattr(self.broker, "list_durable_executions", None)
-        return list_executions() if list_executions is not None else []
+        return dedupe_corrections(list_executions()) if list_executions is not None else []
 
     async def reconcile_todays_executions(self) -> int:
         """Pull the broker's execution history into the durable journal.
@@ -141,7 +166,13 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         ]
 
     def _on_broker_execution(self, execution: Dict[str, Any]) -> None:
-        """Refresh the in-memory order from every durable exec/commission update."""
+        """Refresh the in-memory order from every durable exec/commission update.
+
+        An IBKR correction replaces the fill it corrects (same canonical id);
+        an older revision arriving late is ignored, so a corrected fill is
+        never counted twice.
+        """
+        execution = canonical_execution(execution)
         broker_order_id = str(execution["broker_order_id"])
         metadata = execution.get("order_metadata") or {}
         order = self._orders.get(broker_order_id)
@@ -190,6 +221,9 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 ),
                 placement_latency_s=metadata.get("placement_latency_s"),
                 capped_by=metadata.get("capped_by"),
+                or_source=metadata.get("or_source"),
+                or_high=metadata.get("or_high"),
+                or_low=metadata.get("or_low"),
             )
             self._orders[broker_order_id] = order
 
@@ -197,6 +231,11 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             str(item["execution_id"]): dict(item)
             for item in order.executions
         }
+        existing = executions_by_id.get(str(execution["execution_id"]))
+        if existing is not None and int(existing.get("execution_revision") or 0) > int(
+            execution.get("execution_revision") or 0
+        ):
+            return
         executions_by_id[str(execution["execution_id"])] = dict(execution)
         executions = sorted(
             executions_by_id.values(),
@@ -635,12 +674,68 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         if fetch is None:
             raise RuntimeError("broker cannot provide historical minute bars")
         rows = await fetch(symbol, session_date)
+        return self._minute_frame(rows)
+
+    @staticmethod
+    def _minute_frame(rows: List[Dict[str, Any]]):
+        import pandas as pd
+
         if not rows:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
         frame = pd.DataFrame(rows)
         index = pd.to_datetime(frame.pop("timestamp"), utc=True).dt.tz_convert("America/New_York")
         frame.index = pd.DatetimeIndex(index)
         return frame.sort_index()
+
+    async def fetch_opening_range_bars(self, symbol: str, or_start: datetime, or_end: datetime):
+        """IBKR's 1-minute TRADES bars (RTH) covering ``[or_start, or_end)``.
+
+        The same source the parity replay uses, so live levels and replayed
+        levels are identical by construction.
+        """
+        fetch = getattr(self.broker, "get_minute_bars_between", None)
+        if fetch is None:
+            raise RuntimeError("broker cannot provide historical minute bars")
+        frame = self._minute_frame(await fetch(symbol, or_start, or_end))
+        if frame.empty:
+            return frame
+        start = or_start.astimezone(frame.index.tz)
+        end = or_end.astimezone(frame.index.tz)
+        return frame[(frame.index >= start) & (frame.index < end)]
+
+    async def session_net_quantity(self, symbol: str) -> Optional[float]:
+        """Signed quantity opened by today's resting entry and not yet closed, from fills.
+
+        Counts today's executions (corrections collapsed) from the first
+        resting-entry fill on. None when ``symbol`` has no resting-entry fill
+        today: then fills say nothing about the position (e.g. a carryover).
+        """
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("America/New_York")
+        today = datetime.now(tz).date()
+        todays = []
+        for execution in self.list_durable_executions():
+            if str(execution.get("symbol")) != symbol:
+                continue
+            filled_at = self._as_datetime(execution.get("filled_at"))
+            if filled_at is None:
+                continue
+            if filled_at.tzinfo is None:
+                filled_at = filled_at.replace(tzinfo=timezone.utc)
+            if filled_at.astimezone(tz).date() == today:
+                todays.append((filled_at, execution))
+        todays.sort(key=lambda item: item[0])
+        net: Optional[float] = None
+        for _, execution in todays:
+            metadata = execution.get("order_metadata") or {}
+            if net is None:
+                if metadata.get("order_role") != "entry" or not metadata.get("oca_group"):
+                    continue
+                net = 0.0
+            quantity = abs(float(execution.get("quantity") or 0.0))
+            net += quantity if str(execution.get("side")) == "buy" else -quantity
+        return net
 
     def has_submitted_entry(self, symbol: str, since: datetime) -> bool:
         """Whether a resting-stop entry for ``symbol`` was submitted at/after ``since``.
@@ -716,9 +811,13 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         qualified_contract = (
             await qualify_contract(symbol) if qualify_contract is not None else None
         )
-        # The caller's latest observed price; no quote request here, because
-        # every second between the range end and placement costs fills.
-        reference_price: Optional[float] = metadata.get("reference_price")
+        reference_price = await self._fresh_reference_price(symbol, qualified_contract)
+        or_end = metadata.get("or_end")
+        placement_latency_s = (
+            ((metadata.get("clock") or (lambda: datetime.now(timezone.utc)))() - or_end).total_seconds()
+            if isinstance(or_end, datetime)
+            else metadata.get("placement_latency_s")
+        )
 
         def broker_order(leg: RestingEntryLeg, role: str) -> BrokerOrder:
             entry = role == "entry"
@@ -743,13 +842,24 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 entry_signal_bar_timestamp=metadata.get("entry_signal_bar_timestamp"),
                 order_role=role,
                 oca_group=oca_group if entry else None,
-                gap_fill=leg.triggered_by(reference_price) if entry else None,
-                placement_latency_s=metadata.get("placement_latency_s") if entry else None,
+                gap_fill=(
+                    leg.triggered_by(reference_price)
+                    if entry and reference_price is not None
+                    else None
+                ),
+                placement_latency_s=placement_latency_s if entry else None,
                 capped_by=leg.capped_by if entry else None,
+                or_source=metadata.get("or_source"),
+                or_high=metadata.get("or_high"),
+                or_low=metadata.get("or_low"),
             )
 
         brackets = [(broker_order(leg, "entry"), broker_order(leg, "protective_stop")) for leg in legs]
-        ids = await submit(brackets, qualified_contract=qualified_contract)
+        failure: Optional[PartialPlacementError] = None
+        try:
+            ids = await submit(brackets, qualified_contract=qualified_contract)
+        except PartialPlacementError as exc:
+            failure, ids = exc, list(exc.placed)
 
         placed: List[tuple[Order, Order]] = []
         for (entry_bo, stop_bo), (entry_id, stop_id) in zip(brackets, ids):
@@ -780,11 +890,38 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                     gap_fill=bo.gap_fill,
                     placement_latency_s=bo.placement_latency_s,
                     capped_by=bo.capped_by,
+                    or_source=bo.or_source,
+                    or_high=bo.or_high,
+                    or_low=bo.or_low,
                 )
                 self._orders[order_id] = order
                 pair.append(order)
             placed.append((pair[0], pair[1]))
+        if failure is not None:
+            raise PartialPlacementError(str(failure), placed) from failure
         return placed
+
+    async def _fresh_reference_price(
+        self, symbol: str, qualified_contract: Any, timeout_s: float = 1.0
+    ) -> Optional[float]:
+        """Last trade (else midpoint) from a live IB quote, for the gap-fill flag.
+
+        Bounded to ``timeout_s`` so placement is barely delayed. None when no
+        live quote arrives: a stale bar close would mislabel the fill.
+        """
+        get_quote = getattr(self.broker, "get_market_data", None)
+        if get_quote is None:
+            return None
+        try:
+            quote = await asyncio.wait_for(
+                get_quote(symbol, timeout_seconds=timeout_s, qualified_contract=qualified_contract),
+                timeout=timeout_s + 0.5,
+            )
+        except Exception as exc:
+            logger.info("No live quote for %s at placement (%s); gap_fill unset", symbol, exc)
+            return None
+        last = getattr(quote, "last", None)
+        return float(last) if last else getattr(quote, "market_price", None)
 
     async def submit_protective_stop(
         self,

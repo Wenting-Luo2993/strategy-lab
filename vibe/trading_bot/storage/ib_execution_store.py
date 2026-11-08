@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 def _iso(value: Any) -> Optional[str]:
@@ -16,6 +17,56 @@ def _iso(value: Any) -> Optional[str]:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value)
+
+
+# IBKR execIds look like ``0000e0d5.6577b2c1.01.01``. A correction re-sends
+# the execution with only the final ``.NN`` incremented.
+_EXEC_CORRECTION = re.compile(r"^(?P<base>[^.]+\.[^.]+\..+)\.(?P<revision>\d+)$")
+
+
+def execution_revision(execution_id: Any) -> tuple[str, int]:
+    """``(canonical_id, revision)`` of an execution id.
+
+    The canonical id is the id of the first revision (``.01``), so a
+    corrected fill keeps the identity it was first projected under. Ids
+    without the IBKR shape are their own canonical id at revision 0.
+    """
+    text = str(execution_id or "")
+    match = _EXEC_CORRECTION.match(text)
+    if match is None:
+        return text, 0
+    digits = match["revision"]
+    return f"{match['base']}.{'1'.zfill(len(digits))}", int(digits)
+
+
+def canonical_execution(execution: Dict[str, Any]) -> Dict[str, Any]:
+    """The execution under its canonical id, remembering the raw id and revision."""
+    raw_id = str(execution.get("execution_id") or "")
+    canonical_id, revision = execution_revision(raw_id)
+    if canonical_id == raw_id and "execution_revision" in execution:
+        return dict(execution)
+    return {
+        **execution,
+        "execution_id": canonical_id,
+        "raw_execution_id": execution.get("raw_execution_id") or raw_id,
+        "execution_revision": revision,
+    }
+
+
+def dedupe_corrections(executions: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse IBKR execution corrections onto their latest revision.
+
+    Each fill appears once, under its canonical id, carrying the data of its
+    highest revision. Order of first appearance is kept.
+    """
+    kept: Dict[str, Dict[str, Any]] = {}
+    for execution in executions:
+        item = canonical_execution(execution)
+        key = item["execution_id"] or f"__anonymous_{len(kept)}"
+        current = kept.get(key)
+        if current is None or item["execution_revision"] >= current["execution_revision"]:
+            kept[key] = item
+    return list(kept.values())
 
 
 class IBExecutionStore:
@@ -75,6 +126,9 @@ class IBExecutionStore:
                 gap_fill INTEGER,
                 placement_latency_s REAL,
                 capped_by TEXT,
+                or_source TEXT,
+                or_high REAL,
+                or_low REAL,
                 benchmark_version INTEGER NOT NULL DEFAULT 2,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -131,6 +185,9 @@ class IBExecutionStore:
                 "gap_fill": "INTEGER",
                 "placement_latency_s": "REAL",
                 "capped_by": "TEXT",
+                "or_source": "TEXT",
+                "or_high": "REAL",
+                "or_low": "REAL",
                 "benchmark_version": "INTEGER NOT NULL DEFAULT 1",
                 "created_at": "TEXT",
                 "updated_at": "TEXT",
@@ -180,9 +237,9 @@ class IBExecutionStore:
                     exit_reason, entry_cancel_after_seconds, entry_expiry_bars,
                     entry_signal_bar_timestamp, entry_bar_interval_seconds,
                     order_role, oca_group, parent_order_id, gap_fill,
-                    placement_latency_s, capped_by,
+                    placement_latency_s, capped_by, or_source, or_high, or_low,
                     benchmark_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(broker_order_id) DO UPDATE SET
                     permanent_order_id = COALESCE(excluded.permanent_order_id, permanent_order_id),
                     account_id = COALESCE(excluded.account_id, account_id),
@@ -213,6 +270,9 @@ class IBExecutionStore:
                     gap_fill = COALESCE(excluded.gap_fill, gap_fill),
                     placement_latency_s = COALESCE(excluded.placement_latency_s, placement_latency_s),
                     capped_by = COALESCE(excluded.capped_by, capped_by),
+                    or_source = COALESCE(excluded.or_source, or_source),
+                    or_high = COALESCE(excluded.or_high, or_high),
+                    or_low = COALESCE(excluded.or_low, or_low),
                     benchmark_version = excluded.benchmark_version,
                     updated_at = excluded.updated_at
                 """,
@@ -247,6 +307,9 @@ class IBExecutionStore:
                     None if payload.get("gap_fill") is None else int(bool(payload.get("gap_fill"))),
                     payload.get("placement_latency_s"),
                     payload.get("capped_by"),
+                    payload.get("or_source"),
+                    payload.get("or_high"),
+                    payload.get("or_low"),
                     int(payload.get("benchmark_version") or 2),
                     now,
                     now,

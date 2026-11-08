@@ -55,6 +55,19 @@ class RestingEntryLeg:
         return price <= self.trigger_price
 
 
+class PartialPlacementError(RuntimeError):
+    """Some linked orders reached the broker before placement failed.
+
+    ``placed`` holds what is live (broker id pairs at the broker layer,
+    ``(entry, protective)`` order pairs at the engine layer) so the caller
+    can monitor it instead of losing track of live orders.
+    """
+
+    def __init__(self, message: str, placed: list):
+        super().__init__(message)
+        self.placed = placed
+
+
 class ExecutionEngine(ABC):
     """
     Abstract base class for execution engines.

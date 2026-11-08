@@ -9,7 +9,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from vibe.common.models import Order, OrderStatus, Position, AccountState
 from vibe.common.execution.base import ExecutionEngine, OrderResponse, RestingEntryLeg
@@ -101,6 +101,9 @@ class MockExchange(ExecutionEngine):
 
         # Bracket parent order id -> attached protective stop order id
         self._children: Dict[str, str] = {}
+
+        # Simulated broker history: symbol -> 1-minute OHLCV bars (tz-aware index)
+        self._minute_bars: Dict[str, Any] = {}
 
         logger.info(f"MockExchange initialized with ${initial_capital:,.2f} capital")
 
@@ -487,8 +490,15 @@ class MockExchange(ExecutionEngine):
         ``gap_fill``.
         """
         metadata = lifecycle_metadata or {}
-        reference = metadata.get("reference_price") or self._prices.get(symbol)
+        # The simulated market price is always fresh.
+        reference = self._prices.get(symbol)
         now = datetime.now(timezone.utc)
+        or_end = metadata.get("or_end")
+        latency = (
+            ((metadata.get("clock") or (lambda: datetime.now(timezone.utc)))() - or_end).total_seconds()
+            if isinstance(or_end, datetime)
+            else metadata.get("placement_latency_s")
+        )
         placed = []
         for leg in legs:
             entry = Order(
@@ -514,9 +524,12 @@ class MockExchange(ExecutionEngine):
                 entry_signal_bar_timestamp=metadata.get("entry_signal_bar_timestamp"),
                 order_role="entry",
                 oca_group=oca_group,
-                gap_fill=leg.triggered_by(reference),
-                placement_latency_s=metadata.get("placement_latency_s"),
+                gap_fill=leg.triggered_by(reference) if reference is not None else None,
+                placement_latency_s=latency,
                 capped_by=leg.capped_by,
+                or_source=metadata.get("or_source"),
+                or_high=metadata.get("or_high"),
+                or_low=metadata.get("or_low"),
             )
             stop = Order(
                 order_id=f"ord_{uuid.uuid4().hex[:8]}",
@@ -547,6 +560,19 @@ class MockExchange(ExecutionEngine):
         if reference is not None:
             await self.process_pending_orders()
         return placed
+
+    opening_range_source = "mock_minute_bars"
+
+    def set_minute_bars(self, symbol: str, bars) -> None:
+        """Provide the 1-minute bars the simulated broker serves as history."""
+        self._minute_bars[symbol] = bars
+
+    async def fetch_opening_range_bars(self, symbol: str, or_start: datetime, or_end: datetime):
+        """Historical 1-minute bars in ``[or_start, or_end)``, as IBKR would serve them."""
+        bars = self._minute_bars.get(symbol)
+        if bars is None:
+            raise RuntimeError(f"no minute bars for {symbol}")
+        return bars[(bars.index >= or_start) & (bars.index < or_end)]
 
     async def submit_protective_stop(
         self,

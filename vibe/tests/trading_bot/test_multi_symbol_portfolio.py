@@ -125,9 +125,15 @@ def orchestrator(tmp_path):
     orchestrator.data_manager = SimpleNamespace(get_data=get_data)
     orchestrator.indicator_engine = SimpleNamespace(update=lambda df, **kwargs: df)
     orchestrator.active_provider = None
+    minutes = pd.DataFrame(
+        {"open": 100.0, "high": 100.2, "low": 99.8, "close": 100.0, "volume": 1e4},
+        index=pd.date_range(pd.Timestamp(datetime(2026, 7, 20, 9, 30), tz=ET), periods=5, freq="1min"),
+    )
+    minutes.iloc[1, minutes.columns.get_loc("high")] = 101.0
+    minutes.iloc[3, minutes.columns.get_loc("low")] = 99.0
     for symbol in SYMBOLS:
-        # The aggregator's completed 09:30 bar proves the range is complete.
-        orchestrator._realtime_bars[symbol] = _bars().iloc[:1].drop(columns=["ATR_14"])
+        # IBKR's 1-minute bars for the opening range: 99-101.
+        exchange.set_minute_bars(symbol, minutes)
     return orchestrator
 
 
