@@ -1,6 +1,7 @@
 # Portfolio Paper Trading Plan
 
-**Status:** Approved 2026-11-08, in implementation
+**Status:** Approved 2026-11-08; stages 1–5 implemented 2026-11-08 (see
+"Implementation status"), rollout pending.
 **Goal:** Paper-trade the row-10 resting-stop ORB entry on five symbols with
 account-level risk, so that live fills can be compared trade by trade with the
 backtest.
@@ -260,3 +261,37 @@ New `entry_order.type: resting_stop`, matching
 - No change to research conclusions or published experiments.
 - No live (real-money) trading.
 - No new strategies.
+
+## Implementation status
+
+| Stage | Where |
+| --- | --- |
+| 1 Risk manager | `vibe/trading_bot/execution/portfolio_risk.py`, warm-up step 4.6, `_enforce_account_risk_limits` |
+| 2 Shared sizing | `vibe/common/risk/portfolio_sizing.py` (`size_portfolio_entry`), live executor and both backtest engines |
+| 3 Resting stop | `vibe/rulesets/orb_resting_stop_paper.yaml`, `entry_order.type: resting_stop`, IB `submit_oca_brackets` |
+| 4 Parity report | `vibe/trading_bot/parity/report.py`, cooldown, `scripts/live_backtest_parity.py` |
+| 5 Five symbols | `vibe/rulesets/orb_resting_stop_paper_5sym.yaml`, `[CYCLE]` timing log, `scripts/measure_multi_symbol_footprint.py` |
+
+Decisions made during implementation (beyond the plan):
+
+- E0 is taken only from an untouched account: before the open, or later
+  if the account is flat, has no working orders and no fills today (after
+  reconciling broker executions). Otherwise entries are blocked for the
+  session with one `EQUITY_SNAPSHOT_FAILED` alert. A missing
+  NetLiquidation never reads as a loss; it blocks entries.
+- E0 is published as an equity snapshot with
+  `event_type = "session_start_equity"`; parity results are published as
+  metrics. Neither needs a Supabase schema change.
+- `room_qty` caps gross exposure at `max_gross_leverage × NLV_now`. That
+  matches the formula above at the configured leverage of 1.0.
+- The parity report reads live trades from the durable IB execution
+  journal, which holds order roles, triggers and gap-fill flags.
+
+Pre-rollout checks that need the VM (not possible locally):
+
+- run `scripts/measure_multi_symbol_footprint.py --ruleset
+  orb_resting_stop_paper_5sym` (locally: 5 symbols, median 29 ms per cycle,
+  peak RSS about 148 MiB, +3 MiB over one symbol);
+- confirm IBKR market data and real-time bars for all five symbols;
+- watch the first live day for the `[RESTING ENTRY]`, `[CYCLE]` and
+  `[PARITY]` log lines.

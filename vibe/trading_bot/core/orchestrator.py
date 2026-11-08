@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -3257,7 +3258,10 @@ class TradingOrchestrator:
                     f"Market is open and {self.active_provider.provider_name} is active - relying on real-time data"
                 )
 
+            symbol_timings: List[tuple[str, float]] = []
+            loop_started = time.perf_counter()
             for symbol in self._symbols_in_priority_order():
+                symbol_timings.append((symbol, time.perf_counter()))
                 try:
                     # Fetch historical data from Yahoo (includes yesterday + today with staleness check)
                     # During market hours with a live provider, disable yfinance fallback
@@ -3594,6 +3598,8 @@ class TradingOrchestrator:
                         self.logger.debug(f"Error processing {symbol}: {e}")
                     self.health_monitor.record_error(f"data_{symbol}")
 
+            self._log_cycle_timings(symbol_timings, loop_started, time.perf_counter())
+
             # Monitor open positions for stop-loss, take-profit, and EOD exits
             await self._monitor_open_positions()
 
@@ -3743,6 +3749,37 @@ class TradingOrchestrator:
             except Exception as exc:
                 self.logger.error("[RISK] Flatten %s failed: %s", symbol, exc, exc_info=True)
         return flattened
+
+    def _log_cycle_timings(
+        self,
+        starts: List[tuple[str, float]],
+        loop_started: float,
+        loop_finished: float,
+    ) -> Dict[str, float]:
+        """Log how long the per-symbol data/signal loop took (ms per symbol).
+
+        With several symbols the loop must finish well within one bar; this
+        line is how that is verified in production logs.
+        """
+        timings: Dict[str, float] = {}
+        for index, (symbol, started) in enumerate(starts):
+            ended = starts[index + 1][1] if index + 1 < len(starts) else loop_finished
+            timings[symbol] = (ended - started) * 1000.0
+        total_ms = (loop_finished - loop_started) * 1000.0
+        bar_ms = pd.Timedelta(self._bar_interval).total_seconds() * 1000.0
+        slowest = max(timings.items(), key=lambda item: item[1]) if timings else ("-", 0.0)
+        log = self.logger.warning if total_ms > 0.5 * bar_ms else self.logger.info
+        log(
+            "[CYCLE] %d symbols in %.0f ms (%.1f%% of a %s bar; slowest %s %.0f ms) %s",
+            len(timings),
+            total_ms,
+            100.0 * total_ms / bar_ms if bar_ms else 0.0,
+            self._bar_interval,
+            slowest[0],
+            slowest[1],
+            {symbol: round(ms) for symbol, ms in timings.items()},
+        )
+        return timings
 
     async def _monitor_open_positions(self) -> None:
         """Check all open positions for stop-loss, take-profit, and EOD exit triggers.
