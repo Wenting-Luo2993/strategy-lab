@@ -484,6 +484,9 @@ class TradeExecutor:
             context.get("protective_order_id") if context is not None else None
         ) or self._protective_by_entry.get(order_id)
         symbol = context["symbol"] if context is not None else symbol
+        # Consumed once: a late repeat of this fill callback (e.g. after a
+        # close already cancelled the child) must not re-activate it.
+        self._protective_by_entry.pop(order_id, None)
         if protective and symbol and symbol not in self._active_protective:
             # An existing active stop (e.g. a replacement for a lost child)
             # is never overridden by the bracket's original child.
@@ -554,10 +557,19 @@ class TradeExecutor:
                 return "closing"
             if order.symbol in self._active_protective:
                 return "protected"
+            open_quantity = await self._open_quantity(order.symbol)
+            if open_quantity < 1:
+                # Closed meanwhile (e.g. a close ran while this waited on the
+                # lock): a stop now would rest on a flat account.
+                logger.info(
+                    "Entry %s for %s ended with %s filled but the position is flat; "
+                    "no protective stop", order.order_id, order.symbol, filled,
+                )
+                return "flat"
             side = "sell" if order.side == "buy" else "buy"
             stop_price = context.get("stop_price") or order.strategy_stop_price
             if await self._place_standalone_protective(
-                order.symbol, side, filled, stop_price, order.strategy_name
+                order.symbol, side, min(filled, open_quantity), stop_price, order.strategy_name
             ):
                 return "protected"
         await self._alert(
@@ -594,6 +606,9 @@ class TradeExecutor:
             if position is not None and position.quantity:
                 # Never protect more than is open.
                 remaining = min(remaining, float(position.quantity))
+            net = await self._fill_derived_quantity(symbol)
+            if net is not None:
+                remaining = min(remaining, abs(net))
             if remaining < 1 or position is None:
                 logger.warning(
                     "Protective stop %s for %s ended; no open position to re-protect",
@@ -621,6 +636,34 @@ class TradeExecutor:
     def clear_protective_stop(self, symbol: str) -> None:
         self._active_protective.pop(symbol, None)
         self._protective_since.pop(symbol, None)
+
+    async def _open_quantity(self, symbol: str) -> float:
+        """Open shares: today's fills when known, else the broker position."""
+        net = await self._fill_derived_quantity(symbol)
+        if net is not None:
+            return abs(net)
+        position = await self.exchange.get_position(symbol)
+        return float(position.quantity) if position is not None and position.quantity else 0.0
+
+    async def _reprotect_after_abort(
+        self, symbol: str, stop: Optional[Order], quantity: float, reason: str
+    ) -> None:
+        """A close cancelled the protective stop and then could not go out: re-protect."""
+        if stop is None or quantity < 1:
+            return
+        if await self._place_standalone_protective(
+            symbol, stop.side, quantity, stop.stop_price, stop.strategy_name
+        ):
+            logger.warning(
+                "[PROTECTIVE STOP] %s re-protected (%s shares) after an aborted close: %s",
+                symbol, int(quantity), reason,
+            )
+            return
+        await self._alert(
+            "Position unprotected",
+            f"{symbol}: the close was aborted ({reason}) after its protective stop was "
+            "cancelled, and a replacement stop could not be placed.",
+        )
 
     async def _fill_derived_quantity(self, symbol: str) -> Optional[float]:
         """Signed open quantity from today's fills, when the exchange can tell.
@@ -1094,11 +1137,56 @@ class TradeExecutor:
                 )
             self._pending_entries.pop(order_id, None)
 
+        # Fills are checked before the protective stop is touched: if today's
+        # fills and the broker position disagree, the close is aborted with the
+        # stop still working.
+        broker_position = await self.exchange.get_position(symbol)
+        if broker_position is None or broker_position.quantity == 0:
+            stop_id = self._active_protective.get(symbol)
+            stop = await self.exchange.get_order(stop_id) if stop_id else None
+            if stop is not None and stop.status == OrderStatus.FILLED:
+                self.clear_protective_stop(symbol)
+                return ExecutionResult(
+                    success=False,
+                    reason=f"Position in {symbol} already closed by its protective stop",
+                )
+            return ExecutionResult(
+                success=False,
+                reason=f"No open position in {symbol}",
+            )
+        fill_quantity = await self._fill_derived_quantity(symbol)
+        if fill_quantity is not None:
+            if abs(fill_quantity) < 1:
+                await self._alert(
+                    "Close aborted",
+                    f"{symbol}: today's fills are flat but the broker still shows "
+                    f"{broker_position.side} {broker_position.quantity:.0f}; not sending a "
+                    "market close (the position read is probably lagging a stop fill).",
+                )
+                return ExecutionResult(
+                    success=False,
+                    reason=f"Position in {symbol} is flat by today's fills; not closing",
+                )
+            if (fill_quantity > 0) != (broker_position.side == "long"):
+                await self._alert(
+                    "Close aborted",
+                    f"{symbol}: today's fills show {fill_quantity:+.0f} shares but the broker "
+                    f"position is {broker_position.side}; not sending a market close.",
+                )
+                return ExecutionResult(
+                    success=False,
+                    reason=f"Broker position for {symbol} disagrees with today's fills; not closing",
+                )
+
         # A broker-side protective stop must be cancelled (and confirmed) before
         # a market close, or both could fill and flip the position. If the stop
         # filled, the broker closed the position: a broker position read can
-        # lag that fill, so it must not be used to send a second exit.
-        max_close_quantity: Optional[float] = None
+        # lag that fill, so it must not be used to send a second exit. Any
+        # abort after the cancel re-places a stop for what is still open.
+        max_close_quantity: Optional[float] = (
+            abs(fill_quantity) if fill_quantity is not None else None
+        )
+        cancelled_stop: Optional[Order] = None
         if symbol in self._active_protective:
             stop_id = self._active_protective[symbol]
             outcome = await self._cancel_protective_stop(symbol)
@@ -1113,12 +1201,16 @@ class TradeExecutor:
                     reason=f"Position in {symbol} already closed by its protective stop",
                 )
             stop_order = await self.exchange.get_order(stop_id)
+            cancelled_stop = stop_order
             stop_filled = float(getattr(stop_order, "filled_qty", 0.0) or 0.0)
             if stop_order is not None and stop_filled > 0:
                 # Partially filled stop: only its unfilled remainder is still
                 # open. Size the close from fills, and send it only once the
                 # broker position agrees, or a lagging read could flip it.
-                max_close_quantity = max(float(stop_order.quantity) - stop_filled, 0.0)
+                remainder = max(float(stop_order.quantity) - stop_filled, 0.0)
+                max_close_quantity = (
+                    remainder if max_close_quantity is None else min(max_close_quantity, remainder)
+                )
                 if max_close_quantity <= 0:
                     return ExecutionResult(
                         success=False,
@@ -1130,6 +1222,9 @@ class TradeExecutor:
                         f"{symbol}: protective stop filled {stop_filled:.0f} shares but the "
                         f"broker position does not yet show at most {max_close_quantity:.0f} "
                         "open; not sending a market close.",
+                    )
+                    await self._reprotect_after_abort(
+                        symbol, stop_order, max_close_quantity, "broker position disagrees"
                     )
                     return ExecutionResult(
                         success=False,
@@ -1144,7 +1239,7 @@ class TradeExecutor:
             )
 
         # Determine close side (opposite of position side)
-        # NOTE: position.quantity is always positive — use position.side, not quantity
+        # NOTE: position.quantity is always positive ? use position.side, not quantity
         close_side = "sell" if position.side == "long" else "buy"
 
         # Get current price
@@ -1153,35 +1248,15 @@ class TradeExecutor:
             close_price = self.exchange._prices.get(symbol)
 
         if not close_price:
+            open_quantity = float(position.quantity)
+            if max_close_quantity is not None:
+                open_quantity = min(open_quantity, max_close_quantity)
+            await self._reprotect_after_abort(
+                symbol, cancelled_stop, open_quantity, "no price available"
+            )
             return ExecutionResult(
                 success=False,
                 reason="No price available for close",
-            )
-
-        # Size the close from today's fills too: the broker position can lag a
-        # stop fill whose callback already cleared the protective stop.
-        fill_quantity = await self._fill_derived_quantity(symbol)
-        if fill_quantity is not None:
-            fill_long = fill_quantity > 0
-            if abs(fill_quantity) < 1:
-                return ExecutionResult(
-                    success=False,
-                    reason=f"Position in {symbol} is flat by today's fills; not closing",
-                )
-            if fill_long != (position.side == "long"):
-                await self._alert(
-                    "Close aborted",
-                    f"{symbol}: today's fills show {fill_quantity:+.0f} shares but the broker "
-                    f"position is {position.side}; not sending a market close.",
-                )
-                return ExecutionResult(
-                    success=False,
-                    reason=f"Broker position for {symbol} disagrees with today's fills; not closing",
-                )
-            max_close_quantity = (
-                abs(fill_quantity)
-                if max_close_quantity is None
-                else min(max_close_quantity, abs(fill_quantity))
             )
 
         # Submit close order
@@ -1275,6 +1350,13 @@ class TradeExecutor:
                 reason=f"Close order error: {str(e)}",
             )
             logger.error(f"Close order error: {e}")
+            if symbol not in self._pending_closes:
+                open_quantity = float(position.quantity)
+                if max_close_quantity is not None:
+                    open_quantity = min(open_quantity, max_close_quantity)
+                await self._reprotect_after_abort(
+                    symbol, cancelled_stop, open_quantity, f"close order error: {e}"
+                )
             return result
 
     def get_open_trades(self) -> Dict[str, ExecutionResult]:

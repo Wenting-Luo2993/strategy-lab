@@ -107,7 +107,8 @@ class TradingOrchestrator:
     OR_SOURCE = "ibkr_historical_1m"
     OR_SOURCE_DEADLINE_S = 60
     OR_FETCH_TIMEOUT_S = 10
-    RESTING_WAKE_DELAY_S = 2
+    # IBKR's historical bar for the last OR minute includes late prints by then.
+    RESTING_WAKE_DELAY_S = 10
     """Seconds after the opening range ends at which resting entries are placed."""
     RESTING_FAST_POLL_S = 5
     """Polling cadence while a resting pair is due right after the range ends."""
@@ -244,6 +245,8 @@ class TradingOrchestrator:
         self._latest_bar_prices: Dict[str, float] = {}
         # Symbols with a broker position at the last resting-stop sweep.
         self._broker_position_symbols: set[str] = set()
+        # (symbol, session date) -> complete IBKR opening range (high, low).
+        self._opening_range_levels: Dict[tuple, tuple[float, float]] = {}
 
         # Daily-ATR fetch attempts per (symbol, trading date), for ATR take-profits
         self._daily_atr_attempts: Dict[tuple, int] = {}
@@ -624,6 +627,20 @@ class TradingOrchestrator:
                 self._dashboard_symbol_trade_ids.pop(symbol, None)
         except Exception as exc:
             self.logger.warning("Dashboard trade exit persistence failed for %s: %s", order_id, exc)
+
+    def _log_gap_fill_timing(self, order: Any) -> None:
+        """Log fill - submission for gap-flagged entries (calibrates late placement)."""
+        if not getattr(order, "gap_fill", None):
+            return
+        filled_at = _as_aware_datetime(getattr(order, "filled_at", None))
+        submitted_at = _as_aware_datetime(getattr(order, "submitted_at", None))
+        if filled_at is None or submitted_at is None:
+            return
+        self.logger.info(
+            "[GAP FILL] %s %s entry %s filled %.3f s after submission",
+            order.symbol, order.side, order.order_id,
+            (filled_at - submitted_at).total_seconds(),
+        )
 
     def _clear_pending_entry_if_complete(self, order: Any) -> None:
         """Drop an entry's pending context once it can no longer fill.
@@ -2347,9 +2364,10 @@ class TradingOrchestrator:
             return
         or_start = self._market_datetime(trading_date, strategy_cfg.orb_start_time)
         or_end = or_start + timedelta(minutes=strategy_cfg.orb_duration_minutes)
-        if now < or_end:
+        if now < or_end + timedelta(seconds=self.RESTING_WAKE_DELAY_S):
             # Levels from a partial opening range would rest the pair at the
-            # wrong prices for the whole session.
+            # wrong prices for the whole session; IBKR's last OR bar is only
+            # final a few seconds after the window.
             return
         if self._entry_attempt_count(symbol, trading_date) >= 1:
             return
@@ -2370,7 +2388,15 @@ class TradingOrchestrator:
             )
             return
 
-        levels, why = await self._opening_range_from_broker(symbol, or_start, or_end)
+        cache_key = (symbol, trading_date)
+        levels = self._opening_range_levels.get(cache_key)
+        why = ""
+        if levels is None:
+            levels, why = await self._opening_range_from_broker(symbol, or_start, or_end)
+            if levels is not None:
+                # Fetched once: entries blocked by risk checks retry every
+                # cycle without re-requesting IBKR history.
+                self._opening_range_levels[cache_key] = levels
         if levels is None:
             now = get_market_now(self.market_scheduler)
             if now >= or_end + timedelta(seconds=self.OR_SOURCE_DEADLINE_S):
@@ -4274,6 +4300,7 @@ class TradingOrchestrator:
         role = getattr(order, "order_role", None) if order is not None else None
         if order is not None and self.trade_executor is not None:
             if role == "entry":
+                self._log_gap_fill_timing(order)
                 if float(order.filled_qty or 0.0) >= float(order.quantity):
                     # Only a complete parent activates its attached stop at
                     # IBKR; until then the client-side stop protects the fill.

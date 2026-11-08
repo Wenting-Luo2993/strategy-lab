@@ -901,7 +901,12 @@ async def test_partial_stop_close_aborts_and_alerts_when_the_broker_disagrees(mo
     result = await executor._close_position("AAA", exit_reason="time_exit")
 
     assert not result.success and "disagrees" in result.reason
-    assert len(exchange.get_all_orders()) == orders_before
+    # No market close; the cancelled stop is re-placed for the open remainder.
+    (new_order,) = [o for o in exchange.get_all_orders().values()][orders_before:]
+    assert (new_order.order_role, new_order.order_type, new_order.quantity) == (
+        "protective_stop", "stop", stop.quantity - 40,
+    )
+    assert executor.protective_stop_order_id("AAA") == new_order.order_id
     assert alerts == ["Close aborted"]
     await executor.order_manager.shutdown()
 
@@ -919,7 +924,7 @@ async def test_no_pair_is_placed_from_a_partial_opening_range(tmp_path):
 
 @pytest.mark.asyncio
 async def test_r2_levels_come_from_ibkr_minute_bars_not_snapshots(tmp_path):
-    orchestrator = _orchestrator(tmp_path, (9, 35, 3))
+    orchestrator = _orchestrator(tmp_path, (9, 35, 12))
     # The aggregator's snapshot-built OR (sampled inside the true range) is ignored.
     orchestrator.exchange.set_minute_bars("AAA", _or_minutes(high=101.37, low=98.62))
     await orchestrator.exchange.set_price("AAA", 100.0)
@@ -936,7 +941,7 @@ async def test_r2_levels_come_from_ibkr_minute_bars_not_snapshots(tmp_path):
 
 @pytest.mark.asyncio
 async def test_r2_waits_for_every_or_minute_then_places(tmp_path):
-    orchestrator = _orchestrator(tmp_path, (9, 35, 2))
+    orchestrator = _orchestrator(tmp_path, (9, 35, 11))
     orchestrator.exchange.set_minute_bars("AAA", _or_minutes(minutes=4))  # 09:34 not served yet
     await orchestrator.exchange.set_price("AAA", 100.0)
 
@@ -945,7 +950,7 @@ async def test_r2_waits_for_every_or_minute_then_places(tmp_path):
     assert orchestrator._entry_attempt_count("AAA", SESSION) == 0
 
     orchestrator.exchange.set_minute_bars("AAA", _or_minutes())
-    orchestrator.market_scheduler.set_time(9, 35, 7)
+    orchestrator.market_scheduler.set_time(9, 35, 16)
     await orchestrator._maybe_place_resting_entries("AAA")
     assert len(_orders(orchestrator.exchange, "entry")) == 2
     await orchestrator.trade_executor.order_manager.shutdown()
@@ -1112,7 +1117,7 @@ async def test_b2_partial_parent_fill_stays_under_the_client_stop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_b2_partial_entry_cancelled_at_cutoff_gets_a_standalone_stop(tmp_path):
+async def test_b2_partial_entry_cancelled_at_cutoff_gets_a_standalone_stop(tmp_path, monkeypatch):
     orchestrator = _orchestrator(tmp_path, (9, 40))
     exchange = orchestrator.exchange
     executor = orchestrator.trade_executor
@@ -1120,7 +1125,12 @@ async def test_b2_partial_entry_cancelled_at_cutoff_gets_a_standalone_stop(tmp_p
     await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
     buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
     buy.filled_qty = 30.0
-    await exchange.cancel_order(buy.order_id)  # cutoff; IBKR also drops the child
+    await exchange.cancel_order(buy.order_id)
+
+    async def thirty_long(symbol):
+        return SimpleNamespace(side="long", quantity=30.0)
+
+    monkeypatch.setattr(exchange, "get_position", thirty_long)  # cutoff; IBKR also drops the child
 
     await orchestrator._on_order_cancelled(buy.order_id)
 
@@ -1154,6 +1164,11 @@ async def test_b2_unprotectable_partial_entry_is_flattened_and_alerted(tmp_path,
     buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
     buy.filled_qty = 30.0
     await exchange.cancel_order(buy.order_id)
+
+    async def thirty_long(symbol):
+        return SimpleNamespace(side="long", quantity=30.0)
+
+    monkeypatch.setattr(exchange, "get_position", thirty_long)
 
     await orchestrator._on_order_cancelled(buy.order_id)
 
@@ -1345,13 +1360,13 @@ async def test_s6_levels_are_rounded_to_the_tick_conservatively():
 @pytest.mark.asyncio
 async def test_s7_entry_orders_record_placement_latency(tmp_path):
     orchestrator = _orchestrator(tmp_path, (9, 35))
-    orchestrator.market_scheduler.set_time(9, 35, 4)  # the submission clock
+    orchestrator.market_scheduler.set_time(9, 35, 12)  # the submission clock
     await orchestrator.exchange.set_price("AAA", 100.0)
 
     await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
 
     latencies = [o.placement_latency_s for o in _orders(orchestrator.exchange, "entry")]
-    assert latencies == [pytest.approx(4.0)] * 2
+    assert latencies == [pytest.approx(12.0)] * 2
     await orchestrator.trade_executor.order_manager.shutdown()
 
 
@@ -1750,11 +1765,18 @@ async def test_r5_close_is_skipped_when_todays_fills_are_flat(monkeypatch):
 
     monkeypatch.setattr(exchange, "session_net_quantity", flat_by_fills, raising=False)
     orders_before = len(exchange.get_all_orders())
+    alerts = []
+
+    async def on_alert(title, message):
+        alerts.append(title)
+
+    executor.on_alert = on_alert
 
     result = await executor._close_position("AAA", exit_reason="daily_loss_limit")
 
     assert not result.success and "flat by today's fills" in result.reason
     assert len(exchange.get_all_orders()) == orders_before
+    assert alerts == ["Close aborted"]
     await executor.order_manager.shutdown()
 
 
@@ -1883,3 +1905,157 @@ def test_nit_untracked_broker_positions_keep_the_active_cadence(tmp_path):
     assert orchestrator._has_active_positions() is False
     orchestrator._broker_position_symbols = {"AAA"}
     assert orchestrator._has_active_positions() is True
+
+
+
+# ---------------------------------------------------------------------------
+# Milestone B review, round 3
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_r3_1_fill_disagreement_aborts_before_the_stop_is_cancelled(monkeypatch):
+    exchange = _mock()
+    executor = _executor(exchange)
+    await _filled_long(exchange, executor)
+    stop_id = executor.protective_stop_order_id("AAA")
+
+    async def fills_say_short(symbol):
+        return -50.0
+
+    monkeypatch.setattr(exchange, "session_net_quantity", fills_say_short, raising=False)
+    orders_before = len(exchange.get_all_orders())
+
+    result = await executor._close_position("AAA", exit_reason="time_exit")
+
+    assert not result.success and "disagrees" in result.reason
+    assert executor.protective_stop_order_id("AAA") == stop_id  # still protected
+    assert (await exchange.get_order(stop_id)).status != OrderStatus.CANCELLED
+    assert len(exchange.get_all_orders()) == orders_before
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_r3_1_close_order_failure_after_the_stop_cancel_re_protects(monkeypatch):
+    exchange = _mock()
+    executor = _executor(exchange)
+    buy = await _filled_long(exchange, executor)
+    old_stop = executor.protective_stop_order_id("AAA")
+
+    async def broken_submit(**kwargs):
+        raise ConnectionError("socket closed")
+
+    monkeypatch.setattr(executor.order_manager, "submit_order", broken_submit)
+
+    result = await executor._close_position("AAA", exit_reason="time_exit")
+
+    assert not result.success
+    new_stop_id = executor.protective_stop_order_id("AAA")
+    assert new_stop_id not in (None, old_stop)
+    new_stop = await exchange.get_order(new_stop_id)
+    assert (new_stop.side, new_stop.quantity, new_stop.stop_price) == ("sell", buy.quantity, 99.0)
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_r3_3_entry_cancel_queued_behind_a_close_places_no_stop(monkeypatch):
+    exchange = _mock()
+    executor = _executor(exchange)
+    await exchange.set_price("AAA", 100.0)
+    await _place(executor)
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+    buy.filled_qty = 30.0
+    ended = buy.model_copy(update={"status": OrderStatus.CANCELLED})
+    lock = executor._symbol_lock("AAA")
+    await lock.acquire()  # a close is running
+    handler = asyncio.create_task(executor.handle_entry_cancelled(ended))
+    await asyncio.sleep(0.05)
+    lock.release()  # the close finished: the account is flat
+
+    assert await handler == "flat"
+    assert not executor.has_protective_stop("AAA")
+    standalone = [o for o in _orders(exchange, "protective_stop") if o.parent_order_id is None]
+    assert standalone == []
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_round3_late_fill_callback_does_not_revive_a_cancelled_child():
+    exchange = _mock()
+    executor = _executor(exchange)
+    await exchange.set_price("AAA", 100.0)
+    await _place(executor)
+    await exchange.set_price("AAA", 101.2)
+    await exchange.process_pending_orders()
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+
+    assert (await executor._close_position("AAA", exit_reason="time_exit")).success
+    executor.mark_entry_filled(buy.order_id, "AAA")  # the fill callback, arriving late
+
+    assert not executor.has_protective_stop("AAA")
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_round3_blocked_entries_do_not_refetch_ibkr_history(tmp_path, monkeypatch):
+    orchestrator = _orchestrator(tmp_path, (10, 0))
+    await orchestrator.exchange.set_price("AAA", 100.0)
+    fetches = []
+    real_fetch = orchestrator.exchange.fetch_opening_range_bars
+
+    async def counting(*args):
+        fetches.append(args[0])
+        return await real_fetch(*args)
+
+    async def blocked(symbol, **kwargs):
+        from vibe.trading_bot.execution.trade_executor import ExecutionResult
+
+        return ExecutionResult(success=False, reason="Entries blocked: daily loss limit")
+
+    monkeypatch.setattr(orchestrator.exchange, "fetch_opening_range_bars", counting)
+    monkeypatch.setattr(orchestrator.trade_executor, "place_resting_stop_entries", blocked)
+
+    for _ in range(3):
+        await orchestrator._maybe_place_resting_entries("AAA")
+
+    assert fetches == ["AAA"]
+    assert orchestrator._entry_attempt_count("AAA", SESSION) == 0
+
+
+@pytest.mark.asyncio
+async def test_r3_4_first_or_request_waits_ten_seconds_after_or_end(tmp_path, monkeypatch):
+    orchestrator = _orchestrator(tmp_path, (9, 35, 5))
+    fetches = []
+    real_fetch = orchestrator.exchange.fetch_opening_range_bars
+
+    async def counting(*args):
+        fetches.append(args[0])
+        return await real_fetch(*args)
+
+    monkeypatch.setattr(orchestrator.exchange, "fetch_opening_range_bars", counting)
+    await orchestrator.exchange.set_price("AAA", 100.0)
+
+    await orchestrator._maybe_place_resting_entries("AAA")
+    assert fetches == []
+
+    orchestrator.market_scheduler.set_time(9, 35, 10)
+    await orchestrator._maybe_place_resting_entries("AAA")
+    assert fetches == ["AAA"] and len(_orders(orchestrator.exchange, "entry")) == 2
+    await orchestrator.trade_executor.order_manager.shutdown()
+
+
+def test_r3_2_gap_fill_entries_log_fill_minus_submission(tmp_path, caplog):
+    import logging
+
+    orchestrator = _orchestrator(tmp_path, (9, 40))
+    submitted = datetime(2026, 7, 20, 13, 35, 12, tzinfo=timezone.utc)
+    order = SimpleNamespace(
+        symbol="AAA", side="buy", order_id="9", gap_fill=True,
+        submitted_at=submitted, filled_at=submitted + timedelta(seconds=2.25),
+    )
+    caplog.set_level(logging.INFO)
+
+    orchestrator._log_gap_fill_timing(order)
+    orchestrator._log_gap_fill_timing(SimpleNamespace(**{**order.__dict__, "gap_fill": False}))
+
+    lines = [r.getMessage() for r in caplog.records if "[GAP FILL]" in r.getMessage()]
+    assert lines == ["[GAP FILL] AAA buy entry 9 filled 2.250 s after submission"]

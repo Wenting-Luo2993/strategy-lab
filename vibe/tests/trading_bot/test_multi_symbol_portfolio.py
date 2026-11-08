@@ -200,7 +200,7 @@ def test_cycle_wakes_at_or_end_and_polls_fast_while_resting_entries_are_due(orch
     orchestrator._has_active_positions = lambda: False
 
     orchestrator.market_scheduler.set_time(9, 33, 10)
-    assert orchestrator._calculate_sleep_interval() == 110 + 2  # wake 2 s after 09:35
+    assert orchestrator._calculate_sleep_interval() == 110 + 10  # wake 10 s after 09:35
 
     orchestrator.market_scheduler.set_time(9, 36)
     assert orchestrator._calculate_sleep_interval() == orchestrator.RESTING_FAST_POLL_S

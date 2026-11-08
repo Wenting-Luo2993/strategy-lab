@@ -11,10 +11,10 @@ only what the backtest models (2 ticks beyond a resting trigger):
 * ``normal``          -- measured against the live trigger; the headline.
 * ``market_gap``      -- the backtest itself filled away from the level (the
   minute opened through it); measured against the backtest's base price.
-* ``late_placement``  -- the replay's 1-minute bars show the level was
-  already reached before the order reached the broker (``submitted_at``):
-  the first touching minute ended before submission, or the touch was in
-  the submission minute and the fill came within ``ALREADY_THROUGH_S``.
+* ``late_placement``  -- the replay's 1-minute bars show the level's first
+  touching minute started before the order reached the broker
+  (``submitted_at``) and the fill was immediate (``gap_fill`` at placement,
+  or within ``ALREADY_THROUGH_S`` of submission).
 
 Everything here is pure: callers supply executions, 1-minute bars and E0.
 """
@@ -403,17 +403,27 @@ def backtest_base_price(trade: Trade, slippage_ticks: int = MODELLED_ENTRY_SLIPP
 
 
 def placed_after_touch(live: LiveTrade, first_touch: Optional[datetime]) -> bool:
-    """Whether the market reached the level before the order reached the broker."""
+    """Whether the market was already through the level when the order arrived.
+
+    Late when the level's first touching minute started before submission
+    and the fill was immediate: flagged ``gap_fill`` at placement, or filled
+    within ``ALREADY_THROUGH_S`` of submission.
+    """
     if first_touch is None or live.submitted_at is None:
         return False
-    touch_start = pd.Timestamp(first_touch).tz_convert("UTC")
     submitted = pd.Timestamp(live.submitted_at).tz_convert("UTC")
-    if touch_start + pd.Timedelta(minutes=1) <= submitted:
-        return True  # the whole touching minute was over before submission
-    if touch_start <= submitted:
-        filled = pd.Timestamp(live.entry_time).tz_convert("UTC")
-        return (filled - submitted) <= pd.Timedelta(seconds=ALREADY_THROUGH_S)
-    return False
+    if not pd.Timestamp(first_touch).tz_convert("UTC") < submitted:
+        return False
+    if live.gap_fill is True:
+        return True
+    filled = pd.Timestamp(live.entry_time).tz_convert("UTC")
+    return (filled - submitted) <= pd.Timedelta(seconds=ALREADY_THROUGH_S)
+
+
+def fill_after_submit_s(live: LiveTrade) -> Optional[float]:
+    if live.submitted_at is None:
+        return None
+    return round((live.entry_time - live.submitted_at).total_seconds(), 3)
 
 
 def classify_fill(
@@ -610,6 +620,7 @@ def compare_symbol(
         "gap_fill": live.gap_fill,
         "placement_latency_s": live.placement_latency_s,
         "submitted_at": live.submitted_at.isoformat() if live.submitted_at else None,
+        "fill_after_submit_s": fill_after_submit_s(live),
         "first_touch": (
             replay.first_touch[live.side].isoformat()
             if replay is not None and live.side in replay.first_touch

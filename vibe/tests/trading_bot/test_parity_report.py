@@ -533,16 +533,18 @@ def test_market_gap_is_measured_against_the_backtest_base_and_kept_out_of_the_he
 
 
 @pytest.mark.parametrize(
-    "submitted, filled, fill_class",
+    "submitted, filled, gap_fill, fill_class",
     [
-        ("09:41:05", "09:41:05.3", FILL_LATE_PLACEMENT),  # touching minute already over
-        ("09:40:30", "09:40:30.4", FILL_LATE_PLACEMENT),  # same minute, filled on arrival
-        ("09:40:30", "09:40:45", FILL_NORMAL),  # same minute, then rested
-        ("09:35:03", "09:40:12", FILL_NORMAL),  # rested minutes before the breakout
+        ("09:41:05", "09:41:05.3", False, FILL_LATE_PLACEMENT),  # touched, filled on arrival
+        ("09:40:30", "09:40:30.4", False, FILL_LATE_PLACEMENT),  # same minute, on arrival
+        ("09:41:05", "09:41:08", True, FILL_LATE_PLACEMENT),  # gap-flagged, slow paper fill
+        ("09:41:05", "09:43:00", False, FILL_NORMAL),  # came back and re-crossed later
+        ("09:40:30", "09:40:45", False, FILL_NORMAL),  # same minute, then rested
+        ("09:35:03", "09:40:12", True, FILL_NORMAL),  # rested before the touch
     ],
 )
 def test_late_placement_is_read_from_the_bars_not_a_latency_threshold(
-    backtest_trade, replay, submitted, filled, fill_class
+    backtest_trade, replay, submitted, filled, gap_fill, fill_class
 ):
     def at(text):
         hhmm, seconds = text[:5], float(text[6:])
@@ -551,7 +553,7 @@ def test_late_placement_is_read_from_the_bars_not_a_latency_threshold(
     # A 40 s placement latency alone does not make a fill late.
     live = replace(
         _live_like(backtest_trade), submitted_at=at(submitted), entry_time=at(filled),
-        placement_latency_s=40.0,
+        placement_latency_s=40.0, gap_fill=gap_fill,
     )
 
     report = _report([live], {"AAA": replay})
@@ -559,6 +561,10 @@ def test_late_placement_is_read_from_the_bars_not_a_latency_threshold(
     assert replay.first_touch["buy"] == _ts("09:40")
     assert report.fills[0]["fill_class"] == fill_class
     assert (report.late_placements == 1) is (fill_class == FILL_LATE_PLACEMENT)
+    details = report.symbols[0].details
+    assert details["fill_after_submit_s"] == pytest.approx(
+        (at(filled) - at(submitted)).total_seconds()
+    )
 
 
 def test_normal_fill_is_the_headline(backtest_trade, replay):

@@ -289,9 +289,9 @@ Decisions made during implementation (beyond the plan):
 - Entry fills are split into `normal` (the headline slippage, against the
   live trigger), `market_gap` (the backtest also filled away from the level;
   measured against the backtest's base price) and `late_placement` (the
-  replay's 1-minute bars show the level traded before the order reached
-  IBKR: the touching minute ended before `submitted_at`, or the fill came
-  within 1 s of submission in that minute).
+  replay's 1-minute bars show the level's first touching minute started
+  before `submitted_at` and the fill was immediate: `gap_fill` at placement
+  or within 1 s of submission; `[GAP FILL]` logs calibrate this).
 - Live quantity is checked against `size_portfolio_entry` at the live
   trigger and E0, and the live trigger/stop against the replay's OR edges
   (`level` mismatch, 1 tick). Book-dependent live caps (headroom, broker
@@ -303,7 +303,8 @@ Decisions made during implementation (beyond the plan):
 - The opening range of a resting-stop ruleset comes only from IBKR's
   1-minute TRADES bars (RTH) for the window, the same source the parity
   replay uses; the real-time aggregator's snapshot bars are never used. The
-  cycle wakes about 2 s after OR end and retries every 5 s; if IBKR has not
+  cycle wakes 10 s after OR end (so late prints are in IBKR's last bar)
+  and retries every 5 s; if IBKR has not
   served every OR minute by OR end + 60 s the symbol sits the day out with
   one alert. `or_source`, `or_high`, `or_low`, `placement_latency_s`
   (measured at submission) and `capped_by` are journalled on every entry.
