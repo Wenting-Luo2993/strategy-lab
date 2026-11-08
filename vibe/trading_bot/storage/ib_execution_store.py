@@ -69,6 +69,10 @@ class IBExecutionStore:
                 entry_expiry_bars INTEGER,
                 entry_signal_bar_timestamp TEXT,
                 entry_bar_interval_seconds REAL,
+                order_role TEXT,
+                oca_group TEXT,
+                parent_order_id TEXT,
+                gap_fill INTEGER,
                 benchmark_version INTEGER NOT NULL DEFAULT 2,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -119,6 +123,10 @@ class IBExecutionStore:
                 "entry_expiry_bars": "INTEGER",
                 "entry_signal_bar_timestamp": "TEXT",
                 "entry_bar_interval_seconds": "REAL",
+                "order_role": "TEXT",
+                "oca_group": "TEXT",
+                "parent_order_id": "TEXT",
+                "gap_fill": "INTEGER",
                 "benchmark_version": "INTEGER NOT NULL DEFAULT 1",
                 "created_at": "TEXT",
                 "updated_at": "TEXT",
@@ -167,8 +175,9 @@ class IBExecutionStore:
                     limit_price, strategy_name, strategy_stop_price, take_profit,
                     exit_reason, entry_cancel_after_seconds, entry_expiry_bars,
                     entry_signal_bar_timestamp, entry_bar_interval_seconds,
+                    order_role, oca_group, parent_order_id, gap_fill,
                     benchmark_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(broker_order_id) DO UPDATE SET
                     permanent_order_id = COALESCE(excluded.permanent_order_id, permanent_order_id),
                     account_id = COALESCE(excluded.account_id, account_id),
@@ -193,6 +202,10 @@ class IBExecutionStore:
                     entry_expiry_bars = COALESCE(excluded.entry_expiry_bars, entry_expiry_bars),
                     entry_signal_bar_timestamp = COALESCE(excluded.entry_signal_bar_timestamp, entry_signal_bar_timestamp),
                     entry_bar_interval_seconds = COALESCE(excluded.entry_bar_interval_seconds, entry_bar_interval_seconds),
+                    order_role = COALESCE(excluded.order_role, order_role),
+                    oca_group = COALESCE(excluded.oca_group, oca_group),
+                    parent_order_id = COALESCE(excluded.parent_order_id, parent_order_id),
+                    gap_fill = COALESCE(excluded.gap_fill, gap_fill),
                     benchmark_version = excluded.benchmark_version,
                     updated_at = excluded.updated_at
                 """,
@@ -221,6 +234,10 @@ class IBExecutionStore:
                     payload.get("entry_expiry_bars"),
                     _iso(payload.get("entry_signal_bar_timestamp")),
                     payload.get("entry_bar_interval_seconds"),
+                    payload.get("order_role"),
+                    payload.get("oca_group"),
+                    payload.get("parent_order_id"),
+                    None if payload.get("gap_fill") is None else int(bool(payload.get("gap_fill"))),
                     int(payload.get("benchmark_version") or 2),
                     now,
                     now,
@@ -234,6 +251,38 @@ class IBExecutionStore:
             (str(broker_order_id),),
         ).fetchone()
         return dict(row) if row else None
+
+    def list_submitted_orders(
+        self,
+        *,
+        symbol: Optional[str] = None,
+        order_role: Optional[str] = None,
+        submitted_after: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """Submitted orders, optionally filtered (``submitted_after`` is inclusive)."""
+        clauses, params = [], []
+        if symbol is not None:
+            clauses.append("symbol = ?")
+            params.append(symbol)
+        if order_role is not None:
+            clauses.append("order_role = ?")
+            params.append(order_role)
+        rows = self._connection().execute(
+            "SELECT * FROM ib_submitted_orders"
+            + (" WHERE " + " AND ".join(clauses) if clauses else "")
+            + " ORDER BY submitted_at",
+            params,
+        ).fetchall()
+        result = [dict(row) for row in rows]
+        if submitted_after is not None:
+            cutoff = submitted_after.astimezone(timezone.utc)
+            result = [
+                row
+                for row in result
+                if row.get("submitted_at")
+                and datetime.fromisoformat(row["submitted_at"]).astimezone(timezone.utc) >= cutoff
+            ]
+        return result
 
     def upsert_execution(self, payload: Dict[str, Any]) -> bool:
         """Upsert one execId. Return True when stored content changed."""

@@ -578,6 +578,19 @@ class WarmupPhaseManager(BasePhase):
         if working:
             return False, f"working orders: {', '.join(sorted(set(map(str, working))))}"
 
+        reconcile = getattr(exchange, "reconcile_todays_executions", None)
+        if reconcile is not None:
+            # The local journal misses fills that happened while the bot was
+            # down (e.g. a broker-side protective stop). Unreadable history
+            # counts as touched.
+            try:
+                await reconcile()
+            except Exception as exc:
+                self.logger.error(
+                    "Broker execution reconciliation failed: %s", exc, exc_info=True
+                )
+                return False, f"broker execution history unavailable: {exc}"
+
         list_executions = getattr(exchange, "list_durable_executions", None)
         if list_executions is not None:
             executions = list_executions()

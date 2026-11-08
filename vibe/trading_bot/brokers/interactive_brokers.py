@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -462,14 +463,39 @@ class InteractiveBrokersAPI:
                     stored.get("entry_signal_bar_timestamp")
                 ),
                 entry_bar_interval_seconds=stored.get("entry_bar_interval_seconds"),
+                order_role=stored.get("order_role"),
+                oca_group=stored.get("oca_group") or (getattr(ib_order, "ocaGroup", "") or None),
+                parent_order_id=(
+                    stored.get("parent_order_id")
+                    or (
+                        str(getattr(ib_order, "parentId", 0))
+                        if getattr(ib_order, "parentId", 0)
+                        else None
+                    )
+                ),
+                gap_fill=(
+                    None if stored.get("gap_fill") is None else bool(stored.get("gap_fill"))
+                ),
             )
             self._trades[broker_order_id] = trade
             self._submitted_orders[broker_order_id] = restored
 
-    async def reconcile_executions(self, *, raise_on_timeout: bool = False) -> int:
-        """Request historical executions without placing or modifying any orders."""
+    async def reconcile_executions(
+        self,
+        *,
+        raise_on_timeout: bool = False,
+        strict: bool = False,
+    ) -> int:
+        """Request historical executions without placing or modifying any orders.
+
+        ``strict`` raises on any failure (including a disconnected client)
+        instead of returning 0, for callers that must not mistake "could not
+        read" for "no executions".
+        """
         request = getattr(self.ib, "reqExecutionsAsync", None)
         if request is None or not self.ib.isConnected():
+            if strict:
+                raise RuntimeError("IB execution history unavailable: not connected")
             return 0
         try:
             fills = await asyncio.wait_for(
@@ -481,13 +507,15 @@ class InteractiveBrokersAPI:
                 "IB execution reconciliation timed out after %.1fs",
                 self.connect_timeout,
             )
-            if raise_on_timeout:
+            if raise_on_timeout or strict:
                 raise TimeoutError(
                     "Timed out reconciling IB executions during connection"
                 ) from exc
             return 0
         except Exception as exc:
             logger.warning("IB execution reconciliation failed: %s", exc)
+            if strict:
+                raise
             return 0
         ingested = 0
         for fill in fills or []:
@@ -825,12 +853,104 @@ class InteractiveBrokersAPI:
     def _to_ib_order(self, order: BrokerOrder):
         action = "BUY" if order.side == "buy" else "SELL"
         if order.order_type == "market":
-            return MarketOrder(action, order.quantity, tif="DAY")
-        if order.order_type == "limit":
-            return LimitOrder(action, order.quantity, order.limit_price, tif="DAY")
-        if order.order_type == "stop":
-            return StopOrder(action, order.quantity, order.stop_price, tif="DAY")
-        raise ValueError(f"Unsupported IB order_type: {order.order_type}")
+            ib_order = MarketOrder(action, order.quantity, tif="DAY")
+        elif order.order_type == "limit":
+            ib_order = LimitOrder(action, order.quantity, order.limit_price, tif="DAY")
+        elif order.order_type == "stop":
+            ib_order = StopOrder(action, order.quantity, order.stop_price, tif="DAY")
+        else:
+            raise ValueError(f"Unsupported IB order_type: {order.order_type}")
+        if order.oca_group:
+            # ocaType=1: cancel all remaining orders in the group (with block)
+            # once one fills, so only one resting entry side can open.
+            ib_order.ocaGroup = order.oca_group
+            ib_order.ocaType = 1
+        return ib_order
+
+    def order_status_snapshot(self, broker_order_id: str) -> Optional[str]:
+        """Last IB status string seen for an order, without a network call."""
+        trade = self._trades.get(str(broker_order_id))
+        if trade is None:
+            return None
+        return str(getattr(trade.orderStatus, "status", "") or "") or None
+
+    async def submit_oca_brackets(
+        self,
+        brackets: List[tuple[BrokerOrder, BrokerOrder]],
+        qualified_contract: Any = None,
+    ) -> List[tuple[str, str]]:
+        """Place (entry, protective stop) brackets whose entries share an OCA group.
+
+        Each entry is a bracket parent (``transmit=False``) and its protective
+        stop the attached child (``parentId``, ``transmit=True``), so the
+        broker holds the stop from the moment the entry fills. All orders are
+        placed in one synchronous block: no fill can be processed between the
+        legs, so the OCA group exists completely before any member can fill.
+        Returns ``[(entry_order_id, protective_order_id), ...]``.
+        """
+        if self.readonly:
+            raise RuntimeError("IB adapter is in readonly mode; order submission is disabled")
+        if not brackets:
+            return []
+        symbols = {entry.symbol for entry, _ in brackets} | {
+            stop.symbol for _, stop in brackets
+        }
+        if len(symbols) != 1:
+            raise ValueError("an OCA bracket group must trade one symbol")
+        contract = qualified_contract or await self.qualify_contract(next(iter(symbols)))
+
+        placed: List[tuple[Any, BrokerOrder, Any, BrokerOrder]] = []
+        submitted_at = datetime.now(timezone.utc)
+        for entry, stop in brackets:
+            parent = self._to_ib_order(entry)
+            parent.orderId = self.ib.client.getReqId()
+            parent.transmit = False
+            child = self._to_ib_order(replace(stop, oca_group=None))
+            child.orderId = self.ib.client.getReqId()
+            child.parentId = parent.orderId
+            child.transmit = True
+            placed.append((parent, entry, child, stop))
+
+        trades = []
+        for parent, entry, child, stop in placed:
+            trades.append((self.ib.placeOrder(contract, parent), entry, True))
+            trades.append((self.ib.placeOrder(contract, child), stop, False))
+
+        ids: List[tuple[str, str]] = []
+        parent_id: Optional[str] = None
+        for trade, order, is_parent in trades:
+            broker_order_id = str(trade.order.orderId)
+            submitted = replace(
+                order,
+                broker_order_id=broker_order_id,
+                status="submitted",
+                submitted_at=submitted_at,
+                parent_order_id=None if is_parent else parent_id,
+            )
+            self._trades[broker_order_id] = trade
+            self._submitted_orders[broker_order_id] = submitted
+            self.execution_store.upsert_submitted_order(
+                self._submitted_order_payload(
+                    submitted,
+                    permanent_order_id=getattr(trade.order, "permId", None),
+                )
+            )
+            if is_parent:
+                parent_id = broker_order_id
+            else:
+                ids.append((parent_id, broker_order_id))
+            logger.info(
+                "Submitted IB %s order %s %s %s %s @ %s (oca=%s parent=%s)",
+                order.order_role,
+                broker_order_id,
+                order.side,
+                order.quantity,
+                order.symbol,
+                order.stop_price,
+                order.oca_group,
+                submitted.parent_order_id,
+            )
+        return ids
 
     def _require_trade(self, broker_order_id: str):
         trade = self._trades.get(broker_order_id)
@@ -1116,4 +1236,8 @@ class InteractiveBrokersAPI:
             "entry_expiry_bars": order.entry_expiry_bars,
             "entry_signal_bar_timestamp": order.entry_signal_bar_timestamp,
             "entry_bar_interval_seconds": order.entry_bar_interval_seconds,
+            "order_role": order.order_role,
+            "oca_group": order.oca_group,
+            "parent_order_id": order.parent_order_id,
+            "gap_fill": order.gap_fill,
         }

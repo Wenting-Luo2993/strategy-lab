@@ -110,11 +110,32 @@ def unsupported_settings(ruleset: StrategyRuleSet, context: Context) -> List[str
 
     if context == "backtest":
         default_entry_order = type(strategy.entry_order)()
-        if strategy.entry_order != default_entry_order:
+        resting_stop_order = type(strategy.entry_order)(type="resting_stop")
+        # A resting_stop entry order is the declared live counterpart of
+        # EntryFillPolicy.RESTING_STOP, which BacktestEngine enforces.
+        if strategy.entry_order not in (default_entry_order, resting_stop_order):
             problems.append(
                 "strategy.entry_order is live-only; the backtester prices entries "
                 "with ExecutionRealismConfig"
             )
+
+    if strategy.entry_order.type == "resting_stop":
+        problems.extend(
+            f"{problem} (entry_order.type='resting_stop')"
+            for problem in resting_stop_conflicts(ruleset)
+        )
+        if context == "live":
+            take_profit = exit_.take_profit
+            if take_profit is not None and getattr(take_profit, "multiplier", 1.0) != 0:
+                problems.append(
+                    "exit.take_profit is not implemented for entry_order.type="
+                    "'resting_stop' (only the broker-side protective stop is attached)"
+                )
+            if trailing is not None:
+                problems.append(
+                    "exit.trailing_stop is not implemented for entry_order.type="
+                    "'resting_stop' (the broker-side protective stop is static)"
+                )
 
     return problems
 

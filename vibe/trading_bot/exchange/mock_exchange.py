@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from vibe.common.models import Order, OrderStatus, Position, AccountState
-from vibe.common.execution.base import ExecutionEngine, OrderResponse
+from vibe.common.execution.base import ExecutionEngine, OrderResponse, RestingEntryLeg
 from vibe.trading_bot.exchange.slippage import SlippageModel
 
 
@@ -98,6 +98,9 @@ class MockExchange(ExecutionEngine):
         # Order history for analytics
         self._filled_orders: List[str] = []
         self._cancelled_orders: List[str] = []
+
+        # Bracket parent order id -> attached protective stop order id
+        self._children: Dict[str, str] = {}
 
         logger.info(f"MockExchange initialized with ${initial_capital:,.2f} capital")
 
@@ -323,6 +326,7 @@ class MockExchange(ExecutionEngine):
             if (
                 managed.total_filled_qty == 0
                 and self.partial_fill_probability > 0
+                and order.order_role is None
             ):
                 import random
 
@@ -345,6 +349,9 @@ class MockExchange(ExecutionEngine):
                 order.status = OrderStatus.PARTIAL
                 if order_id not in self._pending_orders:
                     self._pending_orders.append(order_id)
+
+            if order.order_role == "entry":
+                self._on_bracket_entry_fill(order_id)
 
         # Return response
         return OrderResponse(
@@ -454,7 +461,7 @@ class MockExchange(ExecutionEngine):
         """
         pending_ids = self._pending_orders.copy()
         for order_id in pending_ids:
-            if order_id not in self._orders:
+            if order_id not in self._orders or order_id not in self._pending_orders:
                 continue
 
             managed = self._orders[order_id]
@@ -464,6 +471,119 @@ class MockExchange(ExecutionEngine):
                 await self._try_fill_order(
                     order_id, self._prices[symbol]
                 )
+
+    async def submit_resting_entry_pair(
+        self,
+        symbol: str,
+        legs: List[RestingEntryLeg],
+        oca_group: str,
+        lifecycle_metadata: Optional[dict] = None,
+    ) -> List[tuple]:
+        """Simulate IBKR resting stop entries in one OCA group with attached stops.
+
+        The first entry to fill cancels the other entries (and their attached
+        stops) and activates its own protective stop. A level already traded
+        through at placement triggers immediately, like IBKR, and is flagged
+        ``gap_fill``.
+        """
+        metadata = lifecycle_metadata or {}
+        reference = self._prices.get(symbol)
+        now = datetime.now(timezone.utc)
+        placed = []
+        for leg in legs:
+            entry = Order(
+                order_id=f"ord_{uuid.uuid4().hex[:8]}",
+                symbol=symbol,
+                side=leg.side,
+                quantity=leg.quantity,
+                price=leg.trigger_price,
+                order_type="stop",
+                status=OrderStatus.PENDING,
+                decision_at=now,
+                submitted_at=now,
+                benchmark_type="stop_trigger",
+                benchmark_price=leg.trigger_price,
+                stop_price=leg.trigger_price,
+                benchmark_version=2,
+                benchmark_valid=True,
+                trade_currency="USD",
+                commission_currency="USD",
+                strategy_name=metadata.get("strategy_name"),
+                strategy_stop_price=leg.protective_stop_price,
+                entry_cancel_after_seconds=metadata.get("entry_cancel_after_seconds"),
+                entry_signal_bar_timestamp=metadata.get("entry_signal_bar_timestamp"),
+                order_role="entry",
+                oca_group=oca_group,
+                gap_fill=leg.triggered_by(reference),
+            )
+            stop = Order(
+                order_id=f"ord_{uuid.uuid4().hex[:8]}",
+                symbol=symbol,
+                side="sell" if leg.side == "buy" else "buy",
+                quantity=leg.quantity,
+                price=leg.protective_stop_price,
+                order_type="stop",
+                status=OrderStatus.SUBMITTED,
+                decision_at=now,
+                submitted_at=now,
+                benchmark_type="stop_trigger",
+                benchmark_price=leg.protective_stop_price,
+                stop_price=leg.protective_stop_price,
+                benchmark_version=2,
+                benchmark_valid=True,
+                trade_currency="USD",
+                commission_currency="USD",
+                strategy_name=metadata.get("strategy_name"),
+                order_role="protective_stop",
+                parent_order_id=entry.order_id,
+            )
+            self._orders[entry.order_id] = ManagedOrder(order=entry)
+            self._orders[stop.order_id] = ManagedOrder(order=stop)
+            self._pending_orders.append(entry.order_id)
+            self._children[entry.order_id] = stop.order_id
+            placed.append((entry, stop))
+        if reference is not None:
+            await self.process_pending_orders()
+        return placed
+
+    def has_submitted_entry(self, symbol: str, since: datetime) -> bool:
+        """Whether a resting-stop entry for ``symbol`` was submitted at/after ``since``."""
+        return any(
+            managed.order.symbol == symbol
+            and managed.order.order_role == "entry"
+            and managed.order.submitted_at is not None
+            and managed.order.submitted_at >= since
+            for managed in self._orders.values()
+        )
+
+    def _on_bracket_entry_fill(self, order_id: str) -> None:
+        """OCA: cancel sibling entries and their stops; activate this entry's stop."""
+        order = self._orders[order_id].order
+        for managed in self._orders.values():
+            sibling = managed.order
+            if (
+                sibling.order_id != order_id
+                and sibling.oca_group == order.oca_group
+                and sibling.status not in (OrderStatus.FILLED, OrderStatus.CANCELLED)
+            ):
+                self._cancel_quietly(sibling.order_id)
+        child_id = self._children.get(order_id)
+        if child_id is not None and child_id not in self._pending_orders:
+            self._orders[child_id].order.status = OrderStatus.PENDING
+            self._pending_orders.append(child_id)
+
+    def _cancel_quietly(self, order_id: str) -> None:
+        """Broker-side cancellation (OCA / parent cancel), including attached stops."""
+        order = self._orders[order_id].order
+        if order.status in (OrderStatus.FILLED, OrderStatus.CANCELLED):
+            return
+        order.status = OrderStatus.CANCELLED
+        if order_id in self._pending_orders:
+            self._pending_orders.remove(order_id)
+        self._cancelled_orders.append(order_id)
+        child_id = self._children.get(order_id)
+        if child_id is not None and order.filled_qty == 0:
+            self._cancel_quietly(child_id)
 
     async def cancel_order(self, order_id: str) -> OrderResponse:
         """
@@ -486,6 +606,7 @@ class MockExchange(ExecutionEngine):
             OrderStatus.PENDING,
             OrderStatus.PARTIAL,
             OrderStatus.CREATED,
+            OrderStatus.SUBMITTED,
         ):
             raise ValueError(
                 f"Cannot cancel {order.status.name} order"
@@ -495,6 +616,10 @@ class MockExchange(ExecutionEngine):
         if order_id in self._pending_orders:
             self._pending_orders.remove(order_id)
         self._cancelled_orders.append(order_id)
+        child_id = self._children.get(order_id)
+        if child_id is not None and order.filled_qty == 0:
+            # IBKR cancels attached orders with an unfilled parent.
+            self._cancel_quietly(child_id)
 
         return OrderResponse(
             order_id=order_id,
@@ -628,3 +753,4 @@ class MockExchange(ExecutionEngine):
         self._pending_orders.clear()
         self._filled_orders.clear()
         self._cancelled_orders.clear()
+        self._children.clear()

@@ -262,9 +262,16 @@ TrailingStopConfig = Annotated[
 # ============================================================================
 
 class EntryOrderPolicy(BaseModel):
-    """How a valid strategy signal is converted into an entry order."""
+    """How a valid strategy signal is converted into an entry order.
 
-    type: Literal["market", "stop"] = "market"
+    ``resting_stop`` is the live counterpart of the backtester's
+    ``EntryFillPolicy.RESTING_STOP``: once the opening range is complete a
+    buy stop rests at the range high and a sell stop at the range low in one
+    OCA group, each with a broker-side protective stop at the opposite edge,
+    until ``entry_cutoff_time``. No completed-bar signal is consulted.
+    """
+
+    type: Literal["market", "stop", "resting_stop"] = "market"
     buy_reference: Literal["open", "close", "high", "low"] = "high"
     sell_reference: Literal["open", "close", "high", "low"] = "low"
     offset_ticks: int = Field(default=0, ge=0)
@@ -279,6 +286,18 @@ class EntryOrderPolicy(BaseModel):
             raise ValueError("entry order supports only one expiry mode")
         if self.type == "stop" and self.expiry_bars is None and self.expiry_minutes is None:
             raise ValueError("stop entry orders require expiry_bars or expiry_minutes")
+        if self.type == "resting_stop":
+            if self.expiry_bars is not None or self.expiry_minutes is not None:
+                raise ValueError(
+                    "resting_stop entries rest until entry_cutoff_time; expiry is not supported"
+                )
+            if self.offset_ticks:
+                raise ValueError(
+                    "resting_stop entries rest exactly at the opening-range edges; "
+                    "offset_ticks is not supported"
+                )
+            if self.max_attempts_per_day != 1:
+                raise ValueError("resting_stop places one OCA pair per day")
         return self
 
 

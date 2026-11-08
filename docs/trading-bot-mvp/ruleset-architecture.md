@@ -629,6 +629,22 @@ flatten, block entries until the next session, Discord alert). A ruleset without
 keeps the historical per-symbol behaviour and its serialized form (and content hash) is
 unchanged.
 
+### `strategy.entry_order.type: resting_stop`
+
+The live counterpart of the backtester's `EntryFillPolicy.RESTING_STOP` (used by
+`vibe/rulesets/orb_resting_stop_paper.yaml`). Once the opening range is complete the bot
+places, in one IBKR OCA group (`ocaType=1`), a buy stop at the range high and a sell stop at
+the range low (per `direction_mode`). Each entry is a bracket parent whose attached child is a
+protective stop at the opposite edge, so protection rests at the broker from the moment of
+fill. Each side is sized separately by the shared rule; the pair reserves its larger side once.
+Unfilled entries are cancelled at `entry_cutoff_time`; at EOD the protective stop is cancelled
+(confirmed) before the market close, and a stop that filled first means nothing is sent. The
+client never sends its own stop exit for a broker-protected position. After a restart, pairs
+and stops are rebuilt from broker open orders, and the durable submission journal prevents a
+second pair in the same session. Fills record `order_role`, `gap_fill` and signed
+`slippage_ticks` against the trigger level. Take-profit and trailing stops are not supported
+with this entry type; the backtester refuses it unless `EntryFillPolicy.RESTING_STOP` is used.
+
 ---
 
 ## Orchestrator Fan-Out Pattern

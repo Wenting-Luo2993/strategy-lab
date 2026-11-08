@@ -4,10 +4,12 @@ Integrates Position Sizer, Stop Loss Manager, Order Manager, and Exchange.
 """
 
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Literal, Optional
 
+from vibe.common.execution.base import RestingEntryLeg
 from vibe.common.models import Order, OrderStatus, Position
 from vibe.common.risk import PositionSizer
 from vibe.common.risk.position_sizer import PositionSizeResult
@@ -223,6 +225,245 @@ class TradeExecutor:
         self._open_trades: Dict[str, ExecutionResult] = {}
         self._pending_entries: Dict[str, Dict[str, Any]] = {}
         self._pending_closes: Dict[str, str] = {}
+        # Broker-side protective stops: entry order id -> attached stop order
+        # id, and symbol -> the stop protecting its open position.
+        self._protective_by_entry: Dict[str, str] = {}
+        self._active_protective: Dict[str, str] = {}
+
+    async def place_resting_stop_entries(
+        self,
+        symbol: str,
+        *,
+        long_level: Optional[float],
+        short_level: Optional[float],
+        long_stop: Optional[float],
+        short_stop: Optional[float],
+        cancel_after_seconds: float,
+        strategy_name: str = "Unknown",
+        signal_timestamp: Optional[datetime] = None,
+        oca_group: Optional[str] = None,
+    ) -> ExecutionResult:
+        """Rest a buy stop and/or a sell stop in one OCA group with attached stops.
+
+        Each side is sized on its own by the shared rule against the same
+        account state (only one can fill, so the pair reserves the larger side
+        once). Sides that size below one share are dropped.
+        """
+        legs_spec = []
+        if long_level is not None and long_stop is not None:
+            legs_spec.append(("buy", float(long_level), float(long_stop)))
+        if short_level is not None and short_stop is not None:
+            legs_spec.append(("sell", float(short_level), float(short_stop)))
+        if not legs_spec:
+            return ExecutionResult(success=False, reason="No resting entry side enabled")
+        if any(context["symbol"] == symbol for context in self._pending_entries.values()):
+            return ExecutionResult(
+                success=False, reason=f"Entry order already pending for {symbol}"
+            )
+        submit = getattr(self.exchange, "submit_resting_entry_pair", None)
+        if submit is None:
+            return ExecutionResult(
+                success=False,
+                reason=f"{type(self.exchange).__name__} cannot place resting stop entries",
+            )
+
+        account = await self.exchange.get_account()
+        if self.risk_manager.account_level:
+            positions = await self.account_positions()
+            pending = self.pending_exposures(positions)
+            account_value = net_liquidation(account)
+        else:
+            existing = await self.exchange.get_position(symbol)
+            positions = {symbol: existing} if existing is not None else {}
+            pending = []
+            account_value = account.equity
+
+        legs: list[RestingEntryLeg] = []
+        capped: Dict[str, Optional[str]] = {}
+        reasons: list[str] = []
+        for side, level, protective in legs_spec:
+            if self.risk_manager.account_level:
+                check = self.risk_manager.pre_trade_check(
+                    symbol=symbol, side=side, quantity=1, entry_price=level,
+                    current_account_value=account_value,
+                    existing_positions=positions, pending_entries=pending,
+                )
+            else:
+                check = self.risk_manager.pre_trade_check(
+                    symbol=symbol, side=side, quantity=1, entry_price=level,
+                    current_account_value=account_value,
+                    existing_positions=positions,
+                )
+            if not check.passed:
+                reasons.append(f"{side}: {check.reason}")
+                continue
+            try:
+                if self.risk_manager.account_level:
+                    decision = self.risk_manager.size_entry(
+                        entry_price=level, stop_price=protective,
+                        current_equity=account_value, positions=positions,
+                        pending_entries=pending,
+                        broker_available_funds=account.available_funds,
+                    )
+                    quantity, capped_by, detail = (
+                        decision.quantity, decision.capped_by, decision.describe()
+                    )
+                else:
+                    sized = self.position_sizer.calculate(
+                        entry_price=level, stop_price=protective,
+                        account_value=account.equity, buying_power=account.buying_power,
+                    )
+                    quantity, capped_by, detail = int(sized.size), sized.capped_by, sized.reasoning
+            except Exception as exc:
+                reasons.append(f"{side}: sizing error {exc}")
+                continue
+            logger.info(
+                "[SIZING] %s resting %s @ %.2f stop=%.2f -> %s shares (capped_by=%s) | %s",
+                symbol, side, level, protective, quantity, capped_by or "none", detail,
+            )
+            if quantity < 1:
+                reasons.append(f"{side}: size below one share (capped_by={capped_by})")
+                continue
+            legs.append(RestingEntryLeg(side, int(quantity), level, protective))
+            capped[side] = capped_by
+
+        if not legs:
+            reason = "; ".join(reasons) or "No resting entry could be sized"
+            logger.warning("Resting entries for %s not placed: %s", symbol, reason)
+            return ExecutionResult(success=False, reason=reason)
+
+        group = oca_group or f"ORB-{symbol}-{uuid.uuid4().hex[:10]}"
+        try:
+            placed = await submit(
+                symbol,
+                legs,
+                group,
+                lifecycle_metadata={
+                    "strategy_name": strategy_name,
+                    "entry_cancel_after_seconds": cancel_after_seconds,
+                    "entry_signal_bar_timestamp": signal_timestamp,
+                },
+            )
+        except Exception as exc:
+            logger.error("Resting entry submission failed for %s: %s", symbol, exc, exc_info=True)
+            return ExecutionResult(success=False, reason=f"Order submission error: {exc}")
+
+        entries = [entry for entry, _ in placed]
+        stops = [stop for _, stop in placed]
+        for entry, stop in placed:
+            self._protective_by_entry[entry.order_id] = stop.order_id
+            self._pending_entries[entry.order_id] = {
+                "symbol": symbol,
+                "side": entry.side,
+                "stop_price": stop.stop_price,
+                "take_profit": None,
+                "strategy_name": strategy_name,
+                "expiry_bars": None,
+                "bars_elapsed": 0,
+                "last_bar_timestamp": signal_timestamp,
+                "quantity": float(entry.quantity),
+                "trigger_price": float(entry.stop_price),
+                "group": group,
+                "capped_by": capped.get(entry.side),
+                "protective_order_id": stop.order_id,
+                "gap_fill": entry.gap_fill,
+            }
+        self.order_manager.track_orders(entries, cancel_after_seconds=cancel_after_seconds)
+        self.order_manager.track_orders(stops, persistent=True)
+        logger.info(
+            "[RESTING ENTRY] %s oca=%s %s",
+            symbol,
+            group,
+            ", ".join(
+                f"{e.side} {e.quantity:.0f} @ {e.stop_price:.2f} (stop {s.stop_price:.2f}, "
+                f"gap_fill={e.gap_fill})"
+                for e, s in placed
+            ),
+        )
+        result = ExecutionResult(
+            success=False,
+            order_id=entries[0].order_id,
+            reason=f"Resting entries placed in OCA group {group}",
+            pending=True,
+            capped_by=next((c for c in capped.values() if c), None),
+        )
+        if self._on_execution:
+            self._on_execution(result)
+        return result
+
+    def mark_entry_filled(self, order_id: str) -> None:
+        """An entry filled: its protective stop is live, its OCA siblings are void."""
+        context = self._pending_entries.get(order_id)
+        if context is None:
+            return
+        protective = context.get("protective_order_id") or self._protective_by_entry.get(order_id)
+        if protective:
+            self._active_protective[context["symbol"]] = protective
+        group = context.get("group")
+        if group and group != order_id:
+            for other_id, other in list(self._pending_entries.items()):
+                if other_id != order_id and other.get("group") == group:
+                    # Cancelled by the broker's OCA group.
+                    self._pending_entries.pop(other_id, None)
+
+    def has_protective_stop(self, symbol: str) -> bool:
+        return symbol in self._active_protective
+
+    def protective_stop_order_id(self, symbol: str) -> Optional[str]:
+        return self._active_protective.get(symbol)
+
+    def clear_protective_stop(self, symbol: str) -> None:
+        self._active_protective.pop(symbol, None)
+
+    async def _cancel_protective_stop(self, symbol: str) -> str:
+        """Cancel the symbol's protective stop: ``cancelled`` | ``filled`` | ``error``."""
+        order_id = self._active_protective.get(symbol)
+        if order_id is None:
+            return "cancelled"
+        try:
+            current = await self.exchange.get_order(order_id)
+            if current is not None and current.status == OrderStatus.FILLED:
+                outcome = "filled"
+            elif current is not None and current.status == OrderStatus.CANCELLED:
+                outcome = "cancelled"
+            elif self.order_manager.get_order(order_id) is not None:
+                cancelled = await self.order_manager.cancel_order(order_id)
+                managed = self.order_manager.get_order(order_id)
+                outcome = (
+                    "cancelled"
+                    if cancelled
+                    else "filled"
+                    if managed is not None and managed.terminal_status == OrderStatus.FILLED
+                    else None
+                )
+            else:
+                outcome = None
+            if outcome is None:
+                order = await self.exchange.get_order(order_id)
+                if order is not None and order.status == OrderStatus.FILLED:
+                    outcome = "filled"
+                elif order is not None and order.status == OrderStatus.CANCELLED:
+                    outcome = "cancelled"
+                else:
+                    response = await self.exchange.cancel_order(order_id)
+                    outcome = "filled" if response.status == OrderStatus.FILLED else "cancelled"
+        except Exception as exc:
+            # A cancel can lose a race with the fill; the broker state decides.
+            try:
+                order = await self.exchange.get_order(order_id)
+            except Exception:
+                order = None
+            if order is not None and order.status == OrderStatus.FILLED:
+                outcome = "filled"
+            else:
+                logger.error(
+                    "Failed to cancel protective stop %s for %s: %s", order_id, symbol, exc,
+                    exc_info=True,
+                )
+                return "error"
+        self._active_protective.pop(symbol, None)
+        logger.info("Protective stop %s for %s: %s", order_id, symbol, outcome)
+        return outcome
 
     async def execute_signal(
         self,
@@ -524,6 +765,25 @@ class TradeExecutor:
                 order_id=pending_close,
                 reason=f"Close order already pending for {symbol}: {pending_close}",
             )
+
+        # A broker-side protective stop must be cancelled (and confirmed) before
+        # a market close, or both could fill and flip the position. If the stop
+        # filled first, the broker already closed the position.
+        if symbol in self._active_protective:
+            outcome = await self._cancel_protective_stop(symbol)
+            if outcome == "error":
+                return ExecutionResult(
+                    success=False,
+                    reason=f"Protective stop for {symbol} could not be cancelled; not closing",
+                )
+            if outcome == "filled":
+                remaining = await self.exchange.get_position(symbol)
+                if remaining is None or remaining.quantity == 0:
+                    return ExecutionResult(
+                        success=False,
+                        reason=f"Position in {symbol} already closed by its protective stop",
+                    )
+
         position = await self.exchange.get_position(symbol)
         if position is None or position.quantity == 0:
             return ExecutionResult(
@@ -556,9 +816,14 @@ class TradeExecutor:
                 order_type="market",
                 price=close_price,
                 cancel_after_seconds=cancel_after_seconds,
-                lifecycle_metadata={"exit_reason": exit_reason}
-                if exit_reason
-                else None,
+                lifecycle_metadata=(
+                    {
+                        "exit_reason": exit_reason,
+                        "order_role": "eod" if exit_reason == "time_exit" else "exit",
+                    }
+                    if exit_reason
+                    else None
+                ),
             )
 
             actual_filled = response.filled_qty or 0
@@ -715,10 +980,27 @@ class TradeExecutor:
         return cancelled
 
     def restore_pending_entries(self, orders: list[Order]) -> int:
-        """Restore entry context required to project fills after a restart."""
+        """Restore entry context required to project fills after a restart.
+
+        Resting-stop brackets are rebuilt from the broker's open orders: an
+        open protective stop whose entry is still resting stays attached to
+        that entry; one whose entry already filled protects the open position.
+        Nothing is resubmitted.
+        """
         restored = 0
         now = datetime.now().astimezone()
+        open_entry_ids = {
+            order.order_id for order in orders if order.order_role == "entry"
+        }
         for order in orders:
+            if order.order_role == "protective_stop":
+                if order.parent_order_id and order.parent_order_id in open_entry_ids:
+                    self._protective_by_entry[order.parent_order_id] = order.order_id
+                else:
+                    self._active_protective[order.symbol] = order.order_id
+        for order in orders:
+            if order.order_role == "protective_stop":
+                continue
             if order.order_type != "stop" or order.order_id in self._pending_entries:
                 continue
             signal_bar_timestamp = order.entry_signal_bar_timestamp
@@ -756,7 +1038,9 @@ class TradeExecutor:
                 "last_bar_timestamp": last_bar_timestamp,
                 "quantity": float(order.quantity),
                 "trigger_price": float(order.stop_price or order.price),
-                "group": order.order_id,
+                "group": order.oca_group or order.order_id,
+                "protective_order_id": self._protective_by_entry.get(order.order_id),
+                "gap_fill": order.gap_fill,
             }
             restored += 1
         return restored

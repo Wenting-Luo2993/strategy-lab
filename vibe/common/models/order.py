@@ -66,6 +66,18 @@ class Order(BaseModel):
     entry_expiry_bars: Optional[int] = None
     entry_signal_bar_timestamp: Optional[datetime] = None
     entry_bar_interval_seconds: Optional[float] = None
+    order_role: Optional[str] = Field(
+        default=None,
+        description="entry | protective_stop | eod | flatten (resting-stop lifecycle)",
+    )
+    oca_group: Optional[str] = Field(default=None, description="Broker OCA group of linked entries")
+    parent_order_id: Optional[str] = Field(
+        default=None, description="Bracket parent order id for an attached protective stop"
+    )
+    gap_fill: Optional[bool] = Field(
+        default=None,
+        description="Entry level was already traded through when the order was placed",
+    )
 
     @field_validator("side")
     @classmethod

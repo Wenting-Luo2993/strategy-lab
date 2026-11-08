@@ -48,7 +48,7 @@ from vibe.trading_bot.execution.portfolio_risk import (
     PortfolioRiskManager,
 )
 from vibe.common.risk.portfolio_sizing import net_liquidation
-from vibe.common.models import Trade
+from vibe.common.models import OrderStatus, Trade
 from vibe.common.risk import PositionSizer
 from vibe.common.strategies import ORBStrategy
 from vibe.common.strategies.orb import ORBStrategyConfig, take_profit_settings
@@ -817,6 +817,25 @@ class TradingOrchestrator:
                 ("fill_quantity", event.quantity),
                 ("commission", event.commission),
             ]
+            # Resting-stop lifecycle fills (entry, protective stop, EOD) carry
+            # their role and gap-fill flag, and stop-trigger fills report
+            # signed slippage in ticks against the trigger level -- the figure
+            # the backtest models as 2 ticks.
+            lifecycle_getter = getattr(self.exchange, "order_lifecycle", None)
+            lifecycle = (
+                lifecycle_getter(str(event.broker_order_id))
+                if lifecycle_getter is not None
+                else {}
+            ) or {}
+            if lifecycle.get("order_role"):
+                dimensions["order_role"] = lifecycle["order_role"]
+                gap_fill = lifecycle.get("gap_fill")
+                dimensions["gap_fill"] = "unknown" if gap_fill is None else str(bool(gap_fill)).lower()
+            if (
+                lifecycle.get("benchmark_type") == "stop_trigger"
+                or event.benchmark_type == "stop_trigger"
+            ) and event.slippage_amount is not None:
+                samples.append(("slippage_ticks", event.slippage_amount / 0.01))
             if event.benchmark_price not in (None, 0):
                 samples.append(("expected_fill_price", event.benchmark_price))
             if event.slippage_amount is not None:
@@ -2080,6 +2099,92 @@ class TradingOrchestrator:
         key = self._entry_attempt_key(symbol, trading_date)
         self._entry_attempts[key] = self._entry_attempts.get(key, 0) + 1
 
+    def _market_datetime(self, trading_date: Any, hhmm: str) -> datetime:
+        """``hhmm`` on ``trading_date`` in the market timezone (DST-correct)."""
+        hour, minute = map(int, hhmm.split(":"))
+        naive = datetime.combine(
+            trading_date, datetime.min.time().replace(hour=hour, minute=minute)
+        )
+        market_timezone = self.market_scheduler.timezone
+        localize = getattr(market_timezone, "localize", None)
+        return (
+            localize(naive)
+            if localize is not None
+            else naive.replace(tzinfo=market_timezone)
+        )
+
+    async def _maybe_place_resting_entries(
+        self,
+        symbol: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Rest the session's OCA entry pair once the opening range is complete.
+
+        At most one pair per symbol per session: the in-memory attempt count,
+        a pending entry, an open position, today's traded flag and the
+        durable submission journal (which survives restarts) all block it.
+        """
+        if self.trade_executor is None:
+            return
+        orb_high = metadata.get("orb_high")
+        orb_low = metadata.get("orb_low")
+        trading_date = metadata.get("orb_trading_date")
+        if orb_high is None or orb_low is None or trading_date is None:
+            return
+        orb_high, orb_low = float(orb_high), float(orb_low)
+        if orb_high <= orb_low:
+            return
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        now = get_market_now(self.market_scheduler)
+        if trading_date != now.date():
+            return
+        strategy_cfg = self.ruleset.strategy
+        cutoff = self._market_datetime(trading_date, strategy_cfg.entry_cutoff_time)
+        if now >= cutoff:
+            return
+        if self._entry_attempt_count(symbol, trading_date) >= 1:
+            return
+        if self.trade_executor.has_pending_entry(symbol):
+            return
+        if getattr(self.strategy, "_traded_today", {}).get(symbol) == trading_date:
+            return
+        broker_position = await self.exchange.get_position(symbol)
+        if broker_position is not None and broker_position.quantity != 0:
+            return
+        session_start = self._market_datetime(trading_date, "00:00")
+        has_submitted = getattr(self.exchange, "has_submitted_entry", None)
+        if has_submitted is not None and has_submitted(symbol, session_start):
+            # A pair was already placed this session (e.g. before a restart).
+            self._record_entry_attempt(symbol, trading_date)
+            self.logger.info(
+                "[RESTING ENTRY] %s: pair already submitted today; not resubmitting", symbol
+            )
+            return
+
+        direction = strategy_cfg.direction_mode
+        or_end = self._market_datetime(
+            trading_date, strategy_cfg.orb_start_time
+        ) + timedelta(minutes=strategy_cfg.orb_duration_minutes)
+        result = await self.trade_executor.place_resting_stop_entries(
+            symbol,
+            long_level=orb_high if direction != "short_only" else None,
+            short_level=orb_low if direction != "long_only" else None,
+            long_stop=orb_low,
+            short_stop=orb_high,
+            cancel_after_seconds=max((cutoff - now).total_seconds(), 1.0),
+            strategy_name=self.strategy.config.name if self.strategy else "ORB",
+            signal_timestamp=or_end,
+        )
+        if result.order_id:
+            self._record_entry_attempt(symbol, trading_date)
+            self.logger.info(
+                "[RESTING ENTRY] %s: OR %.2f-%.2f, cancel at %s (%s)",
+                symbol, orb_low, orb_high, cutoff.strftime("%H:%M"), result.reason,
+            )
+        else:
+            self.logger.warning("[RESTING ENTRY] %s not placed: %s", symbol, result.reason)
+
     def _build_entry_order_intent(
         self,
         *,
@@ -3240,6 +3345,17 @@ class TradingOrchestrator:
                     # Update daily statistics
                     self._update_daily_stats(symbol, signal_value, signal_metadata)
 
+                    entry_policy = getattr(
+                        getattr(self.ruleset, "strategy", None),
+                        "entry_order",
+                        None,
+                    )
+                    if entry_policy is not None and entry_policy.type == "resting_stop":
+                        # Resting stops never act on a completed-bar signal:
+                        # both edges rest from the end of the opening range.
+                        await self._maybe_place_resting_entries(symbol, signal_metadata)
+                        continue
+
                     # 4. Execute trade if we have a signal
                     if signal_value != 0:  # 1=long, -1=short, 0=no signal
                         broker_position = await self.exchange.get_position(symbol)
@@ -3581,6 +3697,15 @@ class TradingOrchestrator:
             eod_time_str = self.ruleset.exit.eod_time
 
         for symbol in list(self.strategy.positions.keys()):
+            if (
+                self.trade_executor is not None
+                and self.trade_executor.has_protective_stop(symbol)
+            ):
+                await self._monitor_broker_protected_position(
+                    symbol, now, eod_time_str
+                )
+                continue
+
             current_price = self._latest_bar_prices.get(symbol)
             if not current_price:
                 continue
@@ -3613,6 +3738,64 @@ class TradingOrchestrator:
                 f"[EXIT TRIGGERED] {symbol}: {exit_signal.exit_type.upper()} — {exit_signal.reason}"
             )
             await self._close_position_with_notification(symbol, pos, current_price, exit_signal.exit_type)
+
+    async def _monitor_broker_protected_position(
+        self,
+        symbol: str,
+        now: datetime,
+        eod_time_str: str,
+    ) -> None:
+        """Exits for a position whose stop rests at the broker.
+
+        The broker stop is the stop-loss: the client never sends its own stop
+        exit, so it cannot double-exit a position the stop already closed.
+        Broker positions are the source of truth; a flat broker position
+        clears local state. Only the EOD exit is client-side.
+        """
+        snapshot_getter = getattr(self.exchange, "get_position_snapshot", None)
+        if snapshot_getter is not None:
+            broker_position = await snapshot_getter(symbol)
+            flat = broker_position is None or float(broker_position.quantity) == 0
+        else:
+            broker_position = await self.exchange.get_position(symbol)
+            flat = broker_position is None or float(broker_position.quantity) == 0
+        if flat:
+            protective_id = self.trade_executor.protective_stop_order_id(symbol)
+            protective = (
+                await self.exchange.get_order(protective_id) if protective_id else None
+            )
+            if protective is not None and protective.status not in (
+                OrderStatus.FILLED,
+                OrderStatus.CANCELLED,
+            ):
+                # Broker portfolio updates can lag a fresh entry fill; while
+                # the stop is still working the position is presumed open.
+                self.logger.debug("[POSITION] %s not yet visible at the broker", symbol)
+                return
+            self.logger.info(
+                "[POSITION] %s flat at the broker (protective stop %s); clearing local state",
+                symbol,
+                protective.status.name if protective is not None else "unknown",
+            )
+            self.strategy.close_position(symbol)
+            self.trade_executor.clear_protective_stop(symbol)
+            return
+
+        pos = self.strategy.get_position(symbol)
+        current_price = self._latest_bar_prices.get(symbol) or float(pos["entry_price"])
+        if now.strftime("%H:%M") >= eod_time_str:
+            self.logger.info("[EXIT TRIGGERED] %s: TIME_EXIT — EOD (broker stop cancelled first)", symbol)
+            await self._close_position_with_notification(symbol, pos, current_price, "time_exit")
+            return
+        self.logger.info(
+            "[POSITION] %s %s @ $%.2f | Current: $%.2f | broker stop $%.2f (order %s)",
+            symbol,
+            pos["side"].upper(),
+            pos["entry_price"],
+            current_price,
+            pos["stop_loss"],
+            self.trade_executor.protective_stop_order_id(symbol),
+        )
 
     async def _on_order_created_notification(self, order_id: str) -> None:
         """Send ORDER_SENT Discord notification when OrderManager submits an order."""
@@ -3689,7 +3872,15 @@ class TradingOrchestrator:
         """Record and notify ORDER_FILLED events."""
         await self._record_dashboard_order_event("ORDER_FILLED", order_id)
         order = await self.exchange.get_order(order_id)
+        role = getattr(order, "order_role", None) if order is not None else None
         if order is not None and self.trade_executor is not None:
+            if role == "entry":
+                # Activates the attached protective stop; voids OCA siblings.
+                self.trade_executor.mark_entry_filled(order_id)
+            elif role == "protective_stop":
+                self._pending_exit_reasons.setdefault(order.symbol, "stop_loss")
+                if float(order.filled_qty or 0.0) >= float(order.quantity):
+                    self.trade_executor.clear_protective_stop(order.symbol)
             await self.trade_executor.refresh_open_trade(order.symbol, order_id)
         if order is not None:
             await self._sync_open_trade_after_entry_fill(order)
@@ -3702,7 +3893,10 @@ class TradingOrchestrator:
         if self.trade_executor is not None:
             self.trade_executor.clear_pending_entry(order_id)
             order = await self.exchange.get_order(order_id)
-            if order is not None:
+            if order is not None and getattr(order, "order_role", None) not in (
+                "entry",
+                "protective_stop",
+            ):
                 self.trade_executor.clear_pending_close(symbol=order.symbol)
         await self._record_dashboard_order_event("ORDER_CANCELLED", order_id)
 

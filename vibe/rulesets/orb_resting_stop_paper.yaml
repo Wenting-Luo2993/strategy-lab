@@ -1,0 +1,56 @@
+name: orb_resting_stop_paper
+version: "1.0.0"
+description: >-
+  Paper trading of the row-10 resting-stop ORB entry
+  (docs/backtest-research-summaries/orb-exploration-results.md, experiment
+  01a1b8a6): orb_production semantics with a buy stop at the 5-minute opening
+  range high and a sell stop at its low in one OCA group, each carrying a
+  broker-side protective stop at the opposite edge; no take-profit, EOD exit
+  15:55, entry cutoff 15:00, one attempt per day. Account-level sizing via the
+  portfolio block. Backtest it with EntryFillPolicy.RESTING_STOP.
+
+instruments:
+  symbols: [QQQ]
+  timeframe: 5m
+
+strategy:
+  type: orb
+  orb_start_time: "09:30"
+  orb_duration_minutes: 5
+  # A resting stop cannot see the completed breakout bar, so the body filter
+  # is not part of the resting-stop definition (see resting_stop_conflicts).
+  orb_body_pct_filter: 0.0
+  direction_mode: symmetric
+  entry_cutoff_time: "15:00"
+  entry_order:
+    type: resting_stop
+
+position_size:
+  method: max_loss_pct
+  value: 0.01
+
+exit:
+  eod: true
+  eod_time: "15:55"
+  take_profit:
+    method: orb_range_multiple
+    multiplier: 0  # no take-profit
+  stop_loss:
+    method: orb_level
+
+trade_filter:
+  volume_confirmation: false
+  volume_threshold: 1.5
+
+mtf_validation:
+  enabled: false
+  timeframe: 30m
+  condition: trend_aligned
+
+portfolio:
+  sizing_equity_basis: session_start
+  max_symbol_exposure_pct: 0.20
+  max_gross_leverage: 1.0
+  max_open_positions: 5
+  daily_loss_limit_pct: 0.03
+  symbol_priority: [QQQ]

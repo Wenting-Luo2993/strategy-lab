@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Literal, Optional, Protocol
 
 OrderSide = Literal["buy", "sell"]
 OrderType = Literal["market", "limit", "stop"]
-BenchmarkType = Literal["executable_quote", "limit_price", "stop_quote", "legacy"]
+BenchmarkType = Literal["executable_quote", "limit_price", "stop_quote", "stop_trigger", "legacy"]
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,10 @@ class BrokerOrder:
     entry_expiry_bars: Optional[int] = None
     entry_signal_bar_timestamp: Optional[datetime] = None
     entry_bar_interval_seconds: Optional[float] = None
+    order_role: Optional[str] = None
+    oca_group: Optional[str] = None
+    parent_order_id: Optional[str] = None
+    gap_fill: Optional[bool] = None
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:

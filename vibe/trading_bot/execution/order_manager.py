@@ -109,6 +109,13 @@ class ManagedOrder:
     restored: bool = False
     """Whether monitoring resumed from broker state after process recovery."""
 
+    persistent: bool = False
+    """Never auto-cancel on timeout (a broker-side protective stop)."""
+
+    linked: bool = False
+    """Part of an OCA group or bracket: never cancel-and-resubmit a partial fill,
+    because a replacement order would not inherit the broker-side links."""
+
 
 class OrderManager:
     """
@@ -176,12 +183,44 @@ class OrderManager:
                 filled_qty=float(order.filled_qty or 0.0),
                 cancel_after_seconds=order.entry_cancel_after_seconds,
                 restored=True,
+                persistent=getattr(order, "order_role", None) == "protective_stop",
+                linked=getattr(order, "order_role", None) in {"entry", "protective_stop"},
             )
             self._monitoring_tasks[order.order_id] = asyncio.create_task(
                 self._monitor_order(order.order_id)
             )
             restored += 1
         return restored
+
+    def track_orders(
+        self,
+        orders: List[Order],
+        *,
+        cancel_after_seconds: Optional[float] = None,
+        persistent: bool = False,
+    ) -> None:
+        """Monitor orders the exchange placed directly (OCA entries, brackets).
+
+        Emits ORDER_SENT for each and then the normal fill/cancel callbacks.
+        ``persistent`` orders are never cancelled on a timeout.
+        """
+        for order in orders:
+            managed = ManagedOrder(
+                order_id=order.order_id,
+                order=order,
+                submitted_at=order.submitted_at or datetime.now(),
+                # Baseline zero: a fill that landed during placement (a level
+                # already traded through) must still emit ORDER_FILLED.
+                filled_qty=0.0,
+                cancel_after_seconds=cancel_after_seconds,
+                persistent=persistent,
+                linked=True,
+            )
+            self._orders[order.order_id] = managed
+            self._emit_callback(self._on_order_created, order.order_id)
+            self._monitoring_tasks[order.order_id] = asyncio.create_task(
+                self._monitor_order(order.order_id)
+            )
 
     def _emit_callback(self, callback: Optional[Callable[[str], Awaitable[None]]], order_id: str) -> None:
         if callback is None:
@@ -317,6 +356,30 @@ class OrderManager:
 
                 logger.info(f"Order filled: {order_id}")
                 break
+
+            # The broker ended the order itself (OCA sibling filled, bracket
+            # parent cancelled, day order expired).
+            if order.status == OrderStatus.CANCELLED:
+                managed.completed_at = datetime.now()
+                managed.terminal_status = OrderStatus.CANCELLED
+                await self._emit_callback_ordered(self._on_order_cancelled, order_id)
+                logger.info(f"Order cancelled by broker: {order_id}")
+                break
+
+            if managed.persistent or managed.linked:
+                # Linked orders are never cancel-and-resubmitted, and a
+                # protective stop never times out; only an explicit
+                # cancel_order (or the entry deadline) ends them.
+                cancel_after_seconds = managed.cancel_after_seconds
+                if (
+                    not managed.persistent
+                    and cancel_after_seconds is not None
+                    and elapsed >= cancel_after_seconds
+                ):
+                    await self._cancel_on_deadline(managed, order)
+                    break
+                await asyncio.sleep(1.0)
+                continue
 
             # Check if should retry
             cancel_after_seconds = (
@@ -478,6 +541,30 @@ class OrderManager:
                     managed.retry_count
                 )
                 await asyncio.sleep(min(delay, 5.0))  # Max 5s wait
+
+    async def _cancel_on_deadline(self, managed: ManagedOrder, order: Order) -> None:
+        """Cancel a linked order at its deadline, honouring a racing fill."""
+        order_id = managed.order_id
+        cancellation = await self.exchange.cancel_order(order_id)
+        refreshed = await self.exchange.get_order(order_id)
+        terminal_order = refreshed or order
+        confirmed_filled = max(
+            float(getattr(cancellation, "filled_qty", 0.0) or 0.0),
+            float(terminal_order.filled_qty or 0.0),
+        )
+        if confirmed_filled > managed.filled_qty:
+            managed.filled_qty = confirmed_filled
+            await self._emit_callback_ordered(self._on_order_filled, order_id)
+        managed.completed_at = datetime.now()
+        if (
+            getattr(cancellation, "status", None) == OrderStatus.FILLED
+            or confirmed_filled >= float(terminal_order.quantity)
+        ):
+            managed.terminal_status = OrderStatus.FILLED
+            return
+        managed.terminal_status = OrderStatus.CANCELLED
+        await self._emit_callback_ordered(self._on_order_cancelled, order_id)
+        logger.info("Order cancelled at its deadline: %s", order_id)
 
     def get_order(self, order_id: str) -> Optional[ManagedOrder]:
         """

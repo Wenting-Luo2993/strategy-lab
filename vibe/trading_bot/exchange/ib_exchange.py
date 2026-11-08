@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from vibe.common.execution.base import ExecutionEngine, OrderResponse
+from vibe.common.execution.base import ExecutionEngine, OrderResponse, RestingEntryLeg
 from vibe.common.models import AccountState, Order, OrderStatus, Position
 from vibe.trading_bot.brokers.base import BrokerOrder, BrokerPosition
 from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
@@ -83,6 +83,10 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                         entry_expiry_bars=restored.entry_expiry_bars,
                         entry_signal_bar_timestamp=restored.entry_signal_bar_timestamp,
                         entry_bar_interval_seconds=restored.entry_bar_interval_seconds,
+                        order_role=restored.order_role,
+                        oca_group=restored.oca_group,
+                        parent_order_id=restored.parent_order_id,
+                        gap_fill=restored.gap_fill,
                     )
                     self._orders[order_id] = order
                 else:
@@ -106,6 +110,20 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
     def list_durable_executions(self) -> List[Dict[str, Any]]:
         list_executions = getattr(self.broker, "list_durable_executions", None)
         return list_executions() if list_executions is not None else []
+
+    async def reconcile_todays_executions(self) -> int:
+        """Pull the broker's execution history into the durable journal.
+
+        A protective stop can fill while the bot is down; without this the
+        journal would miss it. Raises when the history cannot be read.
+        """
+        reconcile = getattr(self.broker, "reconcile_executions", None)
+        if reconcile is None:
+            raise RuntimeError("broker cannot report execution history")
+        ingested = await reconcile(strict=True)
+        for execution in self.list_durable_executions():
+            self._on_broker_execution(execution)
+        return ingested
 
     def list_open_orders(self) -> List[Order]:
         """Return restored non-terminal orders for lifecycle monitoring."""
@@ -162,6 +180,12 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                     metadata.get("entry_signal_bar_timestamp")
                 ),
                 entry_bar_interval_seconds=metadata.get("entry_bar_interval_seconds"),
+                order_role=metadata.get("order_role"),
+                oca_group=metadata.get("oca_group"),
+                parent_order_id=metadata.get("parent_order_id"),
+                gap_fill=(
+                    None if metadata.get("gap_fill") is None else bool(metadata.get("gap_fill"))
+                ),
             )
             self._orders[broker_order_id] = order
 
@@ -223,6 +247,20 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             return value
         return datetime.fromisoformat(str(value))
 
+    def _refuse_if_restored_orders_open(self, symbol: str) -> None:
+        """Refuse a new order while a restored broker order for ``symbol`` is open."""
+        list_open_orders = getattr(self.broker, "list_open_orders", None)
+        still_open = (
+            any(item["order"].symbol == symbol for item in list_open_orders())
+            if list_open_orders is not None
+            else True
+        )
+        if still_open:
+            raise RuntimeError(
+                f"Open IB order already exists for {symbol}; refusing duplicate submission"
+            )
+        self._restored_open_symbols.discard(symbol)
+
     async def submit_order(
         self,
         symbol: str,
@@ -235,17 +273,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         lifecycle_metadata: Optional[dict] = None,
     ) -> OrderResponse:
         if symbol in self._restored_open_symbols:
-            list_open_orders = getattr(self.broker, "list_open_orders", None)
-            still_open = (
-                any(item["order"].symbol == symbol for item in list_open_orders())
-                if list_open_orders is not None
-                else True
-            )
-            if still_open:
-                raise RuntimeError(
-                    f"Open IB order already exists for {symbol}; refusing duplicate submission"
-                )
-            self._restored_open_symbols.discard(symbol)
+            self._refuse_if_restored_orders_open(symbol)
         decision_at = datetime.now(timezone.utc)
         qualify_contract = getattr(self.broker, "qualify_contract", None)
         qualified_contract = (
@@ -305,6 +333,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             strategy_stop_price=(lifecycle_metadata or {}).get("stop_price"),
             take_profit=(lifecycle_metadata or {}).get("take_profit"),
             exit_reason=(lifecycle_metadata or {}).get("exit_reason"),
+            order_role=(lifecycle_metadata or {}).get("order_role"),
             entry_cancel_after_seconds=(lifecycle_metadata or {}).get(
                 "entry_cancel_after_seconds"
             ),
@@ -375,6 +404,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 entry_expiry_bars=broker_order.entry_expiry_bars,
                 entry_signal_bar_timestamp=broker_order.entry_signal_bar_timestamp,
                 entry_bar_interval_seconds=broker_order.entry_bar_interval_seconds,
+                order_role=broker_order.order_role,
             )
             self._orders[broker_order_id] = order
             return OrderResponse(
@@ -412,6 +442,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             entry_expiry_bars=broker_order.entry_expiry_bars,
             entry_signal_bar_timestamp=broker_order.entry_signal_bar_timestamp,
             entry_bar_interval_seconds=broker_order.entry_bar_interval_seconds,
+            order_role=broker_order.order_role,
             execution_id=fill.execution_id,
             execution_ids=[item["execution_id"] for item in fill.executions],
             permanent_order_id=fill.permanent_order_id,
@@ -592,5 +623,146 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             timestamp=account.timestamp,
         )
 
+    def has_submitted_entry(self, symbol: str, since: datetime) -> bool:
+        """Whether a resting-stop entry for ``symbol`` was submitted at/after ``since``.
+
+        Read from the durable submission journal, so a restart cannot place a
+        second OCA pair for a session whose first pair already filled or ended.
+        """
+        store = getattr(self.broker, "execution_store", None)
+        if store is None or not hasattr(store, "list_submitted_orders"):
+            return False
+        return bool(
+            store.list_submitted_orders(
+                symbol=symbol, order_role="entry", submitted_after=since
+            )
+        )
+
+    def order_lifecycle(self, order_id: str) -> Dict[str, Any]:
+        """Role, OCA and gap-fill tags of an order, for fill telemetry."""
+        order = self._orders.get(str(order_id))
+        if order is None:
+            return {}
+        return {
+            "order_role": order.order_role,
+            "oca_group": order.oca_group,
+            "gap_fill": order.gap_fill,
+            "benchmark_type": order.benchmark_type,
+        }
+
     async def get_order(self, order_id: str) -> Optional[Order]:
-        return self._orders.get(order_id)
+        order = self._orders.get(order_id)
+        if order is not None and order.status in {
+            OrderStatus.CREATED,
+            OrderStatus.PENDING,
+            OrderStatus.SUBMITTED,
+            OrderStatus.PARTIAL,
+        }:
+            # The broker can end an order on its own: an OCA sibling filled,
+            # a bracket parent was cancelled, or the day order expired.
+            snapshot = getattr(self.broker, "order_status_snapshot", None)
+            raw_status = snapshot(order_id) if snapshot is not None else None
+            if (
+                raw_status in {"Cancelled", "ApiCancelled", "Inactive"}
+                and float(order.filled_qty or 0.0) < float(order.quantity)
+            ):
+                order.status = OrderStatus.CANCELLED
+        return order
+
+    async def submit_resting_entry_pair(
+        self,
+        symbol: str,
+        legs: List[RestingEntryLeg],
+        oca_group: str,
+        lifecycle_metadata: Optional[dict] = None,
+    ) -> List[tuple[Order, Order]]:
+        """Place resting stop entries in one OCA group, each with a protective stop.
+
+        The slippage benchmark of every leg is its own trigger level
+        (``benchmark_type="stop_trigger"``), so a fill's slippage is measured
+        against the price the backtest assumes, not a quote.
+        """
+        submit = getattr(self.broker, "submit_oca_brackets", None)
+        if submit is None:
+            raise RuntimeError("broker does not support OCA bracket orders")
+        if symbol in self._restored_open_symbols:
+            self._refuse_if_restored_orders_open(symbol)
+        metadata = lifecycle_metadata or {}
+        decision_at = datetime.now(timezone.utc)
+        qualify_contract = getattr(self.broker, "qualify_contract", None)
+        qualified_contract = (
+            await qualify_contract(symbol) if qualify_contract is not None else None
+        )
+        reference_price: Optional[float] = None
+        try:
+            quote = (
+                await self.broker.get_market_data(symbol, qualified_contract=qualified_contract)
+                if qualified_contract is not None
+                else await self.broker.get_market_data(symbol)
+            )
+            reference_price = quote.last or quote.market_price
+        except Exception:
+            # Gap-fill detection is diagnostic; the orders must still rest.
+            reference_price = None
+
+        def broker_order(leg: RestingEntryLeg, role: str) -> BrokerOrder:
+            entry = role == "entry"
+            side = leg.side if entry else ("sell" if leg.side == "buy" else "buy")
+            level = leg.trigger_price if entry else leg.protective_stop_price
+            return BrokerOrder(
+                symbol=symbol,
+                side=side,
+                quantity=leg.quantity,
+                order_type="stop",
+                expected_price=level,
+                stop_price=level,
+                decision_at=decision_at,
+                benchmark_type="stop_trigger",
+                benchmark_price=level,
+                strategy_name=metadata.get("strategy_name"),
+                strategy_stop_price=leg.protective_stop_price,
+                exit_reason=None if entry else "protective_stop",
+                entry_cancel_after_seconds=(
+                    metadata.get("entry_cancel_after_seconds") if entry else None
+                ),
+                entry_signal_bar_timestamp=metadata.get("entry_signal_bar_timestamp"),
+                order_role=role,
+                oca_group=oca_group if entry else None,
+                gap_fill=leg.triggered_by(reference_price) if entry else None,
+            )
+
+        brackets = [(broker_order(leg, "entry"), broker_order(leg, "protective_stop")) for leg in legs]
+        ids = await submit(brackets, qualified_contract=qualified_contract)
+
+        placed: List[tuple[Order, Order]] = []
+        for (entry_bo, stop_bo), (entry_id, stop_id) in zip(brackets, ids):
+            pair = []
+            for bo, order_id, parent_id in ((entry_bo, entry_id, None), (stop_bo, stop_id, entry_id)):
+                order = Order(
+                    order_id=order_id,
+                    symbol=symbol,
+                    side=bo.side,
+                    quantity=float(bo.quantity),
+                    price=float(bo.stop_price),
+                    order_type="stop",
+                    status=OrderStatus.SUBMITTED,
+                    decision_at=decision_at,
+                    submitted_at=datetime.now(timezone.utc),
+                    benchmark_type=bo.benchmark_type,
+                    benchmark_price=bo.benchmark_price,
+                    stop_price=bo.stop_price,
+                    benchmark_version=2,
+                    benchmark_valid=True,
+                    strategy_name=bo.strategy_name,
+                    strategy_stop_price=bo.strategy_stop_price,
+                    entry_cancel_after_seconds=bo.entry_cancel_after_seconds,
+                    entry_signal_bar_timestamp=bo.entry_signal_bar_timestamp,
+                    order_role=bo.order_role,
+                    oca_group=bo.oca_group,
+                    parent_order_id=parent_id,
+                    gap_fill=bo.gap_fill,
+                )
+                self._orders[order_id] = order
+                pair.append(order)
+            placed.append((pair[0], pair[1]))
+        return placed

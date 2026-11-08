@@ -198,6 +198,18 @@ class BacktestEngine:
                     "would defer it to a later bar"
                 )
         config = ruleset.position_size
+        entry_order = getattr(ruleset.strategy, "entry_order", None)
+        if (
+            entry_order is not None
+            and entry_order.type == "resting_stop"
+            and self.execution_realism.entry_fill_policy
+            is not EntryFillPolicy.RESTING_STOP
+        ):
+            raise UnsupportedRulesetSettingsError(
+                f"Ruleset {ruleset.name!r} declares entry_order.type='resting_stop'; "
+                "backtest it with EntryFillPolicy.RESTING_STOP "
+                "(ExecutionRealismConfig.realistic_resting_stop())"
+            )
         if (
             ruleset.strategy.entry_mode == FIRST_CANDLE_DIRECTION
             and self.execution_realism.entry_fill_policy
