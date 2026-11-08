@@ -3134,6 +3134,21 @@ class TradingOrchestrator:
                     )
                     self._last_approach_logged[f"{symbol}_rejection_{reason}"] = datetime.now().timestamp()
 
+    def _resting_entries_due(self) -> bool:
+        """Whether some symbol still awaits today's resting-stop pair before the cutoff."""
+        policy = getattr(getattr(self.ruleset, "strategy", None), "entry_order", None)
+        if policy is None or policy.type != "resting_stop":
+            return False
+        from vibe.trading_bot.utils.datetime_utils import get_market_now
+
+        now = get_market_now(self.market_scheduler)
+        if now >= self._market_datetime(now.date(), self.ruleset.strategy.entry_cutoff_time):
+            return False
+        return any(
+            self._entry_attempt_count(symbol, now.date()) < 1
+            for symbol in self.active_symbols
+        )
+
     def _calculate_sleep_interval(self) -> int:
         """Calculate sleep interval with exponential backoff on failures.
 
@@ -3167,6 +3182,14 @@ class TradingOrchestrator:
 
         if has_positions:
             self.logger.debug(f"Active positions detected, using {self._base_cycle_interval}s interval")
+            return self._base_cycle_interval
+        if self._resting_entries_due():
+            # A resting pair is placed on the first cycle after the opening
+            # range completes; idling 5 minutes would let price run through
+            # a level the backtest's order was already resting at.
+            self.logger.debug(
+                "Resting entries due, using %ss interval", self._base_cycle_interval
+            )
             return self._base_cycle_interval
         else:
             self.logger.info(

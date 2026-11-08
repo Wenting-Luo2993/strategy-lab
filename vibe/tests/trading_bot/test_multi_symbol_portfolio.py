@@ -182,3 +182,19 @@ def test_cycle_timing_warns_when_the_loop_eats_half_a_bar(orchestrator, caplog):
     assert timings == {"AAA": 100_000.0, "BBB": 100_000.0}
     record = next(r for r in caplog.records if "[CYCLE]" in r.getMessage())
     assert record.levelno == logging.WARNING
+
+
+def test_cycle_uses_the_active_interval_while_resting_entries_are_due(orchestrator):
+    orchestrator._base_cycle_interval = 60
+    orchestrator._idle_cycle_interval = 300
+    orchestrator._has_active_positions = lambda: False
+
+    assert orchestrator._calculate_sleep_interval() == 60
+
+    for symbol in SYMBOLS:
+        orchestrator._record_entry_attempt(symbol, SESSION)
+    assert orchestrator._calculate_sleep_interval() == 300
+
+    orchestrator._entry_attempts.clear()
+    orchestrator.market_scheduler.set_time(15, 0)
+    assert orchestrator._calculate_sleep_interval() == 300
