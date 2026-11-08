@@ -91,11 +91,9 @@ in_market_hours() {
   (( dow <= 5 && 10#$hm >= 925 && 10#$hm <= 1605 ))
 }
 
-gateway_drift() {  # prints "drift" if the running gateway differs from compose
-  local want have
-  want="$("${COMPOSE[@]}" config --hash ib-gateway 2>/dev/null | awk '{print $2}')"
-  have="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.config-hash"}}' "$GW" 2>/dev/null || true)"
-  [[ -n "$want" && -n "$have" && "$want" != "$have" ]] && echo drift || true
+gateway_drift() {  # prints "drift" if `up` would recreate the running gateway
+  docker inspect "$GW" >/dev/null 2>&1 || return 0
+  "${COMPOSE[@]}" up -d --dry-run --no-deps --no-build ib-gateway 2>&1 | grep -q 'Recreat' && echo drift || true
 }
 
 # ------------------------------------------------------------- preflight
