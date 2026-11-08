@@ -62,7 +62,7 @@ services:
     environment:
       ENVIRONMENT: "production"
       LOG_LEVEL: "INFO"
-      ACTIVE_RULESET: "orb_exp073_paper_burn_in"
+      ACTIVE_RULESET: "orb_resting_stop_paper"
       DATA__PRIMARY_PROVIDER: "interactive_brokers"
       BROKER__BROKER_TYPE: "interactive_brokers"
       BROKER__MODE: "paper"
