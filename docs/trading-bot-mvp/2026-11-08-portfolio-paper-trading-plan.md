@@ -234,6 +234,12 @@ New `entry_order.type: resting_stop`, matching
 
 ## Rollout
 
+**Status (2026-11-08):** the user chose to skip the QQQ-only shakedown week. The
+five-symbol ruleset `orb_resting_stop_paper_5sym` was deployed at `1ffe6c4`
+and starts with the 2026-11-09 session, so steps 2 and 3 below are combined.
+Going to 10 symbols (10% cap, 10 positions) will be decided after the first
+week.
+
 1. Deploy with `bash deploy/ibkr-docker/deploy.sh bot` outside market hours,
    with `ACTIVE_RULESET=orb_resting_stop_paper` (QQQ only).
 2. Shakedown, 1 week. Daily parity report clean; no missed sessions; restart
