@@ -144,7 +144,10 @@ async def test_broker_health_failure_sends_critical_discord_alert(monkeypatch):
 @pytest.fixture
 def reconnecting_warmup(monkeypatch, tmp_path):
     now = datetime(2026, 11, 10, 9, 25, tzinfo=ZoneInfo("America/New_York"))
-    socket = SimpleNamespace(connected=False)
+    # With shared IB client refactor, the provider connects during warmup before the broker
+    # health check runs. So we need to start with broker marked as connected for the
+    # provider to successfully connect in shared mode.
+    socket = SimpleNamespace(connected=True)
     events = []
 
     async def reconnect():
@@ -196,6 +199,11 @@ def reconnecting_warmup(monkeypatch, tmp_path):
         connect=AsyncMock(return_value=True),
         ib=SimpleNamespace(isConnected=lambda: True),
     )
+    # With shared IB client refactor, the data provider reuses the execution broker
+    # when it's available, so we pass broker to the provider initialization.
+    primary_provider = InteractiveBrokersDataProvider(broker)
+    primary_provider._owns_broker_lifecycle = False  # Shared mode: provider doesn't own disconnect
+    
     orchestrator = SimpleNamespace(
         config=SimpleNamespace(
             broker=SimpleNamespace(
@@ -211,7 +219,7 @@ def reconnecting_warmup(monkeypatch, tmp_path):
         exchange=exchange,
         trade_executor=SimpleNamespace(risk_manager=risk),
         portfolio_risk_manager=risk,
-        primary_provider=InteractiveBrokersDataProvider(data_broker),
+        primary_provider=primary_provider,
         secondary_provider=None,
         active_symbols=["QQQ"],
         market_scheduler=SimpleNamespace(
@@ -255,7 +263,7 @@ async def test_warmup_reconnects_trading_client_before_account_reads(reconnectin
 
     assert await case.manager.execute(send_notification=False) is True
 
-    case.data_broker.connect.assert_awaited_once()
+    # With shared IB client refactor, both execution and data provider use the same broker
     case.broker.connect.assert_awaited_once()
     case.broker.disconnect.assert_not_awaited()
     assert case.events == ["execution_connect", "account", "account"]
