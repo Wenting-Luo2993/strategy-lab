@@ -85,16 +85,22 @@ class WarmupPhaseManager(BasePhase):
         # Step 3: Pre-calculate indicators (optional)
         await self._precalculate_indicators()
 
-        # Step 4: Verify broker health when live/paper broker execution is configured
-        warmup_success &= await self._verify_broker_health()
+        # Reconnect the trading client before any position or equity reads.
+        broker_healthy = await self._verify_broker_health()
+        warmup_success &= broker_healthy
 
-        # Step 4.5: Apply strategy-specific carryover position policy before entries are allowed
-        warmup_success &= await self._apply_carryover_position_policy(send_notification=send_notification)
-
-        # Step 4.6: Session-start equity snapshot (E0) for account-level risk.
-        # A failure blocks entries for the session but not exits, so it does
-        # not fail the warm-up.
-        await self._take_session_equity_snapshot()
+        if broker_healthy:
+            warmup_success &= await self._apply_carryover_position_policy(
+                send_notification=send_notification
+            )
+            # A snapshot failure blocks entries, but not exit management.
+            await self._take_session_equity_snapshot()
+        else:
+            # A transient disconnect must not persist a session-long E0 failure.
+            self.logger.error(
+                "Skipping carryover handling and equity snapshot until the "
+                "execution connection recovers; warm-up will be retried"
+            )
 
         # Step 5: Run health checks
         health_status, all_healthy = await self._run_health_checks()
@@ -107,7 +113,7 @@ class WarmupPhaseManager(BasePhase):
             else:
                 self.logger.info("WARM-UP COMPLETE - Ready for trading!")
         else:
-            self.logger.warning("WARM-UP COMPLETE - Some issues detected (continuing anyway)")
+            self.logger.warning("WARM-UP COMPLETE - Some checks failed")
         self.logger.info("=" * 60)
 
         # Step 5: Send Discord notification (only for pre-market)
@@ -366,7 +372,7 @@ class WarmupPhaseManager(BasePhase):
         return health_status, all_healthy
 
     async def _verify_broker_health(self) -> bool:
-        """Verify broker connectivity when Interactive Brokers is configured.
+        """Reconnect and verify the persistent IB execution client.
 
         Returns:
             True if broker health is verified or not required, False otherwise
@@ -378,60 +384,43 @@ class WarmupPhaseManager(BasePhase):
             self.logger.info("Step 4/6: Broker health check skipped (broker_type=%s)", broker_type)
             return True
 
-        if not getattr(broker_config, "health_check_enabled", True):
-            self.logger.info("Step 4/6: Interactive Brokers health check disabled by config")
-            return True
-
-        self.logger.info("Step 4/6: Verifying Interactive Brokers health...")
+        self.logger.info("Step 4/6: Connecting and verifying IB execution client...")
 
         try:
-            from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
+            # A separate diagnostic client can pass while the order client is
+            # still disconnected after the gateway's nightly restart.
+            broker = self.orchestrator.exchange.broker
+            if not await broker.connect():
+                raise ConnectionError("IB execution client could not connect")
 
-            broker = InteractiveBrokersAPI(
-                host=broker_config.ib_host,
-                port=broker_config.ib_port,
-                client_id=broker_config.ib_client_id + 20,
-                account_id=broker_config.ib_account_id,
-                exchange=broker_config.ib_exchange,
-                currency=broker_config.ib_currency,
-                market_data_type=broker_config.ib_market_data_type,
-                connect_timeout=broker_config.ib_connect_timeout,
-                connect_max_retries=broker_config.ib_connect_max_retries,
-                connect_retry_delay_seconds=broker_config.ib_connect_retry_delay_seconds,
-                readonly=True,
-            )
-
-            try:
-                connected = await broker.connect()
-                if not connected:
-                    self.logger.error("   [!] IB Gateway API connection failed")
-                    return False
-
-                account = await broker.get_account_info()
-                if broker_config.ib_account_id and account.account_id != broker_config.ib_account_id:
-                    self.logger.error(
-                        "   [!] IB account mismatch: expected=%s actual=%s",
-                        broker_config.ib_account_id,
-                        account.account_id,
-                    )
-                    return False
-
-                quote_symbol = broker_config.health_check_symbol or self.orchestrator.active_symbols[0]
-                quote = await broker.get_market_data(quote_symbol)
-                positions = await broker.get_positions()
-
+            if not getattr(broker_config, "health_check_enabled", True):
                 self.logger.info(
-                    "   [OK] IB broker healthy: account=%s net_liq=%s positions=%s quote=%s market_price=%s",
-                    account.account_id,
-                    account.net_liquidation,
-                    len(positions),
-                    quote.symbol,
-                    quote.market_price,
+                    "IB execution client connected; additional health checks disabled"
                 )
                 self._critical_broker_alert_sent = False
                 return True
-            finally:
-                await broker.disconnect()
+
+            account = await broker.get_account_info()
+            if broker_config.ib_account_id and account.account_id != broker_config.ib_account_id:
+                raise RuntimeError(
+                    f"IB account mismatch: expected={broker_config.ib_account_id} "
+                    f"actual={account.account_id}"
+                )
+
+            quote_symbol = broker_config.health_check_symbol or self.orchestrator.active_symbols[0]
+            quote = await broker.get_market_data(quote_symbol)
+            positions = await broker.get_positions()
+
+            self.logger.info(
+                "   [OK] IB execution client healthy: account=%s net_liq=%s positions=%s quote=%s market_price=%s",
+                account.account_id,
+                account.net_liquidation,
+                len(positions),
+                quote.symbol,
+                quote.market_price,
+            )
+            self._critical_broker_alert_sent = False
+            return True
 
         except Exception as e:
             self.logger.error("   [!] Interactive Brokers health check failed: %s", e, exc_info=True)
@@ -677,7 +666,10 @@ class WarmupPhaseManager(BasePhase):
                 "and synchronization after all configured attempts. Trading is disabled."
             ),
             component="interactive_brokers",
-            action_required="Check IB Gateway connectivity and restart the trading bot.",
+            action_required=(
+                "Check IB Gateway login, connectivity and market-data access. "
+                "The bot will retry warm-up."
+            ),
             version=BUILD_VERSION,
             details={
                 "attempts": self.config.broker.ib_connect_max_retries,

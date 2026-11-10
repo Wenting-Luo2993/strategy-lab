@@ -76,7 +76,9 @@ bash deploy/ibkr-docker/deploy.sh status
 
 A healthy start logs `Connected to IB at ib-gateway:4004`, `Dashboard RemoteDataPublisher started` and `Trading loop started`. The gateway is healthy once its API port `4002` accepts connections, which takes about 1–2 minutes after start while IBC logs in.
 
-IB Gateway restarts itself daily at 04:00 UTC (`AUTO_RESTART_TIME` / `TWS_COLD_RESTART`). The bot reconnects; that window is outside US market hours.
+IB Gateway restarts itself daily at 04:00 UTC (`AUTO_RESTART_TIME` / `TWS_COLD_RESTART`), outside US market hours. At warm-up, the bot reconnects and reconciles its persistent **execution client**, separately from the market-data client, before reading carryover positions or capturing session equity. This connection step is required even if optional broker health checks are disabled. Failed recovery blocks trading and defers the equity snapshot until a subsequent warm-up attempt; it does not persist a session-long snapshot failure merely because the client was disconnected. A trading-client-only disconnect during market hours also triggers warm-up recovery.
+
+Container health and `/api/health` indicate liveness, not broker readiness. After overnight recovery, look for `IB execution client healthy` and a successful session equity snapshot, then confirm fresh market data. A successful connection before the scheduled restart does not prove that the next session is ready.
 
 ## Deploying Code Changes
 

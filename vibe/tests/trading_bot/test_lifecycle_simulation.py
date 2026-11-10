@@ -2,12 +2,73 @@
 
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from vibe.trading_bot.config.settings import AppSettings
 from vibe.trading_bot.core.market_schedulers import MockMarketScheduler
 from vibe.trading_bot.core.orchestrator import TradingOrchestrator
+from vibe.trading_bot.exchange.ib_exchange import InteractiveBrokersExecutionEngine
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovery_succeeds", [True, False])
+async def test_trading_client_disconnect_requires_recovery_with_healthy_data_client(
+    monkeypatch, recovery_succeeds
+):
+    scheduler = MockMarketScheduler(
+        initial_date=datetime(2026, 7, 15, 10, 0),
+        timezone="America/New_York",
+    )
+    orchestrator = TradingOrchestrator(
+        config=AppSettings(
+            environment="test",
+            database_path=":memory:",
+            health_check_port=0,
+            trading={"symbols": ["QQQ"]},
+            data={"primary_provider": "finnhub"},
+            broker={"broker_type": "mock"},
+        ),
+        market_scheduler=scheduler,
+        testing_mode=True,
+    )
+    socket = SimpleNamespace(connected=False)
+    broker = SimpleNamespace(ib=SimpleNamespace(isConnected=lambda: socket.connected))
+    orchestrator.exchange = InteractiveBrokersExecutionEngine(broker)
+    orchestrator.primary_provider = SimpleNamespace(connected=True)
+    orchestrator._warmup_ready = True
+    events = []
+
+    async def recover(send_notification=True):
+        assert send_notification is False
+        events.append("warmup")
+        socket.connected = recovery_succeeds
+        if not recovery_succeeds:
+            orchestrator._shutdown_event.set()
+        return recovery_succeeds
+
+    async def trade():
+        assert socket.connected
+        events.append("trading")
+        orchestrator._shutdown_event.set()
+        return True
+
+    orchestrator.warmup_manager = SimpleNamespace(execute=recover)
+    monkeypatch.setattr(orchestrator, "initialize", AsyncMock(return_value=True))
+    monkeypatch.setattr(orchestrator, "_trading_cycle", trade)
+    monkeypatch.setattr(orchestrator, "_calculate_sleep_interval", lambda: 0)
+    monkeypatch.setattr(orchestrator, "shutdown", AsyncMock())
+    monkeypatch.setattr("vibe.trading_bot.core.orchestrator.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr(
+        "vibe.trading_bot.core.orchestrator.start_health_server_task",
+        AsyncMock(return_value=None),
+    )
+
+    await orchestrator.run()
+
+    assert events == (["warmup", "trading"] if recovery_succeeds else ["warmup"])
+    assert orchestrator._warmup_ready is recovery_succeeds
 
 
 @pytest.mark.asyncio

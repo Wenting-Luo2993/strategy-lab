@@ -138,7 +138,7 @@ class InteractiveBrokersAPI:
                         "has not been accepted."
                     )
                 self._reconcile_open_orders()
-                await self.reconcile_executions(raise_on_timeout=True)
+                await self.reconcile_executions(strict=True)
                 logger.info(
                     "Connected to IB at %s:%s client_id=%s",
                     self.host,

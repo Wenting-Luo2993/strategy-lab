@@ -3182,8 +3182,14 @@ class TradingOrchestrator:
                         if (
                             not self._warmup_ready
                             or (self.primary_provider and not self.primary_provider.connected)
+                            or (
+                                isinstance(self.exchange, InteractiveBrokersExecutionEngine)
+                                and not self.exchange.broker.ib.isConnected()
+                            )
                         ):
-                            self.logger.info("Bot started during market hours - running warmup phase...")
+                            self.logger.info(
+                                "Warm-up or connection recovery required during market hours"
+                            )
                             self._warmup_ready = await self.warmup_manager.execute(
                                 send_notification=False
                             )
