@@ -72,7 +72,7 @@ cd /opt/strategy-lab
 bash deploy/ibkr-docker/deploy.sh status
 ```
 
-`status` is read-only. It shows the host sha vs `origin/main`, container health, `/api/health` and `/health/ready` codes (`503` from `/health/ready` is normal outside warm-up and trading), legacy systemd unit state, recent bot milestones, memory/disk and the last deploys.
+`status` is read-only. It shows the host sha vs `origin/main`, container health, `/api/health` and `/health/ready` codes (`503` from `/health/ready` is normal outside warm-up and trading), legacy systemd unit and timer state, recent bot milestones, memory/disk and the last deploys.
 
 A healthy start logs `Connected to IB at ib-gateway:4004`, `Dashboard RemoteDataPublisher started` and `Trading loop started`. The gateway is healthy once its API port `4002` accepts connections, which takes about 1–2 minutes after start while IBC logs in.
 
@@ -89,7 +89,7 @@ bash deploy/ibkr-docker/deploy.sh bot
 
 `bot` does, in order:
 
-1. Preflight. It requires a non-root docker user; a clean `main` checkout with no commits that are missing from `origin/main`; no legacy systemd units and no foreign containers running; all secrets present; a valid compose config; at least 2 GB free disk; and the time outside market hours.
+1. Preflight. It requires a non-root docker user; a clean `main` checkout with no commits that are missing from `origin/main`; no legacy systemd units running and no legacy timer enabled (`trading-bot-phase2-start.timer` starts the old `ibc-gateway`, which takes the IBKR login from Docker), no foreign containers running; all secrets present; a valid compose config; at least 2 GB free disk; and the time outside market hours.
 2. `git pull --ff-only origin main`, then lists the new commits.
 3. Asks for confirmation.
 4. Tags the current image `strategy-lab-trading-bot:previous`, then builds the new one.

@@ -15,6 +15,9 @@ SYSTEMD_ENV=/etc/strategy-lab/trading-bot-phase2.env
 SRC_DATA="$REPO_DIR/data"
 DST_DATA="$SCRIPT_DIR/data/trading-bot"
 UNITS=(trading-bot-phase2 ibc-gateway x11vnc-ibkr xvfb-ibkr)
+# The weekday 13:20 UTC timer Requires=ibc-gateway, so leaving it enabled
+# restarts the legacy gateway and steals the IB login from Docker.
+TIMERS=(trading-bot-phase2-start.timer)
 BACKUP_DIR=/var/backups/strategy-lab
 OWNER="${SUDO_USER:-root}"
 TS="$(date +%Y%m%d-%H%M%S)"
@@ -38,7 +41,8 @@ step "Pulling gateway image and building bot image (systemd stack still running)
 read -r -p "Stop the systemd stack and start Docker now? [y/N] " ans
 [[ "$ans" =~ ^[Yy]$ ]] || { echo "Aborted; systemd stack untouched."; exit 1; }
 
-step "Stopping and disabling systemd units (unit files kept for rollback)"
+step "Stopping and disabling systemd units and timers (unit files kept for rollback)"
+systemctl disable --now "${TIMERS[@]}" 2>/dev/null || true
 systemctl stop trading-bot-phase2
 systemctl stop ibc-gateway x11vnc-ibkr xvfb-ibkr
 systemctl disable "${UNITS[@]}"

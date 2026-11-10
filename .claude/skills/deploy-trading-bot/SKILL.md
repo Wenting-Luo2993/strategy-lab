@@ -24,7 +24,9 @@ Design history: `docs/trading-bot-mvp/ibkr-integration/phase-4-dockerized-deploy
    only ever runs `git pull --ff-only origin main` (done by `deploy.sh`). Never edit tracked
    files on the VM and never deploy a feature branch.
 2. **Use `deploy.sh`, not hand-typed commands.** Do not use `systemctl` (legacy units
-   `trading-bot-phase2`/`ibc-gateway` are rollback-only and must stay disabled),
+   `trading-bot-phase2`/`ibc-gateway` and the `trading-bot-phase2-start.timer` are
+   rollback-only and must stay disabled; the timer `Requires=ibc-gateway` and starts a
+   competing IB login at 13:20 UTC on weekdays),
    `docker compose restart|down|up`, `docker run`, or `vibe/trading_bot/docker-compose.yml`
    (local development only).
 3. **Never print, read, `cat`, `grep` or echo secrets.** Files under
@@ -83,7 +85,8 @@ Options: `--yes` (skip the prompt; required without a TTY), `--allow-market-hour
 
 | Symptom | Action |
 |---|---|
-| Preflight: legacy systemd unit active | Ask the user; `sudo systemctl disable --now <unit>` only with approval |
+| Preflight: legacy systemd unit active or legacy timer enabled | Ask the user; `sudo systemctl disable --now trading-bot-phase2-start.timer` and `sudo systemctl stop <unit>` only with approval |
+| Bot log: IB requests time out, gateway log shows "Re-login is required" | Check `deploy.sh status` for an active `ibc-gateway`/enabled timer (a second IBKR session); fix as above, then `deploy.sh gateway` |
 | Preflight: foreign container running | Identify it with `docker ps`; stop it only with approval |
 | Preflight: host has local changes | Show `git status`; never `git reset`/`checkout` on the VM without the user |
 | `ib-gateway` unhealthy | `docker logs --tail 80 strategy-lab-ib-gateway` (never show password lines); usually 2FA, credentials or a competing IBKR session |

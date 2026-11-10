@@ -26,6 +26,9 @@ GW=strategy-lab-ib-gateway
 BOT_IMAGE=strategy-lab-trading-bot
 DEPLOY_LOG="$SCRIPT_DIR/deploys.log"
 LEGACY_UNITS=(trading-bot-phase2 ibc-gateway x11vnc-ibkr xvfb-ibkr)
+# An enabled legacy timer restarts ibc-gateway on its schedule (Requires=), so
+# it must be neither active nor enabled.
+LEGACY_TIMERS=(trading-bot-phase2-start.timer)
 MIN_FREE_GB=2
 
 REQUIRED_MARKERS=("Connected to IB at ib-gateway:4004" "Trading loop started")
@@ -125,11 +128,15 @@ preflight() {  # mode: check | change
   if command -v systemctl >/dev/null; then
     local u active=()
     for u in "${LEGACY_UNITS[@]}"; do systemctl is-active --quiet "$u" 2>/dev/null && active+=("$u"); done
+    for u in "${LEGACY_TIMERS[@]}"; do
+      { systemctl is-active --quiet "$u" 2>/dev/null || systemctl is-enabled --quiet "$u" 2>/dev/null; } && active+=("$u")
+    done
     if (( ${#active[@]} )); then
-      echo "  FAIL legacy systemd units active: ${active[*]} (they compete for the IB login and port 8080)" >&2
+      echo "  FAIL legacy systemd units active or timers enabled: ${active[*]} (they compete for the IB login and port 8080)" >&2
+      echo "       fix: sudo systemctl disable --now ${LEGACY_TIMERS[*]}; sudo systemctl stop ${LEGACY_UNITS[*]}" >&2
       failures=$((failures+1))
     else
-      ok "no legacy systemd units active"
+      ok "no legacy systemd units active, no legacy timers enabled"
     fi
   fi
 
@@ -243,8 +250,8 @@ do_status() {
   echo "  /api/health   $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/health || true)"
   echo "  /health/ready $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health/ready || true)  (503 is normal outside warm-up/trading)"
   if command -v systemctl >/dev/null; then
-    step "Legacy systemd units (must be inactive)"
-    for u in "${LEGACY_UNITS[@]}"; do echo "  $u $(systemctl is-active "$u" 2>/dev/null || true)/$(systemctl is-enabled "$u" 2>/dev/null || true)"; done
+    step "Legacy systemd units and timers (must be inactive and disabled)"
+    for u in "${LEGACY_UNITS[@]}" "${LEGACY_TIMERS[@]}"; do echo "  $u $(systemctl is-active "$u" 2>/dev/null || true)/$(systemctl is-enabled "$u" 2>/dev/null || true)"; done
   fi
   step "Recent bot milestones"
   docker logs "$BOT" 2>&1 | grep -E 'Connected to IB|RemoteDataPublisher started|Trading loop started|sleeping until|Warm-up|ORB levels|ERROR|CRITICAL' | tail -8 | cut -c1-180 | sed 's/^/  /' || true

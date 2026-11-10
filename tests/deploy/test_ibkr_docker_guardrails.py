@@ -185,6 +185,30 @@ def test_deploy_script_guards():
     assert "in_market_hours" in text
 
 
+def _bash_array(text, name):
+    match = re.search(rf"^{name}=\(([^)]*)\)", text, re.MULTILINE)
+    assert match, f"{name}=(...) not found"
+    return set(match.group(1).split())
+
+
+def test_legacy_timers_handled_everywhere():
+    """A legacy timer that Requires=ibc-gateway restarts the old gateway, which
+    steals the IB login from Docker (incident 2026-11-09). Cutover must
+    disable it, rollback must re-enable it, and deploy.sh must refuse to run
+    while it is enabled."""
+    deploy = DEPLOY_SH.read_text(encoding="utf-8")
+    cutover = (DEPLOY_SH.parent / "cutover-systemd-to-docker.sh").read_text(encoding="utf-8")
+    rollback = (DEPLOY_SH.parent / "rollback-to-systemd.sh").read_text(encoding="utf-8")
+
+    timers = _bash_array(deploy, "LEGACY_TIMERS")
+    assert "trading-bot-phase2-start.timer" in timers
+    assert _bash_array(cutover, "TIMERS") == timers
+    assert _bash_array(rollback, "TIMERS") == timers
+    assert 'systemctl disable --now "${TIMERS[@]}"' in cutover
+    assert 'systemctl enable --now "${TIMERS[@]}"' in rollback
+    assert 'is-enabled --quiet "$u"' in deploy, "preflight must fail on an enabled legacy timer"
+    assert _bash_array(deploy, "LEGACY_UNITS") == _bash_array(cutover, "UNITS")
+
 @pytest.mark.parametrize(
     "doc",
     ["deploy/ibkr-docker/README.md", "CLAUDE.md", ".vscode/copilot-instructions.md"],

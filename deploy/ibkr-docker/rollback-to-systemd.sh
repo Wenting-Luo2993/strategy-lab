@@ -15,6 +15,7 @@ COMPOSE=(docker compose -f "$SCRIPT_DIR/docker-compose.paper.yml")
 SRC_DATA="$SCRIPT_DIR/data/trading-bot"
 DST_DATA="$REPO_DIR/data"
 UNITS=(xvfb-ibkr ibc-gateway x11vnc-ibkr trading-bot-phase2)
+TIMERS=(trading-bot-phase2-start.timer)
 TS="$(date +%Y%m%d-%H%M%S)"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -39,6 +40,7 @@ fi
 
 step "Re-enabling systemd units"
 systemctl enable --now "${UNITS[@]}"
+systemctl enable --now "${TIMERS[@]}" 2>/dev/null || true
 sleep 5
 systemctl is-active "${UNITS[@]}" || true
 echo
