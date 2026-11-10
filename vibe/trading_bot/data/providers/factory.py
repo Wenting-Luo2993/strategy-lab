@@ -46,7 +46,7 @@ class DataProviderFactory:
             polygon_api_key: Polygon.io API key (if using Polygon)
             alpaca_api_key: Alpaca API key (if using Alpaca)
             alpaca_secret_key: Alpaca secret key (if using Alpaca)
-            ib_broker: Optional shared IB broker instance (if provided, takes precedence over creating new)
+            ib_broker: Execution broker to borrow without owning its connection lifecycle.
 
         Returns:
             Provider instance or None if creation failed
@@ -91,7 +91,9 @@ class DataProviderFactory:
             logger.info("Creating Interactive Brokers market data provider")
             if ib_broker is not None:
                 logger.info("Using shared IB broker instance for data provider")
-                return InteractiveBrokersDataProvider(ib_broker)
+                return InteractiveBrokersDataProvider(
+                    ib_broker, owns_broker_lifecycle=False
+                )
             logger.info("Creating new IB broker instance for data provider (client_id=%s)", ib_client_id)
             return InteractiveBrokersDataProvider(
                 InteractiveBrokersAPI(

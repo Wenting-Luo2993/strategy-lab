@@ -194,7 +194,6 @@ class TradingOrchestrator:
             self._idle_cycle_interval = 300  # 5 minutes when no positions (production)
             self._max_backoff_seconds = 900  # 15 minutes max backoff (production)
         self.data_manager: Optional[DataManager] = None
-        # SHARED IB broker: used for both execution and market data (when IB is primary provider)
         self._shared_ib_broker: Optional[InteractiveBrokersAPI] = None
         self.exchange = self._create_execution_engine()
         add_execution_listener = getattr(self.exchange, "add_execution_listener", None)
@@ -272,7 +271,6 @@ class TradingOrchestrator:
         broker_config = getattr(self.config, "broker", None)
         broker_type = getattr(broker_config, "broker_type", "mock") if broker_config else "mock"
         if broker_type == "interactive_brokers":
-            # Create ONE shared IB broker for both execution and market data
             self._shared_ib_broker = InteractiveBrokersAPI(
                 host=broker_config.ib_host,
                 port=broker_config.ib_port,

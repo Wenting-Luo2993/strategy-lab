@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -17,24 +16,19 @@ logger = logging.getLogger(__name__)
 
 
 class InteractiveBrokersDataProvider(RESTDataProvider):
-    """Polling provider backed by IB live market data snapshots.
-    
-    When initialized with a shared broker (from execution), this provider:
-    - Does NOT own the broker's lifecycle (connect/disconnect)
-    - Coordinates market data requests to avoid cancelling each other's subscriptions
-    - Tracks active subscriptions per-caller to support concurrent requests
-    """
+    """Polling provider that either owns a broker or borrows the execution broker."""
 
-    def __init__(self, broker: InteractiveBrokersAPI, rate_limit_per_minute: int = 120):
+    def __init__(
+        self,
+        broker: InteractiveBrokersAPI,
+        rate_limit_per_minute: int = 120,
+        *,
+        owns_broker_lifecycle: bool = True,
+    ):
         self.broker = broker
         self._rate_limit_per_minute = rate_limit_per_minute
         self._connected = False
-        # Track whether we own this broker's lifecycle (False = shared, True = standalone)
-        self._owns_broker_lifecycle = False
-        # Coordinate market data subscriptions: symbol -> count of active callers
-        self._active_market_data_subscriptions: Dict[str, int] = {}
-        self._active_tick_subscriptions: Dict[str, int] = {}
-        self._subscription_lock = asyncio.Lock()
+        self._owns_broker_lifecycle = owns_broker_lifecycle
 
     @property
     def provider_type(self) -> ProviderType:
@@ -61,28 +55,18 @@ class InteractiveBrokersDataProvider(RESTDataProvider):
         return 5
 
     async def connect(self) -> bool:
-        # Only actually connect if we own the broker (standalone mode)
         if self._owns_broker_lifecycle:
             self._connected = await self.broker.connect()
         else:
-            # In shared mode, just track that provider layer is active
-            # The broker is already connected by execution engine
             self._connected = self.broker.ib.isConnected()
-            if self._connected:
-                logger.info("Using existing shared IB broker connection for data provider")
+            if not self._connected:
+                logger.error("Shared IB execution broker must reconnect before data polling starts")
         return self._connected
 
     async def disconnect(self) -> None:
-        # Only disconnect if we own the broker (standalone mode)
         if self._owns_broker_lifecycle:
             await self.broker.disconnect()
-        else:
-            logger.debug("Skipping IB broker disconnect in shared mode (execution engine owns lifecycle)")
         self._connected = False
-        # Clear subscription tracking when provider stops polling
-        async with self._subscription_lock:
-            self._active_market_data_subscriptions.clear()
-            self._active_tick_subscriptions.clear()
 
     async def get_historical_bars(self, symbol: str, timeframe: str, days: int) -> pd.DataFrame:
         logger.debug("IB snapshot provider does not fetch historical bars for %s", symbol)

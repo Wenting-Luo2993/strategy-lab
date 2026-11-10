@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -46,6 +46,13 @@ _ACCOUNT_SUMMARY_TAGS = (
 )
 _IB_UNSET_DOUBLE = 1.7976931348623157e308
 _ZERO_PNL_STABILIZATION_SECONDS = 0.25
+_TICK_BY_TICK_REQUEST_INTERVAL_SECONDS = 15.0
+
+
+@dataclass
+class _SharedQuoteRequest:
+    task: asyncio.Task[BrokerQuote]
+    users: int = 0
 
 
 class IBOperatorActionRequired(RuntimeError):
@@ -101,6 +108,9 @@ class InteractiveBrokersAPI:
         self._last_error_code: Optional[int] = None
         self._last_error_message: Optional[str] = None
         self.ib.errorEvent += self._handle_ib_error
+        self._connection_generation = 0
+        if hasattr(self.ib, "disconnectedEvent"):
+            self.ib.disconnectedEvent += self._handle_ib_disconnect
         if hasattr(self.ib, "execDetailsEvent"):
             self.ib.execDetailsEvent += self._handle_execution_details
         if hasattr(self.ib, "commissionReportEvent"):
@@ -109,6 +119,10 @@ class InteractiveBrokersAPI:
         self._submitted_orders: Dict[str, BrokerOrder] = {}
         self._execution_listeners: List[Callable[[Dict[str, Any]], None]] = []
         self._pnl_request_lock = asyncio.Lock()
+        self._connection_lock = asyncio.Lock()
+        self._quote_locks: Dict[tuple, asyncio.Lock] = {}
+        self._quote_requests: Dict[tuple, _SharedQuoteRequest] = {}
+        self._quote_request_after: Dict[tuple, float] = {}
 
     def _handle_ib_error(self, req_id: int, error_code: int, error_string: str, *args: Any) -> None:
         """Capture IB API errors emitted during async connection and requests."""
@@ -117,8 +131,15 @@ class InteractiveBrokersAPI:
         if error_code == 10141:
             logger.error("IB Gateway requires paper trading disclaimer acceptance before API use")
 
+    def _handle_ib_disconnect(self) -> None:
+        self._connection_generation += 1
+
     async def connect(self) -> bool:
-        """Connect to TWS or IB Gateway."""
+        """Serialize connection recovery on the shared execution/data client."""
+        async with self._connection_lock:
+            return await self._connect()
+
+    async def _connect(self) -> bool:
         last_exception: Optional[BaseException] = None
         for attempt in range(1, self.connect_max_retries + 1):
             self._last_error_code = None
@@ -146,17 +167,20 @@ class InteractiveBrokersAPI:
                     self.client_id,
                 )
                 return self.ib.isConnected()
+            except asyncio.CancelledError:
+                self._disconnect()
+                raise
             except Exception as exc:
                 last_exception = exc
                 if isinstance(exc, IBOperatorActionRequired) or self._requires_operator_action(exc):
-                    await self.disconnect()
+                    self._disconnect()
                     raise IBOperatorActionRequired(
                         "IB Gateway rejected API access because the paper trading disclaimer "
                         "has not been accepted. Accept the disclaimer in Gateway, then restart "
                         "the trading bot service."
                     ) from exc
 
-                await self.disconnect()
+                self._disconnect()
                 if attempt >= self.connect_max_retries:
                     raise IBConnectionFailed(
                         f"Failed to connect to IB Gateway at {self.host}:{self.port} "
@@ -187,6 +211,10 @@ class InteractiveBrokersAPI:
 
     async def disconnect(self) -> bool:
         """Disconnect from IB."""
+        async with self._connection_lock:
+            return self._disconnect()
+
+    def _disconnect(self) -> bool:
         if self.ib.isConnected():
             self.ib.disconnect()
         logger.info("Disconnected from IB")
@@ -212,22 +240,85 @@ class InteractiveBrokersAPI:
             raise RuntimeError(
                 "Delayed/frozen IB market data cannot be used for execution benchmarking"
             )
+        try:
+            # Include qualification and queueing in the caller's latency budget.
+            return await asyncio.wait_for(
+                self._get_market_data(symbol, qualified_contract),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"Timed out waiting for timestamped live market data for {symbol}"
+            ) from exc
+
+    async def _get_market_data(
+        self, symbol: str, qualified_contract: Any
+    ) -> BrokerQuote:
         contract = qualified_contract or await self.qualify_contract(symbol)
+        con_id = getattr(contract, "conId", 0)
+        key = ("conId", con_id) if con_id else (
+            "stock", contract.symbol, self.exchange, self.currency
+        )
+        lock = self._quote_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            request = self._quote_requests.get(key)
+            if request is None:
+                request = _SharedQuoteRequest(
+                    asyncio.create_task(self._request_market_data(
+                        symbol, contract, key, self._connection_generation
+                    ))
+                )
+                self._quote_requests[key] = request
+            request.users += 1
+        try:
+            return replace(await asyncio.shield(request.task), symbol=symbol)
+        finally:
+            await asyncio.shield(self._release_quote(key, request))
+
+    async def _release_quote(self, key: tuple, request: _SharedQuoteRequest) -> None:
+        async with self._quote_locks[key]:
+            request.users -= 1
+            if request.users == 0:
+                # Drain cleanup before a new request can own this contract.
+                # Results/errors are delivered by the shielded await above.
+                cancelling = not request.task.done()
+                if cancelling:
+                    request.task.cancel()
+                try:
+                    result = (await asyncio.gather(request.task, return_exceptions=True))[0]
+                    if cancelling and isinstance(result, Exception):
+                        logger.error(
+                            "Failed to clean up IB quote request %s: %s", key, result,
+                            exc_info=(type(result), result, result.__traceback__),
+                        )
+                finally:
+                    del self._quote_requests[key]
+
+    async def _request_market_data(
+        self, symbol: str, contract: Any, key: tuple, generation: int
+    ) -> BrokerQuote:
+        loop = asyncio.get_running_loop()
+        delay = self._quote_request_after.get(key, 0.0) - loop.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if generation != self._connection_generation:
+            raise ConnectionError("IB connection changed while requesting market data")
         self.ib.reqMarketDataType(self.market_data_type)
         ticker = None
         timestamped_ticker = None
-        deadline = asyncio.get_running_loop().time() + timeout_seconds
-
         try:
             ticker = self.ib.reqMktData(contract, "", False, False)
-            timestamped_ticker = self.ib.reqTickByTickData(
-                contract,
-                "BidAsk",
-                0,
-                False,
+            # IB allows one tick-by-tick request per instrument per 15 seconds.
+            self._quote_request_after[key] = (
+                loop.time() + _TICK_BY_TICK_REQUEST_INTERVAL_SECONDS
             )
-            while asyncio.get_running_loop().time() < deadline:
+            timestamped_ticker = self.ib.reqTickByTickData(
+                contract, "BidAsk", 0, False
+            )
+            while True:
                 await asyncio.sleep(0.05)
+                if generation != self._connection_generation:
+                    raise ConnectionError("IB connection changed while requesting market data")
                 bid_ask_ticks = list(
                     getattr(timestamped_ticker, "tickByTicks", None) or []
                 )
@@ -253,15 +344,13 @@ class InteractiveBrokersAPI:
                         market_price=(bid + ask) / 2.0,
                         timestamp=latest.time,
                     )
-
-            raise TimeoutError(
-                f"Timed out waiting for timestamped live market data for {symbol}"
-            )
         finally:
-            if ticker is not None:
-                self.ib.cancelMktData(contract)
-            if timestamped_ticker is not None:
-                self.ib.cancelTickByTickData(contract, "BidAsk")
+            try:
+                if ticker is not None:
+                    self.ib.cancelMktData(contract)
+            finally:
+                if timestamped_ticker is not None:
+                    self.ib.cancelTickByTickData(contract, "BidAsk")
 
     async def submit_order(
         self,

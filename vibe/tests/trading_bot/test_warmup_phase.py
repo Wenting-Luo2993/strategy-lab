@@ -144,10 +144,7 @@ async def test_broker_health_failure_sends_critical_discord_alert(monkeypatch):
 @pytest.fixture
 def reconnecting_warmup(monkeypatch, tmp_path):
     now = datetime(2026, 11, 10, 9, 25, tzinfo=ZoneInfo("America/New_York"))
-    # With shared IB client refactor, the provider connects during warmup before the broker
-    # health check runs. So we need to start with broker marked as connected for the
-    # provider to successfully connect in shared mode.
-    socket = SimpleNamespace(connected=True)
+    socket = SimpleNamespace(connected=False)
     events = []
 
     async def reconnect():
@@ -195,15 +192,9 @@ def reconnecting_warmup(monkeypatch, tmp_path):
         PositionSizer(risk_pct=0.01),
         state_path=tmp_path / "session_risk_state.json",
     )
-    data_broker = SimpleNamespace(
-        connect=AsyncMock(return_value=True),
-        ib=SimpleNamespace(isConnected=lambda: True),
+    primary_provider = InteractiveBrokersDataProvider(
+        broker, owns_broker_lifecycle=False
     )
-    # With shared IB client refactor, the data provider reuses the execution broker
-    # when it's available, so we pass broker to the provider initialization.
-    primary_provider = InteractiveBrokersDataProvider(broker)
-    primary_provider._owns_broker_lifecycle = False  # Shared mode: provider doesn't own disconnect
-    
     orchestrator = SimpleNamespace(
         config=SimpleNamespace(
             broker=SimpleNamespace(
@@ -251,7 +242,7 @@ def reconnecting_warmup(monkeypatch, tmp_path):
     )
     return SimpleNamespace(
         manager=manager, orchestrator=orchestrator, broker=broker,
-        data_broker=data_broker, socket=socket, risk=risk, events=events,
+        socket=socket, risk=risk, events=events,
         existing_order=existing_order, now=now, reconnect=reconnect,
     )
 
@@ -263,9 +254,10 @@ async def test_warmup_reconnects_trading_client_before_account_reads(reconnectin
 
     assert await case.manager.execute(send_notification=False) is True
 
-    # With shared IB client refactor, both execution and data provider use the same broker
     case.broker.connect.assert_awaited_once()
     case.broker.disconnect.assert_not_awaited()
+    assert case.orchestrator.primary_provider.broker is case.orchestrator.exchange.broker
+    assert case.orchestrator.primary_provider.connected
     assert case.events == ["execution_connect", "account", "account"]
     assert case.socket.connected
     assert case.risk.snapshot.equity == 10_000.0

@@ -67,6 +67,11 @@ bash deploy.sh gateway        # first start: brings up ib-gateway, then the bot
 
 ## Health Checks
 
+For connection failures, re-login loops or missing data, start with the
+[IB Gateway troubleshooting guide](../../docs/trading-bot-mvp/ibkr-integration/gateway-troubleshooting.md).
+It records known incidents, safe log collection, failure classification and
+post-recovery evidence. Preserve logs before restarting or deploying.
+
 ```bash
 cd /opt/strategy-lab
 bash deploy/ibkr-docker/deploy.sh status
@@ -76,9 +81,29 @@ bash deploy/ibkr-docker/deploy.sh status
 
 A healthy start logs `Connected to IB at ib-gateway:4004`, `Dashboard RemoteDataPublisher started` and `Trading loop started`. The gateway is healthy once its API port `4002` accepts connections, which takes about 1–2 minutes after start while IBC logs in.
 
-IB Gateway restarts itself daily at 04:00 UTC (`AUTO_RESTART_TIME` / `TWS_COLD_RESTART`), outside US market hours. At warm-up, the bot reconnects and reconciles its persistent **execution client**, separately from the market-data client, before reading carryover positions or capturing session equity. This connection step is required even if optional broker health checks are disabled. Failed recovery blocks trading and defers the equity snapshot until a subsequent warm-up attempt; it does not persist a session-long snapshot failure merely because the client was disconnected. A trading-client-only disconnect during market hours also triggers warm-up recovery.
+IB Gateway is configured to restart daily at 04:00 UTC (`AUTO_RESTART_TIME` / `TWS_COLD_RESTART`), outside US market hours. At warm-up, the bot reconnects and reconciles its persistent **execution client** before activating borrowed market-data providers, reading carryover positions or capturing session equity. This connection step is required even if optional broker health checks are disabled. Failed recovery blocks trading and defers the equity snapshot until a subsequent warm-up attempt; it does not persist a session-long snapshot failure merely because the client was disconnected. An execution-client disconnect during market hours also triggers warm-up recovery.
 
 Container health and `/api/health` indicate liveness, not broker readiness. After overnight recovery, look for `IB execution client healthy` and a successful session equity snapshot, then confirm fresh market data. A successful connection before the scheduled restart does not prove that the next session is ready.
+
+Execution, IB-backed market-data providers, and health checks share one broker/client
+(the configured execution client ID). Warm-up reconnects that owner before activating
+the data provider. Provider cooldown/failover only stops that provider; the execution
+connection remains available for order monitoring and parity, and is disconnected at
+orchestrator shutdown. Standalone IB data providers still own their own connection.
+
+Connection recovery/disconnect is serialized at the broker. Overlapping quote callers
+share one in-flight request per contract: polling, execution benchmarks, and the optional
+resting-entry gap-fill quote all use that path. Cancelling one caller does not cancel
+the others' request; when the last caller leaves, subscriptions are cleaned up.
+Independent contracts can proceed concurrently. Completed quotes are not cached.
+
+The broker enforces IB's [15-second minimum between tick-by-tick requests for the same
+instrument](https://interactivebrokers.github.io/tws-api/tick_data.html).
+Each caller's timeout includes qualification, pacing, and waiting for a tick. This
+can slow snapshot polling or time out a quote requested just after another completed;
+it never substitutes a stale quote. If the optional gap-fill quote times out, placement
+keeps the existing `gap_fill`-unknown behavior rather than waiting indefinitely.
+Sharing a client does not resolve competing live/paper login or entitlement errors.
 
 ## Deploying Code Changes
 

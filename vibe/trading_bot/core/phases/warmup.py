@@ -76,6 +76,10 @@ class WarmupPhaseManager(BasePhase):
         # Step 1: Pre-fetch historical data
         warmup_success &= await self._prefetch_historical_data()
 
+        # Borrowed IB data providers need their execution owner connected first.
+        broker_healthy = await self._verify_broker_health()
+        warmup_success &= broker_healthy
+
         # Step 2: Connect to real-time provider
         warmup_success &= await self._connect_realtime_provider()
 
@@ -84,10 +88,6 @@ class WarmupPhaseManager(BasePhase):
 
         # Step 3: Pre-calculate indicators (optional)
         await self._precalculate_indicators()
-
-        # Reconnect the trading client before any position or equity reads.
-        broker_healthy = await self._verify_broker_health()
-        warmup_success &= broker_healthy
 
         if broker_healthy:
             warmup_success &= await self._apply_carryover_position_policy(

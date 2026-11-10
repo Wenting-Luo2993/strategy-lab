@@ -11,15 +11,21 @@ class FakeBroker:
 
     def __init__(self):
         self.ib = self
+        self.connected = True
+        self.connect_calls = 0
+        self.disconnect_calls = 0
 
     def isConnected(self):
-        return True
+        return self.connected
 
     async def connect(self):
+        self.connect_calls += 1
+        self.connected = True
         return True
 
     async def disconnect(self):
-        return None
+        self.disconnect_calls += 1
+        self.connected = False
 
     async def get_market_data(self, symbol: str):
         return BrokerQuote(
@@ -46,38 +52,23 @@ async def test_ib_snapshot_bar_uses_positive_synthetic_volume():
 
 @pytest.mark.asyncio
 async def test_ib_data_provider_shared_mode_does_not_disconnect_broker():
-    """Verify that provider in shared mode (shared broker) does not disconnect the broker."""
     broker = FakeBroker()
-    provider = InteractiveBrokersDataProvider(broker)
-    
-    # Mark as shared (would be set by factory when ib_broker param is provided)
-    provider._owns_broker_lifecycle = False
-    
-    # Connect in shared mode
-    connected = await provider.connect()
-    assert connected is True
-    
-    # Disconnect in shared mode - should only set _connected flag, not call broker.disconnect
+    provider = InteractiveBrokersDataProvider(broker, owns_broker_lifecycle=False)
+
+    assert await provider.connect() is True
     await provider.disconnect()
-    assert provider._connected is False
-    # Broker should still be connected (isConnected would still return True)
+    assert provider.connected is False
     assert broker.isConnected() is True
+    assert broker.connect_calls == broker.disconnect_calls == 0
 
 
 @pytest.mark.asyncio
 async def test_ib_data_provider_standalone_mode_disconnects_broker():
-    """Verify that provider in standalone mode (owns broker) does disconnect."""
     broker = FakeBroker()
     provider = InteractiveBrokersDataProvider(broker)
-    
-    # Mark as standalone (default)
-    provider._owns_broker_lifecycle = True
-    
-    # Connect in standalone mode
-    connected = await provider.connect()
-    assert connected is True
-    
-    # Disconnect in standalone mode - should call broker.disconnect
-    await provider.disconnect()
-    assert provider._connected is False
 
+    assert await provider.connect() is True
+    await provider.disconnect()
+    assert provider.connected is False
+    assert broker.isConnected() is False
+    assert broker.connect_calls == broker.disconnect_calls == 1
