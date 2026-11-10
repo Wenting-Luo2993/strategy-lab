@@ -118,6 +118,15 @@ Do not restart solely because a dashboard has no bars. Check the market calendar
 ingestion timestamps, publisher/outbox failures and persistence separately. A
 missing dashboard row is not evidence that no orders or fills occurred.
 
+**When SSH is unavailable:** the current
+[Supabase publisher](../../../vibe/trading_bot/publishing/remote_data_publisher.py)
+and [dashboard adapter](../../../apps/operational-metrics-dashboard/src/data/supabaseAdapter.ts)
+publish/read trading records, bars, annotations and numeric operational metrics,
+not a Gateway/IBC log stream. Dashboard freshness can corroborate a symptom but
+cannot recover the login/restart/error timeline. Restore SSH or obtain sanitized
+container logs from the operator; do not retrieve service-role credentials or
+infer a connection diagnosis from missing remote rows.
+
 ## Known failure modes and responses
 
 ### A. Legacy timer starts a second gateway / competing login
