@@ -322,6 +322,12 @@ Also: warmup phase must reset cooldown manager state for fresh start each day.
 `.claude/skills/deploy-trading-bot/SKILL.md` and use only `deploy/ibkr-docker/deploy.sh`.**
 The old `vibe/trading_bot/docker-compose.yml` flow and the systemd units are obsolete for production.
 
+For IB connection failures or missing market data, follow the
+[IB Gateway troubleshooting guide](docs/trading-bot-mvp/ibkr-integration/gateway-troubleshooting.md)
+before restarting or deploying, and update its incident register. A listening API
+port, process health endpoint, or old connection log does not prove current broker
+readiness. Do not assume a repeat incident has the previously diagnosed cause.
+
 ### Docker Rebuild Required for Code Changes
 
 ```bash

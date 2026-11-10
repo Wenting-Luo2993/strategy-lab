@@ -18,6 +18,12 @@ pulls `main`, rebuilds, recreates, verifies log markers and `/api/health`, and a
 `deploy/ibkr-docker/deploys.log` on the VM. Full runbook: `deploy/ibkr-docker/README.md`.
 Design history: `docs/trading-bot-mvp/ibkr-integration/phase-4-dockerized-deployment-runbook.md`.
 
+For connection failures or missing IB data, use
+[`gateway-troubleshooting.md`](../../../docs/trading-bot-mvp/ibkr-integration/gateway-troubleshooting.md)
+before restarting or deploying. Preserve timestamped gateway and bot evidence,
+distinguish liveness from broker/data readiness, and update its incident register.
+Do not infer that a recurring failure has the same cause as a previous incident.
+
 ## Hard rules
 
 1. **Code reaches production only through `main`.** Commit and push to `main` first; the VM
@@ -86,7 +92,7 @@ Options: `--yes` (skip the prompt; required without a TTY), `--allow-market-hour
 | Symptom | Action |
 |---|---|
 | Preflight: legacy systemd unit active or legacy timer enabled | Ask the user; `sudo systemctl disable --now trading-bot-phase2-start.timer` and `sudo systemctl stop <unit>` only with approval |
-| Bot log: IB requests time out, gateway log shows "Re-login is required" | Check `deploy.sh status` for an active `ibc-gateway`/enabled timer (a second IBKR session); fix as above, then `deploy.sh gateway` |
+| Bot log: IB requests time out, gateway log shows "Re-login is required" | Follow the troubleshooting guide and preserve the timeline first. Check for an active legacy gateway/enabled timer, but do not assume it explains an earlier re-login. Choose recovery only after classifying the failure. |
 | Preflight: foreign container running | Identify it with `docker ps`; stop it only with approval |
 | Preflight: host has local changes | Show `git status`; never `git reset`/`checkout` on the VM without the user |
 | `ib-gateway` unhealthy | `docker logs --tail 80 strategy-lab-ib-gateway` (never show password lines); usually 2FA, credentials or a competing IBKR session |

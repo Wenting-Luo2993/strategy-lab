@@ -5,6 +5,10 @@
 
 Day-to-day procedures (fresh host setup, deploys, secret rotation, gateway upgrades, VNC fallback, rollback) live in [`deploy/ibkr-docker/README.md`](../../../deploy/ibkr-docker/README.md). This document records the design and the cutover evidence.
 
+Connection incidents and recovery evidence live in the
+[IB Gateway troubleshooting guide](gateway-troubleshooting.md). Check it before
+restarting or assuming that container health proves broker readiness.
+
 ---
 
 ## Architecture
@@ -20,7 +24,7 @@ Key decisions:
 
 - **Maintained gateway image instead of a homemade one.** `gnzsnz/ib-gateway` is widely used, bundles IBC and is configured entirely through environment variables. We pin both the tag and the digest, so an upgrade is a deliberate one-line change (see the README's "Upgrading IB Gateway").
 - **Compose network, not a shared network namespace.** Inside the gateway container, socat relays the paper API port `4002` to `4004`. The bot connects to `ib-gateway:4004`. Because socat connects from `127.0.0.1`, Gateway's trusted-IP list needs no Docker CIDRs. No IB port is published to the host.
-- **Gateway healthcheck probes `4002`, not `4004`.** socat listens on `4004` immediately, so only `4002` shows that Gateway has logged in and the API is up. The bot `depends_on` the gateway being healthy.
+- **Gateway healthcheck probes `4002`, not `4004`.** socat listens on `4004` immediately. A successful `4002` probe establishes that the Gateway API port accepts TCP connections, not that its IBKR login, account requests or market data remain healthy. The bot `depends_on` the gateway being healthy.
 - **Secrets stay out of images and compose.** The username is in `secrets/ib-gateway.env`. The password is a Docker secret file (`secrets/tws_password`, uid 1000, mode 400) read through `TWS_PASSWORD_FILE`. Bot secrets are in `secrets/trading-bot.env`. All are git-ignored.
 - **Non-secret runtime settings live in compose `environment`**, mirroring the former systemd unit. Compose `environment` overrides `env_file`, so dashboard keys are kept only in the env file to avoid silent drift.
 - **Persistent state is bind-mounted** under `deploy/ibkr-docker/`: `data/trading-bot` → `/app/data`, `logs/trading-bot` → `/app/logs`, `state/tws_settings` → Gateway settings. Container logs use json-file rotation (20 MB × 5).
