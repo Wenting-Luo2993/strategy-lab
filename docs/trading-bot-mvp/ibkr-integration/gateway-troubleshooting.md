@@ -4,14 +4,18 @@ This is the living guide for IB Gateway connection incidents, missing IB market
 data, and recovery verification. Update the incident register below when an issue
 recurs; keep observed evidence separate from suspected causes and deployed fixes.
 
+For proposed testing gates and operational assurance outcomes, see the
+[reliability testing product specification](reliability-testing-product-spec.md).
+
 **Current incident: 2026-11-10, investigated 2026-11-11 UTC.** Production logs
 confirm Gateway's upstream connection failed during the IBKR maintenance window
 and remained broken through market hours. The legacy timer stayed disabled, and
 the bot's execution reconnect fix retried and blocked trading as designed.
-The server-side reason it did not recover is not established. A post-maintenance
-restart schedule is prepared locally; production deployment requires separate
-gateway-action approval. See the incident timeline below; the shared-client
-refactor alone is not a fix for an unauthenticated/unresponsive Gateway.
+The server-side reason it did not recover is not established. The approved
+post-maintenance schedule and shared-client release `faf7e61` deployed on November
+11 UTC; the next scheduled restart and warm-up remain unobserved in this record.
+See the incident timeline below; the shared-client refactor alone is not a fix
+for an unauthenticated/unresponsive Gateway.
 
 ## Production and safety
 
@@ -25,7 +29,7 @@ and [operations runbook](../../../deploy/ibkr-docker/README.md).
 | Gateway | `strategy-lab-ib-gateway`; IBC login and connectivity to IBKR |
 | Bot | `strategy-lab-trading-bot`; execution, data polling, risk state and dashboard publisher |
 | API route | Bot -> `ib-gateway:4004` socat relay -> gateway-local `4002`; no host-published IB port |
-| Restart configuration | Checked-in correction: daily `AUTO_RESTART_TIME=07:15 AM`; Sunday-only `TWS_COLD_RESTART=07:15`, both UTC. The incident ran the old 04:00 UTC schedule. |
+| Restart configuration | Deployed and verified in IBC logs: daily `AUTO_RESTART_TIME=07:15 AM`; Sunday-only `TWS_COLD_RESTART=07:15`, both UTC. The incident ran the old 04:00 UTC schedule. |
 | Trading session | `America/New_York`; warm-up at 09:25 ET, regular market at 09:30 ET |
 
 Use the user's SSH terminal as `ubuntu`. If it shows a Windows PowerShell prompt,
@@ -209,9 +213,10 @@ timeouts, and deferred carryover/equity reads as intended. It did not make an
 unresponsive Gateway healthy. Always inspect the failed session before declaring
 that a connection retry itself is broken.
 
-The shared-client refactor is still **unreleased as of the 2026-11-11 investigation**.
-It addresses lifecycle ownership and overlapping quote requests, not IBKR login
-availability. Do not treat its local regression results as production evidence.
+The shared-client refactor was **deployed in the approved `faf7e61` rollout** after
+the initial 2026-11-11 investigation. It addresses lifecycle ownership and
+overlapping quote requests, not IBKR login availability. See section H for the
+bounded deployed-code probe results and pending scheduled-cycle observations.
 
 ### E. API client ID collision versus broker-side connectivity loss
 
@@ -248,7 +253,7 @@ adapter; it is not established as the cause of the November 10 incident.
 ### G. Quote cancellation, pacing or stale samples
 
 Execution benchmarks, data polling and optional resting-entry gap-fill quotes
-must not cancel each other's same-contract subscriptions. The pending shared-client
+must not cancel each other's same-contract subscriptions. The deployed shared-client
 implementation coalesces overlapping calls, bounds each caller's timeout and rejects
 quotes from a previous socket generation.
 
