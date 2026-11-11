@@ -4,11 +4,14 @@ This is the living guide for IB Gateway connection incidents, missing IB market
 data, and recovery verification. Update the incident register below when an issue
 recurs; keep observed evidence separate from suspected causes and deployed fixes.
 
-**Current open incident: 2026-11-10.** The operator reported another failed trading
-session. Today's production logs have **not** been inspected: the SSH terminal
-disconnected and returned to local PowerShell. Cause and current broker state are
-unknown. Do not deploy the shared-client refactor as a presumed fix, or restart the
-gateway before preserving the incident evidence.
+**Current incident: 2026-11-10, investigated 2026-11-11 UTC.** Production logs
+confirm Gateway's upstream connection failed during the IBKR maintenance window
+and remained broken through market hours. The legacy timer stayed disabled, and
+the bot's execution reconnect fix retried and blocked trading as designed.
+The server-side reason it did not recover is not established. A post-maintenance
+restart schedule is prepared locally; production deployment requires separate
+gateway-action approval. See the incident timeline below; the shared-client
+refactor alone is not a fix for an unauthenticated/unresponsive Gateway.
 
 ## Production and safety
 
@@ -22,7 +25,7 @@ and [operations runbook](../../../deploy/ibkr-docker/README.md).
 | Gateway | `strategy-lab-ib-gateway`; IBC login and connectivity to IBKR |
 | Bot | `strategy-lab-trading-bot`; execution, data polling, risk state and dashboard publisher |
 | API route | Bot -> `ib-gateway:4004` socat relay -> gateway-local `4002`; no host-published IB port |
-| Daily restart configuration | `AUTO_RESTART_TIME` and `TWS_COLD_RESTART` are both set to 04:00 UTC; inspect logs for the actual restart/login sequence |
+| Restart configuration | Checked-in correction: daily `AUTO_RESTART_TIME=07:15 AM`; Sunday-only `TWS_COLD_RESTART=07:15`, both UTC. The incident ran the old 04:00 UTC schedule. |
 | Trading session | `America/New_York`; warm-up at 09:25 ET, regular market at 09:30 ET |
 
 Use the user's SSH terminal as `ubuntu`. If it shows a Windows PowerShell prompt,
@@ -80,15 +83,17 @@ UNTIL="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 for container in strategy-lab-ib-gateway strategy-lab-trading-bot; do
   printf '\n=== %s (%s to %s) ===\n' "$container" "$SINCE" "$UNTIL"
   docker logs --timestamps --since "$SINCE" --until "$UNTIL" "$container" 2>&1 \
-    | grep -viE 'password|passwd|TWS_USERID|IbLoginId|user.?name|secret|token|api.?key|service.?key|authorization|webhook' \
+    | grep -E ' IBC:| - (DEBUG|INFO|WARNING|ERROR|CRITICAL) - ' \
+    | grep -viE 'password|passwd|key|token|secret|login.?id|user.?name|credential|authorization|webhook' \
     | sed -E 's/\b(DU|U)[A-Z]?[0-9]+\b/[account]/g; s#https?://[^[:space:]]+#[url]#g' \
     | grep -iE 'login|log-in|authentication|disclaimer|session|restart|shutdown|connect|disconnect|socket|1100|1101|1102|10197|10141|10089|326|warm.?up|equity|snapshot|halt|blocked|timed? out|timeout|farm|error|exception|traceback|polling|publisher|outbox|ORB' \
     | tail -n 200
-  printf 'Pipeline exits (docker, redact-filter, sed, event-filter, tail): %s\n' "${PIPESTATUS[*]}"
+  printf 'Pipeline exits (docker, runtime-filter, redact-filter, sed, event-filter, tail): %s\n' "${PIPESTATUS[*]}"
 done
 ```
 
-This is a triage excerpt, not a complete log archive or guaranteed secret scrubber.
+This keeps structured runtime messages, excluding raw Java command lines and
+startup configuration dumps. It is not a complete log archive or guaranteed secret scrubber.
 Do not share raw configuration dumps; redact any remaining sensitive content
 before attaching evidence. `grep` exit 1 can mean no matches; a nonzero Docker
 exit means collection failed, not that no incident occurred. If output reaches
@@ -198,12 +203,13 @@ those reads and retries warm-up; trading-only socket loss also triggers recovery
 It preserves existing session equity and daily-loss halts.
 
 **Deployment evidence:** the November 9 evening release reported `Deploy OK at
-4d7fee5`, followed by a disposable read-only reconnect probe. This does not prove
-the next morning's real warm-up succeeded. Verify the currently running image and
-the failed session's logs before declaring a regression or attributing it to a
-different cause.
+4d7fee5`, followed by a disposable read-only reconnect probe. November 10 logs
+subsequently confirmed that the owner retried, failed on upstream account/order
+timeouts, and deferred carryover/equity reads as intended. It did not make an
+unresponsive Gateway healthy. Always inspect the failed session before declaring
+that a connection retry itself is broken.
 
-The shared-client refactor is still **unreleased as of 2026-11-10 investigation**.
+The shared-client refactor is still **unreleased as of the 2026-11-11 investigation**.
 It addresses lifecycle ownership and overlapping quote requests, not IBKR login
 availability. Do not treat its local regression results as production evidence.
 
@@ -217,6 +223,7 @@ availability. Do not treat its local regression results as production evidence.
 | `1100` | Gateway lost its upstream IBKR connection; the local socket can still exist. Investigate reset, network and session evidence. |
 | `1101` | Upstream connection restored with market-data requests lost; verify re-subscription and fresh data. Do not assume a socket reconnect handler alone covers it. |
 | `1102` | Upstream connection restored with data subscriptions retained; verify actual fresh responses rather than blindly opening another login. |
+| `2110` | Gateway reports its connection to the upstream server is broken. A local `API connection ready` marker does not contradict this; verify fresh account/order responses. |
 | `2103` / `2105` | Market/historical data farm interruption; correlate duration and affected requests. |
 | `2104`, `2106`, `2158` | Farm-connection status messages, not failures merely because they use the IB error callback. |
 | `2107` / `2108` | Farm is idle/on-demand; not by itself a reason to restart. |
@@ -253,6 +260,76 @@ and subscriptions before restarting. No fresh tick after hours is not equivalent
 to a failed login. Do not weaken timestamp/delayed-data checks or hide an unknown
 gap-fill classification to make a smoke check pass.
 
+### H. Overnight upstream stall and restart timing (November 10)
+
+**Confirmed failure layer:** Gateway's upstream session, not a local TCP failure
+or the legacy timer. API clients could connect to Gateway, but Gateway reported
+`2110` and `2103` and did not complete account/order synchronization. The bot
+correctly kept retrying and blocked trading. The exact server-side reason the
+session failed to recover is not available in the collected logs.
+
+| UTC timestamp | Observed evidence |
+|---|---|
+| Nov 10 04:00:04 | Bot logged `Peer closed connection` during the configured Gateway auto-restart. |
+| Nov 10 04:01:59 | IBC logged successful login after the restart. |
+| Nov 10 05:18:13 | Gateway displayed `Attempt 2: server error, will retry in seconds...` (00:18 EST). |
+| Nov 10 14:25:09 | Warm-up data client reached `API connection ready`, then received `2110` (upstream broken) and `2103` (market-data farm broken). Account/position/order requests timed out. |
+| Nov 10 14:31:17-18 | Execution health failed after its retries; carryover/equity reads were skipped and warm-up was scheduled to retry. |
+| Nov 10 21:03:22 | The same request-timeout/recovery failure was still blocking the final trading-cycle attempts. |
+| Nov 11 04:00:31 / 04:01:58 | Gateway container restarted, then IBC completed a fresh login. Bot container had not restarted. |
+| Nov 11 05:13 | Host and bot deployment were still `4d7fee5`; legacy timer/services inactive and disabled. No OOM flag; ample free disk/memory. Both containers were healthy despite the prior day's failure. |
+| Nov 11 05:16-05:18 | Disposable read-only requests returned server time, positions, open orders, executions and a fresh account summary. Four symbols returned complete Nov 10 RTH history; QQQ returned no bars under the initial 12-second deadline, with code `162` observed. |
+| Nov 11 05:19:03-05:20:18 | Gateway showed a new server-connection transition during maintenance, then finished starting. The QQQ retry received `1102` (upstream restored, data maintained) and all 390 expected Nov 10 minute bars. |
+
+An aggregate scan of the retained bot logs for November 10 14:00-22:00 UTC
+found **56 failed execution-health cycles**, 56 deferred carryover/equity reads
+and 336 `2110` warnings, with failures in every market-hour bucket. It found no
+`IB execution client healthy` or `Connected to IB at` success markers in that
+window. These are log observations, not an execution-journal audit.
+
+No gateway restart, deployment, order action or production risk-state edit was
+performed during this investigation. The November 11 recovery happened without
+operator intervention. All diagnostic clients were disconnected. The first
+diagnostic script also mistakenly called a synchronous account-summary accessor
+inside an async loop; its `RuntimeError` was a **probe bug**, not an IB failure.
+The corrected async probe completed a fresh account-summary request successfully.
+
+**Why change the schedule:** IBKR's
+[published North America reset window](https://brokerage.ibkr.com/en/software/systemStatus.php)
+is 00:15-01:45 ET Sunday-Friday, extending to 02:00 ET Saturday. Both the November 9
+05:16 UTC re-login and November 10 05:18 UTC server error fall inside that window.
+This correlation identifies a recovery risk; it does not prove why IBKR returned
+the error or why recovery stalled on one night but succeeded on the next.
+The old 04:00 UTC auto-restart ran **before** maintenance, leaving no scheduled
+post-maintenance restart before trading.
+
+There was a separate confirmed configuration error: `TWS_COLD_RESTART` maps to
+IBC's **Sunday-only** `ColdRestartTime`, not a daily cold restart. IBC logged its
+next cold restart as November 15 at 04:00 UTC. That is before the Sunday 01:00 ET
+token invalidation described in
+[IBKR's auto-restart guidance](https://www.ibkrguides.com/traderworkstation/auto-restart-considerations.htm)
+and the [IBC configuration reference](https://github.com/IbcAlpha/IBC/blob/master/resources/config.ini).
+Correcting this is preventative; it is not established as Tuesday's cause.
+
+**Prepared mitigation:** set `AUTO_RESTART_TIME=07:15 AM` and
+`TWS_COLD_RESTART=07:15` with `TZ` / `TIME_ZONE` remaining `Etc/UTC`.
+07:15 UTC is 02:15 EST / 03:15 EDT: after the published maintenance windows and
+Sunday token reset, before market warm-up. Guardrail tests exercise winter/summer
+and Saturday/Sunday dates. The daily restart remains an IBC auto-restart; this
+does not add a new cron job, watchdog or daily full-authentication requirement.
+
+**Rollout status:** prepared locally, **not applied to production**. A specific
+`deploy.sh gateway` approval is still required; a bot-only deployment cannot
+apply the Gateway environment changes. After approval: land the complete reviewed
+release on `main`, require green deployment guardrails, rerun preflight, apply the
+gateway action, verify the new IBC schedule and fresh API responses, then record
+the actual next scheduled restart/warm-up outcome here.
+
+Successful historical queries are not proof of fresh market-hours ticks, a
+completed future warm-up, or the absence of trades during the failed session.
+The server-side cause of the stalled recovery, next-cycle reliability, and the
+previous `10197` conflict remain distinct follow-ups.
+
 ## Recovery verification: what is enough to close an incident?
 
 Capture a timestamped post-recovery result for each relevant layer. Report which
@@ -286,11 +363,12 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | Incident / status | Evidence and action | Remaining uncertainty / closure requirement |
 |---|---|---|
 | 2026-07-07 live-data entitlement: historical recovery observed | `10089` while account/delayed data worked; live data later succeeded in local burn-in. | Exact propagation mechanism was not established; not evidence of present entitlement for every symbol. |
-| 2026-11-09 early re-login: **unresolved cause** | Scheduled restart at 04:00 UTC; login completed 04:01:50; re-login required 05:16:17. | This predates the legacy timer. Need the surrounding Gateway/IBC evidence; do not backfill a causal explanation. |
+| 2026-11-09 early re-login: **unresolved server-side cause** | Scheduled restart at 04:00 UTC; login completed 04:01:50; re-login required 05:16:17. | Predates the legacy timer and falls inside IBKR maintenance. Correlation is not proof of the reason for re-login. |
 | 2026-11-09 legacy timer: remediated, recurrence guard added | Old gateway started at 13:20:18 UTC. Timer disabled, old units stopped, approved harness gateway recovery completed. Guard fix `035eb3c`. | Reconfirm live disabled/inactive state on each recurrence. Does not close the earlier re-login issue. |
-| 2026-11-09 execution reconnect bug: fix deployed, next-session outcome unverified | Reproduction plus `4d7fee5`; harness success and disposable read-only reconnect smoke. | Inspect actual failed November 10 warm-up; local reproduction/smoke is not next-session proof. |
+| 2026-11-09 execution reconnect bug: fix deployed, retry behavior observed | Reproduction plus `4d7fee5`; November 10 logs show retries and deferred equity/carryover reads on upstream failure. | Reconnect cannot restore a stuck Gateway session; keep risk-state protections intact. |
 | 2026-11-09 recovery-probe `10197`: **unresolved cause** | First QQQ/AMZN history requests failed; retry returned all five complete 390-bar RTH sessions and quotes. | Identify competing session/permissions; later success alone is not a permanent fix. |
-| 2026-11-10 repeated session failure: **open, log access blocked** | Operator reported failure. SSH disconnected; current-day production logs not read. Shared-client release held. | Reconnect as `ubuntu` in `/opt/strategy-lab`, collect overnight + warm-up logs, classify layer, then choose remediation. No current root cause or no-trades claim is established. |
+| 2026-11-10 repeated session failure: **investigated; mitigation pending approval/deployment** | Upstream server error at 05:18 UTC; `2110`/`2103` and account/order timeouts through market close. Legacy timer disabled; `4d7fee5` retries worked. | Move restart after maintenance and Sunday token reset; observe actual recovery/warm-up after rollout. Exact server-side reason for the stall remains unknown. |
+| 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved

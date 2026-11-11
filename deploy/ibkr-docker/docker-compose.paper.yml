@@ -20,9 +20,10 @@ services:
       TWS_ACCEPT_INCOMING: "accept"
       READ_ONLY_API: "no"
       ALLOW_BLIND_TRADING: "no"
-      # Daily restart at 04:00 UTC, matching the former systemd IBC config.
-      AUTO_RESTART_TIME: "04:00 AM"
-      TWS_COLD_RESTART: "04:00"
+      # After IBKR's North America reset in both EST and EDT.
+      AUTO_RESTART_TIME: "07:15 AM"
+      # IBC cold restart is Sunday-only, after the 01:00 ET token reset.
+      TWS_COLD_RESTART: "07:15"
       TIME_ZONE: "Etc/UTC"
       TZ: "Etc/UTC"
       TWS_SETTINGS_PATH: "/home/ibgateway/tws_settings"

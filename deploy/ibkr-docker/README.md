@@ -81,7 +81,18 @@ bash deploy/ibkr-docker/deploy.sh status
 
 A healthy start logs `Connected to IB at ib-gateway:4004`, `Dashboard RemoteDataPublisher started` and `Trading loop started`. The gateway is healthy once its API port `4002` accepts connections, which takes about 1–2 minutes after start while IBC logs in.
 
-IB Gateway is configured to restart daily at 04:00 UTC (`AUTO_RESTART_TIME` / `TWS_COLD_RESTART`), outside US market hours. At warm-up, the bot reconnects and reconciles its persistent **execution client** before activating borrowed market-data providers, reading carryover positions or capturing session equity. This connection step is required even if optional broker health checks are disabled. Failed recovery blocks trading and defers the equity snapshot until a subsequent warm-up attempt; it does not persist a session-long snapshot failure merely because the client was disconnected. An execution-client disconnect during market hours also triggers warm-up recovery.
+The checked-in configuration schedules the daily Gateway auto-restart at **07:15 UTC**
+(`AUTO_RESTART_TIME`), or 02:15 EST / 03:15 EDT. This is after IBKR's published North
+America maintenance window (00:15-01:45 ET Sunday-Friday; through 02:00 ET Saturday).
+`TWS_COLD_RESTART=07:15` is a separate **Sunday-only** full login, after IBKR's Sunday
+01:00 ET authentication-token reset; it is not a second daily restart.
+The old 04:00 UTC schedule preceded maintenance and put the Sunday cold restart
+before the required token reset. Applying this correction requires an approved
+`deploy.sh gateway`, not a bot-only deployment. See the troubleshooting guide for
+the November 10 incident evidence and actual rollout status; schedule correction
+is a recovery mitigation, not proof that IBKR cannot disconnect again.
+
+At warm-up, the bot reconnects and reconciles its persistent **execution client** before activating borrowed market-data providers, reading carryover positions or capturing session equity. This connection step is required even if optional broker health checks are disabled. Failed recovery blocks trading and defers the equity snapshot until a subsequent warm-up attempt; it does not persist a session-long snapshot failure merely because the client was disconnected. An execution-client disconnect during market hours also triggers warm-up recovery.
 
 Container health and `/api/health` indicate liveness, not broker readiness. After overnight recovery, look for `IB execution client healthy` and a successful session equity snapshot, then confirm fresh market data. A successful connection before the scheduled restart does not prove that the next session is ready.
 

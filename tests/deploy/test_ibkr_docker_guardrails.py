@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import re
 import subprocess
+from datetime import date, datetime, time, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 import yaml
@@ -90,6 +92,26 @@ def test_bot_waits_for_healthy_gateway(bot):
 
 def test_gateway_healthcheck_probes_paper_api(gateway):
     assert "4002" in " ".join(gateway["healthcheck"]["test"])
+
+
+@pytest.mark.parametrize("day", ["2026-01-10", "2026-01-11", "2026-07-11", "2026-07-12"])
+def test_gateway_restarts_after_ibkr_maintenance_in_est_and_edt(gateway, day):
+    env = _env(gateway)
+    assert env["TZ"] == env["TIME_ZONE"] == "Etc/UTC"
+    for key, fmt in (
+        ("AUTO_RESTART_TIME", "%I:%M %p"),
+        ("TWS_COLD_RESTART", "%H:%M"),
+    ):
+        restart = datetime.combine(
+            date.fromisoformat(day),
+            datetime.strptime(env[key], fmt).time(),
+            tzinfo=timezone.utc,
+        ).astimezone(ZoneInfo("America/New_York"))
+        assert restart.date() == date.fromisoformat(day)
+        # Latest published reset ends at 02:00 ET (Saturday); allow 15 minutes.
+        assert time(2, 15) <= restart.time() < time(9, 25), (
+            f"{key} must follow maintenance/token reset and precede warm-up: {restart}"
+        )
 
 
 @pytest.mark.parametrize("service", ["ib-gateway", "trading-bot"])

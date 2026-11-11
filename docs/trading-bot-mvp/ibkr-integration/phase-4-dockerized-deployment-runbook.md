@@ -17,7 +17,7 @@ Compose project `strategy-lab` (`deploy/ibkr-docker/docker-compose.paper.yml`) w
 
 | Service | Image | Role |
 |---|---|---|
-| `ib-gateway` | `ghcr.io/gnzsnz/ib-gateway:10.50.1f`, pinned by digest | IB Gateway + IBC + Xvfb + socat. Logs in with credentials from `secrets/`, restarts daily at 04:00 UTC. |
+| `ib-gateway` | `ghcr.io/gnzsnz/ib-gateway:10.50.1f`, pinned by digest | IB Gateway + IBC + Xvfb + socat. Checked-in schedule: daily auto-restart and Sunday-only cold restart at 07:15 UTC, after IBKR maintenance. See the troubleshooting guide for rollout status. |
 | `trading-bot` | `strategy-lab-trading-bot:local`, built from `vibe/trading_bot/Dockerfile` | Strategy orchestrator, IB broker adapter, health API, SQLite stores, Discord notifications and the in-process Supabase `RemoteDataPublisher`. |
 
 Key decisions:
@@ -59,7 +59,7 @@ Key decisions:
 ## Remaining Validation
 
 - [ ] First trading session under Docker (2026-11-09): warm-up readiness turns green, ORB levels and order notifications fire, and the end-of-day Supabase publish succeeds.
-- [ ] Gateway survives its daily 04:00 UTC restart, and the bot reconnects through the Compose DNS name.
+- [ ] After the schedule correction is deployed, Gateway survives its daily 07:15 UTC restart and the bot reconnects through the Compose DNS name.
 - [ ] VM reboot test: both containers return via `restart: unless-stopped` and the bot reconnects.
 - [ ] After a few stable sessions, remove legacy artifacts (`deploy/ibkr-docker/runtime/`, old `secrets/config.ini`/`ibc.env`, the systemd units, `/opt/ibkr`, `/opt/IBC`, `/etc/ibkr`) and the secret `.bak` files.
 
