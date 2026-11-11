@@ -288,8 +288,9 @@ and 336 `2110` warnings, with failures in every market-hour bucket. It found no
 window. These are log observations, not an execution-journal audit.
 
 No gateway restart, deployment, order action or production risk-state edit was
-performed during this investigation. The November 11 recovery happened without
-operator intervention. All diagnostic clients were disconnected. The first
+performed during the initial investigation. The November 11 05:20 recovery happened
+without operator intervention; the separately approved deployment below followed
+at 05:31 UTC. All initial diagnostic clients were disconnected. The first
 diagnostic script also mistakenly called a synchronous account-summary accessor
 inside an async loop; its `RuntimeError` was a **probe bug**, not an IB failure.
 The corrected async probe completed a fresh account-summary request successfully.
@@ -311,19 +312,47 @@ token invalidation described in
 and the [IBC configuration reference](https://github.com/IbcAlpha/IBC/blob/master/resources/config.ini).
 Correcting this is preventative; it is not established as Tuesday's cause.
 
-**Prepared mitigation:** set `AUTO_RESTART_TIME=07:15 AM` and
+**Deployed mitigation:** set `AUTO_RESTART_TIME=07:15 AM` and
 `TWS_COLD_RESTART=07:15` with `TZ` / `TIME_ZONE` remaining `Etc/UTC`.
 07:15 UTC is 02:15 EST / 03:15 EDT: after the published maintenance windows and
 Sunday token reset, before market warm-up. Guardrail tests exercise winter/summer
 and Saturday/Sunday dates. The daily restart remains an IBC auto-restart; this
 does not add a new cron job, watchdog or daily full-authentication requirement.
 
-**Rollout status:** prepared locally, **not applied to production**. A specific
-`deploy.sh gateway` approval is still required; a bot-only deployment cannot
-apply the Gateway environment changes. After approval: land the complete reviewed
-release on `main`, require green deployment guardrails, rerun preflight, apply the
-gateway action, verify the new IBC schedule and fresh API responses, then record
-the actual next scheduled restart/warm-up outcome here.
+**Rollout status:** user approved the combined schedule/shared-client release;
+`faf7e61` landed on `main` and
+[Deploy Guardrails passed](https://github.com/Wenting-Luo2993/strategy-lab/actions/runs/42966276695).
+The final shared-client, warm-up and deployment regression selection passed
+62 tests. Outside market hours, preflight passed and
+`bash deploy/ibkr-docker/deploy.sh gateway --yes` returned exit 0 with
+`Gateway + bot OK at faf7e61`.
+
+| UTC timestamp, Nov 11 | Post-deployment evidence |
+|---|---|
+| 05:31:51 | Gateway recreated; pinned image remains `10.50.1f`. |
+| 05:31:56 | IBC scheduled Sunday cold restart for **Nov 15 07:15**. |
+| 05:33:28 | IBC login completed. |
+| 05:33:31-32 | Read-Only API remained false; IBC changed auto-restart from **04:00 AM to 07:15 AM**. |
+| 05:33:51 | Bot recreated with the complete reviewed shared-client implementation. |
+| 05:36:09 | Both containers healthy; `/api/health` 200, `/health/ready` 503 (normal after hours). Harness confirmed IB connection, trading loop and publisher startup, with no ERROR/Traceback lines. |
+| 05:37:34 | Disposable client `9277`, using the deployed broker/factory code, passed shared-object identity, borrowed-provider disconnect isolation, concurrent owner recovery after diagnostic socket loss, and fresh server-time/positions/open-orders/executions/account-summary requests. |
+
+The first post-deploy diagnostic used a shortened 10-second connect timeout and
+one attempt: sharing passed, but immediate socket recovery raised
+`IBConnectionFailed`. Its underlying cause was not captured. Repeating with the
+normal 20-second timeout, three attempts and two-second retry delay passed both
+concurrent recovery calls; only informational farm codes `2104`, `2106`, `2158`
+were observed during that recovery. This is a bounded recovery observation, not
+proof that the first failure was caused by the shorter settings.
+Both probes used a disposable client and temporary execution journal, submitted
+or cancelled no orders, disconnected on exit and removed their temporary
+directories. They did not disconnect the production client's socket or invoke
+production warm-up.
+
+The next daily restart is November 11 **07:15 UTC / 02:15 EST**; the next
+market warm-up is **14:25 UTC / 09:25 EST**. Neither scheduled event has been
+observed yet. Record their actual outcomes here before claiming overnight
+recovery is proven.
 
 Successful historical queries are not proof of fresh market-hours ticks, a
 completed future warm-up, or the absence of trades during the failed session.
@@ -367,7 +396,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-09 legacy timer: remediated, recurrence guard added | Old gateway started at 13:20:18 UTC. Timer disabled, old units stopped, approved harness gateway recovery completed. Guard fix `035eb3c`. | Reconfirm live disabled/inactive state on each recurrence. Does not close the earlier re-login issue. |
 | 2026-11-09 execution reconnect bug: fix deployed, retry behavior observed | Reproduction plus `4d7fee5`; November 10 logs show retries and deferred equity/carryover reads on upstream failure. | Reconnect cannot restore a stuck Gateway session; keep risk-state protections intact. |
 | 2026-11-09 recovery-probe `10197`: **unresolved cause** | First QQQ/AMZN history requests failed; retry returned all five complete 390-bar RTH sessions and quotes. | Identify competing session/permissions; later success alone is not a permanent fix. |
-| 2026-11-10 repeated session failure: **investigated; mitigation pending approval/deployment** | Upstream server error at 05:18 UTC; `2110`/`2103` and account/order timeouts through market close. Legacy timer disabled; `4d7fee5` retries worked. | Move restart after maintenance and Sunday token reset; observe actual recovery/warm-up after rollout. Exact server-side reason for the stall remains unknown. |
+| 2026-11-10 repeated session failure: **mitigation deployed; scheduled-cycle observation pending** | Upstream server error at 05:18 UTC; `2110`/`2103` and account/order timeouts through market close. Legacy timer disabled; `4d7fee5` retries worked. Approved gateway action deployed `faf7e61` on Nov 11; IBC confirmed the 07:15 daily/Sunday schedules. | Observe actual scheduled restart and market warm-up. Exact server-side reason for the stall remains unknown. |
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
