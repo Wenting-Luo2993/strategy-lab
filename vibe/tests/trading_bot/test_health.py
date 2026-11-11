@@ -10,7 +10,25 @@ from vibe.trading_bot.api.health import (
     get_health_state,
     add_metric,
     create_health_app,
+    set_readiness_blocker,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_health_state(monkeypatch):
+    monkeypatch.setattr("vibe.trading_bot.api.health._health_state", HealthState())
+
+
+def test_dependency_failures_override_old_heartbeat_without_breaking_liveness(client):
+    set_health_state(is_alive=True, websocket_connected=True, recent_heartbeat=True)
+    set_readiness_blocker("account_risk", "Account request timed out")
+    set_readiness_blocker("market_data:QQQ", "No live quote")
+    assert client.get("/health/ready").status_code == 503
+    assert client.get("/api/health").status_code == 200
+    set_readiness_blocker("account_risk", None)
+    assert client.get("/health/ready").status_code == 503
+    set_readiness_blocker("market_data:QQQ", None)
+    assert client.get("/health/ready").status_code == 200
 
 
 @pytest.fixture

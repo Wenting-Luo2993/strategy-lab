@@ -143,6 +143,8 @@ async def test_broker_health_failure_sends_critical_discord_alert(monkeypatch):
 
 @pytest.fixture
 def reconnecting_warmup(monkeypatch, tmp_path):
+    from vibe.trading_bot.core.orchestrator import TradingOrchestrator
+
     now = datetime(2026, 11, 10, 9, 25, tzinfo=ZoneInfo("America/New_York"))
     socket = SimpleNamespace(connected=False)
     events = []
@@ -218,6 +220,12 @@ def reconnecting_warmup(monkeypatch, tmp_path):
             get_open_time=lambda *args: now.replace(minute=30),
         ),
         _persist_dashboard_account_and_positions=AsyncMock(),
+        _ib_upstream_error=1100,
+        _dependency_failures={"ib_upstream": "Connection lost"},
+        _dependency_alerted={"ib_upstream"},
+    )
+    orchestrator._report_dependency_failure = (
+        TradingOrchestrator._report_dependency_failure.__get__(orchestrator)
     )
     manager = WarmupPhaseManager(orchestrator)
     manager._cleanup_stale_data = Mock()
@@ -265,6 +273,9 @@ async def test_warmup_reconnects_trading_client_before_account_reads(reconnectin
     assert case.risk.halted_reason is None
     assert case.orchestrator.exchange._orders["existing"] is case.existing_order
     assert case.orchestrator.trade_executor is executor
+    assert case.orchestrator._ib_upstream_error is None
+    assert not case.orchestrator._dependency_failures
+    assert not case.orchestrator._dependency_alerted
 
 
 @pytest.mark.asyncio
@@ -311,6 +322,8 @@ async def test_disabled_health_checks_still_reconnect_trading_client(reconnectin
     case.broker.get_positions.assert_not_awaited()
     assert case.events == ["execution_connect", "account"]
     assert case.risk.snapshot is not None
+    assert case.orchestrator._ib_upstream_error == 1100
+    assert "ib_upstream" in case.orchestrator._dependency_failures
 
 
 @pytest.mark.asyncio

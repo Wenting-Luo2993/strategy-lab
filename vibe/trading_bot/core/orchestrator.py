@@ -13,7 +13,9 @@ from typing import Optional, List, Dict, Any
 from vibe.trading_bot.config.settings import AppSettings, get_settings
 from vibe.trading_bot.core.market_schedulers import create_scheduler, BaseMarketScheduler
 from vibe.trading_bot.core.health_monitor import HealthMonitor
-from vibe.trading_bot.api.health import start_health_server_task, set_health_state
+from vibe.trading_bot.api.health import (
+    start_health_server_task, set_health_state, set_readiness_blocker,
+)
 from vibe.trading_bot.data.manager import DataManager
 from vibe.trading_bot.data.aggregator import BarAggregator
 from vibe.trading_bot.data.providers.yahoo import YahooDataProvider
@@ -195,6 +197,9 @@ class TradingOrchestrator:
             self._max_backoff_seconds = 900  # 15 minutes max backoff (production)
         self.data_manager: Optional[DataManager] = None
         self._shared_ib_broker: Optional[InteractiveBrokersAPI] = None
+        self._ib_upstream_error: Optional[int] = None
+        self._dependency_failures: Dict[str, str] = {}
+        self._dependency_alerted: set[str] = set()
         self.exchange = self._create_execution_engine()
         add_execution_listener = getattr(self.exchange, "add_execution_listener", None)
         if add_execution_listener is not None:
@@ -287,8 +292,53 @@ class TradingOrchestrator:
                 connect_retry_delay_seconds=broker_config.ib_connect_retry_delay_seconds,
                 execution_db_path=broker_config.ib_execution_db_path,
             )
+            self._shared_ib_broker.ib.errorEvent += self._on_ib_connectivity_error
             return InteractiveBrokersExecutionEngine(self._shared_ib_broker)
         return MockExchange()
+
+    def _on_ib_connectivity_error(
+        self, req_id: int, code: int, message: str, *args: Any,
+    ) -> None:
+        if code in {1100, 2110}:
+            self._ib_upstream_error = code
+            reason = f"IB upstream unavailable (code {code})"
+        elif code in {1101, 1102}:
+            self._ib_upstream_error = None
+            reason = "Awaiting fresh account verification"
+        else:
+            return
+        self._dependency_failures["ib_upstream"] = reason
+        set_readiness_blocker("ib_upstream", reason)
+
+    async def _report_dependency_failure(
+        self, component: str, reason: Optional[str],
+    ) -> None:
+        set_readiness_blocker(component, reason)
+        if reason is None:
+            self._dependency_failures.pop(component, None)
+            self._dependency_alerted.discard(component)
+            return
+        first_failure = component not in self._dependency_alerted
+        self._dependency_failures[component] = reason
+        if first_failure:
+            self._dependency_alerted.add(component)
+            await self._send_operator_alert(
+                "Trading dependency unavailable",
+                f"{component}: {reason}. Readiness is blocked; verify broker "
+                "positions and working orders. Recovery is not confirmed.",
+            )
+
+    def _entry_dependencies_available(self, symbol: str) -> bool:
+        failures = {
+            key: value for key, value in self._dependency_failures.items()
+            if key in {"ib_upstream", "account_risk", f"market_data:{symbol}"}
+        }
+        if self._ib_upstream_error is not None:
+            failures["ib_upstream"] = f"IB code {self._ib_upstream_error}"
+        if failures:
+            self.logger.warning("Entry blocked for %s: %s", symbol, failures)
+            return False
+        return True
 
     @property
     def active_symbols(self) -> List[str]:
@@ -2358,6 +2408,8 @@ class TradingOrchestrator:
             return
         from vibe.trading_bot.utils.datetime_utils import get_market_now
 
+        if not self._entry_dependencies_available(symbol):
+            return
         now = get_market_now(self.market_scheduler)
         trading_date = now.date()
         strategy_cfg = self.ruleset.strategy
@@ -2422,6 +2474,8 @@ class TradingOrchestrator:
         or_source = getattr(self.exchange, "opening_range_source", self.OR_SOURCE)
 
         direction = strategy_cfg.direction_mode
+        if not self._entry_dependencies_available(symbol):
+            return
         result = await self.trade_executor.place_resting_stop_entries(
             symbol,
             long_level=orb_high if direction != "short_only" else None,
@@ -2969,7 +3023,12 @@ class TradingOrchestrator:
                     )
 
                     # Process each bar
-                    for symbol, bar in bars.items():
+                    for symbol in self.active_symbols:
+                        bar = bars.get(symbol)
+                        await self._report_dependency_failure(
+                            f"market_data:{symbol}",
+                            None if bar else "No live bar returned by the provider",
+                        )
                         if bar:
                             # Feed to bar aggregator (same as WebSocket flow)
                             aggregator = self.bar_aggregators.get(symbol)
@@ -2988,6 +3047,10 @@ class TradingOrchestrator:
 
                 except Exception as e:
                     self.logger.error(f"Error during REST polling: {e}", exc_info=True)
+                    for symbol in self.active_symbols:
+                        await self._report_dependency_failure(
+                            f"market_data:{symbol}", f"Polling failed ({type(e).__name__})",
+                        )
 
                     # Try fallback to secondary provider
                     if self.secondary_provider and self.active_provider != self.secondary_provider:
@@ -3772,6 +3835,8 @@ class TradingOrchestrator:
                                 current_bar=current_bar,
                                 trading_date=trading_date,
                             )
+                            if not self._entry_dependencies_available(symbol):
+                                continue
                             result = await self.trade_executor.execute_signal(
                                 symbol=symbol,
                                 signal=signal_value,
@@ -3907,17 +3972,28 @@ class TradingOrchestrator:
         risk_manager = self.portfolio_risk_manager
         if risk_manager is None or self.trade_executor is None:
             return
+        if self._ib_upstream_error is not None:
+            await self._report_dependency_failure(
+                "ib_upstream", f"IB upstream unavailable (code {self._ib_upstream_error})",
+            )
         try:
             risk_manager.evaluation_error = await self._evaluate_account_risk_limits(
                 risk_manager
             )
         except Exception as exc:
-            risk_manager.evaluation_error = str(exc)
+            risk_manager.evaluation_error = f"{type(exc).__name__}: {exc}"
             self.logger.error(
                 "[RISK] Account risk evaluation failed; entries blocked until it succeeds: %s",
-                exc,
+                risk_manager.evaluation_error,
                 exc_info=True,
             )
+        if self._ib_upstream_error is not None and risk_manager.evaluation_error is None:
+            risk_manager.evaluation_error = "IB upstream recovery is not verified"
+        await self._report_dependency_failure(
+            "account_risk",
+            "Account risk evaluation unavailable; new entries are blocked"
+            if risk_manager.evaluation_error is not None else None,
+        )
 
     async def _evaluate_account_risk_limits(
         self, risk_manager: PortfolioRiskManager
@@ -3949,6 +4025,8 @@ class TradingOrchestrator:
                 account.broker_equity,
             )
             return NET_LIQUIDATION_UNAVAILABLE
+        if self._ib_upstream_error is None:
+            await self._report_dependency_failure("ib_upstream", None)
         status = risk_manager.check_daily_loss(current_equity)
         if not status.triggered:
             return
@@ -3964,6 +4042,7 @@ class TradingOrchestrator:
 
         webhook_url = self.config.notifications.discord_webhook_url
         if not webhook_url:
+            self.logger.error("Daily loss alert not sent: Discord webhook not configured")
             return
         try:
             async with discord_notification_context(webhook_url) as notifier:
@@ -4357,13 +4436,14 @@ class TradingOrchestrator:
         """Discord SYSTEM_ERROR for conditions that need operator attention."""
         webhook_url = self.config.notifications.discord_webhook_url
         if not webhook_url:
+            self.logger.error("Operator alert not sent: Discord webhook not configured (%s)", title)
             return
         from vibe.trading_bot.notifications.payloads import SystemAlertPayload
         from vibe.trading_bot.utils.datetime_utils import get_market_now
 
         try:
             async with discord_notification_context(webhook_url) as notifier:
-                await notifier.send_system_alert(
+                delivered = await notifier.send_system_alert(
                     SystemAlertPayload(
                         event_type="SYSTEM_ERROR",
                         timestamp=get_market_now(self.market_scheduler),
@@ -4375,6 +4455,8 @@ class TradingOrchestrator:
                         version=BUILD_VERSION,
                     )
                 )
+                if not delivered:
+                    self.logger.error("Discord rejected operator alert: %s", title)
         except Exception as exc:
             self.logger.error("Failed to send operator alert: %s", exc, exc_info=True)
 

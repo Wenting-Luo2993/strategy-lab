@@ -1,14 +1,16 @@
 # IBKR Operational Reliability and Testing Product Specification
 
-**Status:** Proposed testing and assurance capabilities; documentation only.
-**Evidence baseline:** Monday November 9 and Tuesday November 10, 2026 incidents,
-including the November 11 UTC rollout recorded in documentation revision
-`38293d2`. Last verified production release: `faf7e61`.
+**Status:** Proposed CI/CD and operational assurance; focused source safeguards
+and local regressions implemented separately from pipeline enforcement.
+**Evidence baseline:** Monday November 9 through Wednesday November 11, 2026,
+including the successful restart/warm-up and subsequent intraday failure.
+Last observed production release: `faf7e61`. The new safeguards below are
+**not deployed**; deployment requires separate approval.
 
 The [gateway troubleshooting guide](gateway-troubleshooting.md) owns the detailed
 timeline, sanitized evidence, recovery procedures and incident closure status.
 This specification defines the desired outcomes, not an implementation plan.
-No later scheduled-cycle success is assumed.
+Only explicitly recorded observation windows establish operational success.
 
 ## Problem and intended outcome
 
@@ -30,11 +32,16 @@ availability or replace observing the next real trading session.
 | Competing authenticated Gateways, Monday | At 13:20 UTC the legacy systemd timer started an old Gateway beside Docker production. The timer was disabled, legacy services stopped and deployment preflight guards added. | This does not explain the earlier 05:16 UTC re-login, which predates the timer. Behavioral prevention needs a durable gate, not only script-text checks. |
 | Fragmented API-client ownership | Data/diagnostic recovery could leave execution disconnected. Execution recovery fix `4d7fee5` deployed Monday evening. The complete shared execution/data client and quote coordination shipped in `faf7e61` early November 11 UTC. Borrowed providers no longer own transport lifecycle; behavioral tests cover overlapping quote cancellation and recovery. | Multiple API clients to **one** Gateway are supported; they are not competing Gateway logins. Shared ownership fixes local lifecycle issues, not an upstream login/session stall. |
 | Upstream session stalled, Tuesday | Local API connections succeeded while account, position and order requests timed out with `2110`/`2103` warnings. Logs showed 56 failed execution-health cycles and safe deferral of equity/carryover reads. The legacy timer remained disabled. | The exact broker-side reason recovery stalled remains unknown. More local socket reconnections cannot necessarily repair the upstream session. Log counts are not an execution-journal audit. |
-| Restart timing | The old 04:00 UTC daily restart preceded North America maintenance; the Sunday-only cold restart also preceded Sunday's 01:00 ET token reset. Both schedules changed to 07:15 UTC (02:15 EST / 03:15 EDT), confirmed in actual IBC logs after approved deployment. | A deployed mitigation, not proof of root cause or future reliability. The next actual scheduled restart and warm-up had not been observed in the evidence baseline. |
+| Restart timing | The old 04:00 UTC daily restart preceded North America maintenance; the Sunday-only cold restart also preceded Sunday's 01:00 ET token reset. Both schedules changed to 07:15 UTC (02:15 EST / 03:15 EDT), confirmed in actual IBC logs after approved deployment. Wednesday's daily restart and warm-up subsequently succeeded. | A deployed mitigation, not proof of root cause or full-session reliability. The Sunday-only cold restart remains unobserved. |
 | Incomplete health signals | Container TCP health and process liveness passed despite unusable broker operations. Current readiness uses alive plus websocket-or-heartbeat, not a complete fresh broker-operation/data contract. The dashboard is not a Gateway/IBC log stream. | Need layered, phase-aware readiness and actionable failure classification; stale dashboard data alone does not identify a Gateway failure. |
 | Separate market-data conflict | Earlier `10197` competing-session/entitlement symptoms were followed by successful retries. | The cause remains unresolved; later historical-data success does not establish permanent live-data access or close this follow-up. |
+| Wednesday intraday dependency failure | Scheduled restart at 07:15 UTC and warm-up around 14:25 UTC succeeded, followed by 91 account-risk errors and 95 dashboard account/position persistence failures. Four `10197` errors preceded three `1100` events around 19:04 UTC and an IBC retry message. Legacy services/timer remained inactive. | The competing session's location and upstream failure cause remain unknown. Successful morning startup is not full-session reliability; dashboard fills are not authoritative current exposure. |
+| False readiness and missing escalation | Both health endpoints returned 200 after broker failure. No successful alert/cooldown marker was found in the retained window. | Known failure blockers and explicit alert attempts are fixed in source, not production. Full freshness/phase policy and durable notification delivery remain proposed. Absence of log markers does not establish webhook configuration or delivery state. |
+| Unconfirmed end-of-day exits | AMZN, MSFT and TSLA exits failed at 20:55 UTC because protective-stop cancellations were unacknowledged. Repeated cancellation produced `10148`; the client library locally labelled the trade `Cancelled`. | Source now rejects rejection-derived cancellation as terminal, avoids resending PendingCancel and alerts on uncertainty. These safeguards cannot make an unavailable broker execute an exit. Current positions and working protection remain unverified. |
+| Invalid bar after a data gap | All five symbols timed out near the close; ten completed-bar handlers failed on `NoneType.__format__`. An empty aggregation placeholder could be emitted when trading resumed in a later interval. | Source now drops the empty interval and starts a real bar from the new trade, without inventing OHLC data. Freshness/completeness assurance remains a separate requirement. |
+| Secondary symptoms | P&L request timeouts and `10185` cancellation errors were also observed. | Subscription lifecycle/causality is not established by this investigation; retain as follow-up rather than attributing every symptom to one root cause. |
 
-### Last verified position
+### Deployment baseline and latest operational position
 
 The approved `faf7e61` rollout recreated Gateway and bot around November 11
 05:31-05:35 UTC. Both containers were subsequently healthy; IB connection,
@@ -48,9 +55,43 @@ one-attempt/10-second probe failed immediate recovery; its underlying cause was
 not captured, so the shorter settings are not an established cause. The probes
 placed no test orders and reset no production risk state.
 
-These are bounded observations of the deployed code, not proof that the running
-bot completed its next scheduled restart, warm-up, or market-hours data cycle.
-Those observations remain pending in the incident record.
+Wednesday subsequently supplied positive evidence for the 07:15 UTC daily
+restart, 14:25 UTC warm-up and initial trading. Seven distinct filled order IDs
+were logged across five symbols; that is not seven completed round trips.
+The afternoon failure invalidates any full-day success claim. The last retained
+runtime log was 20:59:27 UTC; an independent read-only diagnostic connection then
+timed out during synchronization with upstream/data-farm warnings. It could not
+verify current positions or working orders and placed/cancelled no orders.
+No recovery or deployment has been performed under this follow-up assignment.
+The Sunday-only cold restart remains unobserved.
+
+### Source safeguards, not yet deployed
+
+The local changes address reproducible software defects, not the unknown broker
+outage cause:
+
+- Known upstream, account-risk and per-symbol polling failures block readiness
+  and relevant new entry submissions; recovery clears only the matching failure.
+  Upstream restoration messages alone do not release entries: fresh account
+  verification is required. Existing exit handling remains enabled.
+- Account exceptions include their type, even for an empty `TimeoutError`.
+  Existing risk behavior already blocked entries when evaluation failed; this
+  is not evidence that the earlier empty error string allowed trading.
+- Dependency and unconfirmed protective-cancellation failures attempt a
+  deduplicated operator alert. Missing webhook configuration and unsuccessful
+  delivery are logged. This is not durable delivery/retry assurance.
+- PendingCancel retries wait rather than send another cancel. Real ib_insync
+  `10147`/`10148` error events are tested: their local `Cancelled` state cannot
+  authorize a market close. A later authoritative confirmation can resolve it;
+  otherwise ambiguity remains fail-closed and requires reconciliation.
+- Empty interval placeholders are not emitted as real bars after data gaps.
+
+These are reactive safeguards, not a freshness TTL or complete broker-readiness
+redesign. Existing cached position reads are not authoritative reconciliation.
+The alert path does not yet guarantee retries after a failed delivery; already
+working orders require reconciliation rather than an assumption that blocking
+new submissions cancels them. No automatic Gateway restart or full warm-up loop
+was introduced, and no existing equity baseline, halt or journal is reset.
 
 ## Goals and boundaries
 
@@ -61,8 +102,9 @@ process liveness, local transport, upstream broker operations, execution/risk
 eligibility, per-symbol data and downstream publishing. An expected closed market
 or a valid risk halt must not be mistaken for an infrastructure failure.
 
-This specification does **not** implement CI/CD, tests, bot changes, monitoring,
-automation or production changes. It does not authorize restarts or deployment,
+This specification defines high-level acceptance, not CI job implementation.
+The source safeguards above do not implement the proposed pipeline, monitoring,
+or production changes. This document does not authorize restarts or deployment,
 introduce an auto-remediation loop, promise broker uptime, or change trading
 strategy/risk policy. Exact jobs, YAML, mock design, module APIs, commands,
 timeouts, alert thresholds and engineering task breakdown belong to later design.
@@ -94,21 +136,42 @@ Recorded local regression success is not equivalent to an automatically enforced
 PR gate. The stages below are proposed requirements, not claims of implemented
 end-to-end coverage.
 
+The new focused regressions additionally cover actual client-library cancellation
+error semantics and no-close safety in
+[resting-stop execution](../../../vibe/tests/trading_bot/test_resting_stop_entry.py),
+independent [readiness blockers](../../../vibe/tests/trading_bot/test_health.py),
+missing-symbol polling/recovery in
+[orchestrator integration](../../../vibe/tests/trading_bot/test_dashboard_orchestrator_integration.py),
+and [empty intervals after gaps](../../../vibe/tests/trading_bot/test_data.py).
+These local tests do not need production credentials or assert broker availability.
+The broad local run also exposed 34 existing dashboard API tests using the removed
+`httpx.AsyncClient(app=...)` argument. That test-harness compatibility gap must be
+resolved when establishing the full required gate; it is not evidence that these
+broker safeguards failed, nor a reason to silently declare the whole suite green.
+
 ## High-level assurance pipeline and gates
 
 | Priority / stage | Required capability and gate | Outcome-based acceptance |
 |---|---|---|
-| 1. PR regression CI | Automatically run relevant existing shared-client, warm-up and risk regression coverage for trading-bot changes, alongside applicable deployment guardrails. Failed required checks prevent promotion. | Broker-only and related lifecycle/risk changes receive meaningful coverage. A regression in borrower lifecycle isolation, quote cancellation, recovery or risk-state preservation is detected before release. CI operates without production access. |
+| 1. PR regression CI | Automatically run relevant shared-client, warm-up, risk, data, readiness, notification and order-lifecycle coverage for trading-bot changes, alongside deployment guardrails. Failed required checks prevent promotion. | Broker-only changes receive coverage. Detect borrower lifecycle errors, overlapping subscription cancellation, empty bars, silent dependency failures and unsafe cancellation acknowledgements before release, without production access. |
 | 2. Deployment safety integration gate | Exercise deployment behavior against an active legacy Gateway, an enabled-but-inactive timer, incompatible/foreign stacks and unsafe actions. Reject unsafe state before production mutation; bot-only updates preserve Gateway ownership. | Rejection leaves production workloads unchanged with an actionable reason. A safe bot-only update does not restart/recreate Gateway or create a competing authenticated session. Evidence demonstrates behavior, not merely matching script text. |
 | 2. Recovery integration gate | Exercise local API connectivity with unresponsive upstream requests, transport loss, concurrent recovery and restoration. Preserve a single transport owner and fail closed while prerequisites are unavailable. | Simulated upstream failure cannot report trading-ready merely because the socket is connected. Recovery preserves session equity and valid risk halts, avoids duplicate order/subscription effects, and restores eligible operations only after fresh evidence and reconciliation. |
+| 2. Trading-day failure and exit gate | Exercise healthy warm-up followed by partial/multi-symbol data loss, failed account reads, delayed fills, PendingCancel, rejected cancellation and unavailable end-of-day exits. Include the real client library's error-to-status behavior. | Missing data cannot fabricate bars or enable stale-data entries. Failures do not stop exit monitoring. Unconfirmed stop cancellation never authorizes a duplicate/unsafe close; unresolved exposure is explicitly reported, not counted as flattened. Existing orders and risk state survive recovery. |
+| 2. Alert and evidence gate | Exercise missing webhook configuration, delivery rejection/timeout, repeated failures, restoration and a new failure episode, plus downstream publishing loss. | Operators receive actionable, deduplicated incidents with layer/symbol, time, revision and uncertainty. Failed delivery is observable, with a designed bounded retry/escalation path. Dashboard/publisher success never substitutes for broker confirmation. |
 | 3. Approved deployment verification and readiness | Verify the running release, effective daily/Sunday restart configuration and bounded fresh read-only broker operations, rather than relying on old startup markers. Prefer the running bot's shared client; any diagnostic connection is temporary, isolated and order-free. | Results identify which layers passed, failed or remain unobserved, with timestamps and actionable failure categories. Fresh server-time/account/positions/orders/executions evidence is separate from live-data readiness. Diagnostics leave production client ownership, orders and risk state intact. |
-| 4. Scheduled operational assurance | Observe the actual post-maintenance restart, pre-market readiness and market-hours per-symbol data/publishing freshness. Distinguish expected outside-market behavior from failure. | The incident record includes actual restart and warm-up outcomes before claiming next-cycle recovery. During suitable market windows, each enabled symbol has fresh expected data and publishing progress; failures identify the affected layer/symbol and needed operator follow-up. |
+| 4. Full-session operational assurance | Observe actual daily/Sunday restart, pre-market readiness, intraday per-symbol data/account/publishing freshness, end-of-day broker reconciliation and cooldown/summary delivery. Distinguish expected outside-market behavior from failure. | Morning success cannot close a full-day incident. Each phase has evidence; end-of-day positions, working orders and protective coverage are broker-confirmed or explicitly unknown. Missing cooldown, stale publishing and failed exits escalate even if containers remain healthy. |
 
 Priorities are staged delivery order, not dates or reliability commitments.
 Existing behavioral tests should be wired into CI first; deployment and recovery
 integration gates then strengthen what is proven before release. Broker-aware
 verification and scheduled assurance extend that proof into approved operation,
 without turning CI into a production broker client.
+
+The promotion sequence is therefore **source regressions -> simulated deployment
+and partial-failure gates -> approved release -> fresh read-only verification ->
+whole-session observation**. A failed stage retains its evidence and blocks the
+unsafe next action; it does not automatically restart the Gateway, flatten
+positions or reset risk state.
 
 ## Evidence and completion criteria
 
@@ -123,5 +186,6 @@ outcomes, failures block unsafe promotion or entries as appropriate, and operato
 can identify the next safe action without exposing credentials/account details.
 An unresolved broker outage must remain visible and trading must remain safely
 gated; neither a green CI result nor a successful disposable probe closes it.
-The early Monday re-login, Tuesday's stalled recovery and `10197` follow-up remain
-separate uncertainties until the incident guide records evidence resolving them.
+The early Monday re-login, Tuesday/Wednesday upstream failures, `10197` origin,
+P&L/subscription symptoms and Wednesday's unresolved broker exposure remain
+separate follow-ups until the incident guide records evidence resolving them.

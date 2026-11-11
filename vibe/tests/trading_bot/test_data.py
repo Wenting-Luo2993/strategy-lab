@@ -29,6 +29,23 @@ from vibe.trading_bot.data.providers.yahoo import YahooDataProvider
 # Task 2.1: LiveDataProvider Base Class Tests
 # ============================================================================
 
+def test_trade_after_empty_elapsed_interval_does_not_emit_empty_bar(caplog):
+    aggregator = BarAggregator("5m")
+    emitted = []
+    aggregator.on_bar_complete(emitted.append)
+    start = datetime(2026, 11, 11, 14, 30, tzinfo=timezone.utc)
+    aggregator.add_trade(start, 100.0, 1)
+    aggregator.flush_if_elapsed(start + timedelta(minutes=5))
+
+    assert aggregator.add_trade(start + timedelta(minutes=11), 102.0, 1) is None
+    assert len(emitted) == 1
+    assert "not emitting an empty bar" in caplog.text
+    aggregator.flush_if_elapsed(start + timedelta(minutes=15))
+    assert [bar["open"] for bar in emitted] == [100.0, 102.0]
+    assert [bar["timestamp"].astimezone(timezone.utc) for bar in emitted] == [
+        start, start + timedelta(minutes=10),
+    ]
+
 
 class TestRateLimiter:
     """Tests for RateLimiter."""

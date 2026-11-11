@@ -419,6 +419,8 @@ class WarmupPhaseManager(BasePhase):
                 quote.symbol,
                 quote.market_price,
             )
+            self.orchestrator._ib_upstream_error = None
+            await self.orchestrator._report_dependency_failure("ib_upstream", None)
             self._critical_broker_alert_sent = False
             return True
 

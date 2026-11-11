@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -87,6 +88,45 @@ def test_completed_bar_persists_price_bar_and_outbox_event(tmp_path):
     orchestrator.dashboard_store.close()
     orchestrator.dashboard_outbox_store.close()
     orchestrator.trade_store.close()
+
+
+@pytest.mark.asyncio
+async def test_rest_polling_reports_missing_symbol_then_clears_on_recovery(tmp_path, monkeypatch):
+    from vibe.trading_bot.api.health import HealthState, get_health_state
+    from vibe.trading_bot.data.providers.interactive_brokers import InteractiveBrokersDataProvider
+
+    monkeypatch.setattr("vibe.trading_bot.api.health._health_state", HealthState())
+    orchestrator = TradingOrchestrator(
+        config=_dashboard_config(tmp_path), ruleset=_ruleset(),
+        market_scheduler=_scheduler(), testing_mode=True,
+    )
+    provider = InteractiveBrokersDataProvider(SimpleNamespace())
+    provider.get_multiple_latest_bars = AsyncMock(side_effect=[
+        {}, {"AAPL": {"timestamp": datetime(2026, 7, 20, 9, 35, tzinfo=timezone.utc),
+                      "close": 100.0, "volume": 1}},
+    ])
+    orchestrator.active_provider = provider
+    orchestrator._running = True
+    notify = AsyncMock()
+    monkeypatch.setattr(orchestrator, "_send_operator_alert", notify)
+    states = []
+
+    async def next_poll(_seconds):
+        states.append(dict(get_health_state().readiness_blockers))
+        if len(states) == 2:
+            orchestrator._running = False
+
+    monkeypatch.setattr("vibe.trading_bot.core.orchestrator.asyncio.sleep", next_poll)
+    try:
+        await orchestrator._start_rest_polling()
+        assert "market_data:AAPL" in states[0]
+        assert "market_data:AAPL" not in states[1]
+        assert notify.await_count == 1
+    finally:
+        orchestrator.dashboard_price_store.close()
+        orchestrator.dashboard_store.close()
+        orchestrator.dashboard_outbox_store.close()
+        orchestrator.trade_store.close()
 
 
 def test_paper_ruleset_builds_directional_stop_entry_intents(tmp_path):

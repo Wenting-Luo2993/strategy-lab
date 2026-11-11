@@ -401,7 +401,7 @@ class InteractiveBrokersAPI:
 
         while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.25)
-            status = getattr(trade.orderStatus, "status", "")
+            status = self.order_status_snapshot(broker_order_id)
             filled = float(getattr(trade.orderStatus, "filled", 0.0) or 0.0)
 
             if getattr(trade, "fills", None) and (
@@ -432,7 +432,7 @@ class InteractiveBrokersAPI:
                 broker_order_id,
                 trade,
                 submitted_order,
-                getattr(trade.orderStatus, "status", "") or "Partial",
+                self.order_status_snapshot(broker_order_id) or "Partial",
             )
         raise TimeoutError(f"Timed out waiting for fill on IB order {broker_order_id}")
 
@@ -468,9 +468,7 @@ class InteractiveBrokersAPI:
             }
             for order_id, order in self._submitted_orders.items()
             if order_id in self._trades
-            and str(
-                getattr(self._trades[order_id].orderStatus, "status", "") or ""
-            )
+            and self.order_status_snapshot(order_id)
             not in {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
         ]
 
@@ -733,11 +731,13 @@ class InteractiveBrokersAPI:
         while cancellation is in flight are durably ingested before returning.
         """
         trade = self._require_trade(broker_order_id)
-        self.ib.cancelOrder(trade.order)
-        deadline = asyncio.get_running_loop().time() + max(timeout_seconds, 0.1)
         terminal_statuses = {"Filled", "Cancelled", "ApiCancelled", "Inactive"}
+        status = self.order_status_snapshot(broker_order_id)
+        if status not in terminal_statuses and status != "PendingCancel":
+            self.ib.cancelOrder(trade.order)
+        deadline = asyncio.get_running_loop().time() + max(timeout_seconds, 0.1)
         while asyncio.get_running_loop().time() < deadline:
-            status = str(getattr(trade.orderStatus, "status", "") or "")
+            status = self.order_status_snapshot(broker_order_id)
             if status in terminal_statuses:
                 for fill in list(getattr(trade, "fills", None) or []):
                     self._ingest_fill(trade, fill)
@@ -915,7 +915,7 @@ class InteractiveBrokersAPI:
         status = trade.orderStatus
         return {
             "broker_order_id": broker_order_id,
-            "status": getattr(status, "status", None),
+            "status": self.order_status_snapshot(broker_order_id),
             "filled": getattr(status, "filled", None),
             "remaining": getattr(status, "remaining", None),
             "avg_fill_price": getattr(status, "avgFillPrice", None),
@@ -1007,7 +1007,14 @@ class InteractiveBrokersAPI:
         trade = self._trades.get(str(broker_order_id))
         if trade is None:
             return None
-        return str(getattr(trade.orderStatus, "status", "") or "") or None
+        status = str(getattr(trade.orderStatus, "status", "") or "") or None
+        entries = getattr(trade, "log", None) or []
+        # ib_insync turns order errors into a local Cancelled status, even
+        # when IB says a cancellation was rejected or is still pending.
+        if status == "Cancelled" and entries:
+            if getattr(entries[-1], "errorCode", 0) in {10147, 10148}:
+                return "PendingCancel"
+        return status
 
     async def submit_oca_brackets(
         self,

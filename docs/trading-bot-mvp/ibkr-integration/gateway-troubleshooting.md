@@ -222,7 +222,8 @@ that a connection retry itself is broken.
 The shared-client refactor was **deployed in the approved `faf7e61` rollout** after
 the initial 2026-11-11 investigation. It addresses lifecycle ownership and
 overlapping quote requests, not IBKR login availability. See section H for the
-bounded deployed-code probe results and pending scheduled-cycle observations.
+bounded deployed-code probe results; section I records the subsequent scheduled
+restart/warm-up success and intraday failure.
 
 ### E. API client ID collision versus broker-side connectivity loss
 
@@ -360,10 +361,10 @@ or cancelled no orders, disconnected on exit and removed their temporary
 directories. They did not disconnect the production client's socket or invoke
 production warm-up.
 
-The next daily restart is November 11 **07:15 UTC / 02:15 EST**; the next
-market warm-up is **14:25 UTC / 09:25 EST**. Neither scheduled event has been
-observed yet. Record their actual outcomes here before claiming overnight
-recovery is proven.
+At this rollout checkpoint, the next daily restart was November 11
+**07:15 UTC / 02:15 EST** and warm-up **14:25 UTC / 09:25 EST**.
+Both subsequently succeeded; see section I for those observations and the later
+intraday failure. The Sunday-only cold restart remains unobserved.
 
 Successful historical queries are not proof of fresh market-hours ticks, a
 completed future warm-up, or the absence of trades during the failed session.
@@ -411,10 +412,32 @@ authoritative broker position/order reconciliation after approved recovery or
 operator inspection. Do not automatically flatten, cancel protection, reset risk
 state or restart on this evidence alone.
 
-The risk-evaluation exception handler logs the failure but does not itself send a
+In deployed `faf7e61`, the risk-evaluation exception handler logs the failure but does not itself send a
 Discord alert. A lack of alerts is therefore not a health guarantee. The exact
 source of the competing session, reason for upstream recovery failure, and final
 position/order state remain unresolved.
+
+#### Source follow-up (not deployed)
+
+Focused source fixes now reject empty aggregation placeholders, block readiness
+and relevant new entries on known dependency failures, and attempt deduplicated
+dependency/uncertain-exit alerts. Missing webhook configuration and unsuccessful
+delivery are logged; delivery is not guaranteed or durably retried.
+
+Cancellation now waits on an existing PendingCancel instead of resending it.
+Real ib_insync error-event regressions confirm that `10147`/`10148` can set
+`Cancelled` locally without broker acknowledgement; this state is treated as
+unresolved, not permission to submit a market close. A real later confirmation
+can resolve the wait. Otherwise, reconcile with IBKR rather than assuming
+cancellation or protection.
+
+Upstream restoration messages alone cannot release entries: fresh account
+verification or the complete warm-up health path must also succeed. Existing
+risk halts, equity snapshots and exit monitoring are preserved. These changes
+do not implement freshness expiry, authoritative position reconciliation,
+automatic Gateway recovery or the proposed CI pipeline. They do not establish
+why IBKR failed or what Wednesday's final exposure was. Deployment is awaiting
+separate approval; see the [consolidated product spec](reliability-testing-product-spec.md).
 
 ## Recovery verification: what is enough to close an incident?
 
@@ -436,6 +459,9 @@ checks passed, failed or were not observed; do not collapse everything into "hea
 6. Observe the actual next scheduled gateway restart and next market warm-up
    before claiming overnight recovery is proven. A deliberate disconnect/reconnect
    of a separate diagnostic client covers only that probe's lifecycle.
+7. Observe the rest of the trading session, including broker-confirmed end-of-day
+   positions/working orders, unresolved protection/exit state, cooldown and summary
+   delivery. Morning success is not sufficient to close an intraday failure.
 
 Any active API probe must use a distinct unused client ID, bounded requests, no
 order submission/cancellation and a temporary execution-journal directory. Do not
@@ -453,7 +479,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-09 legacy timer: remediated, recurrence guard added | Old gateway started at 13:20:18 UTC. Timer disabled, old units stopped, approved harness gateway recovery completed. Guard fix `035eb3c`. | Reconfirm live disabled/inactive state on each recurrence. Does not close the earlier re-login issue. |
 | 2026-11-09 execution reconnect bug: fix deployed, retry behavior observed | Reproduction plus `4d7fee5`; November 10 logs show retries and deferred equity/carryover reads on upstream failure. | Reconnect cannot restore a stuck Gateway session; keep risk-state protections intact. |
 | 2026-11-09 recovery-probe `10197`: **unresolved cause** | First QQQ/AMZN history requests failed; retry returned all five complete 390-bar RTH sessions and quotes. | Identify competing session/permissions; later success alone is not a permanent fix. |
-| 2026-11-10 repeated session failure: **mitigation deployed; scheduled-cycle observation pending** | Upstream server error at 05:18 UTC; `2110`/`2103` and account/order timeouts through market close. Legacy timer disabled; `4d7fee5` retries worked. Approved gateway action deployed `faf7e61` on Nov 11; IBC confirmed the 07:15 daily/Sunday schedules. | Observe actual scheduled restart and market warm-up. Exact server-side reason for the stall remains unknown. |
+| 2026-11-10 repeated session failure: **mitigation deployed; next morning recovered** | Upstream server error at 05:18 UTC; `2110`/`2103` and account/order timeouts through market close. Legacy timer disabled; `4d7fee5` retries worked. Approved gateway action deployed `faf7e61` on Nov 11; the scheduled daily restart and warm-up then succeeded. | Exact server-side reason for the stall remains unknown; Wednesday's afternoon failure is separate evidence. Sunday cold restart remains unobserved. |
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
 | 2026-11-11 intraday failure: **open; current exposure unverified** | Scheduled 07:15 UTC restart and 09:25 EST warm-up succeeded. Later `10197`, then `1100`/IBC server error at 14:04 EST; three EOD exits failed. Post-close read-only synchronization failed with upstream/farm errors. | Verify authoritative positions and working orders, investigate competing session and recovery/alerting gaps. Healthy containers and API 200 did not imply broker readiness. See section I. |
 

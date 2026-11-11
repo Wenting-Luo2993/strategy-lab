@@ -237,10 +237,18 @@ class BarAggregator:
 
             else:
                 # Trade belongs to a future bar - complete current bar
-                completed_bar = self.current_bar.to_dict()
+                completed_bar = (
+                    self.current_bar.to_dict() if self.current_bar.trade_count else None
+                )
 
                 # Store completed bar for reference
-                self.previous_bar = self.current_bar
+                if completed_bar is not None:
+                    self.previous_bar = self.current_bar
+                else:
+                    logger.warning(
+                        "No trades for elapsed bar %s; not emitting an empty bar",
+                        self.current_bar_start_time,
+                    )
 
                 # Start new bar
                 self.current_bar = Bar(trade_bar_start)
@@ -250,7 +258,7 @@ class BarAggregator:
                 self.current_bar.add_trade(price, size)
 
                 # Call completion callback
-                if self._on_bar_complete:
+                if completed_bar is not None and self._on_bar_complete:
                     logger.info(f"[TRADE-TRIGGERED] Completing bar {completed_bar['timestamp']}")
                     self._on_bar_complete(completed_bar)
 

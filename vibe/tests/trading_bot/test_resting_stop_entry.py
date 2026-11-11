@@ -254,6 +254,39 @@ async def test_eod_close_cancels_the_protective_stop_before_the_market_order():
 
 
 @pytest.mark.asyncio
+async def test_unconfirmed_protection_cancel_alerts_once_and_never_sends_close(monkeypatch):
+    exchange = _mock()
+    await exchange.set_price("AAA", 100.0)
+    executor = _executor(exchange)
+    await _place(executor)
+    await exchange.set_price("AAA", 101.2)
+    await exchange.process_pending_orders()
+    buy = next(o for o in _orders(exchange, "entry") if o.side == "buy")
+    executor.mark_entry_filled(buy.order_id)
+    stop_id = executor.protective_stop_order_id("AAA")
+    alerts = []
+
+    async def alert(title, message):
+        alerts.append((title, message))
+
+    async def failed_cancel(order_id):
+        raise TimeoutError("No cancellation acknowledgement")
+
+    executor.on_alert = alert
+    monkeypatch.setattr(executor.order_manager, "cancel_order", failed_cancel)
+    before = len(exchange.get_all_orders())
+    for _ in range(2):
+        result = await executor._close_position("AAA", exit_reason="time_exit")
+        assert not result.success and not result.order_id
+    assert len(alerts) == 1
+    assert "No market close was sent" in alerts[0][1]
+    assert len(exchange.get_all_orders()) == before
+    assert executor.protective_stop_order_id("AAA") == stop_id
+    assert await exchange.get_position("AAA") is not None
+    await executor.order_manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_eod_race_with_a_filled_protective_stop_sends_no_market_order():
     exchange = _mock()
     await exchange.set_price("AAA", 100.0)
@@ -375,6 +408,49 @@ def _ib_api(tmp_path):
     api._submitted_orders = {}
     api.execution_store = IBExecutionStore(str(tmp_path / "ib.db"))
     return api
+
+
+@pytest.mark.asyncio
+async def test_ib_pending_cancel_is_not_resent_and_waits_for_confirmation(tmp_path):
+    api = _ib_api(tmp_path)
+    trade = SimpleNamespace(
+        order=SimpleNamespace(orderId=101),
+        orderStatus=SimpleNamespace(status="PendingCancel"), fills=[], log=[],
+    )
+    api._trades["101"] = trade
+    with pytest.raises(TimeoutError):
+        await api.cancel_order("101", timeout_seconds=0.1)
+    assert not getattr(api.ib, "cancelled", [])
+    trade.orderStatus.status = "Cancelled"
+    assert await api.cancel_order("101", timeout_seconds=0.1)
+    assert not getattr(api.ib, "cancelled", [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_code", [10147, 10148])
+async def test_ib_cancel_error_is_not_a_terminal_broker_acknowledgement(tmp_path, error_code):
+    from ib_insync import IB, Order as IBOrder, OrderStatus as IBOrderStatus, Stock, Trade
+
+    api = _ib_api(tmp_path)
+    api.ib = IB()
+    api.ib.wrapper.clientId = 201
+    trade = Trade(
+        Stock("AAA", "SMART", "USD"),
+        IBOrder(orderId=101, clientId=201),
+        IBOrderStatus(orderId=101, clientId=201, status="PendingCancel"),
+    )
+    api.ib.wrapper.trades[(201, 101)] = trade
+    api._trades["101"] = trade
+    entry, _ = _bracket("buy", 101.0, 99.0)
+    api._submitted_orders["101"] = entry
+    api.ib.wrapper.error(101, error_code, "Cancellation rejected", "")
+    assert trade.orderStatus.status == "Cancelled"
+    assert api.order_status_snapshot("101") == "PendingCancel"
+    assert api.list_open_orders()[0]["order"] is entry
+    with pytest.raises(TimeoutError):
+        await api.cancel_order("101", timeout_seconds=0.1)
+    api.ib.wrapper.orderStatus(101, "Cancelled", 0, 1, 0, 0, 0, 0, 201, "")
+    assert await api.cancel_order("101", timeout_seconds=0.1)
 
 
 def _bracket(side, level, stop):
@@ -522,6 +598,20 @@ def _or_minutes(day: date = SESSION, high: float = 101.0, low: float = 99.0, min
     frame.iloc[min(1, minutes - 1), frame.columns.get_loc("high")] = high
     frame.iloc[min(3, minutes - 1), frame.columns.get_loc("low")] = low
     return frame
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["market_data:AAA", "account_risk", "ib_upstream"])
+async def test_known_dependency_failure_blocks_resting_entry_until_recovery(tmp_path, failure):
+    orchestrator = _orchestrator(tmp_path)
+    await orchestrator.exchange.set_price("AAA", 100.0)
+    await orchestrator._report_dependency_failure(failure, "Unavailable")
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+    assert not _orders(orchestrator.exchange, "entry")
+    await orchestrator._report_dependency_failure(failure, None)
+    await orchestrator._maybe_place_resting_entries("AAA", dict(ORB))
+    assert len(_orders(orchestrator.exchange, "entry")) == 2
+    await orchestrator.trade_executor.order_manager.shutdown()
 
 
 @pytest.mark.asyncio

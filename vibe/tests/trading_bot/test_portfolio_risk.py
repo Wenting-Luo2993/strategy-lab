@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -555,6 +556,57 @@ async def test_risk_evaluation_errors_fail_closed_without_aborting(tmp_path, mon
     await orchestrator._enforce_account_risk_limits()
     assert manager.evaluation_error is None
     assert manager.entries_blocked_reason() is None
+
+
+@pytest.mark.asyncio
+async def test_empty_timeout_blocks_readiness_alerts_once_and_recovers(tmp_path, monkeypatch):
+    from vibe.trading_bot.api.health import HealthState, get_health_state
+
+    monkeypatch.setattr("vibe.trading_bot.api.health._health_state", HealthState())
+    orchestrator, manager, _, exchange, _ = await _wired_orchestrator(tmp_path, monkeypatch)
+    notify = AsyncMock()
+    monkeypatch.setattr(orchestrator, "_send_operator_alert", notify)
+    healthy_get_account = exchange.get_account
+    monkeypatch.setattr(exchange, "get_account", AsyncMock(side_effect=TimeoutError()))
+
+    await orchestrator._enforce_account_risk_limits()
+    await orchestrator._enforce_account_risk_limits()
+    assert manager.entries_blocked_reason() == RISK_EVALUATION_FAILED
+    assert "TimeoutError" in manager.evaluation_error
+    assert "account_risk" in get_health_state().readiness_blockers
+    assert notify.await_count == 1
+
+    monkeypatch.setattr(exchange, "get_account", healthy_get_account)
+    await orchestrator._enforce_account_risk_limits()
+    assert manager.evaluation_error is None
+    assert "account_risk" not in get_health_state().readiness_blockers
+    monkeypatch.setattr(exchange, "get_account", AsyncMock(side_effect=TimeoutError()))
+    await orchestrator._enforce_account_risk_limits()
+    assert notify.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_upstream_loss_needs_restoration_and_fresh_account_before_ready(tmp_path, monkeypatch):
+    from vibe.trading_bot.api.health import HealthState, get_health_state
+
+    monkeypatch.setattr("vibe.trading_bot.api.health._health_state", HealthState())
+    orchestrator, manager, _, exchange, _ = await _wired_orchestrator(tmp_path, monkeypatch)
+    monkeypatch.setattr(orchestrator, "_send_operator_alert", AsyncMock())
+    healthy_get_account = exchange.get_account
+    orchestrator._on_ib_connectivity_error(-1, 1100, "upstream lost")
+    assert not orchestrator._entry_dependencies_available("AAA")
+    await orchestrator._enforce_account_risk_limits()
+    assert "ib_upstream" in get_health_state().readiness_blockers
+    assert manager.entries_blocked_reason() == RISK_EVALUATION_FAILED
+    orchestrator._on_ib_connectivity_error(-1, 1102, "upstream restored")
+    assert not orchestrator._entry_dependencies_available("AAA")
+    monkeypatch.setattr(exchange, "get_account", AsyncMock(side_effect=TimeoutError()))
+    await orchestrator._enforce_account_risk_limits()
+    assert "ib_upstream" in get_health_state().readiness_blockers
+    monkeypatch.setattr(exchange, "get_account", healthy_get_account)
+    await orchestrator._enforce_account_risk_limits()
+    assert not get_health_state().readiness_blockers
+    assert orchestrator._entry_dependencies_available("AAA")
 
 
 @pytest.mark.asyncio

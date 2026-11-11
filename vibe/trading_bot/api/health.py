@@ -5,7 +5,7 @@ import threading
 from typing import Optional, Dict, Any
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from vibe.trading_bot.utils.logger import get_logger
 from vibe.trading_bot.version import BUILD_VERSION, BUILD_INFO
 
@@ -24,6 +24,7 @@ class HealthState(BaseModel):
     last_error: Optional[str] = None
     uptime_seconds: float = 0.0
     metrics: Dict[str, Any] = {}
+    readiness_blockers: Dict[str, str] = Field(default_factory=dict)
 
 
 # Thread-safe health state management
@@ -61,6 +62,15 @@ def set_health_state(
             _health_state.last_heartbeat = datetime.utcnow().isoformat()
 
 
+def set_readiness_blocker(component: str, reason: Optional[str]) -> None:
+    """Keep independent dependency failures from overwriting one another."""
+    with _health_lock:
+        if reason is None:
+            _health_state.readiness_blockers.pop(component, None)
+        else:
+            _health_state.readiness_blockers[component] = reason
+
+
 def get_health_state() -> HealthState:
     """Get current health state (thread-safe).
 
@@ -71,7 +81,7 @@ def get_health_state() -> HealthState:
 
     with _health_lock:
         # Create a copy to prevent external modification
-        state = _health_state.model_copy()
+        state = _health_state.model_copy(deep=True)
         state.uptime_seconds = (datetime.utcnow() - _start_time).total_seconds()
         return state
 
@@ -175,12 +185,14 @@ def create_health_app() -> FastAPI:
             "alive": state.is_alive,
             "websocket_connected": state.websocket_connected,
             "recent_heartbeat": state.recent_heartbeat,
+            "dependencies_ready": not state.readiness_blockers,
         }
 
         # Consider ready if alive and has recent heartbeat
         is_ready = all([
             state.is_alive,
             state.websocket_connected or state.recent_heartbeat,
+            not state.readiness_blockers,
         ])
 
         if not is_ready:

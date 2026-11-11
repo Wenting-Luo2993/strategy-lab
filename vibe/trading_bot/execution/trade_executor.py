@@ -244,6 +244,7 @@ class TradeExecutor:
         self._active_protective: Dict[str, str] = {}
         # Protective stops this executor is cancelling itself (not broker-ended).
         self._cancelling: set[str] = set()
+        self._unconfirmed_stop_cancels: set[str] = set()
         # Symbols whose position is being closed by the client right now.
         self._closing: set[str] = set()
         # Serialises a symbol's close and stop re-protection, so a replacement
@@ -774,7 +775,16 @@ class TradeExecutor:
                     "Failed to cancel protective stop %s for %s: %s", order_id, symbol, exc,
                     exc_info=True,
                 )
+                if order_id not in self._unconfirmed_stop_cancels:
+                    self._unconfirmed_stop_cancels.add(order_id)
+                    await self._alert(
+                        "Protective stop cancellation unconfirmed",
+                        f"{symbol}: cancellation of protective stop {order_id} failed. "
+                        "No market close was sent. The position and protection state "
+                        "must be verified at IBKR; do not assume the account is flat.",
+                    )
                 return "error"
+        self._unconfirmed_stop_cancels.discard(order_id)
         self._active_protective.pop(symbol, None)
         self._protective_since.pop(symbol, None)
         logger.info("Protective stop %s for %s: %s", order_id, symbol, outcome)
