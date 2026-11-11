@@ -7,13 +7,19 @@ recurs; keep observed evidence separate from suspected causes and deployed fixes
 For proposed testing gates and operational assurance outcomes, see the
 [reliability testing product specification](reliability-testing-product-spec.md).
 
-**Current incident: 2026-11-10, investigated 2026-11-11 UTC.** Production logs
+**Current incident: 2026-11-11 intraday upstream failure and unverified exits.**
+The scheduled restart and morning warm-up succeeded, but the Gateway lost upstream
+connectivity during trading. End-of-day exits failed for three symbols; a fresh
+read-only diagnostic could not retrieve current broker positions. See section I.
+
+**Previous incident: 2026-11-10, investigated 2026-11-11 UTC.** Production logs
 confirm Gateway's upstream connection failed during the IBKR maintenance window
 and remained broken through market hours. The legacy timer stayed disabled, and
 the bot's execution reconnect fix retried and blocked trading as designed.
 The server-side reason it did not recover is not established. The approved
 post-maintenance schedule and shared-client release `faf7e61` deployed on November
-11 UTC; the next scheduled restart and warm-up remain unobserved in this record.
+11 UTC; the next scheduled restart and warm-up subsequently succeeded, as recorded
+in section I, but did not prevent the new intraday failure.
 See the incident timeline below; the shared-client refactor alone is not a fix
 for an unauthenticated/unresponsive Gateway.
 
@@ -364,6 +370,52 @@ completed future warm-up, or the absence of trades during the failed session.
 The server-side cause of the stalled recovery, next-cycle reliability, and the
 previous `10197` conflict remain distinct follow-ups.
 
+### I. November 11: morning recovery succeeded, intraday upstream failure recurred
+
+Read-only inspection began at 21:01 UTC / 16:01 EST. Production remained at
+`faf7e61`; remote main was two documentation commits ahead. Both containers were
+healthy, had no Docker restarts or OOM flags, and legacy services/timer remained
+disabled and nonrunning. Harness preflight passed. No restart, deployment, order
+submission/cancellation or risk-state change was performed by the investigator.
+
+| UTC timestamp | EST | Evidence |
+|---|---|---|
+| 07:15:01 | 02:15:01 | IBC displayed scheduled restart in progress. This was an application restart, not a Docker container restart. |
+| 07:16:49 | 02:16:49 | Login completed; auto-restart remained set to 07:15 AM. |
+| 14:25:15-32 | 09:25:15-32 | Execution client 201 reconnected; execution health passed with zero positions and a QQQ quote. Warm-up completed. |
+| Morning session | Morning session | Resting entries were submitted for all five symbols; broker fill logs corroborated trading activity. Dashboard activity was not merely evidence of process liveness. |
+| 16:26:01 onward | 11:26:01 onward | Account-risk evaluation exceptions began. The retained-log scan through 20:59 UTC counted 91 such errors; the messages claimed entries were blocked, but this inspection did not audit enforcement. |
+| 17:44:12, 18:17:44, 18:47:41, 19:00:57 | 12:44:12, 13:17:44, 13:47:41, 14:00:57 | IB reported `10197`: no market data during competing live session. The source of that competition is not established; disabled local legacy services do not exclude an external session. |
+| 19:04:10-23 | 14:04:10-23 | Three `1100` upstream-connectivity-lost errors. |
+| 19:04:30 | 14:04:30 | IBC displayed `Attempt 3: server error, will retry in seconds...`. |
+| 20:55:16-47 | 15:55:16-47 | AMZN, MSFT and TSLA time-exit attempts failed because protective-stop cancellation did not reach a terminal state. |
+| 20:57:12 | 15:57:12 | AMZN cancellation retry received `10148`, already `PendingCancel`. The local wrapper subsequently displayed `Cancelled`; this is not independently verified broker cancellation or a closing fill. |
+| 20:58:27-20:59:27 | 15:58:27-15:59:27 | Live timestamped-data requests timed out for all five symbols. |
+| 21:01 onward | 16:01 onward | API health/readiness both returned 200 despite these failures. A temporary client 9278 failed connection synchronization with `TimeoutError` and codes `2110`, `2103`, `2105`, `2157`; it disconnected in `finally`. Current positions and working orders could not be established. |
+
+The final retained-log summary ended at 20:59:27 UTC. It contained seven distinct
+order IDs with `Filled` status: AMZN one, QQQ two, GOOGL two, MSFT one and TSLA one.
+These are order-log observations, not seven round-trip trades or an authoritative
+post-close position snapshot. No cooldown-complete, notification-sent or upstream
+`1101`/`1102` restoration marker was found in the scanned window.
+
+Other retained evidence included 95 dashboard account/position persistence failures,
+account P&L timeouts, P&L cancellation errors (`10185`), and ten completed-bar handler
+errors (`NoneType.__format__`). Repeated data-gap warnings compared the previous
+afternoon with today's open; their count is not a count of intraday outages.
+
+**Safety conclusion:** morning recovery is now observed, but full-session
+reliability is not. Do not infer that AMZN/MSFT/TSLA are flat, or that protective
+orders are active, from local cached state or dashboard rows. The next priority is
+authoritative broker position/order reconciliation after approved recovery or
+operator inspection. Do not automatically flatten, cancel protection, reset risk
+state or restart on this evidence alone.
+
+The risk-evaluation exception handler logs the failure but does not itself send a
+Discord alert. A lack of alerts is therefore not a health guarantee. The exact
+source of the competing session, reason for upstream recovery failure, and final
+position/order state remain unresolved.
+
 ## Recovery verification: what is enough to close an incident?
 
 Capture a timestamped post-recovery result for each relevant layer. Report which
@@ -403,6 +455,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-09 recovery-probe `10197`: **unresolved cause** | First QQQ/AMZN history requests failed; retry returned all five complete 390-bar RTH sessions and quotes. | Identify competing session/permissions; later success alone is not a permanent fix. |
 | 2026-11-10 repeated session failure: **mitigation deployed; scheduled-cycle observation pending** | Upstream server error at 05:18 UTC; `2110`/`2103` and account/order timeouts through market close. Legacy timer disabled; `4d7fee5` retries worked. Approved gateway action deployed `faf7e61` on Nov 11; IBC confirmed the 07:15 daily/Sunday schedules. | Observe actual scheduled restart and market warm-up. Exact server-side reason for the stall remains unknown. |
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
+| 2026-11-11 intraday failure: **open; current exposure unverified** | Scheduled 07:15 UTC restart and 09:25 EST warm-up succeeded. Later `10197`, then `1100`/IBC server error at 14:04 EST; three EOD exits failed. Post-close read-only synchronization failed with upstream/farm errors. | Verify authoritative positions and working orders, investigate competing session and recovery/alerting gaps. Healthy containers and API 200 did not imply broker readiness. See section I. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved
