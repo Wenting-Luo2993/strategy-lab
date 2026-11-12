@@ -4,8 +4,10 @@
 and local regressions implemented separately from pipeline enforcement.
 **Evidence baseline:** Monday November 9 through Wednesday November 11, 2026,
 including the successful restart/warm-up and subsequent intraday failure.
-Last observed production release: `faf7e61`. The new safeguards below are
-**not deployed**; deployment requires separate approval.
+Production safeguards: `d31d7a4`, deployed after separately approved Gateway
+recovery at November 12 00:08 UTC (November 11 evening EST). The CI/CD pipeline
+remains proposed. Connectivity recovered, but three positions remain open with
+no open orders returned by the post-recovery broker query.
 
 The [gateway troubleshooting guide](gateway-troubleshooting.md) owns the detailed
 timeline, sanitized evidence, recovery procedures and incident closure status.
@@ -36,8 +38,8 @@ availability or replace observing the next real trading session.
 | Incomplete health signals | Container TCP health and process liveness passed despite unusable broker operations. Current readiness uses alive plus websocket-or-heartbeat, not a complete fresh broker-operation/data contract. The dashboard is not a Gateway/IBC log stream. | Need layered, phase-aware readiness and actionable failure classification; stale dashboard data alone does not identify a Gateway failure. |
 | Separate market-data conflict | Earlier `10197` competing-session/entitlement symptoms were followed by successful retries. | The cause remains unresolved; later historical-data success does not establish permanent live-data access or close this follow-up. |
 | Wednesday intraday dependency failure | Scheduled restart at 07:15 UTC and warm-up around 14:25 UTC succeeded, followed by 91 account-risk errors and 95 dashboard account/position persistence failures. Four `10197` errors preceded three `1100` events around 19:04 UTC and an IBC retry message. Legacy services/timer remained inactive. | The competing session's location and upstream failure cause remain unknown. Successful morning startup is not full-session reliability; dashboard fills are not authoritative current exposure. |
-| False readiness and missing escalation | Both health endpoints returned 200 after broker failure. No successful alert/cooldown marker was found in the retained window. | Known failure blockers and explicit alert attempts are fixed in source, not production. Full freshness/phase policy and durable notification delivery remain proposed. Absence of log markers does not establish webhook configuration or delivery state. |
-| Unconfirmed end-of-day exits | AMZN, MSFT and TSLA exits failed at 20:55 UTC because protective-stop cancellations were unacknowledged. Repeated cancellation produced `10148`; the client library locally labelled the trade `Cancelled`. | Source now rejects rejection-derived cancellation as terminal, avoids resending PendingCancel and alerts on uncertainty. These safeguards cannot make an unavailable broker execute an exit. Current positions and working protection remain unverified. |
+| False readiness and missing escalation | Both health endpoints returned 200 after broker failure. No successful alert/cooldown marker was found in the retained window. Known failure blockers and alert attempts subsequently deployed in `d31d7a4`. | Full freshness/phase policy and durable notification delivery remain proposed. Absence of earlier log markers does not establish webhook configuration or delivery state. |
+| Unconfirmed end-of-day exits | AMZN, MSFT and TSLA exits failed at 20:55 UTC because protective-stop cancellations were unacknowledged. Repeated cancellation produced `10148`; the client library locally labelled the trade `Cancelled`. | Deployed safeguards reject rejection-derived cancellation as terminal, avoid resending PendingCancel and alert on uncertainty. After recovery, broker positions were MSFT -3, AMZN -7, TSLA +4, with no open orders returned. Deployment did not flatten exposure or establish working protection. |
 | Invalid bar after a data gap | All five symbols timed out near the close; ten completed-bar handlers failed on `NoneType.__format__`. An empty aggregation placeholder could be emitted when trading resumed in a later interval. | Source now drops the empty interval and starts a real bar from the new trade, without inventing OHLC data. Freshness/completeness assurance remains a separate requirement. |
 | Secondary symptoms | P&L request timeouts and `10185` cancellation errors were also observed. | Subscription lifecycle/causality is not established by this investigation; retain as follow-up rather than attributing every symptom to one root cause. |
 
@@ -62,12 +64,18 @@ The afternoon failure invalidates any full-day success claim. The last retained
 runtime log was 20:59:27 UTC; an independent read-only diagnostic connection then
 timed out during synchronization with upstream/data-farm warnings. It could not
 verify current positions or working orders and placed/cancelled no orders.
-No recovery or deployment has been performed under this follow-up assignment.
-The Sunday-only cold restart remains unobserved.
+The later approved bot-only rollout failed because execution synchronization still
+timed out against the existing Gateway. Separately approved Gateway + bot recovery
+then passed at November 12 00:08:20 UTC with `d31d7a4`, healthy containers and
+fresh startup markers. A fresh read-only snapshot at 00:08:51 UTC confirmed
+MSFT -3, AMZN -7 and TSLA +4 shares, with no open orders returned. This establishes
+open exposure, not successful EOD exits. No diagnostic orders or risk resets were
+performed. The Sunday-only cold restart and next full trading session remain
+unobserved; the guide records the rollout timeline.
 
-### Source safeguards, not yet deployed
+### Deployed safeguards, operational assurance still pending
 
-The local changes address reproducible software defects, not the unknown broker
+The `d31d7a4` changes address reproducible software defects, not the unknown broker
 outage cause:
 
 - Known upstream, account-risk and per-symbol polling failures block readiness
@@ -187,5 +195,6 @@ can identify the next safe action without exposing credentials/account details.
 An unresolved broker outage must remain visible and trading must remain safely
 gated; neither a green CI result nor a successful disposable probe closes it.
 The early Monday re-login, Tuesday/Wednesday upstream failures, `10197` origin,
-P&L/subscription symptoms and Wednesday's unresolved broker exposure remain
+P&L/subscription symptoms and Wednesday's confirmed open exposure without observed
+working protection remain
 separate follow-ups until the incident guide records evidence resolving them.

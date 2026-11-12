@@ -417,7 +417,7 @@ Discord alert. A lack of alerts is therefore not a health guarantee. The exact
 source of the competing session, reason for upstream recovery failure, and final
 position/order state remain unresolved.
 
-#### Source follow-up (not deployed)
+#### Source follow-up (deployed after approved recovery)
 
 Focused source fixes now reject empty aggregation placeholders, block readiness
 and relevant new entries on known dependency failures, and attempt deduplicated
@@ -436,8 +436,44 @@ verification or the complete warm-up health path must also succeed. Existing
 risk halts, equity snapshots and exit monitoring are preserved. These changes
 do not implement freshness expiry, authoritative position reconciliation,
 automatic Gateway recovery or the proposed CI pipeline. They do not establish
-why IBKR failed or what Wednesday's final exposure was. Deployment is awaiting
-separate approval; see the [consolidated product spec](reliability-testing-product-spec.md).
+why IBKR failed. The approved rollout and subsequent exposure snapshot are recorded
+below; see the [consolidated product spec](reliability-testing-product-spec.md).
+
+#### Approved evening rollout and broker reconciliation
+
+The user approved bot-only deployment, then separately approved Gateway + bot
+recovery after bot-only verification failed. All changes used `deploy.sh` from
+main, outside market hours; no investigator order submissions/cancellations or
+risk-state resets were performed.
+
+| UTC timestamp | EST | Evidence |
+|---|---|---|
+| November 11 23:39 | 18:39 | Preflight passed: clean main, legacy services/timer inactive and disabled, no foreign containers, 15 GB free. |
+| November 11 23:49:02 | 18:49:02 | Bot-only deployment of `d31d7a4` recorded `verify-failed`, exit 1. Startup exhausted three IB connection attempts; `reqExecutionsAsync()` timed out. API health failed and startup markers were absent. |
+| November 11 23:51:40 | 18:51:40 | Bot unhealthy with one Docker restart; Gateway unchanged since 05:31 UTC, TCP health still healthy. The filtered Gateway window retained the 19:04 server-error dialog and no later matching login-success marker. |
+| November 12 00:04:18 | November 11 19:04:18 | Approved Gateway recreation started. |
+| November 12 00:06:48-53 | November 11 19:06:48-53 | IBC login completed, daily restart remained 07:15 UTC and Read-Only API remained false. Sunday cold restart remained November 15 07:15 UTC. |
+| November 12 00:07:08 | November 11 19:07:08 | Bot recreated against the recovered Gateway. |
+| November 12 00:08:20 | November 11 19:08:20 | Harness printed `Gateway + bot OK at d31d7a4`, exit 0. Both containers healthy; IB connection, trading loop and publisher markers present; no ERROR/Traceback lines; API health 200. After-hours readiness subsequently returned expected 503. |
+| November 12 00:08:51 | November 11 19:08:51 | Disposable read-only client 9279 obtained fresh server time, positions and all-open-orders responses. Positions: MSFT -3, AMZN -7, TSLA +4 shares. All-open-orders response was empty. |
+| November 12 00:10:22 | November 11 19:10:22 | Corrected asynchronous account-summary probe returned 96 fresh rows including NetLiquidation; no account identifier or balance was printed. |
+
+Two diagnostic-reporting mistakes were corrected without changing production:
+`reqAccountSummaryAsync()` returns no row list, so testing its return value
+incorrectly printed `account_summary_received: false`; a follow-up used a
+synchronous accessor inside an async loop and raised an event-loop error.
+The final probe awaited the async accessor after the fresh request and succeeded.
+Neither mistake invalidates the separate position/open-order responses above.
+
+**Exposure remains open:** the account was not flat after recovery and the fresh
+all-open-orders response showed no working orders. Do not claim active protective
+stops or successful Wednesday EOD flattening. Operator action/reconciliation is
+required; deploying the fix did not close these positions. The execution request
+returned zero rows after UTC midnight; that is not a complete Wednesday fill audit.
+Diagnostic clients disconnected in `finally` and did not use a production journal.
+This recovery proves current startup/connectivity, not the next full trading day
+or the cause of the upstream/session conflict. Next daily restart is November 12
+07:15 UTC; next warm-up is November 12 09:25 EST.
 
 ## Recovery verification: what is enough to close an incident?
 
@@ -481,7 +517,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-09 recovery-probe `10197`: **unresolved cause** | First QQQ/AMZN history requests failed; retry returned all five complete 390-bar RTH sessions and quotes. | Identify competing session/permissions; later success alone is not a permanent fix. |
 | 2026-11-10 repeated session failure: **mitigation deployed; next morning recovered** | Upstream server error at 05:18 UTC; `2110`/`2103` and account/order timeouts through market close. Legacy timer disabled; `4d7fee5` retries worked. Approved gateway action deployed `faf7e61` on Nov 11; the scheduled daily restart and warm-up then succeeded. | Exact server-side reason for the stall remains unknown; Wednesday's afternoon failure is separate evidence. Sunday cold restart remains unobserved. |
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
-| 2026-11-11 intraday failure: **open; current exposure unverified** | Scheduled 07:15 UTC restart and 09:25 EST warm-up succeeded. Later `10197`, then `1100`/IBC server error at 14:04 EST; three EOD exits failed. Post-close read-only synchronization failed with upstream/farm errors. | Verify authoritative positions and working orders, investigate competing session and recovery/alerting gaps. Healthy containers and API 200 did not imply broker readiness. See section I. |
+| 2026-11-11 intraday failure: **connectivity recovered; exposure open** | Morning restart/warm-up succeeded; afternoon `10197`, then `1100`/IBC error and three failed EOD exits. Bot-only `d31d7a4` rollout failed against the stalled Gateway; separately approved Gateway recovery passed at Nov 12 00:08 UTC. Fresh positions: MSFT -3, AMZN -7, TSLA +4; no open orders returned. | Resolve open exposure/protection with operator authorization; investigate competing session/upstream cause and observe the next full session. Successful deployment is not successful flattening. See section I. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved
