@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "kind": "storage_copy_verification",
+  "verified_date_utc": "2026-11-13",
+  "bucket": "historical_data",
+  "bucket_public_at_verification": false,
+  "license_confirmation": "Owner confirmed private cloud storage and personal research use in conversation on 2026-11-13 UTC.",
+  "provenance_status": "Existing converted files; original source hashes and converter provenance have not been independently re-established. This is not an approved DatasetManifest.",
+  "exploration_end_inclusive": "2024-12-31",
+  "data_after_exploration_end": "Do not use for exploration or confirmation without the registered research protocol.",
+  "timezone": "America/New_York",
+  "first_timestamp": "2018-05-01T09:30:00-04:00",
+  "last_timestamp": "2026-04-27T15:59:00-04:00",
+  "validation": {
+    "download_sha256_matches_local": true,
+    "null_values": 0,
+    "duplicate_timestamps": 0,
+    "ohlcv_hard_errors": [],
+    "complete_session_coverage_verified": false
+  },
+  "objects": [
+    {
+      "symbol": "AMZN",
+      "key": "AMZN.parquet",
+      "bytes": 18489865,
+      "rows": 781297,
+      "sha256": "f8e9d0d35385f77b6f7301038cd1bddf60e6e1498610ed917f90ba865a763168"
+    },
+    {
+      "symbol": "GOOGL",
+      "key": "GOOGL.parquet",
+      "bytes": 18035608,
+      "rows": 779508,
+      "sha256": "5b6a8cefb0270ff26258733a87c7ed95b68edc3b0bb05cae4ac0cbc372357a37"
+    },
+    {
+      "symbol": "MSFT",
+      "key": "MSFT.parquet",
+      "bytes": 14539235,
+      "rows": 781019,
+      "sha256": "dd2df644ceac566210a6d0be7893b33e76ff792c13273f999987fe3a3e658e58"
+    },
+    {
+      "symbol": "QQQ",
+      "key": "QQQ.parquet",
+      "bytes": 14885262,
+      "rows": 781508,
+      "sha256": "8f1f8b31104d4098264e2ead3615d88f96194f843a8fed0939e3b0987022d1c2"
+    },
+    {
+      "symbol": "TSLA",
+      "key": "TSLA.parquet",
+      "bytes": 18989466,
+      "rows": 782006,
+      "sha256": "dfebb145ccab3c91225a60cd42571ab471c5d38876894ba846f3ba417411896e"
+    }
+  ]
+}

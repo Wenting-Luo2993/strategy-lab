@@ -9,6 +9,14 @@ recovery at November 12 00:08 UTC (November 11 evening EST). The CI/CD pipeline
 remains proposed. Connectivity recovered, but three positions remain open with
 no open orders returned by the post-recovery broker query.
 
+**Latest follow-up:** November 12's trading day also suffered an intraday
+upstream stall and failed EOD exits. Separately approved recovery at November 13
+03:38 UTC runs `a1b5cab` (same bot code, updated documentation). Fresh broker
+positions at 03:39 UTC: MSFT +3, TSLA +4, GOOGL +6, QQQ +2, with no open orders
+returned. This supersedes the earlier current-exposure snapshot, not its history.
+See troubleshooting section J. The user knows of no competing login; the source
+of `10197` and repeated upstream stalls remains unresolved.
+
 The [gateway troubleshooting guide](gateway-troubleshooting.md) owns the detailed
 timeline, sanitized evidence, recovery procedures and incident closure status.
 This specification defines the desired outcomes, not an implementation plan.
@@ -180,6 +188,13 @@ and partial-failure gates -> approved release -> fresh read-only verification ->
 whole-session observation**. A failed stage retains its evidence and blocks the
 unsafe next action; it does not automatically restart the Gateway, flatten
 positions or reset risk state.
+
+November 12 adds acceptance cases: a pre-open close timeout must not be treated
+as cancellation when its order can still fill at the open; cooldown's cached
+position report must be reconciled with fresh broker state rather than instructing
+operators to clear it by restarting; and intermittent recovery must not generate
+unbounded alert noise. The 86 logged system-error sends show why per-episode
+deduplication alone is not sufficient operational assurance.
 
 ## Evidence and completion criteria
 

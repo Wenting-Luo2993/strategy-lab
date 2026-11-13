@@ -475,6 +475,70 @@ This recovery proves current startup/connectivity, not the next full trading day
 or the cause of the upstream/session conflict. Next daily restart is November 12
 07:15 UTC; next warm-up is November 12 09:25 EST.
 
+### J. November 12: intraday failure recurred after successful morning recovery
+
+Read-only inspection began November 13 02:58 UTC / November 12 21:58 EST.
+Production was still `d31d7a4`; main was one documentation commit ahead.
+Both containers reported healthy, API liveness was 200 and after-hours readiness
+503. Legacy services/timer remained disabled/nonrunning; preflight passed.
+The user reported no other known session using the same IBKR username. This is
+useful context, not proof that competing authentication/entitlement is excluded.
+
+The retained-log window was November 12 05:00 UTC through November 13 03:00 UTC:
+
+| UTC timestamp | EST | Evidence |
+|---|---|---|
+| 07:16:33 | 02:16:33 | IBC login completed after the scheduled restart; daily restart remained 07:15 UTC. |
+| 14:25-14:28 | 09:25-09:28 | Warm-up attempted to flatten Wednesday's AMZN/MSFT/TSLA carryovers. It logged close-order fill timeouts before the market opened, then warm-up complete. |
+| 14:30:07-11 | 09:30:07-11 | Broker fill logs show those three carryover market orders filled at the open. Earlier timeout messages did not mean the orders had ceased to exist. |
+| 14:30-15:00 | 09:30-10:00 | Eight Filled log records across carryover closes and new entries; these are not eight round-trip trades. |
+| 16:17:14 onward | 11:17:14 onward | Live-data timeouts began; 288 matching data-failure lines in the window. |
+| 17:27:52 onward | 12:27:52 onward | Account-risk evaluation timeouts began; 77 such errors. Exception types are now visible. |
+| Around 19:22 | Around 14:22 | Intraday `1100` upstream loss; six `10197` competing-session errors occurred in the window. Seven total `1100` events include the earlier overnight episode and must not all be attributed to this intraday failure. |
+| 19:23:14 | 14:23:14 | IBC displayed `Attempt 3: server error, will retry in 10 seconds...`. |
+| 20:55-21:00 | 15:55-16:00 | Protective-stop cancellations timed out for all five symbols; exit handling remained fail-closed rather than submitting an unconfirmed close. |
+| 21:06:36 | 16:06:36 | Cooldown reported five locally tracked positions still open. Its suggestion to restart to clear stale state is not a safe reconciliation instruction: restarting does not flatten broker exposure. |
+| November 13 03:25:15 | November 12 22:25:15 | Fresh read-only client 9281 failed synchronization with TimeoutError and codes 2103, 2105, 2110, 2151, 2157. Current exposure could not yet be verified. |
+
+There were 86 logged `SYSTEM_ERROR` notification sends, unlike the previous
+day's retained-log silence. This proves send-path activity, not that every
+message was seen by the operator. Intermittent failure/recovery can produce many
+separate alert episodes despite per-episode deduplication; grouping and delivery
+assurance remain requirements. New diagnostics do not prevent an upstream outage.
+
+#### Approved recovery and authoritative snapshot
+
+After evidence capture, the user explicitly approved `deploy.sh gateway --yes`.
+The harness pulled documentation-only `a1b5cab`, recreated Gateway and bot, and
+recorded `action=gateway result=ok sha=a1b5cab` at November 13 03:38:16 UTC
+(November 12 22:38:16 EST). It printed `Gateway + bot OK`, exit 0; both
+containers were healthy, IB/loop/publisher markers present, API liveness 200
+and after-hours readiness 503. No ERROR/Traceback lines were reported.
+
+At 03:39:49 UTC a fresh read-only client 9282 obtained server time, positions,
+all open orders and 96 account-summary rows including NetLiquidation:
+
+| Symbol | Broker position (shares) |
+|---|---:|
+| MSFT | +3 |
+| TSLA | +4 |
+| GOOGL | +6 |
+| QQQ | +2 |
+
+**No open orders were returned.** AMZN was absent from the position response;
+the reason it differs from cooldown's local five-position report has not been
+established by a fill audit. The four remaining positions need operator
+reconciliation/action; no active protection is demonstrated. Diagnostic clients
+disconnected in `finally`; no investigator orders/cancellations or risk reset
+were performed.
+
+The recurring upstream stall and origin of `10197` remain unresolved. The
+disabled local timer is not an established explanation. Further investigation
+should correlate IBKR authentication/session history and Gateway evidence around
+14:22 EST, and distinguish market-data permission/session conflicts from account
+connectivity loss. Another successful restart is recovery, not root-cause closure.
+Next scheduled restart: November 13 07:15 UTC; next warm-up: November 13 09:25 EST.
+
 ## Recovery verification: what is enough to close an incident?
 
 Capture a timestamped post-recovery result for each relevant layer. Report which
@@ -518,6 +582,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-10 repeated session failure: **mitigation deployed; next morning recovered** | Upstream server error at 05:18 UTC; `2110`/`2103` and account/order timeouts through market close. Legacy timer disabled; `4d7fee5` retries worked. Approved gateway action deployed `faf7e61` on Nov 11; the scheduled daily restart and warm-up then succeeded. | Exact server-side reason for the stall remains unknown; Wednesday's afternoon failure is separate evidence. Sunday cold restart remains unobserved. |
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
 | 2026-11-11 intraday failure: **connectivity recovered; exposure open** | Morning restart/warm-up succeeded; afternoon `10197`, then `1100`/IBC error and three failed EOD exits. Bot-only `d31d7a4` rollout failed against the stalled Gateway; separately approved Gateway recovery passed at Nov 12 00:08 UTC. Fresh positions: MSFT -3, AMZN -7, TSLA +4; no open orders returned. | Resolve open exposure/protection with operator authorization; investigate competing session/upstream cause and observe the next full session. Successful deployment is not successful flattening. See section I. |
+| 2026-11-12 intraday recurrence: **recovered; four positions open** | Scheduled login and initial trading succeeded; data/account failures, six `10197` events and an afternoon upstream stall followed. All five locally tracked EOD exits failed. Approved Gateway recovery succeeded Nov 13 03:38 UTC at `a1b5cab`. | Fresh broker positions: MSFT +3, TSLA +4, GOOGL +6, QQQ +2; no open orders returned. Resolve exposure, audit AMZN discrepancy, investigate recurring upstream cause and observe next full session. See section J. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved

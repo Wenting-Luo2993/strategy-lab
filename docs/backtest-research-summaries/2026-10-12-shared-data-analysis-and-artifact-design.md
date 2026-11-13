@@ -20,6 +20,47 @@ remote artifact previews for the P8/P13 research surfaces.
 5. Legacy/pre-P2b results are excluded from current validated analysis by
    default. They may be added as a visibly distinct overlay.
 
+## November 13 storage-copy handoff
+
+The owner manually uploaded five existing Parquet files to the existing research
+Supabase project's **private** `historical_data` bucket. Read-only API inspection
+confirmed `public=false`. Authenticated downloads of AMZN, GOOGL, MSFT, QQQ and
+TSLA matched the local files by SHA-256 and length (84,939,436 bytes total).
+Basic OHLCV validation found no null values, duplicate timestamps or hard errors.
+This does not establish complete session coverage or recover original converter
+provenance.
+
+The portable verification inventory is
+[`config/research/historical_data_snapshot.json`](../../config/research/historical_data_snapshot.json).
+These objects are ordinary Storage uploads, **not** registered approved
+`research-datasets` manifests. Do not invent vendor-source hashes or use
+`datasets sync <dataset_id>` against this bucket without completing the separate
+registry/provenance process. Existing filenames are mutable: refuse a download
+that does not match the pinned checksum rather than silently accepting an overwrite.
+
+For a cloud checkout:
+
+1. Obtain owner-provisioned access to this project/bucket without exposing keys in
+   chat, logs, command arguments or Git. Prefer an authenticated identity with
+   bucket-scoped SELECT policy, or short-lived signed object URLs. A service-role
+   key bypasses RLS across the project; a second key does not make it read-only.
+   The cloud downloader does not need the owner's upload/admin capability.
+2. Read the inventory from the reviewed commit. For each object, use Supabase
+   Storage's authenticated download endpoint
+   `/storage/v1/object/authenticated/historical_data/<SYMBOL>.parquet` with the
+   appropriate API key and authenticated token, or use its signed download URL.
+3. Stream to a temporary file, verify the expected byte length and SHA-256,
+   then rename to the local `<SYMBOL>.parquet`. Keep verified data outside Git
+   and configure `BACKTEST__DATA_DIR` to that directory. Never log signed URLs.
+4. The files extend through April 27, 2026. Exploration remains restricted to
+   **May 1, 2018 through December 31, 2024**; explicitly pass the end date.
+   Providing cloud storage is not authorization to consume held-out periods.
+
+The local source was the owner's copy under this session's `vibe/data/parquet`;
+the main checkout was not accessed. The owner confirmed the licence permits
+private cloud storage and personal research use. No credentials were transferred
+to another session, and no Storage policies were changed during verification.
+
 ## Candidate QQQ snapshot
 
 The archive at
