@@ -72,6 +72,11 @@ to those local-only artifacts.
 ### Browser credential boundary
 
 Only `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are accepted.
+Trading and research use this same project URL and public anon/publishable key
+(stored in `NEXT_PUBLIC_SUPABASE_ANON_KEY`); no separate research browser key
+is needed. Read-only access comes from database
+grants and RLS policies, not from the key's name. These public credentials do
+not grant access to the private historical-data bucket.
 The build fails if a research/Supabase service-role variable is present or if
 the anonymous-key setting contains a service-role JWT. Do not add
 `RESEARCH_SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, or any
@@ -156,3 +161,12 @@ The dashboard is client-rendered from static fixtures or public Supabase REST
 reads and does not require a server runtime after export. Configure
 `NEXT_PUBLIC_RESEARCH_DATA_SOURCE=supabase` only after the select-only RLS schema
 has been applied to the intended project.
+
+The GitHub Pages workflow defaults the research data source to
+`NEXT_PUBLIC_DASHBOARD_DATA_SOURCE`, using the same two public Supabase secrets
+for both routes. If neither data-source variable is configured, both use
+fixtures. Set the GitHub variable `NEXT_PUBLIC_RESEARCH_DATA_SOURCE=fixture`
+to keep research on demo data explicitly, or `supabase` to enable it independently.
+For local development or other hosts, set each route's data-source variable
+explicitly. Changing these build-time settings requires rebuilding the static
+site; adding or rotating a separate research key is not necessary.
