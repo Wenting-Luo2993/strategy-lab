@@ -7,10 +7,14 @@ recurs; keep observed evidence separate from suspected causes and deployed fixes
 For proposed testing gates and operational assurance outcomes, see the
 [reliability testing product specification](reliability-testing-product-spec.md).
 
-**Current incident: 2026-11-11 intraday upstream failure and unverified exits.**
-The scheduled restart and morning warm-up succeeded, but the Gateway lost upstream
-connectivity during trading. End-of-day exits failed for three symbols; a fresh
-read-only diagnostic could not retrieve current broker positions. See section I.
+**Current incident: 2026-11-13 intermittent live-data timeouts and `10197`.**
+Read-only inspection found missing quote snapshots followed by resumed bars,
+overlapping account-summary requests, and intermittent VM scheduling/swap pressure.
+Local regressions reproduce a packet-buffer race and account-summary overlap;
+fixes are implemented on the investigation branch, **not deployed**. A later
+`10197` establishes a separate broker-reported market-data session conflict whose
+source remains unknown. See section K. Earlier exposure snapshots in I/J are
+historical, not current position or protection verification.
 
 **Previous incident: 2026-11-10, investigated 2026-11-11 UTC.** Production logs
 confirm Gateway's upstream connection failed during the IBKR maintenance window
@@ -191,6 +195,23 @@ This is a market-data session conflict, not proof of duplicate API client IDs.
 Multiple API clients connected to one gateway are not separate IBKR logins.
 Identify which live/paper/TWS/Gateway sessions are active and verify the account's
 market-data sharing permissions with the operator.
+
+Include the **associated live username**, not just another login with the paper
+username. The [official IBKR paper-data FAQ](https://www.interactivebrokers.com/support/faq/content/market-data-considerations-paper-trading-1136176599)
+documents that a paper session sharing a live user's subscriptions receives no
+data when both sessions run on different devices. Multiple sockets to the same
+Gateway are a different case. This mechanism is not proof of the source of a
+particular `10197`.
+
+Ask about already-running desktop/mobile/trading-enabled browser sessions first.
+Do not open another brokerage session just to inspect settings during an incident.
+Review the linked sharing user via an existing appropriate session or an approved
+maintenance window: [Client Portal paper-account settings](https://www.ibkrguides.com/clientportal/papertradingaccount.htm).
+Do not disable sharing as a supposed live-data fix: paper may then receive only
+delayed data. If session inventory does not explain the error, preserve its UTC
+time/request ID and ask IBKR support to investigate session/entitlement state.
+Do not invent a historical-login audit screen or assume support has established
+a cause before it responds.
 
 During the November 9 recovery checks, the first data probe emitted `10197` and
 QQQ/AMZN history requests failed; a later retry returned complete sessions for all
@@ -539,6 +560,77 @@ should correlate IBKR authentication/session history and Gateway evidence around
 connectivity loss. Another successful restart is recovery, not root-cause closure.
 Next scheduled restart: November 13 07:15 UTC; next warm-up: November 13 09:25 EST.
 
+### K. November 13: intermittent snapshot failures, client races and later `10197`
+
+Inspection used the operator-authorized SSH connection and read-only harness,
+filtered logs, container state/resources and host `vmstat`. No diagnostic broker
+client, orders, cancellations, risk resets, restart or deployment were performed.
+The host checkout remained `a1b5cab`; `status` and `check` passed at approximately
+16:46 UTC / 11:46 EST. Both containers had zero Docker restarts and no OOM flag;
+the scheduled Gateway login completed at 07:16:46 UTC. Legacy units/timer remained
+disabled/nonrunning. The running bot still has the earlier `d31d7a4` safeguards;
+later main commits through `1dd360d` do not contain a bot fix for this incident.
+
+| UTC timestamp | EST | Evidence |
+|---|---|---|
+| 14:30:25 | 09:30:25 | Three `322` errors: maximum account-summary requests exceeded. QQQ snapshot timed out. |
+| 15:55:46 | 10:55:46 | AMZN timestamped-live-quote request timed out; a no-live-bar alert followed. Later completed bars show data resumed. |
+| 16:34:42-49 | 11:34:42-49 | GOOGL quote timed out and alert send was logged; subsequent completed bars resumed. |
+| About 16:46-48 | About 11:46-48 | Harness initially showed readiness 200. One direct request timed out; a later request returned 503. QQQ/AMZN snapshots timed out at 16:47:01/20. |
+| 16:47-48 | 11:47-48 | Gateway CPU snapshot about 204%; host load average 7.23. Two one-second `vmstat` interval rows showed 32-38% steal, one 39% I/O wait, with active swap-in/out. These are short samples, not proof of a sustained bottleneck or the cause of every timeout. |
+| 16:50:13-15 | 11:50:13-15 | All five symbols emitted completed 11:45 bars; QQQ/AMZN each contained one sampled quote. Recovery was intermittent, not a complete outage throughout the window. |
+| 16:50:30 | 11:50:30 | Another QQQ live-quote timeout. |
+| 16:50:38.943 | 11:50:38.943 | `10197`, request 2277: `No market data during competing live session`. No corresponding IBC transition was retained by the filtered 16:49-16:53 window. |
+| About 16:52 | About 11:52 | Six further one-second interval samples mostly returned to 0-2% steal, with 0-19% I/O wait and intermittent swap I/O. Ignore `vmstat`'s initial since-boot row when comparing intervals. |
+| About 17:05-06 | About 12:05-06 | Process-name-only inventory found one Java process on the host, belonging to the expected Gateway container, and only the two expected running containers. Wrapper counts since 14:15 had risen to two `10197` and eight `10185`; `322` remained three. |
+
+Through the earlier 16:48 inspection, the retained wrapper-error counts since
+14:15 UTC were three `322` and seven `10185` (P&L cancellation not subscribed),
+not `1100`/`10197`. The later `10197` changes that classification; do not describe
+the whole day as free of session-conflict errors. P&L timeout/cancellation symptoms
+remain unresolved. The operator explicitly confirmed: **no IBKR session outside
+the VM at any point in time**. Do not attribute `10197` to an outside login contrary
+to that information. The process snapshot also found no current duplicate local
+Gateway, but cannot reconstruct prior processes or IBKR's server-side session
+state. The origin of the broker-reported conflict is therefore unresolved; ask
+IBKR to investigate stale/session-entitlement state rather than treating an
+external login as established. No fresh broker position/open-order reconciliation
+was performed during this investigation.
+
+#### Reproduced client defects and branch-only fixes
+
+- **Packet-buffer race:** `ib_insync 0.9.86` clears each pending ticker's
+  `tickByTicks` at the next `tcpDataArrived`. Polling that list every 50 ms can miss
+  an update that was received and already cleared. The new implementation captures
+  the quote synchronously in `Ticker.updateEvent` and awaits that captured result.
+  It does not accept a pre-existing buffer without a new update. Tests reproduce
+  tick arrival followed by clearing before the polling task can resume.
+- **Account-summary overlap:** execution, risk and dashboard consumers share one
+  broker but previously opened independent summary subscriptions concurrently.
+  A per-broker lock now covers the complete owned request/read/cancel lifecycle,
+  including timeout and cancellation. This leaves room for IB's initial summary
+  subscription within its two-active-summary limit. Tests reproduce overlap and
+  verify the next request starts only after the previous cleanup.
+
+Quote pacing, the caller's full timeout budget, shared-consumer ownership,
+disconnect generation checks, cancellation of both subscriptions and fail-closed
+entry/readiness blockers are preserved. Tick and disconnect callbacks are removed
+on success, timeout, cancellation and partial setup failure. These changes
+preserve the library-provided tick timestamp; they do not independently certify
+its exchange-time provenance. Before the fix, five new regression cases failed;
+after it, 273 related broker, execution, data-ingestion, risk and readiness tests
+passed.
+
+**Status: implemented locally, not deployed or live-verified.** These fixes remove
+reproducible client failure modes; they do not explain all observed timeouts,
+repair VM contention, resolve `10197`, guarantee P&L delivery or establish that
+the earlier upstream-stall cause is fixed. Keep the approved deployment procedure
+and market-hours restrictions. After an approved rollout, observe fresh data for
+all five symbols, account requests and the full session; separately verify the
+linked live/paper sharing relationship without creating another login, and escalate the
+sanitized `10197` timeline to IBKR support. No delayed-data fallback or forced
+session takeover was added.
+
 ## Recovery verification: what is enough to close an incident?
 
 Capture a timestamped post-recovery result for each relevant layer. Report which
@@ -583,6 +675,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
 | 2026-11-11 intraday failure: **connectivity recovered; exposure open** | Morning restart/warm-up succeeded; afternoon `10197`, then `1100`/IBC error and three failed EOD exits. Bot-only `d31d7a4` rollout failed against the stalled Gateway; separately approved Gateway recovery passed at Nov 12 00:08 UTC. Fresh positions: MSFT -3, AMZN -7, TSLA +4; no open orders returned. | Resolve open exposure/protection with operator authorization; investigate competing session/upstream cause and observe the next full session. Successful deployment is not successful flattening. See section I. |
 | 2026-11-12 intraday recurrence: **recovered; four positions open** | Scheduled login and initial trading succeeded; data/account failures, six `10197` events and an afternoon upstream stall followed. All five locally tracked EOD exits failed. Approved Gateway recovery succeeded Nov 13 03:38 UTC at `a1b5cab`. | Fresh broker positions: MSFT +3, TSLA +4, GOOGL +6, QQQ +2; no open orders returned. Resolve exposure, audit AMZN discrepancy, investigate recurring upstream cause and observe next full session. See section J. |
+| 2026-11-13 intermittent live-data failures: **client fixes not deployed; session conflict unresolved** | QQQ/AMZN/GOOGL snapshot timeouts interspersed with resumed bars; three summary-limit errors, intermittent scheduler/swap pressure and later `10197` at 16:50:38.943 UTC. Packet-buffer loss and summary overlap reproduced and fixed locally. | Approved rollout and live verification remain pending. Operator confirms no sessions outside VM; current process snapshot found one Gateway JVM. Investigate broker-side session/sharing state; do not infer an outside login, one cause for every timeout, or current exposure from I/J. See section K. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved

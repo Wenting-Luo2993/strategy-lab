@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from ib_insync import Ticker
 
 import vibe.trading_bot.brokers.interactive_brokers as ib_module
 from vibe.trading_bot.data.providers.factory import DataProviderFactory
@@ -22,9 +23,13 @@ class EventHook:
         self.handlers.append(handler)
         return self
 
-    def emit(self):
+    def __isub__(self, handler):
+        self.handlers.remove(handler)
+        return self
+
+    def emit(self, *args):
         for handler in self.handlers:
-            handler()
+            handler(*args)
 
 
 class ControlledIB:
@@ -74,7 +79,7 @@ class ControlledIB:
     def reqMktData(self, contract, *args):
         assert contract.symbol not in self.active, "Overlapping subscription!"
         self.active.add(contract.symbol)
-        ticker = SimpleNamespace(last=100.0, tickByTicks=[])
+        ticker = Ticker(last=100.0)
         self.tickers[contract.symbol] = ticker
         self.events.append(("start", contract.symbol))
         return ticker
@@ -98,6 +103,7 @@ class ControlledIB:
         self.tickers[symbol].tickByTicks.append(
             SimpleNamespace(time=timestamp, bidPrice=99.0, askPrice=101.0)
         )
+        self.tickers[symbol].updateEvent.emit(self.tickers[symbol])
         return timestamp
 
 
@@ -184,6 +190,56 @@ async def test_same_contract_provider_and_execution_share_one_live_request(share
 
 
 @pytest.mark.asyncio
+async def test_live_tick_is_captured_before_next_packet_clears_buffer(shared_broker):
+    broker, ib = shared_broker
+    quote_task = asyncio.create_task(broker.get_market_data("QQQ", timeout_seconds=0.2))
+    await started(ib, "QQQ")
+
+    timestamp = ib.emit("QQQ")
+    ib.tickers["QQQ"].tickByTicks.clear()
+    ib.tickers["QQQ"].updateEvent.emit(ib.tickers["QQQ"])
+
+    quote = await asyncio.wait_for(quote_task, timeout=1)
+    assert quote.timestamp == timestamp
+    assert quote.bid == 99.0
+    assert quote.ask == 101.0
+    assert len(ib.tickers["QQQ"].updateEvent) == 0
+
+
+@pytest.mark.asyncio
+async def test_buffered_tick_without_new_update_is_not_a_fresh_quote(shared_broker):
+    broker, ib = shared_broker
+    quote_task = asyncio.create_task(broker.get_market_data("QQQ", timeout_seconds=0.1))
+    await started(ib, "QQQ")
+    ib.tickers["QQQ"].tickByTicks.append(
+        SimpleNamespace(
+            time=datetime.now(timezone.utc), bidPrice=99.0, askPrice=101.0,
+        )
+    )
+
+    with pytest.raises(TimeoutError, match="timestamped live market data"):
+        await asyncio.wait_for(quote_task, timeout=1)
+    assert len(ib.tickers["QQQ"].updateEvent) == 0
+    assert not ib.active
+
+
+@pytest.mark.asyncio
+async def test_socket_loss_without_ticks_fails_quote_without_waiting_for_timeout(
+    shared_broker,
+):
+    broker, ib = shared_broker
+    quote_task = asyncio.create_task(broker.get_market_data("QQQ", timeout_seconds=0.2))
+    await started(ib, "QQQ")
+    ib.disconnect()
+
+    with pytest.raises(ConnectionError, match="connection changed"):
+        await asyncio.wait_for(quote_task, timeout=1)
+    assert len(ib.tickers["QQQ"].updateEvent) == 0
+    assert ib.disconnectedEvent.handlers == [broker._handle_ib_disconnect]
+    assert not broker._quote_requests
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("cancel_waiter", [False, True])
 async def test_waiter_timeout_or_cancellation_does_not_cancel_owner(
     shared_broker, cancel_waiter
@@ -230,6 +286,8 @@ async def test_last_caller_cancel_cleans_up_before_next_request(shared_broker):
     await cancelled(owner)
     assert not ib.active
     assert not broker._quote_requests
+    assert len(ib.tickers["QQQ"].updateEvent) == 0
+    assert ib.disconnectedEvent.handlers == [broker._handle_ib_disconnect]
     retry = asyncio.create_task(broker.get_market_data("QQQ", timeout_seconds=1))
     await started(ib, "QQQ")
     ib.emit("QQQ")
@@ -317,6 +375,7 @@ async def test_partial_subscription_failure_cleans_up_and_releases_lock(shared_b
     with pytest.raises(RuntimeError, match="Tick subscription rejected"):
         await broker.get_market_data("QQQ")
     assert ib.events == [("start", "QQQ"), ("cancel_market", "QQQ")]
+    assert ib.disconnectedEvent.handlers == [broker._handle_ib_disconnect]
     ib.fail_tick_subscription = False
     retry = asyncio.create_task(broker.get_market_data("QQQ", timeout_seconds=1))
     await started(ib, "QQQ")

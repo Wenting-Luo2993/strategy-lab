@@ -119,6 +119,7 @@ class InteractiveBrokersAPI:
         self._submitted_orders: Dict[str, BrokerOrder] = {}
         self._execution_listeners: List[Callable[[Dict[str, Any]], None]] = []
         self._pnl_request_lock = asyncio.Lock()
+        self._account_summary_lock = asyncio.Lock()
         self._connection_lock = asyncio.Lock()
         self._quote_locks: Dict[tuple, asyncio.Lock] = {}
         self._quote_requests: Dict[tuple, _SharedQuoteRequest] = {}
@@ -306,7 +307,41 @@ class InteractiveBrokersAPI:
         self.ib.reqMarketDataType(self.market_data_type)
         ticker = None
         timestamped_ticker = None
+        quote_future: asyncio.Future[BrokerQuote] = loop.create_future()
+        disconnect_event = getattr(self.ib, "disconnectedEvent", None)
+
+        def on_disconnect() -> None:
+            if not quote_future.done():
+                quote_future.set_exception(
+                    ConnectionError("IB connection changed while requesting market data")
+                )
+
+        def on_update(updated_ticker: Any) -> None:
+            if quote_future.done():
+                return
+            if generation != self._connection_generation:
+                on_disconnect()
+                return
+            # ib_insync clears tickByTicks on the next network packet, so
+            # capture the tick inside its update callback, never by polling.
+            for tick in reversed(updated_ticker.tickByTicks):
+                timestamp = getattr(tick, "time", None)
+                bid = self._clean_number(getattr(tick, "bidPrice", None))
+                ask = self._clean_number(getattr(tick, "askPrice", None))
+                if timestamp is not None and bid is not None and ask is not None:
+                    quote_future.set_result(BrokerQuote(
+                        symbol=symbol,
+                        bid=bid,
+                        ask=ask,
+                        last=self._clean_number(ticker.last),
+                        market_price=(bid + ask) / 2.0,
+                        timestamp=timestamp,
+                    ))
+                    return
+
         try:
+            if disconnect_event is not None:
+                disconnect_event += on_disconnect
             ticker = self.ib.reqMktData(contract, "", False, False)
             # IB allows one tick-by-tick request per instrument per 15 seconds.
             self._quote_request_after[key] = (
@@ -315,36 +350,17 @@ class InteractiveBrokersAPI:
             timestamped_ticker = self.ib.reqTickByTickData(
                 contract, "BidAsk", 0, False
             )
-            while True:
-                await asyncio.sleep(0.05)
-                if generation != self._connection_generation:
-                    raise ConnectionError("IB connection changed while requesting market data")
-                bid_ask_ticks = list(
-                    getattr(timestamped_ticker, "tickByTicks", None) or []
-                )
-                latest = next(
-                    (
-                        tick
-                        for tick in reversed(bid_ask_ticks)
-                        if getattr(tick, "time", None) is not None
-                    ),
-                    None,
-                )
-                if latest is None:
-                    continue
-                bid = self._clean_number(getattr(latest, "bidPrice", None))
-                ask = self._clean_number(getattr(latest, "askPrice", None))
-                last = self._clean_number(ticker.last)
-                if bid is not None and ask is not None:
-                    return BrokerQuote(
-                        symbol=symbol,
-                        bid=bid,
-                        ask=ask,
-                        last=last,
-                        market_price=(bid + ask) / 2.0,
-                        timestamp=latest.time,
-                    )
+            timestamped_ticker.updateEvent += on_update
+            quote = await quote_future
+            if generation != self._connection_generation:
+                raise ConnectionError("IB connection changed while requesting market data")
+            return quote
         finally:
+            if timestamped_ticker is not None:
+                timestamped_ticker.updateEvent -= on_update
+            if disconnect_event is not None:
+                disconnect_event -= on_disconnect
+            quote_future.cancel()
             try:
                 if ticker is not None:
                     self.ib.cancelMktData(contract)
@@ -795,6 +811,12 @@ class InteractiveBrokersAPI:
         IB request when available so a timeout cannot leak subscriptions.
         Lightweight broker doubles may implement only the convenience method.
         """
+        # IB permits only two active summary subscriptions, including the
+        # convenience subscription created during initial synchronization.
+        async with self._account_summary_lock:
+            return await self._read_account_summary()
+
+    async def _read_account_summary(self) -> List[Any]:
         client = getattr(self.ib, "client", None)
         wrapper = getattr(self.ib, "wrapper", None)
         if (

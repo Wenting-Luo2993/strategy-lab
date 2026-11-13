@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
+from ib_insync import Ticker
 
 from vibe.trading_bot.brokers.base import BrokerAccount, BrokerOrder, BrokerQuote, FillEvent
 from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
@@ -125,7 +126,9 @@ class _MarketDataIB:
             if self.quote_time is not None
             else []
         )
-        return SimpleNamespace(tickByTicks=ticks)
+        ticker = Ticker(tickByTicks=ticks)
+        asyncio.get_running_loop().call_soon(ticker.updateEvent.emit, ticker)
+        return ticker
 
     def cancelMktData(self, contract):
         self.cancelled.append(contract)
@@ -516,6 +519,90 @@ async def test_ib_account_summary_timeout_cancels_owned_request(monkeypatch):
     assert fake_ib.client.requested[0][0:2] == (42, "All")
     assert "NetLiquidation" in fake_ib.client.requested[0][2]
     assert fake_ib.client.cancelled == [42]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupt_first", [None, "timeout", "cancel"])
+async def test_concurrent_account_summaries_serialize_through_cleanup(
+    monkeypatch, interrupt_first,
+):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    pending = {}
+    active = set()
+    requested = []
+    cancelled = []
+    events = []
+    values = [_summary("NetLiquidation", "100000", "USD")]
+    first_started = asyncio.Event()
+    first_release = asyncio.Event()
+
+    async def respond(req_id):
+        if req_id == 1:
+            first_started.set()
+            await first_release.wait()
+        if not pending[req_id].done():
+            pending[req_id].set_result([])
+
+    responders = []
+
+    class Client:
+        def getReqId(self):
+            return len(requested) + 1
+
+        def reqAccountSummary(self, req_id, group, tags):
+            assert not active, "Overlapping account-summary subscriptions"
+            active.add(req_id)
+            requested.append(req_id)
+            events.append(("request", req_id))
+            responders.append(asyncio.create_task(respond(req_id)))
+
+        def cancelAccountSummary(self, req_id):
+            active.remove(req_id)
+            cancelled.append(req_id)
+            events.append(("cancel", req_id))
+
+    class Wrapper:
+        acctSummary = {i: value for i, value in enumerate(values)}
+
+        def startReq(self, req_id):
+            pending[req_id] = asyncio.get_running_loop().create_future()
+            return pending[req_id]
+
+    fake_ib = SimpleNamespace(
+        errorEvent=_ErrorEvent(), client=Client(), wrapper=Wrapper(),
+    )
+    monkeypatch.setattr(ib_module, "IB", lambda: fake_ib)
+    api = InteractiveBrokersAPI(account_data_timeout_seconds=0.1)
+    first = asyncio.create_task(api._request_account_summary())
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    others = [asyncio.create_task(api._request_account_summary()) for _ in range(3)]
+    try:
+        if interrupt_first == "cancel":
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        elif interrupt_first == "timeout":
+            with pytest.raises(TimeoutError):
+                await first
+        else:
+            await asyncio.sleep(0)
+            assert requested == [1]
+            first_release.set()
+            assert await first == values
+        assert await asyncio.wait_for(asyncio.gather(*others), timeout=1) == [values] * 3
+        assert events == [
+            event for req_id in range(1, 5)
+            for event in [("request", req_id), ("cancel", req_id)]
+        ]
+        assert cancelled == requested == [1, 2, 3, 4]
+        assert not active
+    finally:
+        first_release.set()
+        for task in [first, *others, *responders]:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(first, *others, *responders, return_exceptions=True)
 
 
 @pytest.mark.asyncio
