@@ -54,6 +54,7 @@ Run from `/opt/strategy-lab` on the VM. `D=deploy/ibkr-docker`.
 | Task | Command(s) |
 |---|---|
 | Is production healthy? | `bash $D/deploy.sh status` |
+| Watch Gateway API peers without logging into IB | `bash $D/deploy.sh status --watch-connections` (foreground; Ctrl+C stops) |
 | Dry-run preflight | `bash $D/deploy.sh check` |
 | Ship a code change (bot code, rulesets, config, Dockerfile) | merge to `main` → `bash $D/deploy.sh bot` |
 | Bump the IB Gateway image / change gateway settings | edit tag+digest in compose → `main` → `bash $D/deploy.sh gateway` |
@@ -65,6 +66,12 @@ Run from `/opt/strategy-lab` on the VM. `D=deploy/ibkr-docker`.
 
 `deploy.sh` actions: `status`, `check`, `bot`, `gateway`, `rollback-bot`.
 Options: `--yes` (skip the prompt; required without a TTY), `--allow-market-hours`.
+`status --watch-connections` is read-only and repeats a metadata-only socket,
+JVM and resource-counter audit every 60 seconds. It creates no additional service
+or IB session; errors are explicit. Peer allowlisting does not verify client IDs
+or broker-side sessions and cannot establish the cause of `10197`. It never
+disconnects a peer or changes orders. Do not leave an unattended watcher running
+without an operator request.
 
 ## Workflow
 

@@ -14,6 +14,7 @@ Every host and every coding agent deploys the same way: merge to `main`, then ru
 | Task | Command (from `/opt/strategy-lab`) |
 |------|-------------------------------------|
 | Health report (read-only) | `bash deploy/ibkr-docker/deploy.sh status` |
+| Passive connection watch (read-only, Ctrl+C to stop) | `bash deploy/ibkr-docker/deploy.sh status --watch-connections` |
 | Preflight only | `bash deploy/ibkr-docker/deploy.sh check` |
 | Ship a code change | `bash deploy/ibkr-docker/deploy.sh bot` |
 | Gateway image/settings or IBKR password change | `bash deploy/ibkr-docker/deploy.sh gateway` |
@@ -78,6 +79,30 @@ bash deploy/ibkr-docker/deploy.sh status
 ```
 
 `status` is read-only. It shows the host sha vs `origin/main`, container health, `/api/health` and `/health/ready` codes (`503` from `/health/ready` is normal outside warm-up and trading), legacy systemd unit and timer state, recent bot milestones, memory/disk and the last deploys.
+
+### Passive Gateway connection audit
+
+`status` also runs one metadata-only socket/process audit using the host's
+Python 3 standard library and Docker access. `--watch-connections` repeats only
+that audit every 60 seconds in the foreground; Ctrl+C stops it. It installs no
+service, opens no IB client connection and changes no orders, sessions or settings.
+Inspection failure returns nonzero rather than reporting an empty/healthy audit.
+
+JSON samples show established connections to ports 4002/4004 **inside the
+Gateway network namespace**, expected bot addresses discovered from the shared
+Docker network, local relay/probe connections, unexpected peers, and Gateway/host
+JVM PIDs. Multiple bot sockets and additional JVMs are flagged for investigation,
+not automatically disconnected. Only process names are read, never arguments or
+environment variables. Host memory and cumulative CPU/swap counters are included;
+compare successive samples for rates, not since-boot totals as current pressure.
+
+This is not authentication or client-ID verification: a bot-IP connection need
+not be client 201; loopback connections may be probes or the socat relay. A short
+connection between samples can be missed. It cannot observe competing sessions
+held at IBKR, prove the source of `10197`, or certify live data/order protection.
+Warnings do not change trading or readiness. Save the foreground output if
+historical evidence is needed; no persistent watcher or recording is enabled
+automatically.
 
 A healthy start logs `Connected to IB at ib-gateway:4004`, `Dashboard RemoteDataPublisher started` and `Trading loop started`. The gateway is healthy once its API port `4002` accepts connections, which takes about 1–2 minutes after start while IBC logs in.
 

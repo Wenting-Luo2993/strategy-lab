@@ -631,6 +631,32 @@ linked live/paper sharing relationship without creating another login, and escal
 sanitized `10197` timeline to IBKR support. No delayed-data fallback or forced
 session takeover was added.
 
+#### Deployment approval and passive connection monitoring
+
+The operator approved deployment on November 13, but did not approve a
+market-hours Gateway restart. Read-only `status`/`check` at approximately
+18:55 UTC / 13:55 EST passed preflight; readiness was 503, and all five live-data
+requests plus account-risk reads were timing out. The filtered Gateway log
+retained an IBC server-error dialog event at 18:34:54 UTC. Bot-only deployment
+cannot be assumed to restore this stalled Gateway. The request for explicit
+market-hours Gateway recovery approval was unanswered; no restart was performed.
+
+A passive monitor was added to `deploy.sh status`; `status --watch-connections`
+repeats socket/process/resource metadata every 60 seconds in the foreground.
+It uses the Gateway's network namespace rather than host-only `ss`, discovers
+the expected bot address from the shared Docker network, and flags other peers,
+extra bot sockets or additional JVMs. It reads no arguments, environment,
+credentials or packet contents, opens no IB client, and installs no service.
+See the [runbook](../../../deploy/ibkr-docker/README.md#passive-gateway-connection-audit)
+for scope and limitations.
+
+At 19:03:14 UTC / 14:03:14 EST, a one-shot read-only execution of this monitor
+reported one expected bot socket, one loopback relay/probe connection and one
+Gateway JVM (also the only host JVM); no unexpected peer warnings. This is a
+current snapshot, not proof that an unexpected connection never existed or
+that client 201 owns that socket. It does not observe IBKR-side session state
+and does not resolve `10197`. No foreground watcher was left running.
+
 ## Recovery verification: what is enough to close an incident?
 
 Capture a timestamped post-recovery result for each relevant layer. Report which

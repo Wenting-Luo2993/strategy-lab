@@ -15,6 +15,7 @@
 # Options:
 #   --yes                  skip the confirmation prompt
 #   --allow-market-hours   permit changes 09:25-16:05 ET on weekdays (incident fixes only)
+#   --watch-connections    status only: audit API sockets every 60s until Ctrl+C
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,6 +37,7 @@ OPTIONAL_MARKERS=("Dashboard RemoteDataPublisher started")
 
 ASSUME_YES=false
 ALLOW_MARKET_HOURS=false
+WATCH_CONNECTIONS=false
 ACTION=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -43,18 +45,22 @@ warn() { echo "WARN: $*" >&2; }
 step() { echo; echo "==> $*"; }
 ok() { echo "  ok   $*"; }
 
-usage() { sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 for arg in "$@"; do
   case "$arg" in
     status|check|bot|gateway|rollback-bot) [[ -z "$ACTION" ]] || die "only one action allowed"; ACTION="$arg" ;;
     --yes|-y) ASSUME_YES=true ;;
     --allow-market-hours) ALLOW_MARKET_HOURS=true ;;
+    --watch-connections) WATCH_CONNECTIONS=true ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $arg" >&2; usage 2 ;;
   esac
 done
 [[ -n "$ACTION" ]] || usage 2
+if $WATCH_CONNECTIONS && [[ "$ACTION" != status ]]; then
+  die "--watch-connections is supported only with status"
+fi
 
 cd "$REPO_DIR"
 
@@ -247,8 +253,8 @@ do_status() {
   echo "  bot image built $(docker image inspect -f '{{.Created}}' "$BOT_IMAGE:local" 2>/dev/null | cut -c1-19 || echo '?')"
   [[ "$(gateway_drift)" == drift ]] && warn "running ib-gateway differs from compose"
   step "Health"
-  echo "  /api/health   $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/health || true)"
-  echo "  /health/ready $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health/ready || true)  (503 is normal outside warm-up/trading)"
+  echo "  /api/health   $(curl --max-time 10 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/health || true)"
+  echo "  /health/ready $(curl --max-time 10 -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health/ready || true)  (503 is normal outside warm-up/trading)"
   if command -v systemctl >/dev/null; then
     step "Legacy systemd units and timers (must be inactive and disabled)"
     for u in "${LEGACY_UNITS[@]}" "${LEGACY_TIMERS[@]}"; do echo "  $u $(systemctl is-active "$u" 2>/dev/null || true)/$(systemctl is-enabled "$u" 2>/dev/null || true)"; done
@@ -260,6 +266,10 @@ do_status() {
   df -h / | tail -1 | sed 's/^/  /'
   step "Recent deploys"
   tail -5 "$DEPLOY_LOG" 2>/dev/null | sed 's/^/  /' || echo "  (none recorded)"
+  step "Gateway connection audit (TCP metadata, not brokerage sessions)"
+  local audit_args=()
+  $WATCH_CONNECTIONS && audit_args+=(--watch)
+  python3 "$SCRIPT_DIR/monitor_gateway_connections.py" "${audit_args[@]}"
 }
 
 do_bot() {
