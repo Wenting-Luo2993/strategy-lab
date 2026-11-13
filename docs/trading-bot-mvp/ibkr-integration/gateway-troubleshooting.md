@@ -11,7 +11,9 @@ For proposed testing gates and operational assurance outcomes, see the
 Read-only inspection found missing quote snapshots followed by resumed bars,
 overlapping account-summary requests, and intermittent VM scheduling/swap pressure.
 Local regressions reproduce a packet-buffer race and account-summary overlap;
-fixes are implemented on the investigation branch, **not deployed**. A later
+fixes and passive monitoring were **deployed at `c3b7a7c`** in the explicitly
+approved 20:55 UTC Gateway recovery. Fresh quotes/account reads recovered, but
+QQQ polling timeouts and a failed TSLA EOD exit remain. A later
 `10197` establishes a separate broker-reported market-data session conflict whose
 source remains unknown. See section K. Earlier exposure snapshots in I/J are
 historical, not current position or protection verification.
@@ -621,7 +623,7 @@ its exchange-time provenance. Before the fix, five new regression cases failed;
 after it, 273 related broker, execution, data-ingestion, risk and readiness tests
 passed.
 
-**Status: implemented locally, not deployed or live-verified.** These fixes remove
+**Initial status before the later approved recovery: branch-only fixes.** These fixes remove
 reproducible client failure modes; they do not explain all observed timeouts,
 repair VM contention, resolve `10197`, guarantee P&L delivery or establish that
 the earlier upstream-stall cause is fixed. Keep the approved deployment procedure
@@ -631,7 +633,7 @@ linked live/paper sharing relationship without creating another login, and escal
 sanitized `10197` timeline to IBKR support. No delayed-data fallback or forced
 session takeover was added.
 
-#### Deployment approval and passive connection monitoring
+#### Initial deployment approval and passive connection monitoring
 
 The operator approved deployment on November 13, but did not approve a
 market-hours Gateway restart. Read-only `status`/`check` at approximately
@@ -656,6 +658,47 @@ Gateway JVM (also the only host JVM); no unexpected peer warnings. This is a
 current snapshot, not proof that an unexpected connection never existed or
 that client 201 owns that socket. It does not observe IBKR-side session state
 and does not resolve `10197`. No foreground watcher was left running.
+
+#### Explicit market-hours approval and completed recovery
+
+The operator subsequently explicitly authorized
+`deploy.sh gateway --yes --allow-market-hours`. The deferred after-hours
+bot-only job was stopped first, so it cannot cause a second deployment.
+Fresh 20:47 UTC preflight passed; Deploy Guardrails was green for `c3b7a7c`.
+The harness pulled four commits from `a1b5cab` through `c3b7a7c` (two earlier
+documentation/dashboard commits, quote/account fixes `22a3b87`, and the monitor).
+
+| UTC timestamp | EST | Evidence |
+|---|---|---|
+| 20:49:55 | 15:49:55 | Gateway container recreated. |
+| 20:52:03-10 | 15:52:03-10 | IBC login completed; Read-Only API remained false and daily restart remained 07:15 UTC. Sunday cold restart remained November 15 07:15 UTC. |
+| 20:52:28 | 15:52:28 | Bot container recreated with the new image. |
+| 20:54:07 | 15:54:07 | Warm-up health passed, intraday carryover flattening was explicitly skipped, and the existing session equity snapshot was reused. No risk reset was performed. |
+| 20:55:02 | 15:55:02 | Harness recorded `action=gateway result=ok sha=c3b7a7c`, printed `Gateway + bot OK`, exit 0. Both containers healthy, IB/loop/publisher markers present, API health 200; two error lines were warned, not an error-free verification. |
+| 20:55:55 | 15:55:55 | Fresh read-only client 9283 obtained server time, 96 account-summary rows including NetLiquidation, positions AMZN -7, TSLA -4, QQQ -2, GOOGL -6, and matching BUY stop quantities for those four symbols, all `PreSubmitted`. |
+| 20:55:56-20:56:06 | 15:55:56-15:56:06 | The deployed quote path returned newly timestamped quotes for all five symbols. Probe codes were only 2104/2106/2158. |
+| 20:56:17 | 15:56:17 | After probe disconnect, passive audit found one bot connection, one local relay connection, and one JVM; no unexpected peers. |
+| About 20:57 | About 15:57 | API health 200 and readiness 503. The earlier direct readiness request had timed out. QQQ polling timed out at 20:54:36 and 20:56:30 despite successful independent quotes. P&L cancellation `10185` recurred. Short VM intervals again showed active swap/I/O wait and steal (one 50% interval); not proof of one causal explanation. |
+| 20:57:16-20:59:40 | 15:57:16-15:59:40 | TSLA EOD exit repeatedly failed: `Open IB order already exists for TSLA; refusing duplicate submission`. Do not bypass this guard or assume the restart flattened the account. |
+| 21:00:41 | 16:00:41 | Bot entered cooldown. Completion/summary delivery was not yet observed in this verification window. |
+| 21:01:15 | 16:01:15 | Fresh read-only client 9284 returned only TSLA -4 shares and a TSLA BUY-4 STP order `PreSubmitted`. AMZN/QQQ/GOOGL were absent from the position response. This snapshot does not certify overnight protection or explain every locally reported partial-close quantity. |
+| 21:01:19 | 16:01:19 | After probe disconnect, passive audit again showed one expected bot socket, one loopback relay, one JVM and no unexpected-peer warnings. |
+
+Both probe clients disconnected in `finally`. Client 9283 used a temporary
+execution-journal directory; 9284 used raw read-only IB without a journal.
+No investigator orders/cancellations, account-balance output in probe results,
+daily-loss reset or manual flattening were performed. Normal bot EOD handling
+continued after restart.
+
+**Deployment is complete, not incident closure.** TSLA exposure remains open
+in the latest authoritative snapshot and requires operator reconciliation.
+The stop's presence is not a guarantee of continued/overnight protection.
+QQQ polling, P&L subscriptions, VM scheduling pressure and the underlying
+Gateway/`10197` cause remain unresolved; the packet-race fix must not be presented
+as curing all live-data failures. Monitoring is installed and available through
+`status --watch-connections`, but no unattended watcher or durable recording
+service was enabled. Next daily restart: November 14 07:15 UTC; next Sunday
+cold restart: November 15 07:15 UTC; next regular warm-up: November 16 09:25 EST.
 
 ## Recovery verification: what is enough to close an incident?
 
@@ -701,7 +744,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
 | 2026-11-11 intraday failure: **connectivity recovered; exposure open** | Morning restart/warm-up succeeded; afternoon `10197`, then `1100`/IBC error and three failed EOD exits. Bot-only `d31d7a4` rollout failed against the stalled Gateway; separately approved Gateway recovery passed at Nov 12 00:08 UTC. Fresh positions: MSFT -3, AMZN -7, TSLA +4; no open orders returned. | Resolve open exposure/protection with operator authorization; investigate competing session/upstream cause and observe the next full session. Successful deployment is not successful flattening. See section I. |
 | 2026-11-12 intraday recurrence: **recovered; four positions open** | Scheduled login and initial trading succeeded; data/account failures, six `10197` events and an afternoon upstream stall followed. All five locally tracked EOD exits failed. Approved Gateway recovery succeeded Nov 13 03:38 UTC at `a1b5cab`. | Fresh broker positions: MSFT +3, TSLA +4, GOOGL +6, QQQ +2; no open orders returned. Resolve exposure, audit AMZN discrepancy, investigate recurring upstream cause and observe next full session. See section J. |
-| 2026-11-13 intermittent live-data failures: **client fixes not deployed; session conflict unresolved** | QQQ/AMZN/GOOGL snapshot timeouts interspersed with resumed bars; three summary-limit errors, intermittent scheduler/swap pressure and later `10197` at 16:50:38.943 UTC. Packet-buffer loss and summary overlap reproduced and fixed locally. | Approved rollout and live verification remain pending. Operator confirms no sessions outside VM; current process snapshot found one Gateway JVM. Investigate broker-side session/sharing state; do not infer an outside login, one cause for every timeout, or current exposure from I/J. See section K. |
+| 2026-11-13 intermittent live-data failures: **fixes deployed; partial recovery, TSLA exposure open** | Packet-buffer and summary-concurrency fixes plus passive monitoring deployed in explicitly approved market-hours Gateway recovery at 20:55 UTC, `c3b7a7c`. Fresh quotes for all five symbols and account reads passed. QQQ polling timeouts/10185 persisted; TSLA EOD close failed the duplicate-order guard. | At 21:01 UTC: TSLA -4, BUY-4 STP `PreSubmitted`; reconcile exposure without bypassing safeguards. No outside sessions per operator; audits found one JVM and expected peers only. Investigate remaining timeouts and broker-side `10197`; recovery is not full incident closure. See section K. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved
