@@ -700,6 +700,45 @@ as curing all live-data failures. Monitoring is installed and available through
 service was enabled. Next daily restart: November 14 07:15 UTC; next Sunday
 cold restart: November 15 07:15 UTC; next regular warm-up: November 16 09:25 EST.
 
+#### Evening status follow-up: exposure persists, no open orders
+
+At November 14 00:29-00:31 UTC / November 13 19:29-19:31 EST, the running
+release remained `c3b7a7c` (reported version `v1.4.13`); remote main was one
+documentation commit ahead. Both containers were healthy with zero restarts
+and no OOM flags. The bot completed cooldown at 21:05:47 UTC, logged the
+unclosed TSLA position, sent an operator-alert marker at 21:07:10 and entered
+sleep until November 16 14:25 UTC / 09:25 EST. Cooldown publishing still had
+pending/failed/dead-letter records; its completion is not delivery assurance.
+
+Fresh read-only client 9285 at **00:30:29 UTC** obtained server time, 96 summary
+rows including NetLiquidation, **TSLA -4 shares and no open orders**. The earlier
+`PreSubmitted` stop is therefore not current protection evidence. Its earlier
+DAY time-in-force is consistent with expiration, but no expiration/fill audit
+was performed to establish why it disappeared. The client disconnected in
+`finally`, without orders, cancellations or a journal.
+
+The first simultaneous audit saw two bot-IP sockets while this diagnostic was
+connected. After it disconnected, the 00:30:45 audit returned to one expected
+bot socket, one local relay and one JVM, without warnings. This extra observed
+socket was our probe, not evidence of an unknown login.
+
+Both health endpoints returned 200, including readiness. Inspection of
+`api/health.py` confirms readiness checks liveness, connection/heartbeat and
+dependency blockers, **not market phase or protection of broker exposure**.
+It must not be interpreted as safe-to-trade or successful EOD reconciliation.
+After-hours data was not used to certify the next market session's live bars.
+
+The TSLA log took the normal client-side EOD exit branch rather than the
+broker-protected branch, while a restored broker stop still existed.
+`trade_executor._close_position_locked` only cancels recognized protective
+stops, and `ib_exchange._refuse_if_restored_orders_open` then blocks a new
+submission for a symbol with any restored open order. This explains the
+observed safe refusal instead of a completed exit and indicates a mismatch
+between restored broker orders and local protective-stop tracking. The precise
+reason TSLA's protection was not recognized requires a separate restoration/
+journal audit; removing the duplicate-order guard is not an appropriate fix.
+No production changes or manual trading actions were made in this follow-up.
+
 ## Recovery verification: what is enough to close an incident?
 
 Capture a timestamped post-recovery result for each relevant layer. Report which
@@ -744,7 +783,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
 | 2026-11-11 intraday failure: **connectivity recovered; exposure open** | Morning restart/warm-up succeeded; afternoon `10197`, then `1100`/IBC error and three failed EOD exits. Bot-only `d31d7a4` rollout failed against the stalled Gateway; separately approved Gateway recovery passed at Nov 12 00:08 UTC. Fresh positions: MSFT -3, AMZN -7, TSLA +4; no open orders returned. | Resolve open exposure/protection with operator authorization; investigate competing session/upstream cause and observe the next full session. Successful deployment is not successful flattening. See section I. |
 | 2026-11-12 intraday recurrence: **recovered; four positions open** | Scheduled login and initial trading succeeded; data/account failures, six `10197` events and an afternoon upstream stall followed. All five locally tracked EOD exits failed. Approved Gateway recovery succeeded Nov 13 03:38 UTC at `a1b5cab`. | Fresh broker positions: MSFT +3, TSLA +4, GOOGL +6, QQQ +2; no open orders returned. Resolve exposure, audit AMZN discrepancy, investigate recurring upstream cause and observe next full session. See section J. |
-| 2026-11-13 intermittent live-data failures: **fixes deployed; partial recovery, TSLA exposure open** | Packet-buffer and summary-concurrency fixes plus passive monitoring deployed in explicitly approved market-hours Gateway recovery at 20:55 UTC, `c3b7a7c`. Fresh quotes for all five symbols and account reads passed. QQQ polling timeouts/10185 persisted; TSLA EOD close failed the duplicate-order guard. | At 21:01 UTC: TSLA -4, BUY-4 STP `PreSubmitted`; reconcile exposure without bypassing safeguards. No outside sessions per operator; audits found one JVM and expected peers only. Investigate remaining timeouts and broker-side `10197`; recovery is not full incident closure. See section K. |
+| 2026-11-13 intermittent live-data failures: **fixes deployed; partial recovery, TSLA exposure open** | Packet-buffer and summary-concurrency fixes plus passive monitoring deployed in explicitly approved market-hours Gateway recovery at 20:55 UTC, `c3b7a7c`. Fresh quotes for all five symbols and account reads passed. QQQ polling timeouts/10185 persisted; TSLA EOD close failed the duplicate-order guard. | Latest fresh snapshot November 14 00:30 UTC: TSLA -4 and **no open orders**; earlier stop is not current protection evidence. Reconcile exposure without bypassing safeguards. No outside sessions per operator; post-probe audit found expected peers/one JVM. Investigate restoration mismatch, remaining timeouts and broker-side `10197`; recovery is not full incident closure. See section K. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved
