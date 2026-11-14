@@ -9,7 +9,7 @@ recovery at November 12 00:08 UTC (November 11 evening EST). The CI/CD pipeline
 remains proposed. Connectivity recovered, but three positions remain open with
 no open orders returned by the post-recovery broker query.
 
-**Latest follow-up:** November 12's trading day also suffered an intraday
+**November 12 follow-up:** That trading day also suffered an intraday
 upstream stall and failed EOD exits. Separately approved recovery at November 13
 03:38 UTC runs `a1b5cab` (same bot code, updated documentation). Fresh broker
 positions at 03:39 UTC: MSFT +3, TSLA +4, GOOGL +6, QQQ +2, with no open orders
@@ -33,6 +33,11 @@ foreign clients and non-destructive journal migration. An ambiguous live stop
 blocks initialization. This does not repair upstream `10197` or close existing
 exposure; section K of the troubleshooting guide owns deployment observations
 and the downgrade/reconciliation limitation.
+The approved bot-only rollout completed at **November 14 04:28 UTC,
+`385a516`**, after 758 bot tests passed (34 existing HTTPX-incompatible API
+tests excluded). Startup and journal-preservation checks passed. Fresh 04:29
+UTC broker state remained **TSLA -4, no open orders**; the next live EOD is
+still unobserved.
 
 ## Problem and intended outcome
 

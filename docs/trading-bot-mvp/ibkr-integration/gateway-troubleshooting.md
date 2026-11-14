@@ -863,6 +863,34 @@ defect and do not read new lifetime records. Do not blindly downgrade and
 resume trading, delete the journal, or overwrite new executions with an older
 backup. Any approved rollback requires broker/journal reconciliation first.
 
+#### Approved bot-only deployment and post-deploy verification
+
+At **November 14 04:28:11 UTC / November 13 23:28:11 EST**, the user-authorized
+`deploy.sh bot --yes` completed at **`385a516` (v1.4.14)** with `Deploy OK` and
+exit 0. The Gateway was not restarted. The main checkout advanced three
+commits from `c3b7a7c`: the two previous evidence updates and the identity fix.
+An owner-only SQLite online backup was retained at
+`/app/data/local/ib_executions.pre-identity-20261114T042545Z.db`
+(host: `deploy/ibkr-docker/data/trading-bot/local/`).
+
+The harness confirmed bot health, IB connection, trading-loop and publisher
+markers, no ERROR/Traceback lines, and `/api/health = 200`. Post-deploy status
+at 04:29 UTC showed both containers healthy and `/health/ready = 503` outside
+the trading phase. Startup was waiting for **Monday November 16 09:25 EST**.
+
+Read-only migration verification confirmed version 1.4.14, SQLite integrity
+`ok`, **84 executions, 122 original submitted rows and 122 archived lifetime
+rows**, zero changed/missing original submission rows, and zero missing
+execution IDs relative to the backup.
+
+At **04:29:19 UTC**, fresh read-only client 9287 returned **TSLA -4 shares and
+no open orders**, with server time 04:29:18. It disconnected in `finally`;
+the subsequent passive audit returned one bot socket, one relay and the
+same single JVM, with no unexpected peers. No investigator trades,
+cancellations or risk resets occurred. The deployment did not flatten or
+provide protection for that exposure. Next-session live EOD behavior is not
+yet observed; source regression success is not a complete incident closure.
+
 The independent upstream `10197`/quote-timeout investigation remains open.
 This identity defect explains the observed TSLA exit refusal, not those
 connectivity errors or the exact cause of the DAY stop's later disappearance.
@@ -911,7 +939,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
 | 2026-11-11 intraday failure: **connectivity recovered; exposure open** | Morning restart/warm-up succeeded; afternoon `10197`, then `1100`/IBC error and three failed EOD exits. Bot-only `d31d7a4` rollout failed against the stalled Gateway; separately approved Gateway recovery passed at Nov 12 00:08 UTC. Fresh positions: MSFT -3, AMZN -7, TSLA +4; no open orders returned. | Resolve open exposure/protection with operator authorization; investigate competing session/upstream cause and observe the next full session. Successful deployment is not successful flattening. See section I. |
 | 2026-11-12 intraday recurrence: **recovered; four positions open** | Scheduled login and initial trading succeeded; data/account failures, six `10197` events and an afternoon upstream stall followed. All five locally tracked EOD exits failed. Approved Gateway recovery succeeded Nov 13 03:38 UTC at `a1b5cab`. | Fresh broker positions: MSFT +3, TSLA +4, GOOGL +6, QQQ +2; no open orders returned. Resolve exposure, audit AMZN discrepancy, investigate recurring upstream cause and observe next full session. See section J. |
-| 2026-11-13 intermittent live-data failures: **partial recovery, TSLA exposure open** | Packet-buffer and summary-concurrency fixes plus passive monitoring deployed in approved market-hours Gateway recovery at 20:55 UTC, `c3b7a7c`. QQQ polling timeouts/10185 persisted; TSLA EOD close failed the duplicate-order guard. | November 14 00:38 UTC snapshot: TSLA -4 and **no open orders**. Audit proved historical QQQ169 collided with the current TSLA stop. The v1.4.14 identity repair and its rollout evidence are documented in section K; deployment does not flatten exposure. No outside sessions per operator. Timeouts and broker-side `10197` remain separate unresolved issues. |
+| 2026-11-13 intermittent live-data failures: **identity repair deployed, TSLA exposure open** | Packet-buffer and summary-concurrency fixes deployed in approved Gateway recovery at `c3b7a7c`. Audit proved historical QQQ169 collided with the current TSLA stop. The v1.4.14 identity fix deployed bot-only at November 14 04:28 UTC, `385a516`; startup and journal-preservation checks passed. | Fresh November 14 04:29 UTC snapshot: TSLA -4 and **no open orders**. Deployment did not flatten exposure. Next live EOD remains unobserved. No outside sessions per operator. Quote timeouts and broker-side `10197` remain separate unresolved issues. See section K. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved
