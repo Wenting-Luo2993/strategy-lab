@@ -8,6 +8,18 @@ For accumulated lessons learned and production incident fixes, also read: **`CLA
 
 ---
 
+## Project Documentation and Taskboard
+
+Whenever asked to document a plan, bug fix, incident, new project, maintenance,
+research result or handoff, follow the
+[`document-project-work` skill](.claude/skills/document-project-work/SKILL.md).
+Classify the work, associate it with a registered project and follow
+[`docs/taskboard/README.md`](docs/taskboard/README.md) for automatic ingestion.
+Prefer canonical sources, preserve historical evidence, and regenerate the
+read-only taskboard after documentation changes.
+
+---
+
 ## Discord Notification Pattern
 
 All Discord notifications follow a standardized pattern for consistency and maintainability.

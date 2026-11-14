@@ -1,3 +1,6 @@
+<!-- taskboard
+{"id":"reliability-spec","title":"Reliability and CI/CD acceptance gates","projects":["live-reliability","deployment-cicd"],"status":"current","kind":"plan","reviewed":"2026-11-14"}
+-->
 # IBKR Operational Reliability and Testing Product Specification
 
 **Status:** Proposed CI/CD and operational assurance; focused source safeguards

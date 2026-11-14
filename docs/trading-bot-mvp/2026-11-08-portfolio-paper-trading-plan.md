@@ -1,4 +1,12 @@
+<!-- taskboard
+{"id":"portfolio-paper","title":"Portfolio paper-trading design","projects":["execution-quality","live-reliability"],"status":"current","kind":"plan","reviewed":"2026-11-14"}
+-->
 # Portfolio Paper Trading Plan
+
+> This remains the design reference. The implementation/rollout statements
+> below are historical snapshots; see the [incident guide](ibkr-integration/gateway-troubleshooting.md)
+> for deployment evidence and the [execution roadmap](../taskboard/execution-quality.md)
+> for remaining measurement work. Paper fills are not real-money execution proof.
 
 **Status:** Approved 2026-11-08; stages 1–5 implemented 2026-11-08 (see
 "Implementation status"), rollout pending.

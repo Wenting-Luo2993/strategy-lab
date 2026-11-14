@@ -1,3 +1,6 @@
+<!-- taskboard
+{"id":"gateway-evidence","title":"Gateway incidents and recovery evidence","projects":["live-reliability","execution-quality","deployment-cicd"],"status":"current","kind":"evidence","reviewed":"2026-11-14"}
+-->
 # IB Gateway Connection Troubleshooting
 
 This is the living guide for IB Gateway connection incidents, missing IB market

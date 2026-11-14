@@ -1,4 +1,11 @@
+<!-- taskboard
+{"id":"platform-old-handoff","title":"Backtest platform handoff (historical)","projects":["orb-research"],"status":"historical","kind":"reference","reviewed":"2026-11-14","superseded_by":["orb-results","orb-roadmap"]}
+-->
 # Backtest research handoff
+
+> Historical platform-build record. Branch names, setup and next-step statements
+> are snapshots, not current instructions. Start from the
+> [taskboard research roadmap](../taskboard/orb-research.md) for reviewed work.
 
 **Updated:** 2026-10-31  
 **Branch:** `wenting-luo2993-backtest-continuation` (includes the merged

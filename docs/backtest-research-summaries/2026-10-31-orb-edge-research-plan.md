@@ -1,3 +1,6 @@
+<!-- taskboard
+{"id":"orb-plan","title":"ORB research programme and gates","projects":["orb-research"],"status":"current","kind":"plan","reviewed":"2026-11-14"}
+-->
 # ORB edge research plan
 
 **Date:** 2026-10-31  

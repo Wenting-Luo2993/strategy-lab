@@ -1,3 +1,6 @@
+<!-- taskboard
+{"id":"research-north-star","title":"Backtest research north star","projects":["orb-research"],"status":"current","kind":"reference","reviewed":"2026-11-14"}
+-->
 # Backtest research north star
 
 **Date:** 2026-10-31  

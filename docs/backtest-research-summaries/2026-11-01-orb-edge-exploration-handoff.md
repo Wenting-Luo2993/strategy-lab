@@ -1,4 +1,11 @@
+<!-- taskboard
+{"id":"orb-old-handoff","title":"ORB exploration handoff (historical)","projects":["orb-research"],"status":"historical","kind":"reference","reviewed":"2026-11-14","superseded_by":["orb-results","orb-roadmap"]}
+-->
 # ORB edge exploration handoff
+
+> Historical continuation notes. Some trial-count and next-step statements
+> below predate the latest results. Use the [living summary](orb-exploration-results.md)
+> and [research roadmap](../taskboard/orb-research.md) for the reviewed work index.
 
 **Updated:** 2026-11-03  
 **Branch:** `wenting-luo2993-backtest-implementation-review`  

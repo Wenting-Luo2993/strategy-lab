@@ -1,3 +1,6 @@
+<!-- taskboard
+{"id":"orb-results","title":"ORB exploration findings","projects":["orb-research","execution-quality"],"status":"current","kind":"research","reviewed":"2026-11-14"}
+-->
 # ORB edge exploration: results
 
 A living, high-level summary of what has been explored for the ORB strategy

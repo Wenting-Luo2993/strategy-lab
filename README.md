@@ -2,6 +2,21 @@
 
 A toolkit for algorithmic trading — strategy development, backtesting, and live trading execution (stocks).
 
+## Project taskboard
+
+Open the local, read-only overview of research, execution quality, reliability
+and CI/CD work:
+
+```powershell
+python tools\taskboard\build.py
+Start-Process docs\taskboard\index.html
+```
+
+No server or credentials are needed. Tagged documents are automatically included
+at build time; tasks remain explicitly reviewed snapshots, not live status.
+See the [documentation standard](docs/taskboard/README.md) and
+[authoring skill](.claude/skills/document-project-work/SKILL.md).
+
 ## 📁 Project Structure
 
 ```

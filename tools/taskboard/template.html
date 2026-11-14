@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Strategy Lab | Taskboard</title>
+  <style><!-- STYLE --></style>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="#overview"><span class="brand-mark">SL</span> Strategy Lab</a>
+    <div class="eyebrow">WORKSPACE</div>
+    <nav aria-label="Views">
+      <button data-view="overview" class="nav-button">Overview <span>01</span></button>
+      <button data-view="board" class="nav-button">Taskboard <span>02</span></button>
+      <button data-view="documents" class="nav-button">Documents <span>03</span></button>
+    </nav>
+    <div class="eyebrow project-label">PROJECTS</div>
+    <div id="project-nav"></div>
+    <div class="sidebar-footer"><span class="dot"></span> Local &amp; read-only
+      <p>No server. No credentials.<br>No trading or deployment controls.</p>
+    </div>
+  </aside>
+  <main>
+    <header class="topbar"><span>RESEARCH &amp; OPERATIONS</span><span class="pill">Offline snapshot</span></header>
+    <section class="page-heading">
+      <div><div class="eyebrow">THE BIG PICTURE</div><h1 id="page-title">From plans to progress.</h1>
+        <p id="page-description">See what matters, what is waiting, and what comes next.</p></div>
+      <div id="snapshot"></div>
+    </section>
+    <div class="snapshot-note" id="freshness"></div>
+    <div class="toolbar">
+      <label class="search-label">Search<input id="search" type="search" placeholder="Find a task, project or document..."></label>
+      <label>Project<select id="project-filter"><option value="">All projects</option></select></label>
+      <label id="status-label" hidden>Status<select id="status-filter"><option value="">All statuses</option></select></label>
+    </div>
+    <div id="content"></div>
+    <p id="result-count" class="muted" role="status" aria-live="polite"></p>
+    <footer>Read-only by design. Update the source Markdown, then run <code>python tools\taskboard\build.py</code> and reload.
+      Rebuilding refreshes documents, not the reviewed task states.</footer>
+  </main>
+  <dialog id="detail" aria-labelledby="detail-title">
+    <div class="dialog-top"><span class="eyebrow" id="detail-type">DETAIL</span><button id="close-detail" aria-label="Close detail">Close &times;</button></div>
+    <div id="detail-content"></div>
+  </dialog>
+  <noscript>This offline board needs JavaScript enabled to display its embedded documents and tasks. It makes no network requests.</noscript>
+  <script id="taskboard-data" type="application/json"><!-- DATA --></script>
+  <script><!-- SCRIPT --></script>
+</body>
+</html>

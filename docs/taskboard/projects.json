@@ -1,0 +1,37 @@
+[
+  {
+    "id": "orb-research",
+    "title": "ORB strategy research",
+    "goal": "Determine whether a precisely defined ORB rule has a credible, usable edge, and preserve what each experiment teaches us.",
+    "stage": "Exploration",
+    "next_action": "Choose a bounded next exploration; keep confirmation and final holdout locked until hypotheses are registered."
+  },
+  {
+    "id": "execution-quality",
+    "title": "Execution-quality measurement",
+    "goal": "Compare observed paper fills and strategy behavior with backtest assumptions, without treating paper execution as real-money proof.",
+    "stage": "Evidence collection",
+    "next_action": "Audit usable sessions and matched fills before declaring the slippage sample sufficient."
+  },
+  {
+    "id": "live-reliability",
+    "title": "Live-service reliability",
+    "goal": "Demonstrate safe operation through warm-up, intraday failures, broker recovery, end-of-day exits and cooldown.",
+    "stage": "Operational assurance",
+    "next_action": "Reconcile outstanding exposure through an authorized operational workflow; observe the next complete trading session."
+  },
+  {
+    "id": "deployment-cicd",
+    "title": "Deployment CI/CD",
+    "goal": "Gate changes with reproducible tests, safe deployment behavior and release-specific verification.",
+    "stage": "Planned gates",
+    "next_action": "Fix the known test-harness incompatibility, then wire existing bot regressions into required CI."
+  },
+  {
+    "id": "taskboard",
+    "title": "Project taskboard",
+    "goal": "Keep projects, next actions, dependencies and source documents visible without creating another operational service.",
+    "stage": "Local first",
+    "next_action": "Review the seeded project map and use the documentation skill for future updates."
+  }
+]
