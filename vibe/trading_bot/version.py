@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.13"  # configurable continuation-stop entries with durable expiry
+VERSION = "1.4.14"  # durable IB order identity and safe restored-stop exits
 
 
 def get_build_timestamp() -> str:

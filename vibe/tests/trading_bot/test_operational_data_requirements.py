@@ -25,7 +25,7 @@ from vibe.trading_bot.storage.dashboard_store import (
 )
 from vibe.trading_bot.storage.metrics_store import MetricType, MetricsStore
 from vibe.trading_bot.storage.trade_store import TradeStore
-from vibe.trading_bot.storage.ib_execution_store import IBExecutionStore
+from vibe.trading_bot.storage.ib_execution_store import IBExecutionStore, execution_order_identity
 from vibe.common.execution.base import OrderResponse
 from vibe.common.models import Order, OrderStatus, Trade
 
@@ -187,6 +187,126 @@ class _ExecutionIB:
             orderStatus=SimpleNamespace(status="Submitted", filled=0, avgFillPrice=0),
             fills=[],
         )
+
+
+def test_order_lifetime_migration_preserves_legacy_rows_and_separates_reuse(tmp_path):
+    path = str(tmp_path / "orders.db")
+    store = IBExecutionStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """INSERT INTO ib_submitted_orders
+               (broker_order_id, permanent_order_id, account_id, symbol, side,
+                quantity, order_type, submitted_at, created_at, updated_at)
+               VALUES ('169', '0', 'DU123', 'QQQ', 'buy', 2, 'stop',
+                       '2026-11-11T14:35:00+00:00', 'old', 'old')"""
+        )
+    store.close()
+    store = IBExecutionStore(path)
+    original = store.get_submitted_order("169")
+    for identity, permanent, client in [("sl:new", "1743199735", 201), ("sl:other", "1743199736", 202)]:
+        store.upsert_submitted_order({
+            "order_identity": identity, "broker_order_id": "169",
+            "permanent_order_id": permanent, "account_id": "DU123", "client_id": client,
+            "symbol": "TSLA", "side": "buy", "quantity": 4, "order_type": "stop",
+        })
+    assert store.get_submitted_order(order_identity=original["order_identity"]) == original
+    assert store.get_submitted_order(account_id="DU123", permanent_order_id="1743199735")["order_identity"] == "sl:new"
+    with pytest.raises(ValueError, match="Ambiguous"):
+        store.get_submitted_order("169")
+    store.close()
+    reopened = IBExecutionStore(path)
+    assert len(reopened.list_submitted_orders()) == 3
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT symbol, quantity, permanent_order_id FROM ib_submitted_orders WHERE broker_order_id='169'"
+        ).fetchone() == ("QQQ", 2, "0")
+    reopened.close()
+
+
+def test_live_restore_never_borrows_unbound_legacy_metadata(monkeypatch, tmp_path):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    ib = _ExecutionIB()
+    monkeypatch.setattr(ib_module, "IB", lambda: ib)
+    api = InteractiveBrokersAPI(account_id="DU123", client_id=201, execution_db_path=str(tmp_path / "ib.db"))
+    api.execution_store.upsert_submitted_order({
+        "broker_order_id": "169", "permanent_order_id": "0", "account_id": "DU123",
+        "symbol": "QQQ", "side": "sell", "quantity": 2, "order_type": "stop",
+        "order_role": "entry", "stop_price": 600,
+    })
+    order = SimpleNamespace(
+        orderId=169, permId=1743199735, clientId=201, account="DU123",
+        action="BUY", totalQuantity=4, orderType="STP", auxPrice=404.4, parentId=168,
+    )
+    ib.openTrades = lambda: [SimpleNamespace(
+        order=order, contract=SimpleNamespace(symbol="TSLA"),
+        orderStatus=SimpleNamespace(status="PreSubmitted", filled=0, avgFillPrice=0),
+    )]
+    api._reconcile_open_orders()
+    restored = api.get_submitted_order("169")
+    assert (restored.symbol, restored.side, restored.quantity, restored.stop_price) == ("TSLA", "buy", 4, 404.4)
+    assert restored.order_role is None
+    assert restored.order_identity == "ib:DU123:1743199735"
+    order.clientId = 202
+    with pytest.raises(RuntimeError, match="another IB client"):
+        api._reconcile_open_orders()
+
+
+def test_fill_after_preack_restart_binds_persisted_reference(monkeypatch, tmp_path):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    monkeypatch.setattr(ib_module, "IB", lambda: _ExecutionIB())
+    api = InteractiveBrokersAPI(account_id="DU123", client_id=201, execution_db_path=str(tmp_path / "ib.db"))
+    ib_order = SimpleNamespace(orderId=1001)
+    prepared = api._prepare_order_identity(
+        BrokerOrder("QQQ", "buy", 3), ib_order, datetime.now(timezone.utc),
+    )
+    assert api.execution_store.get_submitted_order(order_identity=prepared.order_identity)
+    # No in-memory order or trade survives this simulated pre-ack restart.
+    fill = _ib_fill("preack", 1, 100.0)
+    fill.execution.orderRef = ib_order.orderRef
+    api._ingest_fill(None, fill)
+    row = api.execution_store.get_execution("preack")
+    assert execution_order_identity(row) == prepared.order_identity
+    bound = api.execution_store.get_submitted_order(account_id="DU123", permanent_order_id="9001")
+    assert bound["order_identity"] == prepared.order_identity
+    assert bound["quantity"] == 3
+
+
+def test_acknowledgement_binds_permanent_id_before_any_fill(monkeypatch, tmp_path):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    monkeypatch.setattr(ib_module, "IB", lambda: _ExecutionIB())
+    api = InteractiveBrokersAPI(account_id="DU123", client_id=201, execution_db_path=str(tmp_path / "ib.db"))
+    ib_order = SimpleNamespace(orderId=169, permId=0)
+    prepared = api._prepare_order_identity(
+        BrokerOrder("TSLA", "buy", 4, order_type="stop", stop_price=404.4, order_role="protective_stop"),
+        ib_order, datetime.now(timezone.utc),
+    )
+    api._submitted_orders["169"] = prepared
+    ib_order.permId = 1743199735
+    api._handle_order_status(SimpleNamespace(order=ib_order))
+    bound = api.execution_store.get_submitted_order(account_id="DU123", permanent_order_id="1743199735")
+    assert bound["order_identity"] == prepared.order_identity
+    assert bound["order_role"] == "protective_stop"
+
+
+def test_late_fill_uses_execution_contract_not_reused_current_trade(monkeypatch, tmp_path):
+    import vibe.trading_bot.brokers.interactive_brokers as ib_module
+
+    monkeypatch.setattr(ib_module, "IB", lambda: _ExecutionIB())
+    api = InteractiveBrokersAPI(account_id="DU123", client_id=201, execution_db_path=str(tmp_path / "ib.db"))
+    current = SimpleNamespace(orderId=1001, permId=9999)
+    prepared = api._prepare_order_identity(
+        BrokerOrder("TSLA", "sell", 4), current, datetime.now(timezone.utc),
+    )
+    api._submitted_orders["1001"] = prepared
+    trade = SimpleNamespace(order=current, contract=SimpleNamespace(symbol="TSLA"))
+    api._ingest_fill(trade, _ib_fill("late-qqq", 2, 600.0))
+    row = api.execution_store.get_execution("late-qqq")
+    assert (row["symbol"], row["side"], row["quantity"]) == ("QQQ", "buy", 2)
+    assert execution_order_identity(row) == "ib:DU123:9001"
+    assert row["order_metadata"].get("order_identity") != prepared.order_identity
 
 
 @pytest.mark.asyncio
@@ -714,12 +834,13 @@ def test_ib_commission_report_currency_is_preserved_per_execution(monkeypatch):
     monkeypatch.setattr(ib_module, "IB", lambda: _AccountSummaryIB([]))
     api = InteractiveBrokersAPI(account_id="DU123", currency="USD")
     trade = SimpleNamespace(
-        contract=SimpleNamespace(currency="USD"),
+        contract=SimpleNamespace(symbol="QQQ", currency="USD"),
         order=SimpleNamespace(permId=9001),
         fills=[
             SimpleNamespace(
                 execution=SimpleNamespace(
                     execId="e1",
+                    side="BOT",
                     orderId=1001,
                     permId=9001,
                     acctNumber="DU123",
@@ -732,6 +853,7 @@ def test_ib_commission_report_currency_is_preserved_per_execution(monkeypatch):
             SimpleNamespace(
                 execution=SimpleNamespace(
                     execId="e2",
+                    side="BOT",
                     orderId=1001,
                     permId=9001,
                     acctNumber="DU123",
@@ -792,12 +914,13 @@ def test_missing_commission_report_remains_unknown(monkeypatch):
     monkeypatch.setattr(ib_module, "IB", lambda: _AccountSummaryIB([]))
     api = InteractiveBrokersAPI()
     trade = SimpleNamespace(
-        contract=SimpleNamespace(currency="USD"),
+        contract=SimpleNamespace(symbol="QQQ", currency="USD"),
         order=SimpleNamespace(permId=1),
         fills=[
             SimpleNamespace(
                 execution=SimpleNamespace(
                     execId="e1", orderId=1, permId=1, acctNumber="DU123",
+                    side="BOT",
                     shares=1, price=100.0, time=datetime.now(timezone.utc),
                 ),
                 commissionReport=None,
@@ -1005,7 +1128,7 @@ async def test_restart_reconciles_final_fill_without_placing_order(monkeypatch, 
     engine = InteractiveBrokersExecutionEngine(second)
 
     await engine.initialize()
-    recovered = await engine.get_order("1001")
+    recovered = await engine.get_order("ib:DU123:9001")
 
     assert second_ib.place_calls == 0
     assert recovered.status.name == "FILLED"
@@ -1065,7 +1188,7 @@ async def test_engine_rebuilds_snapshot_from_unchanged_durable_executions():
     engine.add_execution_listener(projected.append)
 
     await engine.initialize()
-    order = await engine.get_order("1001")
+    order = await engine.get_order("ib:DU123:9001")
 
     assert order.filled_qty == 3
     assert order.status.name == "FILLED"

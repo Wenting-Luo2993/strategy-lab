@@ -22,6 +22,18 @@ timeline, sanitized evidence, recovery procedures and incident closure status.
 This specification defines the desired outcomes, not an implementation plan.
 Only explicitly recorded observation windows establish operational success.
 
+**November 14 identity follow-up:** Friday's TSLA exit refusal was reproduced:
+historical QQQ169 fills collided with a newer TSLA169 stop despite different
+permanent IDs. The v1.4.14 repair journals UUID/orderRef identities before
+submission, binds broker permanent IDs, separates historical execution replay
+from live API routing, and preserves cancel-confirm-reconcile-close safeguards.
+Regression gates now exercise cross-symbol/same-symbol number reuse, legacy
+stop adoption, partial/complete fill races, corrections, pre-ack restart,
+foreign clients and non-destructive journal migration. An ambiguous live stop
+blocks initialization. This does not repair upstream `10197` or close existing
+exposure; section K of the troubleshooting guide owns deployment observations
+and the downgrade/reconciliation limitation.
+
 ## Problem and intended outcome
 
 The bot can be alive and its Gateway API port reachable while broker operations

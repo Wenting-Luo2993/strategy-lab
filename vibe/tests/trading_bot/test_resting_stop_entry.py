@@ -402,6 +402,7 @@ def _ib_api(tmp_path):
     from vibe.trading_bot.storage.ib_execution_store import IBExecutionStore
 
     api.ib = _FakeIB()
+    api.client_id = 201
     api.readonly = False
     api.account_id = "DU1"
     api._trades = {}
@@ -1395,7 +1396,7 @@ async def test_nit_partial_placement_monitors_live_legs_and_alerts(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_s4_journal_failure_does_not_hide_live_orders(tmp_path, monkeypatch):
+async def test_s4_journal_failure_prevents_unjournalled_orders(tmp_path, monkeypatch):
     import vibe.trading_bot.brokers.interactive_brokers as ib_module
 
     monkeypatch.setattr(
@@ -1409,9 +1410,10 @@ async def test_s4_journal_failure_does_not_hide_live_orders(tmp_path, monkeypatc
 
     monkeypatch.setattr(api.execution_store, "upsert_submitted_order", broken_journal)
 
-    ids = await api.submit_oca_brackets([_bracket("buy", 101.0, 99.0)], qualified_contract=object())
-
-    assert len(ids) == 1 and len(api._trades) == 2
+    with pytest.raises(OSError, match="disk full"):
+        await api.submit_oca_brackets([_bracket("buy", 101.0, 99.0)], qualified_contract=object())
+    assert not api._trades
+    assert not api.ib.placed
 
 
 @pytest.mark.asyncio
@@ -1528,6 +1530,7 @@ async def test_s8_ib_status_refresh_only_touches_linked_orders():
                   order_type="market", status=OrderStatus.SUBMITTED)
     linked = _restored("2", "sell", "protective_stop", 99.0, parent="9")
     engine._orders = {"1": plain, "2": linked}
+    engine._api_order_ids = {"1": "1", "2": "2"}
 
     assert (await engine.get_order("1")).status == OrderStatus.SUBMITTED
     assert (await engine.get_order("2")).status == OrderStatus.CANCELLED
@@ -1674,7 +1677,7 @@ async def test_r1_standalone_stop_keeps_its_role_across_a_restart(tmp_path, monk
     executor.restore_pending_entries([restored])
     assert executor.has_protective_stop("AAA")
     assert not executor.has_pending_entry("AAA")
-    managed = executor.order_manager.get_order(stop_id)
+    managed = executor.order_manager.get_order(restored.order_id)
     assert managed.persistent and managed.linked
     await executor.order_manager.shutdown()
 
@@ -1948,7 +1951,7 @@ def test_r8_ib_engine_counts_a_corrected_execution_once():
     engine._on_broker_execution(correction)
     engine._on_broker_execution(original)  # a late replay of the old revision
 
-    order = engine._orders["5"]
+    order = engine._orders["legacy-execution:00a.11b.01.01"]
     assert order.filled_qty == 50.0 and order.avg_price == pytest.approx(101.03)
     assert order.execution_ids == ["00a.11b.01.01"]
     assert [e["execution_id"] for e in seen] == ["00a.11b.01.01", "00a.11b.01.01"]

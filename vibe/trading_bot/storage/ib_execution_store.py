@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -9,6 +10,27 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+
+def permanent_order_identity(account_id: Any, permanent_order_id: Any) -> Optional[str]:
+    """IB's permanent ID, unlike its API order number, identifies an order lifetime."""
+    value = str(permanent_order_id or "")
+    if not value.isdigit() or int(value) <= 0 or not account_id:
+        return None
+    return f"ib:{account_id}:{int(value)}"
+
+
+def execution_order_identity(execution: Dict[str, Any]) -> str:
+    metadata = execution.get("order_metadata") or {}
+    identity = execution.get("order_identity") or metadata.get("order_identity")
+    if identity:
+        return str(identity)
+    permanent = permanent_order_identity(
+        execution.get("account_id"), execution.get("permanent_order_id")
+    )
+    if permanent:
+        return permanent
+    # Unidentified historical fills must not share a live API routing handle.
+    return f"legacy-execution:{execution_revision(execution.get('execution_id'))[0]}"
 
 
 def _iso(value: Any) -> Optional[str]:
@@ -154,6 +176,22 @@ class IBExecutionStore:
 
             CREATE INDEX IF NOT EXISTS idx_ib_executions_order
                 ON ib_executions(broker_order_id, filled_at);
+
+            CREATE TABLE IF NOT EXISTS ib_order_lifetimes (
+                order_identity TEXT PRIMARY KEY,
+                broker_order_id TEXT NOT NULL,
+                account_id TEXT,
+                permanent_order_id TEXT,
+                client_id INTEGER,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ib_lifetimes_api
+                ON ib_order_lifetimes(broker_order_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ib_lifetimes_permanent
+                ON ib_order_lifetimes(account_id, permanent_order_id)
+                WHERE account_id IS NOT NULL AND permanent_order_id IS NOT NULL;
             """
         )
         self._ensure_columns(
@@ -207,6 +245,23 @@ class IBExecutionStore:
                 "updated_at": "TEXT",
             },
         )
+        # Keep the original table intact for evidence/rollback. Legacy rows are
+        # archived, not assumed to belong to whichever order now uses that ID.
+        for row in conn.execute("SELECT * FROM ib_submitted_orders").fetchall():
+            payload = dict(row)
+            seed = json.dumps(
+                [payload["broker_order_id"], payload.get("submitted_at"), payload.get("created_at")],
+                separators=(",", ":"),
+            )
+            identity = "legacy-submission:" + hashlib.sha256(seed.encode()).hexdigest()
+            payload["order_identity"] = identity
+            conn.execute(
+                """INSERT OR IGNORE INTO ib_order_lifetimes
+                   (order_identity, broker_order_id, payload_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (identity, str(payload["broker_order_id"]), json.dumps(payload),
+                 payload.get("created_at") or "", payload.get("updated_at") or ""),
+            )
         conn.commit()
 
     @staticmethod
@@ -226,103 +281,68 @@ class IBExecutionStore:
 
     def upsert_submitted_order(self, payload: Dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).isoformat()
+        payload = json.loads(json.dumps(payload, default=_iso))
+        identity = payload.get("order_identity")
+        if not identity:
+            # Import compatibility for legacy callers; production submissions
+            # supply a UUID before placeOrder, never an API-number-only key.
+            seed = json.dumps([
+                payload.get("account_id"), payload.get("client_id"),
+                payload["broker_order_id"], payload.get("submitted_at"),
+            ])
+            identity = "legacy-submission:" + hashlib.sha256(seed.encode()).hexdigest()
+        permanent = permanent_order_identity(
+            payload.get("account_id"), payload.get("permanent_order_id")
+        )
+        payload["order_identity"] = identity
+        payload["permanent_order_id"] = str(int(payload["permanent_order_id"])) if permanent else None
         with self._lock:
+            existing = self.get_submitted_order(order_identity=identity)
+            if existing:
+                for field in ("account_id", "permanent_order_id", "symbol", "side"):
+                    if existing.get(field) and payload.get(field) and existing[field] != payload[field]:
+                        raise ValueError(f"Order lifetime identity conflict: {field}")
+                payload = {**existing, **{k: v for k, v in payload.items() if v is not None}}
+            payload["created_at"] = (existing or {}).get("created_at") or now
+            payload["updated_at"] = now
             self._connection().execute(
-                """
-                INSERT INTO ib_submitted_orders (
-                    broker_order_id, permanent_order_id, account_id, symbol, side,
-                    quantity, order_type, submitted_at, decision_at, benchmark_type,
-                    benchmark_price, quote_bid, quote_ask, quote_midpoint, stop_price,
-                    limit_price, strategy_name, strategy_stop_price, take_profit,
-                    exit_reason, entry_cancel_after_seconds, entry_expiry_bars,
-                    entry_signal_bar_timestamp, entry_bar_interval_seconds,
-                    order_role, oca_group, parent_order_id, gap_fill,
-                    placement_latency_s, capped_by, or_source, or_high, or_low,
-                    benchmark_version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(broker_order_id) DO UPDATE SET
-                    permanent_order_id = COALESCE(excluded.permanent_order_id, permanent_order_id),
-                    account_id = COALESCE(excluded.account_id, account_id),
-                    symbol = excluded.symbol,
-                    side = excluded.side,
-                    quantity = excluded.quantity,
-                    order_type = excluded.order_type,
-                    submitted_at = COALESCE(excluded.submitted_at, submitted_at),
-                    decision_at = COALESCE(excluded.decision_at, decision_at),
-                    benchmark_type = COALESCE(excluded.benchmark_type, benchmark_type),
-                    benchmark_price = COALESCE(excluded.benchmark_price, benchmark_price),
-                    quote_bid = COALESCE(excluded.quote_bid, quote_bid),
-                    quote_ask = COALESCE(excluded.quote_ask, quote_ask),
-                    quote_midpoint = COALESCE(excluded.quote_midpoint, quote_midpoint),
-                    stop_price = COALESCE(excluded.stop_price, stop_price),
-                    limit_price = COALESCE(excluded.limit_price, limit_price),
-                    strategy_name = COALESCE(excluded.strategy_name, strategy_name),
-                    strategy_stop_price = COALESCE(excluded.strategy_stop_price, strategy_stop_price),
-                    take_profit = COALESCE(excluded.take_profit, take_profit),
-                    exit_reason = COALESCE(excluded.exit_reason, exit_reason),
-                    entry_cancel_after_seconds = COALESCE(excluded.entry_cancel_after_seconds, entry_cancel_after_seconds),
-                    entry_expiry_bars = COALESCE(excluded.entry_expiry_bars, entry_expiry_bars),
-                    entry_signal_bar_timestamp = COALESCE(excluded.entry_signal_bar_timestamp, entry_signal_bar_timestamp),
-                    entry_bar_interval_seconds = COALESCE(excluded.entry_bar_interval_seconds, entry_bar_interval_seconds),
-                    order_role = COALESCE(excluded.order_role, order_role),
-                    oca_group = COALESCE(excluded.oca_group, oca_group),
-                    parent_order_id = COALESCE(excluded.parent_order_id, parent_order_id),
-                    gap_fill = COALESCE(excluded.gap_fill, gap_fill),
-                    placement_latency_s = COALESCE(excluded.placement_latency_s, placement_latency_s),
-                    capped_by = COALESCE(excluded.capped_by, capped_by),
-                    or_source = COALESCE(excluded.or_source, or_source),
-                    or_high = COALESCE(excluded.or_high, or_high),
-                    or_low = COALESCE(excluded.or_low, or_low),
-                    benchmark_version = excluded.benchmark_version,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    str(payload["broker_order_id"]),
-                    payload.get("permanent_order_id"),
-                    payload.get("account_id"),
-                    payload["symbol"],
-                    payload["side"],
-                    float(payload["quantity"]),
-                    payload.get("order_type") or "market",
-                    _iso(payload.get("submitted_at")),
-                    _iso(payload.get("decision_at")),
-                    payload.get("benchmark_type"),
-                    payload.get("benchmark_price"),
-                    payload.get("quote_bid"),
-                    payload.get("quote_ask"),
-                    payload.get("quote_midpoint"),
-                    payload.get("stop_price"),
-                    payload.get("limit_price"),
-                    payload.get("strategy_name"),
-                    payload.get("strategy_stop_price"),
-                    payload.get("take_profit"),
-                    payload.get("exit_reason"),
-                    payload.get("entry_cancel_after_seconds"),
-                    payload.get("entry_expiry_bars"),
-                    _iso(payload.get("entry_signal_bar_timestamp")),
-                    payload.get("entry_bar_interval_seconds"),
-                    payload.get("order_role"),
-                    payload.get("oca_group"),
-                    payload.get("parent_order_id"),
-                    None if payload.get("gap_fill") is None else int(bool(payload.get("gap_fill"))),
-                    payload.get("placement_latency_s"),
-                    payload.get("capped_by"),
-                    payload.get("or_source"),
-                    payload.get("or_high"),
-                    payload.get("or_low"),
-                    int(payload.get("benchmark_version") or 2),
-                    now,
-                    now,
-                ),
+                """INSERT INTO ib_order_lifetimes
+                   (order_identity, broker_order_id, account_id, permanent_order_id,
+                    client_id, payload_json, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(order_identity) DO UPDATE SET
+                     broker_order_id=excluded.broker_order_id,
+                     account_id=excluded.account_id,
+                     permanent_order_id=excluded.permanent_order_id,
+                     client_id=excluded.client_id, payload_json=excluded.payload_json,
+                     updated_at=excluded.updated_at""",
+                (identity, str(payload["broker_order_id"]), payload.get("account_id"),
+                 payload.get("permanent_order_id"), payload.get("client_id"),
+                 json.dumps(payload, sort_keys=True), payload["created_at"], now),
             )
             self._connection().commit()
 
-    def get_submitted_order(self, broker_order_id: str) -> Optional[Dict[str, Any]]:
-        row = self._connection().execute(
-            "SELECT * FROM ib_submitted_orders WHERE broker_order_id = ?",
-            (str(broker_order_id),),
-        ).fetchone()
-        return dict(row) if row else None
+    def get_submitted_order(
+        self, broker_order_id: Optional[str] = None, *,
+        order_identity: Optional[str] = None,
+        account_id: Optional[str] = None, permanent_order_id: Any = None,
+    ) -> Optional[Dict[str, Any]]:
+        if order_identity:
+            clause, params = "order_identity = ?", (order_identity,)
+        elif permanent_order_identity(account_id, permanent_order_id):
+            clause, params = "account_id = ? AND permanent_order_id = ?", (
+                account_id, str(int(permanent_order_id)),
+            )
+        elif broker_order_id is not None:
+            clause, params = "broker_order_id = ?", (str(broker_order_id),)
+        else:
+            return None
+        rows = self._connection().execute(
+            f"SELECT payload_json FROM ib_order_lifetimes WHERE {clause}", params,
+        ).fetchall()
+        if len(rows) > 1:
+            raise ValueError("Ambiguous API order ID; an order lifetime identity is required")
+        return json.loads(rows[0]["payload_json"]) if rows else None
 
     def list_submitted_orders(
         self,
@@ -334,18 +354,18 @@ class IBExecutionStore:
         """Submitted orders, optionally filtered (``submitted_after`` is inclusive)."""
         clauses, params = [], []
         if symbol is not None:
-            clauses.append("symbol = ?")
+            clauses.append("json_extract(payload_json, '$.symbol') = ?")
             params.append(symbol)
         if order_role is not None:
-            clauses.append("order_role = ?")
+            clauses.append("json_extract(payload_json, '$.order_role') = ?")
             params.append(order_role)
         rows = self._connection().execute(
-            "SELECT * FROM ib_submitted_orders"
+            "SELECT payload_json FROM ib_order_lifetimes"
             + (" WHERE " + " AND ".join(clauses) if clauses else "")
-            + " ORDER BY submitted_at",
+            + " ORDER BY json_extract(payload_json, '$.submitted_at')",
             params,
         ).fetchall()
-        result = [dict(row) for row in rows]
+        result = [json.loads(row["payload_json"]) for row in rows]
         if submitted_after is not None:
             cutoff = submitted_after.astimezone(timezone.utc)
             result = [

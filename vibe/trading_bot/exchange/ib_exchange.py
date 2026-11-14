@@ -19,6 +19,7 @@ from vibe.trading_bot.brokers.interactive_brokers import InteractiveBrokersAPI
 from vibe.trading_bot.storage.ib_execution_store import (
     canonical_execution,
     dedupe_corrections,
+    execution_order_identity,
 )
 
 
@@ -38,6 +39,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         self.fill_timeout_seconds = fill_timeout_seconds
         self.quote_max_age_seconds = quote_max_age_seconds
         self._orders: dict[str, Order] = {}
+        self._api_order_ids: dict[str, str] = {}
         self._prices: dict[str, float] = {}
         self._execution_listeners: List[Callable[[Dict[str, Any]], None]] = []
         self._restored_open_symbols: set[str] = set()
@@ -53,9 +55,14 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             self._on_broker_execution(execution)
         list_open_orders = getattr(self.broker, "list_open_orders", None)
         if list_open_orders is not None:
-            for item in list_open_orders():
+            open_orders = list_open_orders()
+            identities = {
+                str(item["order"].broker_order_id): self._register_broker_order(item["order"])
+                for item in open_orders
+            }
+            for item in open_orders:
                 restored = item["order"]
-                order_id = str(restored.broker_order_id)
+                order_id = identities[str(restored.broker_order_id)]
                 order = self._orders.get(order_id)
                 if order is None:
                     reference_price = float(
@@ -68,6 +75,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                     )
                     order = Order(
                         order_id=order_id,
+                        broker_order_id=str(restored.broker_order_id),
                         symbol=restored.symbol,
                         side=restored.side,
                         quantity=float(restored.quantity),
@@ -106,26 +114,77 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                             else None
                         ),
                         oca_group=restored.oca_group,
-                        parent_order_id=restored.parent_order_id,
+                        parent_order_id=identities.get(
+                            str(restored.parent_order_id), restored.parent_order_identity,
+                        ),
                         gap_fill=restored.gap_fill,
                         placement_latency_s=restored.placement_latency_s,
                         capped_by=restored.capped_by,
                         or_source=restored.or_source,
                         or_high=restored.or_high,
                         or_low=restored.or_low,
+                        permanent_order_id=restored.permanent_order_id,
+                        account_id=restored.account_id,
                     )
                     self._orders[order_id] = order
                 else:
+                    if order.symbol != restored.symbol or order.side != restored.side:
+                        raise RuntimeError("Restored IB order conflicts with durable execution identity")
                     order.quantity = max(
                         float(restored.quantity),
                         float(order.filled_qty),
                     )
+                    order.filled_qty = max(order.filled_qty, float(item.get("filled_qty") or 0))
+                    order.broker_order_id = str(restored.broker_order_id)
+                    order.order_type = restored.order_type
+                    order.order_role = restored.order_role or (
+                        "protective_stop" if restored.exit_reason == "protective_stop" else order.order_role
+                    )
+                    order.parent_order_id = identities.get(
+                        str(restored.parent_order_id), restored.parent_order_identity,
+                    )
+                    # Execution-only legacy rows can lack lifecycle metadata.
+                    # Refresh it from the verified live order, preserving fills.
+                    for field in (
+                        "stop_price", "limit_price", "permanent_order_id", "account_id",
+                        "decision_at", "submitted_at", "benchmark_type", "benchmark_price",
+                        "strategy_name", "strategy_stop_price", "take_profit", "oca_group",
+                        "entry_cancel_after_seconds", "entry_expiry_bars",
+                        "entry_signal_bar_timestamp", "entry_bar_interval_seconds",
+                    ):
+                        value = getattr(restored, field)
+                        if value is not None:
+                            setattr(order, field, value)
                 order.status = (
                     OrderStatus.PARTIAL
                     if float(order.filled_qty) > 0
                     else OrderStatus.SUBMITTED
                 )
                 self._restored_open_symbols.add(restored.symbol)
+
+    def _register_broker_order(self, order: BrokerOrder) -> str:
+        identity = order.order_identity or str(order.broker_order_id)
+        self._api_order_ids[identity] = str(order.broker_order_id)
+        return identity
+
+    def _submission_identity(self, api_order_id: str) -> str:
+        getter = getattr(self.broker, "get_submitted_order", None)
+        submitted = getter(api_order_id) if getter is not None else None
+        if submitted is not None:
+            return self._register_broker_order(submitted)
+        # Non-IB/test adapters may already provide an opaque unique order ID.
+        self._api_order_ids[str(api_order_id)] = str(api_order_id)
+        return str(api_order_id)
+
+    def _routing_id(self, order_id: str) -> str:
+        api_id = self._api_order_ids.get(order_id)
+        if api_id is None:
+            raise RuntimeError("Historical order has no current broker routing handle")
+        getter = getattr(self.broker, "get_submitted_order", None)
+        submitted = getter(api_id) if getter is not None else None
+        if submitted is not None and (submitted.order_identity or api_id) != order_id:
+            raise RuntimeError("IB routing handle now belongs to another order lifetime")
+        return api_id
 
     async def close(self) -> None:
         await self.broker.disconnect()
@@ -156,7 +215,8 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         """Return restored non-terminal orders for lifecycle monitoring."""
         return [
             order
-            for order in self._orders.values()
+            for identity, order in self._orders.items()
+            if identity in self._api_order_ids
             if order.status in {
                 OrderStatus.CREATED,
                 OrderStatus.PENDING,
@@ -173,14 +233,15 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         never counted twice.
         """
         execution = canonical_execution(execution)
-        broker_order_id = str(execution["broker_order_id"])
+        order_id = execution_order_identity(execution)
         metadata = execution.get("order_metadata") or {}
-        order = self._orders.get(broker_order_id)
+        order = self._orders.get(order_id)
         if order is None:
             price = float(metadata.get("benchmark_price") or execution["price"])
             quantity = float(metadata.get("quantity") or execution["quantity"])
             order = Order(
-                order_id=broker_order_id,
+                order_id=order_id,
+                broker_order_id=str(execution["broker_order_id"]),
                 symbol=execution["symbol"],
                 side=execution["side"],
                 quantity=quantity,
@@ -215,7 +276,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 entry_bar_interval_seconds=metadata.get("entry_bar_interval_seconds"),
                 order_role=metadata.get("order_role"),
                 oca_group=metadata.get("oca_group"),
-                parent_order_id=metadata.get("parent_order_id"),
+                parent_order_id=metadata.get("parent_order_identity"),
                 gap_fill=(
                     None if metadata.get("gap_fill") is None else bool(metadata.get("gap_fill"))
                 ),
@@ -225,7 +286,13 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 or_high=metadata.get("or_high"),
                 or_low=metadata.get("or_low"),
             )
-            self._orders[broker_order_id] = order
+            self._orders[order_id] = order
+        elif (
+            order.symbol != execution["symbol"] or order.side != execution["side"]
+            or (order.permanent_order_id and execution.get("permanent_order_id")
+                and str(order.permanent_order_id) != str(execution["permanent_order_id"]))
+        ):
+            raise RuntimeError("Execution conflicts with its durable order identity")
 
         executions_by_id = {
             str(item["execution_id"]): dict(item)
@@ -276,7 +343,9 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             next(iter(commission_currencies)) if len(commission_currencies) == 1 else None
         )
         order.status = OrderStatus.FILLED if filled_qty >= order.quantity else OrderStatus.PARTIAL
-        if order.status == OrderStatus.FILLED:
+        if order.status == OrderStatus.FILLED and order_id in self._api_order_ids and not any(
+            live.symbol == order.symbol for live in self.list_open_orders()
+        ):
             self._restored_open_symbols.discard(order.symbol)
         if order.avg_price > 0:
             self._prices[order.symbol] = order.avg_price
@@ -409,6 +478,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         submitted_at = (
             getattr(submitted_order, "submitted_at", None) or submission_fallback
         )
+        order_id = self._submission_identity(broker_order_id)
 
         try:
             initial_fill_wait = (
@@ -422,7 +492,8 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             )
         except TimeoutError:
             order = Order(
-                order_id=broker_order_id,
+                order_id=order_id,
+                broker_order_id=broker_order_id,
                 symbol=symbol,
                 side=side,
                 quantity=quantity,
@@ -449,17 +520,19 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
                 entry_bar_interval_seconds=broker_order.entry_bar_interval_seconds,
                 order_role=broker_order.order_role,
             )
-            self._orders[broker_order_id] = order
+            order = self._orders.get(order_id) or order
+            self._orders[order_id] = order
             return OrderResponse(
-                order_id=broker_order_id,
-                status=OrderStatus.SUBMITTED,
-                filled_qty=0.0,
-                avg_price=0.0,
-                remaining_qty=quantity,
+                order_id=order_id,
+                status=order.status,
+                filled_qty=order.filled_qty,
+                avg_price=order.avg_price,
+                remaining_qty=max(quantity - order.filled_qty, 0.0),
             )
 
         order = Order(
-            order_id=broker_order_id,
+            order_id=order_id,
+            broker_order_id=broker_order_id,
             symbol=symbol,
             side=side,
             quantity=quantity,
@@ -498,11 +571,11 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         order.avg_price = fill.avg_fill_price
         order.commission = fill.commission or 0.0
         order.status = OrderStatus.FILLED if fill.quantity >= quantity else OrderStatus.PARTIAL
-        self._orders[broker_order_id] = order
+        self._orders[order_id] = order
         self._prices[symbol] = fill.avg_fill_price
 
         return OrderResponse(
-            order_id=broker_order_id,
+            order_id=order_id,
             status=OrderStatus.FILLED if fill.quantity >= quantity else OrderStatus.PARTIAL,
             filled_qty=fill.quantity,
             avg_price=fill.avg_fill_price,
@@ -514,12 +587,13 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             raise ValueError(f"Unknown order: {order_id}")
 
         order = self._orders[order_id]
-        acknowledged = await self.broker.cancel_order(order_id)
+        api_order_id = self._routing_id(order_id)
+        acknowledged = await self.broker.cancel_order(api_order_id)
         if acknowledged is not True:
             raise RuntimeError(
                 f"Cancellation state could not be confirmed for order {order_id}"
             )
-        status = await self.broker.get_order_status(order_id)
+        status = await self.broker.get_order_status(self._routing_id(order_id))
         raw_status = str(status.get("status") or "")
         if raw_status not in {"Filled", "Cancelled", "ApiCancelled", "Inactive"}:
             raise RuntimeError(
@@ -532,7 +606,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
         executions = [
             execution
             for execution in self.list_durable_executions()
-            if str(execution.get("broker_order_id")) == str(order_id)
+            if execution_order_identity(execution) == order_id
         ]
         for execution in executions:
             self._on_broker_execution(execution)
@@ -767,7 +841,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
 
     async def get_order(self, order_id: str) -> Optional[Order]:
         order = self._orders.get(order_id)
-        if order is not None and (
+        if order is not None and order_id in self._api_order_ids and (
             order.order_role in ("entry", "protective_stop") or order.oca_group
         ) and order.status in {
             OrderStatus.CREATED,
@@ -779,7 +853,7 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             # own: an OCA sibling filled, a bracket parent was cancelled, or
             # the order was rejected. Other orders keep their historical path.
             snapshot = getattr(self.broker, "order_status_snapshot", None)
-            raw_status = snapshot(order_id) if snapshot is not None else None
+            raw_status = snapshot(self._routing_id(order_id)) if snapshot is not None else None
             if (
                 raw_status in {"Cancelled", "ApiCancelled", "Inactive"}
                 and float(order.filled_qty or 0.0) < float(order.quantity)
@@ -863,10 +937,13 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
 
         placed: List[tuple[Order, Order]] = []
         for (entry_bo, stop_bo), (entry_id, stop_id) in zip(brackets, ids):
+            entry_id = self._submission_identity(entry_id)
+            stop_id = self._submission_identity(stop_id)
             pair = []
             for bo, order_id, parent_id in ((entry_bo, entry_id, None), (stop_bo, stop_id, entry_id)):
                 order = Order(
                     order_id=order_id,
+                    broker_order_id=self._api_order_ids[order_id],
                     symbol=symbol,
                     side=bo.side,
                     quantity=float(bo.quantity),
@@ -952,8 +1029,10 @@ class InteractiveBrokersExecutionEngine(ExecutionEngine):
             order_role="protective_stop",
         )
         order_id = await submit(broker_order)
+        order_id = self._submission_identity(str(order_id))
         order = Order(
             order_id=str(order_id),
+            broker_order_id=self._api_order_ids[str(order_id)],
             symbol=symbol,
             side=side,
             quantity=float(quantity),

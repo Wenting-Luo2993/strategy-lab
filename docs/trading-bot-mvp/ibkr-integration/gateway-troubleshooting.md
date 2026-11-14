@@ -734,10 +734,138 @@ broker-protected branch, while a restored broker stop still existed.
 stops, and `ib_exchange._refuse_if_restored_orders_open` then blocks a new
 submission for a symbol with any restored open order. This explains the
 observed safe refusal instead of a completed exit and indicates a mismatch
-between restored broker orders and local protective-stop tracking. The precise
-reason TSLA's protection was not recognized requires a separate restoration/
-journal audit; removing the duplicate-order guard is not an appropriate fix.
+between restored broker orders and local protective-stop tracking. At this
+point the precise restoration/journal cause had not yet been audited; the
+follow-up below establishes it. Removing the duplicate-order guard is not
+an appropriate fix.
 No production changes or manual trading actions were made in this follow-up.
+
+#### November 14 read-only audit: reused order ID corrupts stop restoration
+
+A follow-up investigation of deployed `c3b7a7c` identified and reproduced the
+specific restoration defect behind the TSLA EOD refusal. At 00:35 UTC, read-only
+`status`/`check` still showed that release, healthy containers, both health
+endpoints 200 and disabled/inactive legacy trading services. The execution
+journal was queried with SQLite `mode=ro`; no records were changed.
+
+The broker's API order ID is not a globally unique historical order identity:
+
+| Evidence | Symbol / purpose | API order ID | Permanent ID |
+|---|---|---|---|
+| November 11 execution at 15:43:35 UTC | QQQ BUY 2 protective-stop fill | 169 | 974881495 |
+| November 13 `openOrder` at 20:53:00 UTC | TSLA BUY 4 protective stop, parent 168, stop 404.40, DAY | 169 | 1743199735 |
+
+The current submitted-order journal row for 169 correctly identifies TSLA and
+`order_role=protective_stop`, with parent 168. This is **not missing stop-role
+metadata**. The execution journal still contains the distinct older QQQ fill.
+Entry ID 168 also has both a November 11 QQQ fill and a November 13 TSLA fill
+with different permanent IDs. Other historical collisions exist for IDs
+12, 16, 20 and 144, so a TSLA-only exception is not a sufficient repair.
+
+The causal path in the deployed source is:
+
+1. `InteractiveBrokersExecutionEngine.initialize` replays durable executions
+   into `_orders`, indexed only by `str(broker_order_id)`.
+   `_on_broker_execution` creates order 169 from the historical QQQ fill.
+2. Restoring the current broker stop finds that existing object. The existing
+   branch updates quantity/status but retains the historical symbol, permanent
+   ID, fills and metadata. The broker still has a TSLA stop, while the
+   execution-engine object describes QQQ with historical filled quantity 2.
+3. `_adopt_restored_protective_stops` does not correct it: that fallback skips
+   orders that already have a role. `TradeExecutor.restore_pending_entries`
+   consequently associates the stop with QQQ, not TSLA.
+4. TSLA follows the ordinary client-side EOD branch. Its close routine finds
+   no recognized TSLA protective stop to cancel first. The separate restored
+   symbol guard correctly sees an actual open TSLA broker order and refuses
+   the market submission. The logged error is a **local safety refusal before
+   a new close order is sent**, not an IBKR rejection of that close.
+
+An offline fake-broker reproduction against this source used the two distinct
+order lifetimes above, without any production connection. With historical
+replay, it restored order 169 as QQQ, retained filled quantity 2, reported no
+TSLA protection, and produced the exact duplicate-submission refusal. The
+control without the historical fill restored TSLA with filled quantity 0 and
+recognized its stop. This corroborates the journal and observed log sequence;
+it is not a runtime memory dump.
+
+Today's execution journal also confirms that **not all positions failed to
+exit**: MSFT's protective stop filled at 14:40:27 UTC; EOD BUY fills closed
+AMZN 7 at 20:56:53, QQQ 2 at 20:56:55 and GOOGL 6 at 20:57:11. No TSLA EOD
+fill was present. TSLA retried and failed at 20:57:16, 20:58:30 and 20:59:40,
+then cooldown warned and the bot slept until Monday. The existing cooldown
+text calling this "stale state" and suggesting a restart is misleading:
+the broker position is real, and restarting can replay the same collision.
+
+At **00:38:29 UTC / November 13 19:38:29 EST**, a fresh read-only probe
+(client 9286) again returned **TSLA -4 shares and no open orders**, with fresh
+server time 00:38:28 UTC. The probe used no execution journal and disconnected
+in `finally`. No investigator order submissions, cancellations, risk resets,
+deployments or service restarts were performed.
+
+#### Durable order identity repair (v1.4.14)
+
+The repair separates internal order identity from the API routing number:
+
+- New submissions receive a UUID (`sl:...`) persisted **before** transmission
+  and sent in IB's `orderRef`. Bracket parents and children have separate
+  identities, linked durably. Journal failure before transmission prevents
+  placement; partial-placement handling still exposes/cancels placed legs.
+- Acknowledgements and executions bind the identity to account/nonzero `permId`.
+  Replay uses that identity, or account/permanent ID for older executions,
+  never API order number alone. Unidentifiable legacy executions are isolated
+  by canonical execution ID rather than attached to a current order.
+- `ib_order_lifetimes` stores separate submission records. Migration archives
+  existing submitted rows there without deleting/changing the original
+  `ib_submitted_orders` table or execution IDs. API-number-only lookup fails
+  explicitly when ambiguous. Overwritten historical metadata is not invented.
+- Open-order reconciliation takes contract, side, quantity and prices from
+  the broker. Submission metadata is attached only through a verified identity.
+  Unbound legacy metadata is not borrowed because its API number matches.
+  Role-less stops can be adopted against matching broker exposure; an
+  unclassifiable live IB stop blocks initialization rather than becoming an
+  entry eligible for timeout cancellation. Foreign-client/account orders
+  require explicit reconciliation.
+- Engine order IDs and lifecycle aggregation use durable identities. Current
+  API routing handles are kept separately and revalidated before cancellation.
+  A late historical fill cannot poll/cancel the new order, contaminate its
+  filled quantity, or release its duplicate-order guard. Dashboard fill events
+  preserve the API number and carry the durable ID in `strategy_order_id`.
+- EOD keeps the existing sequence: cancel protection, confirm terminal status,
+  reconcile fills, then close only the remaining exposure. Cooldown now
+  explicitly warns that restarting does not flatten or protect positions.
+
+Regression coverage reproduces QQQ169 -> TSLA169 and same-symbol reuse, both
+with verified stop roles and legacy role adoption. It covers no fill, partial
+fill and complete stop-fill races at cancellation, corrections, late callbacks,
+reused cancellation handles, unacknowledged cancellations, different clients,
+pre-ack recovery and non-destructive migration.
+
+**Local validation:** 758 bot tests passed with the existing incompatible
+`vibe/tests/trading_bot/dashboard/test_api.py` excluded. The full-suite attempt
+confirmed that file's 34 existing HTTPX `AsyncClient(app=...)` failures; no
+identity/lifecycle test failures remained. Dependencies and those unrelated
+API tests were not changed. The exact passing command was:
+
+```text
+python -B -m pytest vibe/tests/trading_bot --ignore=vibe/tests/trading_bot/dashboard/test_api.py -q
+```
+
+**Rollout preparation:** November 14 04:16 UTC read-only harness preflight
+passed; production still ran `c3b7a7c` at that observation. A read-only journal
+audit found 84 executions, all with account/nonzero permanent ID, 122 submitted
+rows, and `PRAGMA quick_check = ok`. Deployment must retain an online SQLite
+backup and verify the migrated row counts and fresh startup markers.
+Deployment/exposure results are recorded separately below when observed.
+
+**Rollback limitation:** the retained legacy table is evidence, not an
+up-to-date compatibility mirror. Old bot images still contain the collision
+defect and do not read new lifetime records. Do not blindly downgrade and
+resume trading, delete the journal, or overwrite new executions with an older
+backup. Any approved rollback requires broker/journal reconciliation first.
+
+The independent upstream `10197`/quote-timeout investigation remains open.
+This identity defect explains the observed TSLA exit refusal, not those
+connectivity errors or the exact cause of the DAY stop's later disappearance.
 
 ## Recovery verification: what is enough to close an incident?
 
@@ -783,7 +911,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-11 recovery observation: read-only probes passed after an empty history response | Fresh account/order/server-time requests worked. All five Nov 10 histories returned 390 bars after QQQ retry; `1102` arrived during the observed maintenance transition. No manual restart. | This is current probe evidence, not a deployed fix, fresh market-session data, or a guarantee about the next warm-up. |
 | 2026-11-11 intraday failure: **connectivity recovered; exposure open** | Morning restart/warm-up succeeded; afternoon `10197`, then `1100`/IBC error and three failed EOD exits. Bot-only `d31d7a4` rollout failed against the stalled Gateway; separately approved Gateway recovery passed at Nov 12 00:08 UTC. Fresh positions: MSFT -3, AMZN -7, TSLA +4; no open orders returned. | Resolve open exposure/protection with operator authorization; investigate competing session/upstream cause and observe the next full session. Successful deployment is not successful flattening. See section I. |
 | 2026-11-12 intraday recurrence: **recovered; four positions open** | Scheduled login and initial trading succeeded; data/account failures, six `10197` events and an afternoon upstream stall followed. All five locally tracked EOD exits failed. Approved Gateway recovery succeeded Nov 13 03:38 UTC at `a1b5cab`. | Fresh broker positions: MSFT +3, TSLA +4, GOOGL +6, QQQ +2; no open orders returned. Resolve exposure, audit AMZN discrepancy, investigate recurring upstream cause and observe next full session. See section J. |
-| 2026-11-13 intermittent live-data failures: **fixes deployed; partial recovery, TSLA exposure open** | Packet-buffer and summary-concurrency fixes plus passive monitoring deployed in explicitly approved market-hours Gateway recovery at 20:55 UTC, `c3b7a7c`. Fresh quotes for all five symbols and account reads passed. QQQ polling timeouts/10185 persisted; TSLA EOD close failed the duplicate-order guard. | Latest fresh snapshot November 14 00:30 UTC: TSLA -4 and **no open orders**; earlier stop is not current protection evidence. Reconcile exposure without bypassing safeguards. No outside sessions per operator; post-probe audit found expected peers/one JVM. Investigate restoration mismatch, remaining timeouts and broker-side `10197`; recovery is not full incident closure. See section K. |
+| 2026-11-13 intermittent live-data failures: **partial recovery, TSLA exposure open** | Packet-buffer and summary-concurrency fixes plus passive monitoring deployed in approved market-hours Gateway recovery at 20:55 UTC, `c3b7a7c`. QQQ polling timeouts/10185 persisted; TSLA EOD close failed the duplicate-order guard. | November 14 00:38 UTC snapshot: TSLA -4 and **no open orders**. Audit proved historical QQQ169 collided with the current TSLA stop. The v1.4.14 identity repair and its rollout evidence are documented in section K; deployment does not flatten exposure. No outside sessions per operator. Timeouts and broker-side `10197` remain separate unresolved issues. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved

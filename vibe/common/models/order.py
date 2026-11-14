@@ -43,6 +43,7 @@ class Order(BaseModel):
     execution_id: Optional[str] = Field(default=None, description="Primary broker execution ID")
     execution_ids: List[str] = Field(default_factory=list, description="Distinct broker execution IDs")
     permanent_order_id: Optional[str] = Field(default=None, description="Broker permanent order ID")
+    broker_order_id: Optional[str] = Field(default=None, description="Current broker API routing number, not historical identity")
     account_id: Optional[str] = Field(default=None, description="Broker account ID")
     trade_currency: Optional[str] = Field(default=None, description="Instrument/trade currency")
     commission_currency: Optional[str] = Field(default=None, description="Broker-reported commission currency")

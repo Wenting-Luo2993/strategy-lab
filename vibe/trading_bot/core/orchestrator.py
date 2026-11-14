@@ -23,6 +23,7 @@ from vibe.trading_bot.data.providers.finnhub import FinnhubWebSocketClient
 from vibe.trading_bot.data.providers.factory import DataProviderFactory
 from vibe.trading_bot.data.providers.types import RealtimeDataProvider, WebSocketDataProvider, RESTDataProvider
 from vibe.trading_bot.storage.trade_store import TradeStore
+from vibe.trading_bot.storage.ib_execution_store import execution_order_identity
 from vibe.trading_bot.storage.metrics_store import MetricType, MetricsStore
 from vibe.trading_bot.storage.dashboard_store import (
     AccountRecord,
@@ -515,9 +516,7 @@ class TradingOrchestrator:
                     projected_row, _ = (
                         self.trade_store.apply_entry_execution_projection(
                             execution_id=str(execution["execution_id"]),
-                            broker_order_id=str(
-                                execution.get("broker_order_id") or order_id
-                            ),
+                            broker_order_id=order_id,
                             # Dashboard account scoping is authoritative. Mock
                             # execution IDs use an internal "mock" account tag
                             # that must not create a second logical account.
@@ -932,7 +931,7 @@ class TradingOrchestrator:
             # the backtest models as 2 ticks.
             lifecycle_getter = getattr(self.exchange, "order_lifecycle", None)
             lifecycle = (
-                lifecycle_getter(str(event.broker_order_id))
+                lifecycle_getter(str(event.strategy_order_id or event.broker_order_id))
                 if lifecycle_getter is not None
                 else {}
             ) or {}
@@ -1101,13 +1100,14 @@ class TradingOrchestrator:
                 ),
                 broker="interactive_brokers",
                 broker_order_id=str(execution["broker_order_id"]),
+                strategy_order_id=execution_order_identity(execution),
                 permanent_order_id=execution.get("permanent_order_id"),
                 event_type="ORDER_FILLED",
                 symbol=execution["symbol"],
                 side=execution["side"],
                 quantity=float(execution["quantity"]),
                 trade_id=(
-                    self._dashboard_order_trade_ids.get(str(execution["broker_order_id"]))
+                    self._dashboard_order_trade_ids.get(execution_order_identity(execution))
                     or (existing_event or {}).get("trade_id")
                 ),
                 price=execution_price,
@@ -1185,7 +1185,7 @@ class TradingOrchestrator:
 
         for execution in executions:
             execution_id = str(execution["execution_id"])
-            order_id = str(execution["broker_order_id"])
+            order_id = execution_order_identity(execution)
             execution_account_id = str(execution.get("account_id") or "").strip()
             if (
                 configured_account_id
@@ -1731,7 +1731,8 @@ class TradingOrchestrator:
                         execution_id=execution_id,
                         account_id=execution.get("account_id") or account_id,
                         broker=self._dashboard_broker_name(),
-                        broker_order_id=str(execution.get("broker_order_id") or order_id),
+                        broker_order_id=str(execution.get("broker_order_id") or order.broker_order_id or order_id),
+                        strategy_order_id=order_id,
                         permanent_order_id=execution.get("permanent_order_id"),
                         event_type=event_type,
                         symbol=execution.get("symbol") or order.symbol,
@@ -1775,7 +1776,8 @@ class TradingOrchestrator:
                 event_id=f"{event_type}:{order_id}",
                 account_id=account_id,
                 broker=self._dashboard_broker_name(),
-                broker_order_id=order_id,
+                broker_order_id=order.broker_order_id or order_id,
+                strategy_order_id=order_id,
                 event_type=event_type,
                 symbol=order.symbol,
                 side=order.side,
@@ -2302,8 +2304,12 @@ class TradingOrchestrator:
                     "Could not read %s position to classify restored stop %s: %s",
                     order.symbol, order.order_id, exc, exc_info=True,
                 )
+                if getattr(order, "broker_order_id", None) is not None:
+                    raise RuntimeError("Cannot classify restored IB stop; broker reconciliation required") from exc
                 continue
             if position is None or not float(position.quantity or 0.0):
+                if getattr(order, "broker_order_id", None) is not None:
+                    raise RuntimeError("Unidentified live IB stop without a matching position; reconciliation required")
                 continue
             closes = (position.side == "long" and order.side == "sell") or (
                 position.side == "short" and order.side == "buy"
@@ -2315,6 +2321,8 @@ class TradingOrchestrator:
                     "as its protective stop",
                     order.symbol, order.order_id, order.side, order.quantity,
                 )
+            elif getattr(order, "broker_order_id", None) is not None:
+                raise RuntimeError("Unidentified IB stop does not match broker exposure; reconciliation required")
 
     def _record_entry_attempt(self, symbol: str, trading_date: Any) -> None:
         key = self._entry_attempt_key(symbol, trading_date)

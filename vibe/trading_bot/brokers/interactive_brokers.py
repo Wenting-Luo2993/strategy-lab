@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -17,7 +18,7 @@ from vibe.trading_bot.brokers.base import (
     BrokerQuote,
     FillEvent,
 )
-from vibe.trading_bot.storage.ib_execution_store import IBExecutionStore
+from vibe.trading_bot.storage.ib_execution_store import IBExecutionStore, permanent_order_identity
 
 try:
     from ib_insync import IB, LimitOrder, MarketOrder, Stock, StopOrder, Trade
@@ -115,6 +116,8 @@ class InteractiveBrokersAPI:
             self.ib.execDetailsEvent += self._handle_execution_details
         if hasattr(self.ib, "commissionReportEvent"):
             self.ib.commissionReportEvent += self._handle_commission_report
+        if hasattr(self.ib, "orderStatusEvent"):
+            self.ib.orderStatusEvent += self._handle_order_status
         self._trades: Dict[str, Any] = {}
         self._submitted_orders: Dict[str, BrokerOrder] = {}
         self._execution_listeners: List[Callable[[Dict[str, Any]], None]] = []
@@ -382,6 +385,7 @@ class InteractiveBrokersAPI:
         # This timestamp deliberately brackets the synchronous API call. Contract
         # qualification and benchmark acquisition have already completed.
         submitted_at = datetime.now(timezone.utc)
+        order = self._prepare_order_identity(order, ib_order, submitted_at)
         trade = self.ib.placeOrder(contract, ib_order)
         broker_order_id = str(trade.order.orderId)
 
@@ -393,6 +397,7 @@ class InteractiveBrokersAPI:
             broker_order_id=broker_order_id,
             status="submitted",
             submitted_at=submitted_at,
+            permanent_order_id=self._permanent_id(trade.order),
         )
         self._trades[broker_order_id] = trade
         self._submitted_orders[broker_order_id] = submitted_order
@@ -404,6 +409,59 @@ class InteractiveBrokersAPI:
         )
         logger.info("Submitted IB order %s %s %s %s", broker_order_id, order.side, order.quantity, order.symbol)
         return broker_order_id
+
+    @staticmethod
+    def _permanent_id(ib_order: Any) -> Optional[str]:
+        value = getattr(ib_order, "permId", None)
+        return str(int(value)) if value and int(value) > 0 else None
+
+    def _prepare_order_identity(
+        self, order: BrokerOrder, ib_order: Any, submitted_at: datetime,
+    ) -> BrokerOrder:
+        identity = "sl:" + uuid.uuid4().hex
+        ib_order.orderRef = identity
+        prepared = replace(
+            order, order_identity=identity, account_id=self.account_id,
+            client_id=self.client_id, submitted_at=submitted_at,
+            broker_order_id=str(getattr(ib_order, "orderId", "") or ""),
+        )
+        # Persist before transmission, including for partially placed brackets.
+        self.execution_store.upsert_submitted_order(self._submitted_order_payload(prepared))
+        return prepared
+
+    def _handle_order_status(self, trade: Any) -> None:
+        order_id = str(trade.order.orderId)
+        order = self._submitted_orders.get(order_id)
+        if order is None or getattr(trade.order, "orderRef", "") != order.order_identity:
+            return
+        permanent = self._permanent_id(trade.order)
+        if permanent and permanent != order.permanent_order_id:
+            updated = replace(order, permanent_order_id=permanent)
+            self.execution_store.upsert_submitted_order(self._submitted_order_payload(updated))
+            self._submitted_orders[order_id] = updated
+
+    def _verified_order_metadata(self, ib_order: Any, contract: Any) -> Dict[str, Any]:
+        account = getattr(ib_order, "account", None) or self.account_id
+        if self.account_id and account != self.account_id:
+            raise RuntimeError("Open IB order belongs to another account; reconciliation required")
+        permanent = self._permanent_id(ib_order)
+        reference = str(getattr(ib_order, "orderRef", "") or "")
+        stored = self.execution_store.get_submitted_order(
+            order_identity=reference if reference.startswith("sl:") else None,
+            account_id=account, permanent_order_id=permanent,
+        )
+        if stored is None:
+            return {}
+        side = "buy" if getattr(ib_order, "action", "") == "BUY" else "sell"
+        if (
+            stored.get("account_id") not in (None, "", account)
+            or stored.get("permanent_order_id") not in (None, "", permanent)
+            or stored.get("symbol") != contract.symbol
+            or stored.get("side") != side
+            or stored.get("client_id") not in (None, getattr(ib_order, "clientId", self.client_id))
+        ):
+            raise RuntimeError("Broker order conflicts with its durable identity; reconciliation required")
+        return stored
 
     def get_submitted_order(self, broker_order_id: str) -> Optional[BrokerOrder]:
         """Return the broker-captured submission metadata for an order."""
@@ -497,34 +555,36 @@ class InteractiveBrokersAPI:
                 continue
             ib_order = trade.order
             contract = trade.contract
+            client_id = getattr(ib_order, "clientId", self.client_id)
+            if client_id != self.client_id:
+                raise RuntimeError("Open order belongs to another IB client; operator reconciliation required")
             broker_order_id = str(getattr(ib_order, "orderId", ""))
             if not broker_order_id:
                 continue
-            stored = self.execution_store.get_submitted_order(broker_order_id) or {}
+            stored = self._verified_order_metadata(ib_order, contract)
+            account = getattr(ib_order, "account", None) or self.account_id
+            permanent = self._permanent_id(ib_order)
+            identity = stored.get("order_identity") or permanent_order_identity(account, permanent)
+            if not identity:
+                raise RuntimeError("Open IB order has no verified durable identity; reconciliation required")
+            if not stored:
+                logger.warning(
+                    "Restoring live IB order %s from broker fields without verified submission metadata",
+                    broker_order_id,
+                )
             action = str(getattr(ib_order, "action", "")).upper()
             ib_order_type = str(getattr(ib_order, "orderType", "MKT")).upper()
             order_type = {"LMT": "limit", "STP": "stop"}.get(
                 ib_order_type,
                 "market",
             )
-            limit_price = (
-                stored.get("limit_price")
-                if stored.get("limit_price") is not None
-                else self._clean_number(getattr(ib_order, "lmtPrice", None))
-            )
-            stop_price = (
-                stored.get("stop_price")
-                if stored.get("stop_price") is not None
-                else self._clean_number(getattr(ib_order, "auxPrice", None))
-            )
+            limit_price = self._clean_number(getattr(ib_order, "lmtPrice", None))
+            stop_price = self._clean_number(getattr(ib_order, "auxPrice", None))
             restored = BrokerOrder(
-                symbol=stored.get("symbol") or contract.symbol,
-                side=stored.get("side") or ("buy" if action == "BUY" else "sell"),
-                quantity=float(
-                    stored.get("quantity")
-                    or getattr(ib_order, "totalQuantity", 0.0)
-                ),
-                order_type=stored.get("order_type") or order_type,
+                symbol=contract.symbol,
+                side="buy" if action == "BUY" else "sell",
+                quantity=float(getattr(ib_order, "totalQuantity", 0.0)),
+                order_type=order_type,
                 expected_price=stored.get("benchmark_price"),
                 limit_price=limit_price,
                 stop_price=stop_price,
@@ -566,7 +626,13 @@ class InteractiveBrokersAPI:
                 or_source=stored.get("or_source"),
                 or_high=stored.get("or_high"),
                 or_low=stored.get("or_low"),
+                order_identity=identity,
+                permanent_order_id=permanent,
+                account_id=account,
+                client_id=client_id,
+                parent_order_identity=stored.get("parent_order_identity"),
             )
+            self.execution_store.upsert_submitted_order(self._submitted_order_payload(restored))
             self._trades[broker_order_id] = trade
             self._submitted_orders[broker_order_id] = restored
 
@@ -654,7 +720,10 @@ class InteractiveBrokersAPI:
         execution = getattr(fill, "execution", None)
         broker_order_id = str(getattr(execution, "orderId", "") or "")
         submitted_order = self._submitted_orders.get(broker_order_id)
-        stored_order = self.execution_store.get_submitted_order(broker_order_id)
+        stored_order = self.execution_store.get_submitted_order(
+            account_id=getattr(execution, "acctNumber", None) or self.account_id,
+            permanent_order_id=getattr(execution, "permId", None),
+        )
         payload = self._execution_payload(
             trade,
             fill,
@@ -1073,6 +1142,11 @@ class InteractiveBrokersAPI:
             child.orderId = self.ib.client.getReqId()
             child.parentId = parent.orderId
             child.transmit = True
+            entry = self._prepare_order_identity(entry, parent, submitted_at)
+            stop = self._prepare_order_identity(
+                replace(stop, parent_order_id=str(parent.orderId),
+                        parent_order_identity=entry.order_identity), child, submitted_at,
+            )
             placed.append((parent, entry, child, stop))
 
         # Each leg is registered the moment placeOrder returns, before the
@@ -1093,6 +1167,7 @@ class InteractiveBrokersAPI:
                         status="submitted",
                         submitted_at=submitted_at,
                         parent_order_id=None if is_parent else parent_id,
+                        permanent_order_id=self._permanent_id(trade.order),
                     )
                     self._trades[broker_order_id] = trade
                     self._submitted_orders[broker_order_id] = submitted
@@ -1327,6 +1402,11 @@ class InteractiveBrokersAPI:
                 stored_order=None,
                 fallback_filled_at=fallback_filled_at,
             )
+            if (
+                submitted_order.order_identity
+                and payload["order_metadata"]["order_identity"] != submitted_order.order_identity
+            ):
+                raise RuntimeError("IB trade contains a fill for another order lifetime")
             self.execution_store.upsert_execution(payload)
             executions.append(payload)
         if not executions:
@@ -1365,37 +1445,69 @@ class InteractiveBrokersAPI:
         if execution_time.tzinfo is None:
             execution_time = execution_time.replace(tzinfo=timezone.utc)
 
-        if submitted_order is not None:
-            order_metadata = self._submitted_order_payload(submitted_order)
-        else:
-            order_metadata = dict(stored_order or {})
         raw_side = str(getattr(execution, "side", "") or "").upper()
-        side = (
-            submitted_order.side
-            if submitted_order is not None
-            else (stored_order or {}).get("side")
-            or ("buy" if raw_side in {"BOT", "BUY"} else "sell")
-        )
-        symbol = (
-            submitted_order.symbol
-            if submitted_order is not None
-            else (stored_order or {}).get("symbol")
-            or getattr(contract, "symbol", None)
-        )
+        if raw_side not in {"BOT", "BUY", "SLD", "SELL"}:
+            raise RuntimeError("IB execution did not include a recognized side")
+        side = "buy" if raw_side in {"BOT", "BUY"} else "sell"
+        symbol = getattr(contract, "symbol", None)
         if not symbol:
             raise RuntimeError(f"IB execution {execution_id} did not include a symbol")
+        account = getattr(execution, "acctNumber", None) or self.account_id
+        permanent = getattr(execution, "permId", None)
+        permanent_identity = permanent_order_identity(account, permanent)
+        trade_order = getattr(trade, "order", None)
+        order_metadata = dict(stored_order or {})
+        reference = getattr(execution, "orderRef", None) or (
+            getattr(trade_order, "orderRef", None)
+            if getattr(trade_order, "permId", None) == permanent else None
+        )
+        if reference:
+            referenced = self.execution_store.get_submitted_order(order_identity=reference)
+            if referenced is not None:
+                if (
+                    referenced.get("account_id") not in (None, "", account)
+                    or referenced.get("permanent_order_id") not in (None, "", str(permanent))
+                    or referenced.get("symbol") != symbol or referenced.get("side") != side
+                ):
+                    raise RuntimeError("Execution reference conflicts with durable submission")
+                order_metadata = referenced
+        if (
+            submitted_order is not None
+            and submitted_order.order_identity
+            and getattr(trade_order, "orderRef", None) == submitted_order.order_identity
+            and getattr(trade_order, "permId", None) == permanent
+            and submitted_order.account_id in (None, account)
+        ):
+            order_metadata = self._submitted_order_payload(submitted_order)
+        elif not order_metadata:
+            existing = self.execution_store.get_execution(str(execution_id))
+            if existing and permanent_identity and permanent_identity == permanent_order_identity(
+                existing.get("account_id"), existing.get("permanent_order_id")
+            ):
+                order_metadata = dict(existing.get("order_metadata") or {})
+        if (
+            order_metadata.get("symbol", symbol) != symbol
+            or order_metadata.get("side", side) != side
+        ):
+            logger.error("Discarding conflicting legacy metadata for IB execution %s", execution_id)
+            order_metadata = {}
+        identity = order_metadata.get("order_identity") or permanent_identity
+        if not identity:
+            raise RuntimeError("IB execution has no durable order identity; reconciliation required")
+        order_metadata["order_identity"] = identity
+        order_metadata["symbol"] = symbol
+        order_metadata["side"] = side
+        if order_metadata.get("submitted_at") and identity.startswith("sl:"):
+            self.execution_store.upsert_submitted_order({
+                **order_metadata, "account_id": account,
+                "permanent_order_id": str(permanent) if permanent_identity else None,
+                "broker_order_id": broker_order_id,
+            })
         return {
             "execution_id": str(execution_id),
             "broker_order_id": broker_order_id,
-            "permanent_order_id": str(
-                getattr(execution, "permId", None)
-                or getattr(getattr(trade, "order", None), "permId", None)
-                or (stored_order or {}).get("permanent_order_id")
-                or ""
-            ) or None,
-            "account_id": getattr(execution, "acctNumber", None)
-            or (stored_order or {}).get("account_id")
-            or self.account_id,
+            "permanent_order_id": str(int(permanent)) if permanent_identity else None,
+            "account_id": account,
             "symbol": symbol,
             "side": side,
             "quantity": float(getattr(execution, "shares", 0.0) or 0.0),
@@ -1419,10 +1531,13 @@ class InteractiveBrokersAPI:
     ) -> Dict[str, Any]:
         return {
             "broker_order_id": str(order.broker_order_id or ""),
+            "order_identity": order.order_identity,
+            "client_id": order.client_id,
             "permanent_order_id": (
-                str(permanent_order_id) if permanent_order_id not in (None, "") else None
+                str(permanent_order_id) if permanent_order_id not in (None, "", 0, "0")
+                else order.permanent_order_id
             ),
-            "account_id": self.account_id,
+            "account_id": order.account_id or self.account_id,
             "symbol": order.symbol,
             "side": order.side,
             "quantity": order.quantity,
@@ -1448,6 +1563,7 @@ class InteractiveBrokersAPI:
             "order_role": order.order_role,
             "oca_group": order.oca_group,
             "parent_order_id": order.parent_order_id,
+            "parent_order_identity": order.parent_order_identity,
             "gap_fill": order.gap_fill,
             "placement_latency_s": order.placement_latency_s,
             "capped_by": order.capped_by,

@@ -343,7 +343,8 @@ class CooldownPhaseManager(BasePhase):
                 self.logger.error(
                     f"[UNCLOSED POSITIONS] {len(symbols)} position(s) still open at market close: "
                     f"{symbols}. EOD exit at ruleset eod_time should have closed these. "
-                    f"These positions will carry over as stale state — restart the bot to clear."
+                    "Broker exposure may persist overnight. Reconcile positions and open orders; "
+                    "restarting the bot does not close positions or provide protection."
                 )
                 for symbol in symbols:
                     pos = strategy.get_position(symbol)

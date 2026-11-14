@@ -64,6 +64,11 @@ class BrokerOrder:
     or_source: Optional[str] = None
     or_high: Optional[float] = None
     or_low: Optional[float] = None
+    order_identity: Optional[str] = None
+    parent_order_identity: Optional[str] = None
+    permanent_order_id: Optional[str] = None
+    account_id: Optional[str] = None
+    client_id: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:
