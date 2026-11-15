@@ -10,7 +10,7 @@ const interval = (low, high) => (finite(low) && finite(high) ? `[${r(low)}, ${r(
 const table = (headings, rows) => `<div class="table-wrap"><table><thead><tr>${headings
   .map((h) => `<th scope="col">${escape(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 
-export const KNOWN_KINDS = ["fixed_rule", "paired_comparison", "platform_validation"];
+export const KNOWN_KINDS = ["fixed_rule", "paired_comparison", "platform_validation", "condition_diagnostic"];
 
 /** The researcher's editable one-line conclusion, if one has been recorded. */
 export function conclusionHtml(conclusion) {
@@ -226,7 +226,7 @@ export function trialHtml(trial, trialsPayload) {
   if (!trial) return "";
   const total = trialsPayload?.total_trials;
   return `<p class="notice"><strong>Programme:</strong> ${escape(trial.programme)} · phase ${escape(trial.phase)} · family ${escape(trial.family)}
-    · this study counts ${escape(trial.n_trials ?? 1)} trial(s)${finite(total) ? ` · programme total ${escape(total)} trials` : ""}</p>`;
+    · this study counts ${escape(trial.n_trials ?? 1)} trial(s)${finite(total) ? ` · this database records ${escape(total)} trials (not the full programme ledger)` : ""}</p>`;
 }
 
 export function validationBadge(report) {
@@ -325,6 +325,62 @@ function pairedHtml(experiment) {
     <h3>Difference by symbol</h3>${barRows(s.by_symbol, "Symbol")}`;
 }
 
+function conditionDiagnosticHtml(experiment) {
+  const summary = experiment.result;
+  const protocol = experiment.definition?.protocol;
+  if (!summary?.slices || !protocol) return '<p class="notice">Diagnostic setup or results have not been recorded.</p>';
+  const definitions = [
+    ["Opportunity", protocol.features?.opportunity?.definition, "High minus low opportunity mean net R"],
+    ["Persistence", protocol.features?.persistence?.definition, "High minus low persistence mean net R"],
+    ["Interaction", "H/L for both measurements; first letter opportunity, second persistence", "HH - HL - LH + LL mean net R"],
+  ];
+  const setup = table(["Comparison", "Measurement", "Exact contrast"], definitions.map(([name, measurement, contrast]) =>
+    `<tr><th scope="row">${escape(name)}</th><td>${escape(measurement)}</td><td>${escape(contrast)}</td></tr>`));
+  const cutoffs = table(["Symbol", "Calibration trades", "Opportunity median", "Persistence median"], Object.entries(summary.thresholds || {}).map(([symbol, values]) =>
+    `<tr><th scope="row">${escape(symbol)}</th><td>${escape(values.n)}</td><td>${finite(values.opportunity) ? escape(values.opportunity) : "n/a"}</td>
+      <td>${finite(values.persistence) ? escape(values.persistence) : "n/a"}</td></tr>`));
+  const contrasts = table(["Slice", "Comparison", "Measurable trades", "Group counts", "Difference", "Nominal 95% CI", "Three-comparison interval", "Group sufficiency"], Object.entries(summary.slices).flatMap(([slice, block]) =>
+    Object.entries(block.contrasts || {}).map(([name, contrast]) =>
+      `<tr><th scope="row">${escape(slice)}</th><td>${escape(name)}</td><td>${escape(block.measurable_n)}</td>
+        <td>${escape(Object.entries(contrast.group_sizes || {}).map(([group, count]) => `${group}: ${count}`).join(" / "))}</td>
+        <td>${r(contrast.estimate_r, 4)}</td><td>${interval(contrast.ci_low_r, contrast.ci_high_r)}</td>
+        <td>${interval(contrast.familywise_interval?.ci_low_r, contrast.familywise_interval?.ci_high_r)}</td>
+        <td>${contrast.adequate_group_sizes ? "Adequate" : "Insufficient"}</td></tr>`)));
+  const decisions = table(["Candidate", "Advance to separate gate design?", "Recorded checks"], Object.entries(summary.triage || {}).map(([name, decision]) =>
+    `<tr><th scope="row">${escape(name)}</th><td>${decision.advance_to_separate_gate_design ? "Yes" : "No"}</td>
+      <td>${escape(Object.entries(decision.checks || {}).map(([check, passed]) => `${check}: ${passed ? "pass" : "not met"}`).join(" · "))}</td></tr>`));
+  const cells = summary.slices.all?.cells || {};
+  return `${roleBanner(summary.evidence_role)}
+    <p class="notice"><strong>One diagnostic experiment, three comparisons, no new simulation runs.</strong>
+      These are conditional associations on the unchanged source trades, not an executable filtered strategy or three new equity curves.</p>
+    <h3>Source experiment</h3><p><button class="link" data-open-experiment="${escape(summary.source_experiment_id)}">${escape(summary.source_experiment_id)}</button>
+      · ${escape(summary.coverage?.n_trades)} retained trades · ${escape(summary.coverage?.measurable)} jointly measurable
+      · ${escape(summary.coverage?.missing_persistence)} missing persistence.</p>
+    <h3>Exact setup: all three comparisons</h3>${setup}
+    <p>${escape((protocol.symbols || []).join(", "))} · ${escape(protocol.start)} to ${escape(protocol.end)}
+      · calibration through ${escape(protocol.calibration_end)} · later dates are reused-data robustness, not independent confirmation.</p>
+    <p>${escape(protocol.thresholds?.method)}. ${escape(protocol.thresholds?.freeze)}.</p>
+    <p>Opportunity availability: ${escape(protocol.features?.opportunity?.availability)}.</p>
+    <p>${escape(protocol.features?.persistence?.availability)}. ${escape(protocol.features?.persistence?.missing_policy)}.</p>
+    <p>${escape(protocol.features?.persistence?.early_entries)}</p>
+    <p>Friction standardizer: ${usd(protocol.features?.opportunity?.friction_dollars, 3)}/share.
+      ${escape(protocol.features?.opportunity?.friction_definition)}. ${escape(protocol.features?.opportunity?.limitations)}</p>
+    <p class="notice"><strong>ATR seed-description erratum:</strong> the original protocol says first-observation EWM seed.
+      The pinned shared helper actually seeds with the mean of the first 20 true ranges, then Wilder recursion, shifted one session.
+      The original registration is preserved; calculations were not changed after results.</p>
+    <h3>Frozen per-symbol cutoffs</h3>${cutoffs}
+    <h3>All-period condition cells</h3>${table(["Cell", "Trades", "Mean net R", "95% CI", "Attributed net dollars"], Object.entries(cells).map(([name, cell]) =>
+      `<tr><th scope="row">${escape(name)}</th><td>${escape(cell.n)}</td><td>${r(cell.mean_r, 4)}</td>
+        <td>${interval(cell.ci_low_r, cell.ci_high_r)}</td><td>${usd(cell.net_dollars)}</td></tr>`))}
+    <h3>Registered contrasts and robustness</h3>${contrasts}
+    <p class="chart-note">Date-clustered intervals retain shared-date covariance. Three-comparison intervals do not correct the programme's full trial history.
+      Missing groups are unavailable, not zero; attributed dollars are not new filtered-account returns.</p>
+    <h3>Frozen advance rule and decisions</h3><p>${escape(protocol.analysis?.advance_rule)}</p>
+    <p>Minimum per group: ${escape(protocol.analysis?.minimum_group_trades)} trades and ${escape(protocol.analysis?.minimum_group_dates)} dates.</p>${decisions}
+    <p>${escape(protocol.analysis?.stopping_rule)}</p>
+    <details class="detail-section"><summary>Original registered protocol</summary><pre>${escape(JSON.stringify(protocol, null, 2))}</pre></details>`;
+}
+
 /** Compact, collapsed list of the runs this experiment explicitly recorded. */
 export function linkedRunsHtml(runsPayload) {
   const runs = runsPayload?.items || [];
@@ -346,8 +402,9 @@ export function kindDetail(experiment) {
   const kind = experiment?.definition?.kind;
   if (!isKnownKind(kind)) return null;
   const body = kind === "fixed_rule" ? fixedRuleHtml(experiment)
-    : kind === "paired_comparison" ? pairedHtml(experiment) : validationHtml(experiment);
-  const labels = { fixed_rule: "FIXED-RULE STUDY", paired_comparison: "PAIRED COMPARISON", platform_validation: "PLATFORM VALIDATION" };
+    : kind === "paired_comparison" ? pairedHtml(experiment)
+      : kind === "condition_diagnostic" ? conditionDiagnosticHtml(experiment) : validationHtml(experiment);
+  const labels = { fixed_rule: "FIXED-RULE STUDY", paired_comparison: "PAIRED COMPARISON", platform_validation: "PLATFORM VALIDATION", condition_diagnostic: "CONDITION DIAGNOSTICS" };
   return `<header class="experiment-heading"><p class="eyebrow">${labels[kind]}</p>
     <h2 tabindex="-1">${escape(experiment.title)}</h2>
     <div><small>Procedure execution</small> <span class="badge ${experiment.state === "completed" ? "good" : "warning"}">${escape(experiment.state)}</span></div></header>

@@ -41,6 +41,10 @@ Completed experiments can have negative or inconclusive conclusions.
 ```
 
 ```taskboard-task
+{"id":"orb-diagnostic-viewer","title":"Show the recorded condition study and exact comparisons in the local viewer","project":"orb-research","status":"done","milestone":"Research presentation implementation","note":"The stale preview datasource is replaced with the Python-resolved authoritative recording DB. A dedicated condition_diagnostic panel shows one study, three contrasts, formulas/availability, frozen cutoffs, coverage, uncertainty, robustness, decisions and the preserved seed erratum. Rendering/escaping checks and live API/browser inspection support completion; source-account daily charts remain available. Local trial counts are not mislabelled as the full programme ledger. No experiment rerun, invented member runs or hosted release.","acceptance":"Verify that the existing diagnostic entry appears, exact setup and recorded results render, source navigation works, missing groups stay unavailable and the original five-account charts are preserved without fabricating filtered returns.","reviewed":"2026-11-15","depends_on":["orb-movement-noise-exploration","orb-performance-dashboard"],"refs":["orb-results","orb-plan"]}
+```
+
+```taskboard-task
 {"id":"orb-performance-data-publication","title":"Apply the research daily-series schema and publish approved aggregates","project":"orb-research","status":"waiting","milestone":"Hosted research data rollout","note":"Awaiting explicit schema/publication authorization. The SELECT-only schema and bounded aggregate exporter are implemented, but the schema is not applied and row 12 remains local-only. No credentials or raw trade/equity artifacts may be exposed; updating task states does not authorize publication.","acceptance":"With explicit authorization, apply and verify browser SELECT-only/RLS boundaries, publish the approved outcome and matching bounded daily aggregate, and verify acknowledgement/checksum/provenance and anonymous reads without exposing private artifacts.","reviewed":"2026-11-14","depends_on":["orb-performance-dashboard"],"refs":["orb-plan","orb-results"]}
 ```
 

@@ -140,8 +140,60 @@ test("known kinds render, unknown kinds fall back", () => {
   assert.match(experimentDetail({ title: "T", state: "completed", definition: { kind: "fixed_rule" }, result: { pooled: { n: 1 } } }), /FIXED-RULE STUDY/);
 });
 
-test("trial html reports programme totals", () => {
-  assert.match(trialHtml({ programme: "p", phase: "x", family: "f", n_trials: 2 }, { total_trials: 7 }), /programme total 7/);
+test("condition diagnostics expose three setups, frozen thresholds and actual results without inventing runs", () => {
+  const protocol = {
+    symbols: ["QQQ", "<script>"], start: "2018-05-01", end: "2024-12-31",
+    calibration_end: "2021-12-31",
+    features: {
+      opportunity: { definition: "Prior Wilder ATR20 / friction", friction_dollars: .047 },
+      persistence: { definition: "Six close changes in one session", missing_policy: "Missing remains unavailable" },
+    },
+    thresholds: { method: "Per-symbol calibration medians" },
+    analysis: { advance_rule: "Later contrast >= 0.05R", stopping_rule: "No tuning" },
+  };
+  const contrast = {
+    estimate_r: .0399145, ci_low_r: -.0093463, ci_high_r: .0891754,
+    group_sizes: { H: 1725, L: 1709 }, adequate_group_sizes: true,
+    familywise_interval: { ci_low_r: -.0202741, ci_high_r: .1001031 },
+  };
+  const experiment = {
+    title: "Mechanism study", state: "completed",
+    definition: { kind: "condition_diagnostic", protocol },
+    runs: { items: [] },
+    result: {
+      evidence_role: "exploration", source_experiment_id: "source-123",
+      coverage: { n_trades: 3956, measurable: 3434, missing_persistence: 522 },
+      thresholds: { QQQ: { n: 319, opportunity: 84.96966, persistence: .66537 } },
+      slices: { all: { measurable_n: 3434, contrasts: { persistence: contrast } },
+        later: { measurable_n: 1594, contrasts: { interaction: {
+          estimate_r: null, group_sizes: { HH: 5, LL: 0 }, adequate_group_sizes: false,
+        } } } },
+      triage: { persistence: { advance_to_separate_gate_design: false, checks: { later_at_least_005r: false } } },
+    },
+  };
+  const html = experimentDetail(experiment);
+  assert.match(html, /CONDITION DIAGNOSTICS/);
+  assert.match(html, /one diagnostic experiment, three comparisons, no new simulation runs/i);
+  assert.match(html, /HH - HL - LH \+ LL/);
+  assert.match(html, /84\.96966/);
+  assert.match(html, /0\.0399R/);
+  assert.match(html, /H: 1725 \/ L: 1709/);
+  assert.match(html, /Insufficient/);
+  assert.match(html, /data-open-experiment="source-123"/);
+  assert.match(html, /seed-description erratum/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.doesNotMatch(html, /<script>|data-kind-chart|experiment-fold/);
+  const list = experimentList([{ kind: "condition_diagnostic", experimentId: "diagnostic", title: "Mechanism", linkedRuns: 0 }]);
+  assert.match(list, /Condition diagnostics/);
+  assert.match(list, /No new simulation runs/);
+  assert.doesNotMatch(list, /Definition unavailable/);
+  assert.match(kindDetail({ ...experiment, result: {} }), /Diagnostic setup or results have not been recorded/);
+});
+
+test("trial html scopes totals to recorded database rows, not the full programme ledger", () => {
+  const html = trialHtml({ programme: "p", phase: "x", family: "f", n_trials: 2 }, { total_trials: 7 });
+  assert.match(html, /this database records 7 trials \(not the full programme ledger\)/);
+  assert.doesNotMatch(html, /programme total 7/);
   assert.equal(trialHtml(null, null), "");
 });
 

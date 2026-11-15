@@ -253,6 +253,18 @@ are materialized. Source-file hashes identify data, not permission to read
 later observations. The original 3,956 retained trades, net dollars and pooled
 R reconcile unchanged.
 
+**Local presentation (2026-11-15):** this is one `condition_diagnostic`
+experiment with three comparison trials and zero new simulation-run links.
+The viewer now has a dedicated setup/results panel, frozen cutoffs, coverage,
+robustness and source-experiment navigation. Its missing entry came from an
+older preview SQLite snapshot; the live local viewer now reads the actual
+recording database. Windows Store Python's application-data redirection
+requires resolving the database path with Python before passing it to Node,
+as shown in the [viewer run instructions](../../tools/backtest-research-viewer/README.md#run).
+The existing source-account daily charts are preserved. Database-local trial
+totals are labelled separately from the programme's 104-trial ledger; this
+presentation change creates no research evidence or hosted publication.
+
 ### Frozen method, provenance and erratum
 
 The [protocol](../../config/research/orb_movement_noise_diagnostic_v1.json)

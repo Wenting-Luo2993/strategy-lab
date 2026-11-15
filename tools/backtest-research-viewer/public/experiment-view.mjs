@@ -76,7 +76,7 @@ function criterionWithCallout(item) {
   </div>`;
 }
 
-const KIND_LABELS = { fixed_rule: "Fixed-rule study", paired_comparison: "Paired comparison", platform_validation: "Platform validation" };
+const KIND_LABELS = { fixed_rule: "Fixed-rule study", paired_comparison: "Paired comparison", platform_validation: "Platform validation", condition_diagnostic: "Condition diagnostics" };
 
 function kindSummary(item) {
   const parts = [KIND_LABELS[item.kind]];
@@ -95,7 +95,7 @@ export function experimentList(items) {
       ${conclusionHtml(item.conclusion)}</td>
       <td>${kind ? kindSummary(item) : (item.axes || []).map((axis) => `${escape(axis.name)}: ${escape(axis.values.join(" / "))}`).join("<br>") || "Definition unavailable"}</td>
       <td>${kind ? "<small>No folds (single study)</small>" : `${escape(item.completedFolds ?? "—")} / ${escape(item.expectedFolds ?? "—")} completed`}
-        <small>${escape(item.linkedRuns)} linked ${kind ? "" : "segment "}runs</small></td>
+        <small>${item.kind === "condition_diagnostic" ? "No new simulation runs" : `${escape(item.linkedRuns)} linked ${kind ? "" : "segment "}runs`}</small></td>
       <td><small>Procedure</small>${status(item.state)}
         <small>Research reliability</small>${status(item.reliabilityVerdict)}
         ${item.recordingErrors ? "<small>Recording errors — inspect coverage</small>" : ""}</td></tr>`;

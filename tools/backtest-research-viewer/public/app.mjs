@@ -122,11 +122,12 @@ async function showExperiment(experimentId, focus = true) {
     if (host.querySelector("[data-kind-trial]")) {
       const base = `/api/experiments/${encodeURIComponent(experimentId)}`;
       const programme = experiment.definition?.trial?.programme;
+      const diagnostics = experiment.definition?.kind === "condition_diagnostic";
       const [rSeries, excursions, trials, dailySeries] = await Promise.all([
-        api(`${base}/r-series`).catch(() => null),
-        api(`${base}/excursions`).catch(() => null),
+        diagnostics ? null : api(`${base}/r-series`).catch(() => null),
+        diagnostics ? null : api(`${base}/excursions`).catch(() => null),
         programme ? api(`/api/programmes/${encodeURIComponent(programme)}/trials`).catch(() => null) : null,
-        api(`${base}/daily-series`).catch((error) => ({ error: error.message })),
+        diagnostics ? null : api(`${base}/daily-series`).catch((error) => ({ error: error.message })),
       ]);
       if (request !== experimentRequest) return;
       disposeExperimentCharts = renderKindExtras(host, experiment, { rSeries, excursions, trials, dailySeries });
@@ -134,6 +135,7 @@ async function showExperiment(experimentId, focus = true) {
     host.querySelectorAll("[data-run]").forEach((button) => {
       button.addEventListener("click", () => showRun(button.dataset.run));
     });
+    bindExperimentLinks(host);
     host.querySelectorAll('a[href^="#experiment-fold-"]').forEach((link) => {
       link.addEventListener("click", (event) => {
         event.preventDefault();

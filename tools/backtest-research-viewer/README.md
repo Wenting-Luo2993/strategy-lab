@@ -40,6 +40,24 @@ Choose a different database only when the process starts:
 node tools\backtest-research-viewer\server.mjs --db C:\local\research.sqlite3
 ```
 
+For the current ORB programme on Windows, select its actual recording database,
+not an older preview snapshot:
+
+```powershell
+$researchDb = python -B -c "import os; from pathlib import Path; print((Path(os.environ['LOCALAPPDATA']) / 'strategy-lab' / 'orb_edge_2026.sqlite3').resolve())"
+node tools\backtest-research-viewer\server.mjs --db "$researchDb"
+```
+
+Resolve the path using the same Python runtime that records experiments:
+Windows Store Python can redirect application data into its package
+`LocalCache`. Node cannot see that redirection through the nominal
+`%LOCALAPPDATA%` path.
+
+The configured database path is visible in the viewer header. A copied
+snapshot does not receive new experiments; changing `--db` requires restarting
+the viewer. The research writer's `--research-db` and viewer's `--db` must
+refer to the same file to see subsequent writes.
+
 Open `http://127.0.0.1:4178`. `--port` may select another local port.
 `--host` accepts loopback values only.
 
@@ -107,8 +125,8 @@ visibly labelled as UI fixtures, not research evidence.
 
 ## Study panels
 
-Experiments whose definition `kind` is `fixed_rule`, `paired_comparison` or
-`platform_validation` get a dedicated panel (other experiments keep the
+Experiments whose definition `kind` is `fixed_rule`, `paired_comparison`,
+`platform_validation` or `condition_diagnostic` get a dedicated panel (other experiments keep the
 walk-forward view):
 
 - outcome badge, evidence-role banner ("Exploration: cannot confirm."), the
@@ -116,6 +134,13 @@ walk-forward view):
 - cumulative R and drawdown, net R histogram, by-year, by-symbol, exit reasons,
   MAE/MFE scatter, cost sensitivity and labelled-diagnostic condition terciles;
 - programme trial counts and, for validation studies, a pass/review badge.
+
+Condition diagnostics have no new simulation runs. Their panel displays the
+source-experiment link, original protocol and disclosed ATR-seed erratum,
+exact three contrasts, frozen symbol cutoffs, missing-data coverage, condition
+cells, every recorded robustness slice and advance-rule decisions. Frozen
+diagnostic cutoffs keep their full stored precision. The panel does
+not request or fabricate filtered equity, R-series or excursion charts.
 
 Fixed-rule experiment details also show an upfront per-symbol performance
 table: net expectancy and its recorded interval, equity Sharpe, maximum
