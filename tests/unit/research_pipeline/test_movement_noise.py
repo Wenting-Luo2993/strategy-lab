@@ -3,11 +3,13 @@ import copy
 import numpy as np
 import pandas as pd
 import pytest
+import pyarrow.parquet as pq
 
 from scripts.run_movement_noise_study import load_exploration_bars
 from vibe.research_pipeline.movement_noise import (
-    clustered_contrast, decision_features, freeze_labels, join_features,
+    clustered_contrast, decision_features, freeze_labels, join_features, summarize_diagnostics,
 )
+from vibe.research_pipeline.publishing import forbidden_payload_path
 
 
 def _protocol():
@@ -53,6 +55,21 @@ def test_opportunity_is_prior_session_and_features_available_at_close():
     masked, _ = decision_features(bars, _protocol(), complete_bars=partial)
     assert masked["persistence"].iloc[9:].isna().all()
     pd.testing.assert_series_equal(masked["opportunity"], full["opportunity"])
+
+
+def test_opportunity_reuses_shared_mean_true_range_seed_not_first_observation_ewm():
+    bars = pd.DataFrame({
+        "open": [10., 11., 12., 16.], "close": [10., 11., 12., 16.],
+        "high": [11., 13., 16., 20.], "low": [9., 9., 8., 12.],
+        "volume": [100.] * 4,
+    }, index=pd.date_range(
+        "2024-03-04 09:30", periods=4, freq="D", tz="America/New_York"
+    ))
+    protocol = _protocol()
+    protocol["features"]["opportunity"]["atr_period"] = 3
+    result, _ = decision_features(bars, protocol)
+    assert result["opportunity"].iloc[:3].isna().all()
+    assert result["opportunity"].iloc[3] == pytest.approx((2 + 4 + 8) / 3 / .1)
 
 
 def test_feature_join_never_reads_entry_bar_close_or_later_stamp():
@@ -139,3 +156,31 @@ def test_parquet_predicate_load_never_materializes_reserved_rows(tmp_path, monke
     result = load_exploration_bars(path, "2024-03-07", "2024-12-31")
     assert len(result) == len(bars)
     assert len(observed["filters"]) == 2
+    schema = pq.ParquetFile(path).schema_arrow
+    for column, _, scalar in observed["filters"]:
+        assert scalar.type == schema.field(column).type
+
+
+def test_diagnostic_summary_supports_missing_strata_and_is_aggregate_only():
+    protocol = _protocol()
+    protocol["analysis"] = {
+        "familywise_confidence_level": 1 - .05 / 3,
+        "minimum_group_trades": 100, "minimum_group_dates": 50,
+        "meaningful_contrast_r": .05,
+    }
+    rows = pd.DataFrame({
+        "symbol": ["AAA"] * 4,
+        "session": ["2019-01-02", "2020-01-02", "2022-01-03", "2024-01-02"],
+        "opportunity": [10., 20., 1000., 2000.],
+        "persistence": [.2, .4, .9, .8],
+        "measurable": [True] * 4,
+        "net_r": [-1., 1., 1., -1.], "net_dollars": [-10., 10., 10., -10.],
+        "initial_risk": [10.] * 4, "quantity": [1.] * 4,
+        "year": ["2019", "2020", "2022", "2024"],
+        "side": ["buy"] * 4, "entry_band": ["early"] * 4,
+    })
+    labelled, _ = freeze_labels(rows, protocol)
+    summary = summarize_diagnostics(labelled, protocol)
+    assert forbidden_payload_path(summary) is None
+    assert not summary["triage"]["opportunity"]["advance_to_separate_gate_design"]
+    assert summary["slices"]["all"]["contrasts"]["interaction"]["estimate_r"] is None

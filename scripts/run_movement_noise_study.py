@@ -1,4 +1,9 @@
-"""Run the registered, exploration-only ORB frozen-trade condition study."""
+"""Run the registered, exploration-only ORB frozen-trade condition study.
+
+The original v1 JSON mistakenly describes the shared ATR seed as EWM.
+Calculations use the unchanged shared helper's mean-of-first-20-TR seed;
+the protocol-description discrepancy is preserved in the living results.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +30,7 @@ from vibe.research_pipeline.movement_noise import (
     decision_features, freeze_labels, join_features, mean_estimate, summarize_diagnostics,
 )
 from vibe.research_pipeline.provenance import study_definition_hash
+from vibe.research_pipeline.publishing import forbidden_payload_path
 from vibe.research_pipeline.storage.sqlite_store import SqliteResearchStore
 from vibe.research_pipeline.trials import TrialTag
 
@@ -34,16 +41,23 @@ def sha256(path: Path) -> str:
 
 def load_exploration_bars(path: Path, start: str, end: str) -> pd.DataFrame:
     """Predicate-filter parquet before materializing any OHLCV rows."""
-    metadata = json.loads(pq.ParquetFile(path).schema_arrow.metadata[b"pandas"])
+    schema = pq.ParquetFile(path).schema_arrow
+    metadata = json.loads(schema.metadata[b"pandas"])
     columns = metadata["index_columns"]
     if len(columns) != 1 or not isinstance(columns[0], str):
         raise ValueError(f"{path.name}: expected a stored timestamp index")
     key = columns[0]
+    timestamp_type = schema.field(key).type
+    if not pa.types.is_timestamp(timestamp_type) or timestamp_type.tz is None:
+        raise ValueError(f"{path.name}: expected an aware Arrow timestamp index")
     lo = pd.Timestamp(start, tz="America/New_York").tz_convert("UTC")
     hi = (pd.Timestamp(end, tz="America/New_York") + pd.Timedelta(days=1)).tz_convert("UTC")
     bars = pd.read_parquet(
         path, columns=["open", "high", "low", "close", "volume"],
-        filters=[(key, ">=", lo), (key, "<", hi)],
+        filters=[
+            (key, ">=", pa.scalar(lo, type=timestamp_type)),
+            (key, "<", pa.scalar(hi, type=timestamp_type)),
+        ],
     )
     if not isinstance(bars.index, pd.DatetimeIndex) or bars.index.tz is None:
         raise ValueError(f"{path.name}: expected aware intraday timestamps")
@@ -221,7 +235,7 @@ def main(argv=None) -> int:
         "pooled": pooled, "outcome": "diagnostic_only", "errors": {},
         "thresholds": thresholds,
         "coverage": {
-            "trades": len(rows), "measurable": int(rows["measurable"].sum()),
+            "n_trades": len(rows), "measurable": int(rows["measurable"].sum()),
             "missing_opportunity": int(rows["opportunity"].isna().sum()),
             "missing_persistence": int(rows["persistence"].isna().sum()),
             "missing_both_features": int(rows[["opportunity", "persistence"]].isna().all(axis=1).sum()),
@@ -262,6 +276,9 @@ def main(argv=None) -> int:
         "symbols": protocol["symbols"], "execution_identity": definition["execution_identity"],
     }
     study["definition_sha256"] = study_definition_hash(study)
+    forbidden = forbidden_payload_path(summary)
+    if forbidden is not None:
+        raise ValueError(f"Diagnostic aggregate violates publication boundary: {forbidden}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     # Persist reproducible private diagnostics first; no raw-trade publication.
     rows.to_csv(args.output_dir / "movement-noise-trades.csv", index=False)

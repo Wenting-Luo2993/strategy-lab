@@ -1,5 +1,5 @@
 <!-- taskboard
-{"id":"orb-results","title":"ORB exploration findings","projects":["orb-research","execution-quality"],"status":"current","kind":"research","reviewed":"2026-11-14"}
+{"id":"orb-results","title":"ORB exploration findings","projects":["orb-research","execution-quality"],"status":"current","kind":"research","reviewed":"2026-11-15"}
 -->
 # ORB edge exploration: results
 
@@ -8,9 +8,9 @@ and what was found. Add a row for each new experiment, and revise the overall
 conclusion and "What is left" when the picture changes. Detailed tables and
 decision rules stay in the research plan.
 
-**Last updated:** 2026-11-14
+**Last updated:** 2026-11-15
 
-**Programme:** `orb_edge_2026` (101 trials counted, including 75 October legacy runs on the same data; see "Trial count" below)
+**Programme:** `orb_edge_2026` (104 trials counted, including 75 October legacy runs on the same data; see "Trial count" below)
 
 **Data:** exploration set only: QQQ, AMZN, GOOGL, MSFT and TSLA, 2018-05-01
 to 2024-12-31. Confirmation stocks and the holdout are untouched.  
@@ -24,6 +24,8 @@ The local DB that recorded rows 3 to 8 no longer exists; rows 9 to 11 and
 later runs are recorded in `%LOCALAPPDATA%\strategy-lab\orb_edge_2026.sqlite3`.
 Row 12 is recorded in that local DB, with a conclusion and five member-run
 summaries; it has **not been published to Supabase**.
+Row 13 is also local-only: three condition contrasts on the unchanged row-12
+trades, with a new diagnostic experiment identity, not new simulated runs.
 Rows 0 to 2 (Step 0, the Step 2
 baseline and the first condition pass) were run before publishing was wired
 up and are **not yet in Supabase**; republishing them is an open action. Full
@@ -79,10 +81,19 @@ early entry. This is one full-stack exploration, not a test of each filter's
 contribution or a statistically demonstrated improvement over a matched
 baseline. The interval is not corrected for the 101-trial research history.
 
+**Update 2026-11-15 (row 13):** neither movement/cost nor persistence passes
+the frozen advance rule. Persistence is the stronger exploratory lead:
+high-minus-low +0.0399R [-0.0093, +0.0892], positive outside 2020/2022 and
+in four tickers, but only +0.0315R [-0.0411, +0.1042] in 2022-2024. The
+absolute-dollar ATR/cost cutoff mostly labels historical price/volatility
+drift: just 23 later-period trades are low. No executable filter is justified,
+and waiting for the persistence window would omit a profitable early cohort.
+
 ## Experiments
 
-R is profit divided by initial risk. Condition studies compare terciles
-(low / mid / high) of a variable known at entry time. Exit and opening-range
+R is profit divided by initial risk. Earlier condition studies compare terciles
+(low / mid / high) of a variable known at entry time; row 13 uses frozen
+per-symbol medians and a 2x2 interaction. Exit and opening-range
 studies are paired comparisons: variant minus baseline on the same 8,395
 symbol-sessions (1,679 clustered sessions). Intervals are approximate 95%
 confidence intervals. Rows 0 to 8 used execution model v6; rows 9 to 12 use v7
@@ -105,6 +116,7 @@ its exact local source fingerprints are in the frozen registration.
 | 10 | Does a lookahead-free resting stop order at the range edge (gap-aware, 1-minute bars, +2 ticks, no completed-bar body filter) do better than a market order at the next bar's open? | `01a1b8a6-eefd-7c52-a22e-651d5a3c3fff` | 1 | **Small positive, not yet a usable edge.** 8,383 trades, +0.062R, CI [+0.010, +0.115], +$46 per trade, CI [+2, +91]. The only result whose interval excludes 0, but below the 0.05R bar with confidence (outcome "underpowered"). Tail-dependent: without the best 10 / 20 days +0.034 / +0.011R. It depends on stop orders filling as modelled; each extra tick of entry slippage costs about 0.01R, so roughly 6 extra ticks erase it. Needs live fill evidence before it counts. |
 | 11 | Does the Zarattini & Aziz (2023) first-candle-direction ORB reproduce? (go with the first 5-minute candle at the next open, stop at its opposite extreme, target 10R, exit at the close) | `01a1b8ab-3665-7d69-a3be-669c16e08420` | 1 | **Reproduces the paper's costs, not ours.** Realistic costs, 5 symbols: +0.028R, CI [−0.031, +0.087], not supported. Near-frictionless QQQ 2018-05 to 2023-02 (unrecorded, scratch): +0.19R per trade, 24% wins, 75% stop exits; compounding $25k at 1% risk with up to 4× leverage gives 35%/yr, Sharpe 1.12, max drawdown 22% (paper: 33%/yr, 1.13, 22%). Under realistic costs QQQ falls to +0.087R and 16%/yr, Sharpe 0.63, about the same as buy-and-hold (13%/yr, Sharpe 0.61), and the best 10 days carry 97% of the R. Unlevered (1×): 4%/yr. |
 | 12 | Does one fixed 15m ORB entry stack (5m close/body, same-clock RVOL >1.5, VWAP, expanding EMA9/20, OR/Wilder ATR20 25-60%) improve the exploratory picture? | `01a1db6f-6ada-75f0-85f9-3f8640d084eb` | 1 | **Small positive, not an established usable edge.** 3,956 trades over 1,524 traded-day clusters: +0.035R [+0.004, +0.066], outcome underpowered versus +0.05R. 4/5 symbols and 5/7 years have positive means, but 2019/2024 and GOOGL are negative. Without the best 20 days +0.003R; 5% trimmed mean -0.013R. +$37/trade, but +$17.44 per all symbol-sessions because only 47.1% trade. Median entry 11:05 ET; 84.5% EOD exits. Around 5.6 extra entry ticks erase the mean at fixed risk/quantity. Preserved opposite-range stop/EOD exits, not article midpoint/scale-out/trailing exits; no matched control or threshold tuning. Local-only result. |
+| 13 | Do prior movement relative to costs and pre-entry directional persistence separate outcomes of the unchanged 15m stack? | `01a1e0a2-dc39-7228-9efe-6be1427096a0` | 3 | **Inconclusive; neither advances to a gate test.** On 3,434 measurable trades, high-low ATR/cost +0.0244R [-0.0415, +0.0902], efficiency +0.0399R [-0.0093, +0.0892], interaction -0.0223R [-0.1306, +0.0861]. Persistence is positive outside 2020/2022 and 4/5 tickers, but the later-period +0.0315R fails the frozen +0.05R/CI rule. Later low-ATR group has only 23 trades. Missing persistence affects 522 trades earning +0.1211R, so dropping them is not neutral. Original protocol preserves an ATR-seed wording error; actual pinned helper uses the first 20 TRs' mean, then Wilder recursion. Diagnostic only; no policy rerun, tuning or reserved data. |
 
 ## Fixed-stack attribution: 2020 and 2022 (2026-11-14)
 
@@ -222,13 +234,158 @@ Dashboard return curves rebase at the first selected daily close and do not
 explicitly credit benchmark dividends. Reconstructed closed-trade equity is
 not the missing intraday mark-to-market curve.
 
-**Proposed, not run:** test whether movement sufficiently large relative to
+**Original next step (2026-11-14; subsequently executed as row 13):** test whether movement sufficiently large relative to
 execution friction and directional persistence observable before entry
 predict useful net outcomes outside the two highlighted years. See the
 [bounded proposal](2026-10-31-orb-edge-research-plan.md#potential-next-exploration-movement-to-noise-and-persistence-2026-11-14)
 and [roadmap tasks](../taskboard/orb-research.md). No candidate measurement,
 lookback, cutoff or trial budget has been selected; documentation is not
 execution or reserved-data permission.
+
+## Movement-to-cost and persistence diagnostics (2026-11-15)
+
+**Experiment:** `01a1e0a2-dc39-7228-9efe-6be1427096a0`, completed locally.
+This tests associations on row 12, not an executable filtered strategy.
+Three conditions add three trials, taking the programme from 101 to 104.
+The same five exploration symbols and 2018-05-01 through 2024-12-31 are
+predicate-filtered at parquet load time; no confirmation or holdout bars
+are materialized. Source-file hashes identify data, not permission to read
+later observations. The original 3,956 retained trades, net dollars and pooled
+R reconcile unchanged.
+
+### Frozen method, provenance and erratum
+
+The [protocol](../../config/research/orb_movement_noise_diagnostic_v1.json)
+was committed as `3fdf855` before feature/outcome comparison; SHA-256
+`bbf28637b6aeefdb529f26c6bb0476d4864d156ee52f114652747b32d325a3bb`.
+Implementation starts at `13365e4`; the experiment definition additionally
+pins exact source-file, source-trade, original-definition and data hashes.
+Use `scripts/run_movement_noise_study.py` for reproduction, not an indicator
+grid. A rerun records another execution; do not casually rerun it as tuning.
+
+**Seed-description erratum:** the original protocol incorrectly calls the
+existing shared ATR helper's seed a first-observation EWM seed. Its actual
+pinned implementation, used throughout this study and the baseline, seeds
+ATR20 with the arithmetic mean of the first 20 true ranges, then applies
+`(19 * prior_ATR + TR) / 20`, shifted one session. First true range is
+high-low. This is a protocol-description discrepancy, not an algorithm
+changed after results; the original JSON is deliberately preserved. Interpret
+the opportunity result as evidence for the actual shared-helper definition,
+not strict adherence to that mistaken seed sentence. Independent hand-formula
+checks of 59 trade snapshots reconcile ATR and efficiency.
+
+Two recording issues changed no numerical results: Arrow bounds required
+scalars with the stored timestamp's timezone/unit, and the publication guard
+rejected an integer count named `coverage.trades`. The latter was renamed
+`coverage.n_trades`; the **original** running experiment was completed, not
+replaced or counted twice. The immutable result records that recovery.
+No publisher was run; queued aggregate/conclusion records remain local.
+
+| Measurement | Definition and availability |
+| --- | --- |
+| Opportunity | Prior-session shared Wilder ATR20 / $0.047 standard friction per share, known at the open. $0.047 = two entry ticks + two stop-exit ticks + $0.007 round-trip per-share commission. This is not realized cost: EOD slippage differs, minimum commission, spreads, fees, borrow and impact are not captured by that standardizer. Original outcomes retain original net costs. |
+| Persistence | Kaufman-style `abs(C[t]-C[t-6]) / sum(abs(diff(C)))`: six changes over seven completed, contiguous 5-minute closes in the current regular session. Last close is available at entry, never the entry bar's future close. Flat path = 0; missing/partial bars invalidate the window; no gap/overnight bridging. |
+| Labels | Separate per-symbol medians from jointly measurable source-trade features through 2021-12-31; high strictly exceeds the median. No outcomes choose cuts. Identical cuts apply to every period/sensitivity; later 2022-2024 is reused-data robustness, not untouched OOS confirmation. |
+| Inference | Date-clustered influence-function t intervals retain covariance when groups share dates. Nominal 95% intervals plus 98.333% intervals correct these three contrasts only. Neither corrects the 104-trial programme, serial dependence or the post-hoc hypothesis. |
+| Advancement | Later high-low >= +0.05R with nominal lower bound > 0, adequate groups (100 trades/50 dates), positive outside 2020/2022, in >=4/5 tickers and after removing the 20 best baseline dates. This is triage for a separately registered gate study, not proof of an edge. |
+
+Per-symbol opportunity cutoffs are 65.6131 / 38.7997 / 83.3673 / 84.9697 /
+28.2191 cost units for AMZN / GOOGL / MSFT / QQQ / TSLA. Efficiency medians
+are respectively 0.6984 / 0.6682 / 0.6577 / 0.6654 / 0.7026. There are
+1,840 calibration and 1,594 later jointly measurable trades.
+
+### Results and uncertainty
+
+| Registered contrast | All measurable trades: difference in mean R [95% CI] | 2022-2024 [95% CI] | Outside 2020/2022 [95% CI] |
+| --- | --- | --- | --- |
+| High minus low opportunity | +0.0244 [-0.0415, +0.0902] | +0.0291 [-0.2391, +0.2972] | +0.0295 [-0.0404, +0.0994] |
+| High minus low persistence | +0.0399 [-0.0093, +0.0892] | +0.0315 [-0.0411, +0.1042] | +0.0493 [-0.0076, +0.1063] |
+| Interaction: HH - HL - LH + LL | -0.0223 [-0.1306, +0.0861] | -0.2762 [-0.7911, +0.2388] | -0.0353 [-0.1517, +0.0811] |
+
+All-period three-comparison-adjusted intervals are respectively
+[-0.0561, +0.1048], [-0.0203, +0.1001], [-0.1547, +0.1102].
+There is no established positive interaction. A positive interaction is a
+stronger claim than additive benefit; its absence does not prove that combining
+filters cannot help.
+
+High/low persistence means are +0.04166R (1,725 trades) versus +0.00174R
+(1,709), not a demonstrated +0.05R edge or a simulated gain over baseline.
+The four cells are HH +0.04555R (1,242), HL +0.01150R (1,248),
+LH +0.03164R (483), LL -0.02468R (461). Group dollars are contributions
+from the original trades, never a new filtered account's equity.
+
+**Opportunity does not produce a usable regime comparison.** High-low is
+positive in only 3/5 tickers. The fixed nominal ATR/cost cutoff puts 1,571 of
+1,594 later trades in high; only 23 are low (11 LH, 12 LL), and *all* 540
+measurable 2022 trades are high. Absolute-dollar ATR can rise as price levels
+change, even without an equivalent increase in percentage volatility.
+Per-symbol calibration does not remove that through-time confound. We cannot
+conclude that ATR is useless or fix this by selecting a new rolling rank after
+seeing the outcome. A stationarity-aware alternative would be a new protocol.
+
+**Persistence is a lead, not a filter.** Its high-low difference is positive
+in AMZN +0.0454R, GOOGL +0.0467R, MSFT +0.0548R, QQQ +0.0778R, but
+negative in TSLA -0.0119R. It is positive in five of seven years, with 2019
+-0.0397R and 2020 -0.0039R; 2022 is +0.0424R. It therefore does **not**
+establish a common explanation for both unusually profitable years.
+Longs +0.0655R and shorts +0.0166R have the same sign. By entry time,
+10:05-before-11:00 is +0.0293R, 11:00-before-13:00 +0.0728R, and 13:00+
+-0.0064R. These descriptive slices cannot be mined into an 11:00-only rule.
+
+Removing the best 20 baseline dates leaves opportunity high-low +0.0485R
+[-0.0114, +0.1084] and persistence +0.0560R [+0.0097, +0.1023].
+The latter adjusted interval still includes zero [-0.0006, +0.1126].
+Additional fixed-quantity round-trip costs of $0.02 / $0.04 per share leave
+persistence differences +0.0405 / +0.0410R, but reduce high-persistence
+absolute means from +0.0417R to +0.0343 / +0.0269R. Static cost stress does
+not resimulate fills, sizing, leverage or rejection behavior.
+
+### Coverage and the portfolio objective
+
+Both features are available for 3,434/3,956 trades (86.80%). Persistence is
+unavailable on 522: 505 enter before 10:05 ET and 17 have incomplete/missing
+lookback bars. Opportunity is available for all source trades. The missing
+cohort earns +0.1211R [0.0241, 0.2181] and $59,436.56, **40.59% of baseline
+profit**; the measurable cohort earns only +0.0218R [-0.0086, +0.0522].
+Waiting for ER or silently excluding missing windows would sacrifice a
+material, profitable group. None of these is a tested handling policy.
+
+Baseline checks, not claims of a new strategy satisfying the goal:
+
+| Objective context | Observed unchanged baseline |
+| --- | --- |
+| Net dollars including no-trade sessions | $146,426.46 over 8,395 observed symbol-sessions; $17.44/session, 47.12% trade frequency |
+| Daily closed-trade drawdown | -$37,235.68 / -5.57%; summed-R drawdown -27.4788R. Five independent $100k accounts, not intraday MTM or a risk-matched buy-and-hold comparison |
+| Overnight positions | Zero retained trades cross exchange-local session dates |
+| Buy-and-hold relationship | Daily return correlation +0.0124 with a fixed equal-initial-dollar five-symbol basket; ticker correlations AMZN +0.0217, GOOGL -0.0076, MSFT -0.0353, QQQ -0.1007, TSLA +0.1214 |
+| Downside co-movement | On 767 basket-down days, baseline mean daily return +0.0151% and conditional correlation -0.3581; on 911 basket-up days, mean +0.0162% |
+
+The basket is buy-and-hold with fixed initial allocations, not daily
+rebalancing. Cash yield is zero, benchmark prices do not explicitly credit
+dividends or fees, and no combined allocation is optimized. Low correlation
+is consistent with possible complementarity, not proof of a superior
+risk-matched combined portfolio, better drawdown or reliable future returns.
+Drawdown duration and intraday exposure need further measurement before a
+portfolio claim.
+
+### Decision and durable evidence
+
+**Stop here under the frozen rule. Neither feature advances to an executable
+gate study.** Persistence warrants retaining as a mechanism lead, not
+production-enabling, changing its window, choosing a winning time band or
+opening reserved data. No filter can be evaluated by deleting source trades:
+a rejected first signal can permit a later entry and change sizing.
+
+The original SQLite experiment stores the complete aggregate slices,
+thresholds, triage and baseline context. Private joined trade-feature CSV,
+aggregate contrast CSV, JSON and checksum manifest are retained as session
+artifacts; no raw ledger is committed or published. Result JSON SHA-256:
+`1ad3e98b3eb6fc321c3ecf97aeb3e5be143b6b87f253952853467697fd787512`;
+joined CSV SHA-256:
+`8865e87a9b3eaa81c9ad904ec09989d4b918264c02583c7b8757b94165d5c373`.
+The reusable efficiency indicator and causal/missing-data tests persist in
+source. Completion means the bounded study produced an honest answer, not
+that a useful edge has been established.
 
 ## What the results say together
 
@@ -256,10 +413,11 @@ execution or reserved-data permission.
 
 ## Trial count
 
-101 trials are counted (`python scripts/show_trial_ledger.py --programme
+104 trials are counted (`python scripts/show_trial_ledger.py --programme
 orb_edge_2026 --research-db %LOCALAPPDATA%\strategy-lab\orb_edge_2026.sqlite3`):
 
-- 4 recorded in the local DB (rows 9 to 12);
+- 7 recorded in the local DB (four strategy trials in rows 9 to 12 plus
+  three diagnostic contrasts in row 13);
 - 15 published in Supabase whose local DB was lost (rows 3 to 8);
 - 7 from before publishing was wired up (rows 1 and 2);
 - 75 October 2026 same-data legacy configurations (nested walk-forward,
@@ -276,10 +434,10 @@ Any future lead must be judged against the full count.
 | **First-candle-direction ORB** (Zarattini & Aziz 2023; `vibe/rulesets/orb_first_candle_za.yaml`, commit `e6f3d2d`) | Done, recorded (row 11): reproduces the paper under its costs, not supported under ours |
 | **Fixed 15m close/RVOL/VWAP/EMA/range-ATR entry stack** | Done, recorded locally (row 12): small positive, below the usable-edge bar with confidence; review the mechanism before choosing any separately registered control or variant |
 | **2020/2022 attribution of the frozen entry stack** | Done, diagnostic only: 91.49% of dollars / 85.03% of net R comes from these two years; direction switches, and both remain best-day dependent |
-| **Movement-to-noise and pre-entry persistence** | Proposal for review, not registered or run: define causal measurements, risk/complementarity comparisons and a bounded trial budget before any exploration |
+| **Movement-to-noise and pre-entry persistence** | Done as bounded diagnostics (row 13); neither passes the advance rule. Preserve the persistence lead and opportunity stationarity/missingness lessons, without retuning or enabling a gate |
 | **Measure real stop-order fills** (paper-trade the resting-stop entry, log slippage per fill) | **Next.** Row 10 survives up to about 6 extra ticks of slippage; only live fills can say which side of that it lands |
 | Dollar, power and robustness reporting | Done (commit `4ba9762`); printed by every study and shown in the local viewer, not yet on the Supabase dashboard |
-| Execution identity, dataset pin, member-run summaries, trial ledger (commit `4c942a5`) | Done in code. Ledger: 101 trials. Republishing rows 0–2 and backfilling run summaries for rows 3–8 is blocked: their local DB was lost |
+| Execution identity, dataset pin, member-run summaries, trial ledger (commit `4c942a5`) | Done in code. Ledger: 104 trials. Republishing rows 0–2 and backfilling run summaries for rows 3–8 is blocked: their local DB was lost |
 | Execution model v7 (minimum-risk floor, take-profit must trade through; commit `7bd69a6`) | Done. Baseline rerun under v7 recorded (row 9) |
 | Time-exit rerun paired against a same-cutoff baseline | Open |
 | Opening-range duration sweep (15, 30 and 60 minutes vs the 5-minute baseline) | Done (row 8): flat at zero in R, worse in $ |

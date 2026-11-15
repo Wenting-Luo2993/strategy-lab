@@ -1,5 +1,5 @@
 <!-- taskboard
-{"id":"orb-plan","title":"ORB research programme and gates","projects":["orb-research"],"status":"current","kind":"plan","reviewed":"2026-11-14"}
+{"id":"orb-plan","title":"ORB research programme and gates","projects":["orb-research"],"status":"current","kind":"plan","reviewed":"2026-11-15"}
 -->
 # ORB edge research plan
 
@@ -50,7 +50,9 @@ current dashboard benchmark is a source-price ratio, not an explicitly
 dividend-credited total-return series. Higher Sharpe, lower drawdown or a
 beneficial combination is not established by the annual return comparison.
 Numerical drawdown/complementarity acceptance thresholds remain to be agreed
-before execution, rather than chosen after seeing results.
+before an executable-gate or portfolio study, rather than chosen after seeing
+its results. Row 13 is diagnostic attribution with baseline context only,
+not a test claiming to satisfy those portfolio acceptance criteria.
 
 ## 2. Evidence map
 
@@ -454,16 +456,19 @@ mechanism. The retained trades have no entry-time volatility/persistence
 feature vectors, and neither a reusable regime nor lower drawdown/portfolio
 complementarity has been demonstrated.
 
-**Candidate measurements, not selected rules:**
+**Original candidate discussion, retained as history:** the first diagnostic
+choices are frozen above, with results and the seed-description erratum below.
+These alternatives were not a parameter grid.
+
+**Candidate measurements, not selected trading rules:**
 
 | Component | Possible causal measurement | What must be frozen before inspection |
 | --- | --- | --- |
 | Opportunity relative to friction | Prior-session ATR normalized by price, or trailing realized volatility relative to its own past; compare with declared spread/slippage assumptions | One measurement, lookback/reference window, units, warm-up, missing-data rules and exact prior-session availability |
 | Directional persistence versus noise | Absolute net close-to-close displacement divided by the sum of absolute consecutive close changes, using only completed bars ending before the decision | Window/bar frequency, whether the window crosses sessions or excludes gaps, last available close, zero-path/missing-bar behavior and direction treatment |
 
-These alternatives are not a parameter grid. Select a small fixed set before
-feature/outcome inspection; lengths, cutoffs and the trial budget are still
-open decisions. A prior-session pre-market screen and a same-day pre-entry
+At proposal time lengths, cutoffs and the trial budget were open decisions;
+the first study now fixes them without a sweep. A prior-session pre-market screen and a same-day pre-entry
 gate are different policies and must not be mixed. Large volatility alone
 can mean reversals rather than profitable trends. The new measurements must
 add information beyond the already present RVOL, VWAP and expanding EMA gates;
@@ -504,6 +509,26 @@ all-session net returns. An inconclusive study is a valid outcome, not a reason
 to keep adding cutoffs. Any genuine confirmation must follow the existing
 registration/approval gates on separately authorized untouched data or forward
 evidence; the confirmation set and final holdout remain locked.
+
+**Execution and decision (2026-11-15):** diagnostic experiment
+`01a1e0a2-dc39-7228-9efe-6be1427096a0` is complete and local-only; three
+contrasts take the programme to 104 trials. See the
+[complete measurements, uncertainty, limitations and provenance](orb-exploration-results.md#movement-to-cost-and-persistence-diagnostics-2026-11-15).
+Neither candidate passes the frozen advance rule. Persistence high-low is
++0.0399R [-0.0093, +0.0892] overall and +0.0315R [-0.0411, +0.1042] in
+2022-2024. ATR/cost is +0.0244R [-0.0415, +0.0902] overall, but only 23
+later-period trades are low. Interaction is not established. No gate
+simulation or post-result tuning follows this result.
+
+The actual shared ATR20 helper seeds with the first 20 true ranges' mean,
+then Wilder recursion, not the original protocol sentence's mistaken
+first-observation EWM seed. Its pinned code and the original JSON are
+preserved; this is a disclosed protocol-description discrepancy, not a
+post-result algorithm adjustment. Measurements reconcile independently.
+Also preserve the coverage warning: ER is unavailable on 522 trades earning
+40.59% of baseline dollars, so waiting until ER exists is not an innocent
+implementation choice. Baseline daily low correlation/zero overnight holds
+are context, not demonstrated filtered-strategy or portfolio improvement.
 
 **Purpose:** find at most two conditions under which the edge looks stronger
 or weaker.  
