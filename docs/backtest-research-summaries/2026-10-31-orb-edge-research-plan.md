@@ -382,6 +382,30 @@ trade/equity checksums; do not replace the missing curve with cumulative R.
 Hosted performance/curve work is requested next, starting with the local
 viewer; it has not been deployed or published.
 
+**Presentation implementation review (2026-11-14):** subsequent work is
+committed as `717fb18` and pushed to the continuation feature branch. The
+local viewer and hosted fixture preview now have performance tables, a
+daily benchmark/cumulative-R/reconstructed-closed-equity/drawdown comparison,
+year/range controls, ticker/All selection and linked zoom/crosshairs. The
+initial-range/axis-resize regression was corrected and complete rendered
+calendar ranges were checked. The pre-sync review passed 73 local viewer
+tests, 41 hosted research tests, TypeScript/targeted lint and 131 affected
+Python regressions. These are implementation/preview checks, not hosted
+rollout or a new backtest.
+
+The earlier retention observation still holds: original intraday equity
+points are absent. Closed-trade equity is explicitly reconstructed from
+complete retained exit-session net P&L, not presented as recovered
+mark-to-market data. Row 12's derived price/closed-equity aggregate exists
+locally; the hosted fixture is not its publication.
+
+The [roadmap](../taskboard/orb-research.md) now separates **completed dashboard
+implementation**, **waiting schema/aggregate publication** and **backlog hosted
+release/verification**. Its hypothesis/goal documentation is also complete
+(`bb2b7d1`), while protocol approval/registration and any new experiment remain
+open. The SQL, row-12 publication and hosted release have not been applied;
+updating task states is not authorization to perform them.
+
 #### Potential next exploration: movement-to-noise and persistence (2026-11-14)
 
 **Status:** hypothesis/design proposal for review; not registered, implemented
