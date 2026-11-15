@@ -28,6 +28,30 @@ The plan follows one principle: **explore on one set of data, confirm on
 another, and decide what to confirm before looking at the confirmation
 data.**
 
+**Strategy objective added 2026-11-14:** pursue "positive net returns with
+less drawdown, limited overnight exposure, and returns that complement
+buy-and-hold", as recorded in the
+[north star](2026-10-31-backtest-research-north-star.md#orb-research-objective-decision-2026-11-14).
+This supplements the edge questions above; it does not replace the existing
++0.05R meaningful-edge threshold or claim that the current rule meets the goal.
+
+Before the next study, predeclare how each part will be evaluated:
+
+| Objective | Required comparison or measurement |
+| --- | --- |
+| Positive net returns | Net expectancy with uncertainty, net dollars per all symbol-sessions including no-trade sessions, trade frequency and annual/ticker stability; preserve modelled commissions and slippage and disclose unmodelled costs |
+| Less drawdown | Drawdown depth and duration versus the unchanged stack and buy-and-hold on common dates, with a declared capital, exposure/leverage and risk-comparison basis; daily closed-trade drawdown is not intraday mark-to-market risk |
+| Limited overnight exposure | Verify entries/exits and any positions carried across session close; do not infer safety from an EOD exit rule alone |
+| Complement buy-and-hold | Compare aligned daily returns, downside co-movement and exposure; a combined allocation needs fixed weights, a risk/capital budget and cash treatment before testing, not simply a sum of independent accounts |
+
+Use cash as a reference when explaining bear-year outperformance. Disclose
+benchmark dividends/fees and the risk-free or cash-yield assumption; the
+current dashboard benchmark is a source-price ratio, not an explicitly
+dividend-credited total-return series. Higher Sharpe, lower drawdown or a
+beneficial combination is not established by the annual return comparison.
+Numerical drawdown/complementarity acceptance thresholds remain to be agreed
+before execution, rather than chosen after seeing results.
+
 ## 2. Evidence map
 
 Data has two roles. Exploration data can be reused freely but can never
@@ -211,6 +235,229 @@ detectable average edge on the exploration set, so Steps 3 and 4 must find
 conditions or changes that create one.
 
 ### Step 3: Explore market conditions (Q3)
+
+#### Additional fixed entry-stack exploration (registered 2026-11-14)
+
+User-approved definition:
+[`orb_entry_stack_15m_exploratory_v1.json`](../../config/research/orb_entry_stack_15m_exploratory_v1.json).
+One trial, no optimization/fold selection, five exploration symbols only,
+2018-05-01 through 2024-12-31. Confirmation and final holdout remain locked.
+
+This tests a declared interpretation of the
+[Trader Sentiments entry stack](https://tradersentiments.com/trading-strategies/opening-range-breakout),
+not its claimed performance or full exit package:
+
+- Complete 15-minute OR; completed 5-minute close at least one tick outside,
+  body at least 50%.
+- Breakout RVOL strictly above 1.5 versus the same clock-time bar in the prior
+  20 observed sessions. Missing slots do not shorten the lookback.
+- Close above/below cumulative session HLC3 VWAP for long/short.
+- EMA9/20 spread aligned and widening versus the prior completed bar; EMAs
+  carry across regular sessions.
+- Opening range within inclusive 25-60% of prior-session Wilder ATR20.
+- Existing next-bar-open +2-tick entry, opposite-range stop, no target,
+  15:55 exit and 1% risk. No midpoint stop, scale-out or trailing change.
+
+Data starts at the exploration boundary, so initial sessions warm indicators
+in place with no fabricated values. Report net R/uncertainty, dollars, trade
+frequency, year/symbol stability, tails, costs and gate evaluation counts.
+The registration pins files/rules and labels comparisons with historical
+baselines descriptive: their close qualification differs. A stack result alone
+cannot identify which individual filter helped. The executed findings below
+are also summarized in the living results.
+
+**Executed 2026-11-14:** experiment
+`01a1db6f-6ada-75f0-85f9-3f8640d084eb` is completed and recorded locally.
+All five member runs have passing engine-integrity reports and zero accounting
+failures. Their lifecycle remains `VALIDATING` because the fixed-rule runner
+does not run a separate research validator; completed simulation is not
+confirmation. The programme now counts 101 trials (one added).
+
+| Measurement | Observation |
+| --- | --- |
+| Net expectancy | +0.0349R; day-clustered 95% CI [+0.0041, +0.0657]; bootstrap CI [+0.0041, +0.0649] |
+| Evidence size | 3,956 trades; 1,524 days with trades; 1,679 observed sessions per symbol, 8,395 symbol-sessions overall |
+| Meaningful-edge decision | `underpowered` versus +0.05R; interval does not establish an edge above that threshold |
+| Frequency and timing | 47.1% of symbol-sessions trade, about 593 trades/year across five symbols; median entry 11:05 ET; 1,946 longs / 2,010 shorts |
+| Distribution | 50.5% winners; median +0.0047R; 1% / 5% trimmed mean +0.0160 / -0.0125R |
+| Tail dependence | Without best 10 / 20 / 50 days: +0.0165 / +0.0033 / -0.0292R; without best 50 trades: -0.0010R |
+| Exits | 84.5% EOD exits, mean +0.2279R; 15.5% stop exits, mean -1.0157R |
+| Net dollars | $146,426 summed across five independent $100k simulations; +$37.01/trade, CI [$4.31, $69.72] |
+| All-session dollars | +$17.44 per symbol-session, including sessions without trades ($146,426 / 8,395) |
+| Capital constraint | 25.0% of entries capped by buying power; this is not a shared-capital portfolio return |
+| Cost stress | One extra entry tick costs about 0.00621R/trade at fixed quantity/initial risk; roughly 5.6 extra ticks erase the current mean |
+
+The runner's `$ / symbol-session` block uses
+`symbol_sessions_with_at_least_one_trade`, so its $37.01 is **not** the
+all-session opportunity rate. The $17.44 figure above uses observed data
+coverage and the stored `n_sessions` metrics. The static tick calculation
+uses recorded quantity and initial risk; it is not a new simulated variant,
+nor proof of attainable broker fills.
+
+| Symbol | Trades | Mean net R | Approximate 95% CI |
+| --- | --- | --- | --- |
+| AMZN | 820 | +0.0596 | [+0.0071, +0.1121] |
+| GOOGL | 779 | -0.0038 | [-0.0519, +0.0443] |
+| MSFT | 781 | +0.0100 | [-0.0409, +0.0608] |
+| QQQ | 678 | +0.0452 | [-0.0235, +0.1138] |
+| TSLA | 898 | +0.0599 | [+0.0135, +0.1062] |
+
+Year means (2018 partial): 2018 +0.0051R, 2019 -0.0013R, 2020 +0.1200R,
+2021 +0.0043R, 2022 +0.0881R, 2023 +0.0377R, 2024 -0.0120R.
+Symbol/year intervals and the pooled interval are exploratory, not corrected
+for the full 101-trial history. Do not select AMZN/TSLA or tune thresholds from
+these subgroup results and then call that confirmation.
+
+Stored gate diagnostics show 92,170 evaluations rejected by range/ATR bounds,
+78,684 by breakout RVOL, 1,438 by EMA alignment, 1,207 by EMA widening, 124 by
+VWAP and 1,568 by candle body. There are 5,119 unavailable-indicator evaluations
+and 940 incomplete-OR evaluations. These are **bar evaluations**, not distinct
+days; gates short-circuit in order and positions suppress further entry
+evaluation. Small downstream counts do not prove a gate is redundant or that
+removing it improves returns. All first trades occur after May 29, consistent
+with the required prior-20-session warm-up.
+
+**Implementation/provenance:** reusable functions and contracts are in
+[`vibe/common/indicators/README.md`](../../vibe/common/indicators/README.md).
+The rules opt into close-only breakout qualification; old wick/body defaults
+are unchanged. Batch features are prepared once, with no future-row use,
+and entries are actually booked at the next bar with entry-bar stop checks.
+Live history preparation and custom execution configurations are explicitly
+unsupported, not silently ignored.
+
+The experiment uses local **uncommitted** source based on `2a3c804`; that
+commit alone does not reproduce the implementation. Frozen registration
+SHA-256 is
+`8f1ea706e43dd66b2d4e7787beadc8682ce0070058ff68c59e85227b4c5e89a1`,
+with exact source-file, ruleset, dataset and holdout-lock hashes. All were
+checked before and after execution. 200 focused indicator/strategy/model/engine/
+recording regressions pass; one pre-existing pandas int-volume fixture fails
+independently at HEAD and was excluded rather than changed. No thresholds
+were tuned, no extra strategy variants were run, and no broker/production or
+confirmation/holdout access occurred. The local DB has the conclusion and
+member summaries; there was no Supabase publication.
+
+**Decision:** small exploratory positive, not an established usable edge or
+demonstrated improvement over a matched control. Compared with the old
+5m/15m baselines, this changes range, entry qualification, participation,
+timing and fill booking together. A useful lesson is that the stack waits
+until much later and changes the payoff distribution, while its remaining
+mean is fragile to tails and costs. Review that mechanism before deciding
+whether a separately registered matched control is worth another trial;
+there is no permission here to run one or to unlock confirmation.
+
+**Expanded performance review (2026-11-14):**
+
+| Symbol | Net R (95% CI) | Equity Sharpe | Max drawdown | DD duration (calendar days) | Net-dollar profit factor |
+| --- | --- | --- | --- | --- | --- |
+| AMZN | +0.060 [+0.007, +0.112] | 0.87 | -11.57% | 747 | 1.20 |
+| GOOGL | -0.004 [-0.052, +0.044] | -0.03 | -15.79% | 1,433 | 0.98 |
+| MSFT | +0.010 [-0.041, +0.061] | 0.19 | -13.35% | 684 | 1.04 |
+| QQQ | +0.045 [-0.023, +0.114] | 0.40 | -13.38% | 1,601 | 1.10 |
+| TSLA | +0.060 [+0.014, +0.106] | 0.98 | -11.81% | 440 | 1.23 |
+
+Sharpe and drawdown come from the stored simulation-equity metrics. Profit
+factor is computed from retained trades as sum of winning net dollar P&L
+divided by absolute sum of losing net dollar P&L. Pooled net-dollar profit
+factor is **1.127**, win rate **50.53%**. These independent-account Sharpes
+and drawdowns cannot be averaged into a shared-capital portfolio statistic.
+
+**Article comparison:** we did not reproduce the quoted 52.4% win rate /
+1.68 profit factor. More importantly, this was not an equivalent replication:
+the quote describes a fixed 1.5R target over five years of S&P 500 tick data;
+we used opposite-range stops and EOD exits, five selected instruments
+(including QQQ), and 2018-2024 bar data with explicit costs. The reported
+18% profit-factor improvement from excluding 10:00 ET macro releases was
+**not tested**; no economic-release calendar was used. A predeclared calendar
+and a matched news-filter comparison would be new research, not evidence
+inferred from this run. The article's headline statistics are claims, not
+auditable benchmarks supplied with a dataset or reproducible protocol.
+
+**Dashboard retention limitation:** the local fixed-rule detail now has the
+performance table. This experiment saved diagnostic trades but no equity-point
+rows, despite the stored evidence containing equity count/checksum and summary
+metrics. It cannot currently display the actual mark-to-market curve.
+Full-retention recovery must preserve the original immutable result and verify
+trade/equity checksums; do not replace the missing curve with cumulative R.
+Hosted performance/curve work is requested next, starting with the local
+viewer; it has not been deployed or published.
+
+#### Potential next exploration: movement-to-noise and persistence (2026-11-14)
+
+**Status:** hypothesis/design proposal for review; not registered, implemented
+or run. The user requested documentation as a potential next study.
+Documentation and taskboard entries do not authorize execution, publication
+or reserved-data access.
+
+**Working hypothesis:** a direction-agnostic ORB may earn more useful net
+returns when price movement is large enough relative to execution friction
+and pre-entry observations indicate directional persistence rather than
+back-and-forth noise. It may struggle when breakouts reverse or offer too
+little follow-through after costs. Any regime filter must use information
+available before its entry decision; successful full-day moves are outcomes
+to explain, not permissible inputs.
+
+**Evidence motivating it:** the
+[frozen-stack attribution](orb-exploration-results.md#fixed-stack-attribution-2020-and-2022-2026-11-14)
+finds that 2020 and 2022 carry 91.49% of net dollar profit and 85.03% of net R,
+with the profitable direction switching from predominantly long to short.
+Similar entry timing/frequency and continued tail dependence suggest asking
+about opportunity and follow-through, not choosing a calendar-year or
+short-only rule. This is a recurring payoff pattern, not a measured causal
+mechanism. The retained trades have no entry-time volatility/persistence
+feature vectors, and neither a reusable regime nor lower drawdown/portfolio
+complementarity has been demonstrated.
+
+**Candidate measurements, not selected rules:**
+
+| Component | Possible causal measurement | What must be frozen before inspection |
+| --- | --- | --- |
+| Opportunity relative to friction | Prior-session ATR normalized by price, or trailing realized volatility relative to its own past; compare with declared spread/slippage assumptions | One measurement, lookback/reference window, units, warm-up, missing-data rules and exact prior-session availability |
+| Directional persistence versus noise | Absolute net close-to-close displacement divided by the sum of absolute consecutive close changes, using only completed bars ending before the decision | Window/bar frequency, whether the window crosses sessions or excludes gaps, last available close, zero-path/missing-bar behavior and direction treatment |
+
+These alternatives are not a parameter grid. Select a small fixed set before
+feature/outcome inspection; lengths, cutoffs and the trial budget are still
+open decisions. A prior-session pre-market screen and a same-day pre-entry
+gate are different policies and must not be mixed. Large volatility alone
+can mean reversals rather than profitable trends. The new measurements must
+add information beyond the already present RVOL, VWAP and expanding EMA gates;
+fewer trades or a higher conditional win rate is not sufficient.
+
+**Proposed bounded sequence:**
+
+1. Freeze the causal feature definitions, diagnostic comparisons, prediction,
+   meaningful effect sizes, trial-counting policy and stopping rules.
+2. Attribute the unchanged fixed stack across all five exploration symbols,
+   2018-05-01 through 2024-12-31. Include unfavorable months/years and compare
+   conditions outside 2020/2022, long/short, ticker and entry-time strata;
+   report uncertainty and best-day/cost sensitivity, not a winning cutoff.
+3. Only if that review justifies it, separately register an unchanged-stack
+   control and a small fixed candidate set on the same data, fills, stops,
+   sizing and costs. Judge the comparison by all-session dollars, R,
+   frequency, drawdown and the declared buy-and-hold-complement objective.
+
+Filtering a retained trade ledger is only attribution: blocking the first
+signal can admit a later entry and alter capital/position sizing. Any claim
+about an executable gate therefore needs an explicitly authorized matched
+simulation, including missed winners and no-trade sessions, not merely deleting
+losing trades from the existing ledger.
+
+**Anti-overfitting/decision rules:** all of 2018-2024 has been inspected.
+Chronological or leave-one-year/ticker checks on it are robustness on reused
+data, not independent confirmation; the five correlated instruments are not
+five independent regime replications. Do not label sessions with eventual
+day/year returns, select only winning years, tune until 2022 looks good, or
+reinterpret tail removal as a tradable calendar. Earlier gap-size and
+20-day-trend leads failed later-period checks on the baseline; those findings
+are not proof about this stack, but argue against a broad filter search.
+
+Deprioritize the candidate if its association disappears outside the selected
+years, under reasonable costs/tail checks, or after accounting for existing
+gates/timing, or if increased per-trade expectancy sacrifices useful
+all-session net returns. An inconclusive study is a valid outcome, not a reason
+to keep adding cutoffs. Any genuine confirmation must follow the existing
+registration/approval gates on separately authorized untouched data or forward
+evidence; the confirmation set and final holdout remain locked.
 
 **Purpose:** find at most two conditions under which the edge looks stronger
 or weaker.  

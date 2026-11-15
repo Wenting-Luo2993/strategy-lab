@@ -35,6 +35,25 @@ The goal of the research platform is therefore:
 A rejected or inconclusive experiment is a successful research outcome when it
 clearly explains *why*, and narrows what to try next.
 
+### ORB research objective (decision 2026-11-14)
+
+The user-selected strategy objective is:
+
+> **Positive net returns with less drawdown, limited overnight exposure, and
+> returns that complement buy-and-hold.**
+
+This is an objective to test, not an achieved result. Beating every ticker's
+buy-and-hold return every year is not required: an intermittent intraday
+long/short strategy has different exposure from a continuously long benchmark.
+Equal starting dollars alone do not make their risks comparable. Lower
+drawdown and portfolio complementarity need their own evidence; outperforming
+a falling stock does not establish either, since cash can do that too.
+
+The [ORB plan](2026-10-31-orb-edge-research-plan.md#1-goal) defines the proposed
+comparison measures. Its movement-to-noise/persistence study is a potential
+next exploration, motivated by the [2020/2022 attribution](orb-exploration-results.md#fixed-stack-attribution-2020-and-2022-2026-11-14),
+not a proven regime filter or permission to run new experiments.
+
 ## 2. The end-to-end picture
 
 The research loop follows the high-level backtest flow diagram (历史回测流程):

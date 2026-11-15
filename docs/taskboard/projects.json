@@ -2,9 +2,9 @@
   {
     "id": "orb-research",
     "title": "ORB strategy research",
-    "goal": "Determine whether a precisely defined ORB rule has a credible, usable edge, and preserve what each experiment teaches us.",
+    "goal": "Determine whether a precisely defined ORB rule can deliver credible positive net returns with less drawdown, limited overnight exposure and returns that complement buy-and-hold; preserve what each experiment teaches us.",
     "stage": "Exploration",
-    "next_action": "Choose a bounded next exploration; keep confirmation and final holdout locked until hypotheses are registered."
+    "next_action": "Review the proposed movement-to-noise and directional-persistence study, then freeze its measurements, risk comparisons and trial budget before authorizing another exploration; keep confirmation and final holdout locked."
   },
   {
     "id": "execution-quality",
