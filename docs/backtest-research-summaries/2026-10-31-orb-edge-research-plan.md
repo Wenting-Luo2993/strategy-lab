@@ -408,10 +408,32 @@ updating task states is not authorization to perform them.
 
 #### Potential next exploration: movement-to-noise and persistence (2026-11-14)
 
-**Status:** hypothesis/design proposal for review; not registered, implemented
-or run. The user requested documentation as a potential next study.
-Documentation and taskboard entries do not authorize execution, publication
-or reserved-data access.
+**Original status (2026-11-14):** hypothesis/design proposal for review, not
+registered, implemented or run at that point. The subsequent user request
+explicitly authorizes designing, implementing and executing exploration.
+Publication and reserved-data access remain unauthorized.
+
+**Frozen first study:** `config/research/orb_movement_noise_diagnostic_v1.json`
+is written before joining the new features with trade outcomes. It permits
+three diagnostic comparisons of the unchanged row-12 ledger, not executable
+filters: prior Wilder ATR20 / $0.047 standard per-share friction, six-change
+same-session 5-minute Kaufman efficiency, and their 2x2 interaction. Per-symbol
+medians use only jointly measurable calibration feature values through 2021;
+2022-2024 is a reused-data temporal robustness check, **not confirmation**.
+Seven contiguous closes are required, so entries before 10:05 ET have missing
+persistence and remain explicitly in baseline coverage reporting. No window
+or threshold sweep is allowed. The protocol freezes uncertainty, meaningful
+effect, sample requirements, year/ticker/side/time checks, cost/tail
+sensitivities and stop/advance rules.
+
+ATR measures movement magnitude, not direction; ER measures net displacement
+relative to close-path length, not future follow-through. The
+[Fidelity ATR reference](https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/atr)
+and [StockCharts Kaufman formula](https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/kaufmans-adaptive-moving-average-kama)
+support these definitions, not an ORB profitability claim. We choose these
+simple interpretable quantities rather than searching ADX, CHOP, realized
+volatility and multiple lookbacks for a winner. The friction denominator is
+an explicit standardizer, not observed spread or exact round-trip costs.
 
 **Working hypothesis:** a direction-agnostic ORB may earn more useful net
 returns when price movement is large enough relative to execution friction

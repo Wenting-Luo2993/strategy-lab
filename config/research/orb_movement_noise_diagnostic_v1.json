@@ -1,0 +1,70 @@
+{
+  "registration_version": 1,
+  "title": "ORB movement-to-cost and persistence diagnostics",
+  "evidence_role": "exploration",
+  "evidence_label": "post_hoc_hypothesis_on_reused_development_data",
+  "confirmation_claim_permitted": false,
+  "source_experiment_id": "01a1db6f-6ada-75f0-85f9-3f8640d084eb",
+  "source_registration": "config/research/orb_entry_stack_15m_exploratory_v1.json",
+  "source_registration_sha256": "8f1ea706e43dd66b2d4e7787beadc8682ce0070058ff68c59e85227b4c5e89a1",
+  "source_trade_count": 3956,
+  "programme": "orb_edge_2026",
+  "n_trials": 3,
+  "symbols": ["AMZN", "GOOGL", "MSFT", "QQQ", "TSLA"],
+  "start": "2018-05-01",
+  "end": "2024-12-31",
+  "calibration_end": "2021-12-31",
+  "lock_hash": "6cba881723b0222d44b25f0a19bdcb8bacecf841dbbf26c559a3a770155218f5",
+  "features": {
+    "opportunity": {
+      "definition": "Prior-session Wilder ATR20 / standard round-trip per-share friction",
+      "atr_period": 20,
+      "atr_seed": "Existing shared Wilder ATR: first TR high-low; first-observation EWM seed; minimum 20 sessions; shifted one session",
+      "friction_dollars": 0.047,
+      "friction_definition": "2 entry ticks + 2 stop-exit ticks at $0.01 + 2 * $0.0035 commission/share",
+      "limitations": "A standardizer, not measured execution cost: EOD exit uses one tick; per-order minimum/cap, spread variation, fees, borrow and market impact are not represented. Original net outcomes retain actual modelled commissions/slippage.",
+      "availability": "Session open; no current-session high/low/close"
+    },
+    "persistence": {
+      "definition": "abs(C[t]-C[t-6]) / sum(abs(diff(C))) over six contiguous 5-minute close changes in the current regular session",
+      "changes": 6,
+      "bar_minutes": 5,
+      "session_open": "09:30",
+      "session_close": "16:00",
+      "exchange_tz": "America/New_York",
+      "availability": "Last signal bar closes at entry timestamp. Use bar stamped entry minus 5 minutes, never the entry bar close",
+      "missing_policy": "Require seven closes at consecutive 5-minute stamps in one local session; no overnight gaps, forward fill, shortened window or substitution. Dead-flat path is 0, not trending. NaN propagates until outside the window",
+      "early_entries": "Unavailable before 10:05 ET; report these separately, never classify them low or discard from the baseline"
+    }
+  },
+  "thresholds": {
+    "method": "Separate per-symbol median for each feature over source trades through 2021-12-31 with both features available; high strictly greater than median, low otherwise",
+    "freeze": "Calibration feature values only; no outcomes used for medians. Same cutoffs for all years and all robustness slices",
+    "minimum_calibration_rows_per_symbol": 30
+  },
+  "comparisons": [
+    "opportunity: high minus low mean net R among jointly measurable source trades",
+    "persistence: high minus low mean net R among jointly measurable source trades",
+    "interaction: HH - HL - LH + LL mean net R; first letter opportunity, second persistence"
+  ],
+  "analysis": {
+    "confidence_level": 0.95,
+    "familywise_confidence_level": 0.9833333333333333,
+    "familywise_note": "Bonferroni for these three contrasts only, not the programme's prior 101 trials or post-hoc subgroup analysis",
+    "meaningful_contrast_r": 0.05,
+    "minimum_group_trades": 100,
+    "minimum_group_dates": 50,
+    "prediction": "Both high-minus-low contrasts positive; positive interaction is an additional, stronger prediction, not necessary for additive benefit",
+    "advance_rule": "A main-effect candidate deserves a separately registered executable-gate study only if later reused-data contrast >= 0.05R, nominal CI excludes zero, sign is positive outside 2020/2022 and in at least 4/5 symbols, and survives removing the 20 best baseline dates with positive sign. Report three-comparison intervals and every failed criterion; this is triage, never confirmation",
+    "slices": ["all", "calibration_2018_2021", "later_2022_2024", "outside_2020_2022", "each_year", "each_symbol", "long_short", "entry_early_before_1100_mid_before_1300_late"],
+    "sensitivity": "Remove all trades on the 20 best dates ranked by full baseline summed net R; fixed-quantity additional round-trip friction of $0.02 and $0.04/share",
+    "calendar": "Report all observed regular symbol-sessions, including no-trade dates; diagnostic group dollar contributions divided by this same all-session denominator are not simulated gated-strategy returns",
+    "portfolio_goal": "Positive net returns with less drawdown, limited overnight exposure, and returns that complement buy-and-hold",
+    "portfolio_limit": "Only verify baseline daily closed-trade drawdown, zero overnight holds, all-session dollars and daily price-return correlation/downside co-movement. No risk-matched combined portfolio, optimized allocation or claim of improved filtered equity",
+    "stopping_rule": "One feature set, one window each, one calibration split, three contrasts; no threshold/window/exit retuning after results. Negative/inconclusive is a completed study. No executable gate is tested in this protocol"
+  },
+  "sources": [
+    "https://chartschool.stockcharts.com/table-of-contents/technical-indicators-and-overlays/technical-overlays/kaufmans-adaptive-moving-average-kama",
+    "https://www.fidelity.com/learning-center/trading-investing/technical-analysis/technical-indicator-guide/atr"
+  ]
+}
