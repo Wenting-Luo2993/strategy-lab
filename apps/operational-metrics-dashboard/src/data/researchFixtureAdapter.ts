@@ -13,6 +13,7 @@ import type {
   ResearchPage,
   ResearchPublication,
 } from "./researchTypes.ts";
+import { decodeDailySeries } from "./researchSeries.ts";
 
 export class FixtureResearchDataAdapter implements ResearchDataAdapter {
   readonly source = "fixture" as const;
@@ -88,6 +89,38 @@ export class FixtureResearchDataAdapter implements ResearchDataAdapter {
       && item.kind !== "registry_record"
       && item.experimentId === experimentId
     );
+  }
+
+  async getExperimentDailySeries(experimentId: string) {
+    // Synthetic preview only; production never falls back to fixture results.
+    if (experimentId !== "fixture-daily") return null;
+    return decodeDailySeries({
+      version: 1, experimentId, basis: "Synthetic daily preview, not research evidence",
+      runs: [{
+        runId: "fixture-run", label: "Synthetic preview", candidateId: "fixture",
+        foldIndex: 0, segmentRole: "test", tradeCount: 4, profitFactor: 1.2, netExpectancyR: 0.275,
+        metrics: { sharpe_ratio: 0.5, max_drawdown: -0.03, max_drawdown_duration_days: 10 },
+        startingEquity: 100000, tradeChecksum: "", equityChecksum: "",
+        rAvailable: true, equityAvailable: true,
+        dailyR: [
+          { date: "2026-10-01", value: 1 }, { date: "2026-10-02", value: -0.5 },
+          { date: "2026-10-05", value: 0.2 }, { date: "2026-10-06", value: 0.4 },
+        ],
+        dailyEquity: [
+          { date: "2026-10-01", value: 101000 }, { date: "2026-10-02", value: 99500 },
+          { date: "2026-10-05", value: 99700 }, { date: "2026-10-06", value: 100100 },
+        ],
+        dailyClosedEquity: [
+          { date: "2026-10-01", value: 101000 }, { date: "2026-10-02", value: 99500 },
+          { date: "2026-10-05", value: 99700 }, { date: "2026-10-06", value: 100100 },
+        ],
+        dailyPrices: [
+          { date: "2026-10-01", value: 100 }, { date: "2026-10-02", value: 102 },
+          { date: "2026-10-05", value: 101 }, { date: "2026-10-06", value: 105 },
+        ],
+        priceBasis: "Synthetic prices, not a real ticker benchmark.",
+      }],
+    }, experimentId);
   }
 
   async getExperimentConclusions(

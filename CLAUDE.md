@@ -223,6 +223,17 @@ self.health_monitor      # System health monitoring
 
 ## Utility Patterns
 
+### Shared Indicator Architecture
+
+Implement reusable, causal calculations in `vibe/common/indicators/`, following
+its [implementation contract](vibe/common/indicators/README.md). Indicators
+must not import strategies, backtesting, live execution or research policy.
+Keep thresholds and entry/exit decisions in strategies/rulesets. Parameterize
+periods and relevant session boundaries; document units, seeds, warm-up,
+missing-data behavior and decision-time availability. Test prefix invariance,
+session/timezone boundaries and batch/incremental parity when both exist.
+Preserve defaults and refuse unsupported consumers rather than ignoring filters.
+
 ### DateTime Utilities
 
 Always use timezone-aware datetime operations:

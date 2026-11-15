@@ -1,5 +1,6 @@
 import { decodeResearchPublication } from "./researchDecoder.ts";
 import { assertSafeDashboardEnvironment } from "./researchEnvironment.ts";
+import { decodeDailySeries } from "./researchSeries.ts";
 import type {
   AnalysisField,
   AnalysisMetadata,
@@ -130,6 +131,7 @@ export class SupabaseResearchDataAdapter implements ResearchDataAdapter {
       // the conclusions table yet must still render its publications.
       return {};
     }
+
     const conclusions: Record<string, ResearchExperimentConclusion> = {};
     for (const row of Array.isArray(rows) ? rows : []) {
       if (typeof row.experiment_id !== "string" || typeof row.conclusion !== "string") continue;
@@ -161,6 +163,20 @@ export class SupabaseResearchDataAdapter implements ResearchDataAdapter {
       screenable: row.screenable === true,
       trustRestricted: row.trust_restricted === true,
     }));
+  }
+
+  async getExperimentDailySeries(experimentId: string) {
+    const parameters = new URLSearchParams({
+      select: "payload", experiment_id: `eq.${experimentId}`, limit: "1",
+    });
+    const response = await this.#request(`/rest/v1/research_experiment_daily_series?${parameters}`);
+    const text = await response.text();
+    if (new TextEncoder().encode(text).length > 3 * 1024 * 1024) {
+      throw new Error("Daily research response exceeds the byte limit.");
+    }
+    const rows = JSON.parse(text);
+    if (!Array.isArray(rows)) throw new Error("Invalid daily research response.");
+    return rows[0] ? decodeDailySeries(rows[0].payload, experimentId) : null;
   }
 
   async estimateAnalysis(query: AnalysisQuery) {

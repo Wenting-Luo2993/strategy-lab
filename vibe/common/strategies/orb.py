@@ -15,6 +15,11 @@ import pandas as pd
 import numpy as np
 from pydantic import Field
 
+from vibe.common.indicators.batch import ema_series
+from vibe.common.indicators.session import (
+    session_keys, session_vwap_series, same_time_relative_volume_series,
+)
+from vibe.common.ruleset.models import EntryConfirmation, RangeATRFilter
 from vibe.common.strategies.base import StrategyBase, StrategyConfig
 from vibe.common.indicators.daily_atr import add_daily_atr, daily_atr_column
 from vibe.common.indicators.orb_levels import ORBCalculator, ORBLevels
@@ -35,9 +40,9 @@ class ORBStrategyConfig(StrategyConfig):
         default="symmetric",
         description="Which breakout directions may produce entry signals",
     )
-    breakout_evaluation: Literal["wick", "body"] = Field(
+    breakout_evaluation: Literal["wick", "body", "close"] = Field(
         default="wick",
-        description="Breakout evaluation mode: wick or body",
+        description="Breakout evaluation mode: wick, body extremes or completed close",
     )
     entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
     take_profit_multiplier: float = Field(
@@ -73,6 +78,8 @@ class ORBStrategyConfig(StrategyConfig):
         default=5, ge=1,
         description="Signal bar length; first_candle_direction fires on the bar ending the window",
     )
+    entry_confirmation: Optional[EntryConfirmation] = None
+    range_atr_filter: Optional[RangeATRFilter] = None
 
 
 def take_profit_settings(take_profit: Any) -> Dict[str, Any]:
@@ -125,6 +132,10 @@ class ORBStrategy(StrategyBase):
         super().__init__(config)
 
         self.config: ORBStrategyConfig = config
+        if (config.breakout_evaluation == "close" or self.needs_entry_features) and (
+            config.orb_duration_minutes < 1 or config.orb_duration_minutes % config.bar_minutes
+        ):
+            raise ValueError("Completed-bar entries require whole opening-range bars")
         # Per-symbol ORB calculators - ORBCalculator caches by date only,
         # so a single shared instance would return the first symbol's levels for all symbols.
         self._orb_calculators: Dict[str, ORBCalculator] = {}
@@ -155,6 +166,90 @@ class ORBStrategy(StrategyBase):
         # Resets automatically when trading_date differs from stored date
         self._traded_today: Dict[str, Any] = {}  # symbol -> date
 
+    @property
+    def needs_entry_features(self) -> bool:
+        return self.config.entry_confirmation is not None or self.config.range_atr_filter is not None
+
+    def prepare_entry_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Precompute causal shared indicators once, before bar-by-bar execution."""
+        if not self.needs_entry_features:
+            return df
+        out = df.copy()
+        confirmation = self.config.entry_confirmation
+        if confirmation is not None:
+            if confirmation.relative_volume is not None:
+                period = confirmation.relative_volume.lookback_sessions
+                out[f"RVOL_SAME_TIME_{period}"] = same_time_relative_volume_series(out, period)
+            if confirmation.vwap is not None:
+                source = confirmation.vwap.price_source
+                out[f"SESSION_VWAP_{source.upper()}"] = session_vwap_series(out, price_source=source)
+            if confirmation.ema is not None:
+                ema = confirmation.ema
+                _, regular = session_keys(out, "America/New_York", "09:30", "16:00")
+                for period in (ema.fast_period, ema.slow_period):
+                    out[f"EMA_{period}"] = ema_series(out.loc[regular, "close"], period).reindex(out.index)
+                spread = out.loc[regular, f"EMA_{ema.fast_period}"] - out.loc[regular, f"EMA_{ema.slow_period}"]
+                out[f"EMA_SPREAD_CHANGE_{ema.fast_period}_{ema.slow_period}"] = spread.diff().reindex(out.index)
+        range_filter = self.config.range_atr_filter
+        if range_filter is not None:
+            out = add_daily_atr(out, range_filter.period, smoothing=range_filter.smoothing)
+        return out
+
+    def _entry_filter_reason(
+        self, direction: int, levels: ORBLevels, context: pd.DataFrame, metadata: Dict[str, Any]
+    ) -> Optional[str]:
+        """Apply policy to indicators of the completed decision bar, never a later row."""
+        confirmation = self.config.entry_confirmation
+        range_filter = self.config.range_atr_filter
+        columns = []
+        if range_filter is not None:
+            columns.append(daily_atr_column(range_filter.period, range_filter.smoothing))
+        if confirmation is not None:
+            if confirmation.relative_volume is not None:
+                columns.append(f"RVOL_SAME_TIME_{confirmation.relative_volume.lookback_sessions}")
+            if confirmation.vwap is not None:
+                columns.append(f"SESSION_VWAP_{confirmation.vwap.price_source.upper()}")
+            if confirmation.ema is not None:
+                ema = confirmation.ema
+                columns.extend([f"EMA_{ema.fast_period}", f"EMA_{ema.slow_period}"])
+                if ema.require_expanding:
+                    columns.append(f"EMA_SPREAD_CHANGE_{ema.fast_period}_{ema.slow_period}")
+        if not columns:
+            return None
+        if any(column not in context for column in columns):
+            context = self.prepare_entry_features(context)
+        values = {column: float(context[column].iloc[-1]) for column in columns}
+        metadata["entry_indicators"] = values
+        if not all(np.isfinite(value) for value in values.values()):
+            return "entry_indicator_unavailable"
+        if range_filter is not None:
+            atr = values[daily_atr_column(range_filter.period, range_filter.smoothing)]
+            if atr <= 0:
+                return "entry_indicator_unavailable"
+            ratio = levels.range / atr
+            metadata["orb_range_atr_ratio"] = ratio
+            if not range_filter.min_ratio <= ratio <= range_filter.max_ratio:
+                return "opening_range_outside_atr_bounds"
+        if confirmation is not None:
+            if confirmation.relative_volume is not None:
+                volume = confirmation.relative_volume
+                if values[f"RVOL_SAME_TIME_{volume.lookback_sessions}"] <= volume.min_ratio:
+                    return "breakout_relative_volume_below_threshold"
+            if confirmation.vwap is not None:
+                vwap = values[f"SESSION_VWAP_{confirmation.vwap.price_source.upper()}"]
+                if direction * (metadata["current_price"] - vwap) <= 0:
+                    return "vwap_not_aligned"
+            if confirmation.ema is not None:
+                ema = confirmation.ema
+                spread = values[f"EMA_{ema.fast_period}"] - values[f"EMA_{ema.slow_period}"]
+                if direction * spread <= 0:
+                    return "ema_not_aligned"
+                if ema.require_expanding and direction * values[
+                    f"EMA_SPREAD_CHANGE_{ema.fast_period}_{ema.slow_period}"
+                ] <= 0:
+                    return "ema_not_expanding"
+        return None
+
     def mark_traded_today(self, symbol: str, trading_date: Any) -> None:
         """Record that an entry trade was actually opened for the trading date."""
         self._traded_today[symbol] = trading_date
@@ -170,6 +265,10 @@ class ORBStrategy(StrategyBase):
         Returns Series with signals: 1 (long), -1 (short), 0 (neutral)
         """
         signals = pd.Series(0, index=df.index)
+        if self.needs_entry_features or self.config.breakout_evaluation == "close":
+            raise NotImplementedError(
+                "Completed-close/entry-confirmation rules use generate_signal_incremental"
+            )
         if self.config.entry_mode != "breakout":
             raise NotImplementedError(
                 f"generate_signals does not implement entry_mode={self.config.entry_mode!r}; "
@@ -231,7 +330,9 @@ class ORBStrategy(StrategyBase):
         bar_low: float,
         current_price: float,
     ) -> Tuple[bool, bool]:
-        if self.config.breakout_evaluation == "body":
+        if self.config.breakout_evaluation == "close":
+            breakout_high = breakout_low = current_price
+        elif self.config.breakout_evaluation == "body":
             breakout_high = max(bar_open, current_price)
             breakout_low = min(bar_open, current_price)
         else:
@@ -304,6 +405,11 @@ class ORBStrategy(StrategyBase):
         # Convert to market timezone
         current_time_local = current_time.astimezone(market_tz)
         bar_time = current_time_local.time()
+        if (
+            (self.config.breakout_evaluation == "close" or self.needs_entry_features)
+            and pd.Timestamp(df_context["timestamp"].iloc[-1]) != pd.Timestamp(current_time)
+        ):
+            raise ValueError("Entry indicators must end at the current decision bar")
 
         logger.debug(
             f"[TIMESTAMP CHECK] {symbol}: "
@@ -376,6 +482,19 @@ class ORBStrategy(StrategyBase):
         if self._traded_today.get(symbol) == trading_date:
             return 0, {**metadata, "reason": "already_traded_today"}
 
+        if self.config.breakout_evaluation == "close" or self.needs_entry_features:
+            # Bar timestamps are starts: only bars starting after the complete
+            # opening window may signal, and every opening bar must be present.
+            start = pd.Timestamp.combine(trading_date, orb_calc.start_time).tz_localize(market_tz)
+            end = start + pd.Timedelta(minutes=self.config.orb_duration_minutes)
+            if current_time_local < end:
+                return 0, {**metadata, "reason": "opening_range_not_complete"}
+            tail = df_context.tail(1440 // self.config.bar_minutes + 1)
+            stamps = pd.DatetimeIndex(tail["timestamp"]).tz_convert(market_tz)
+            actual = stamps[(stamps >= start) & (stamps < end)]
+            expected = pd.date_range(start, end, freq=f"{self.config.bar_minutes}min", inclusive="left")
+            if not actual.equals(expected):
+                return 0, {**metadata, "reason": "incomplete_opening_range"}
         if self.config.entry_mode == "first_candle_direction":
             return self._first_candle_signal(
                 orb_calc, df_context, current_time_local, levels, metadata,
@@ -437,6 +556,11 @@ class ORBStrategy(StrategyBase):
                 short_broke = False  # bar moved more up: long fires first
             else:
                 long_broke  = False  # bar moved more down: short fires first
+
+        if long_broke or short_broke:
+            reason = self._entry_filter_reason(1 if long_broke else -1, levels, df_context, metadata)
+            if reason is not None:
+                return 0, {**metadata, "reason": reason}
 
         # Long breakout
         if long_broke:

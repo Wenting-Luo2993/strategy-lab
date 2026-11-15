@@ -1992,6 +1992,12 @@ class TradingOrchestrator:
             # 5. Initialize strategy — driven by ruleset if available, else fall back to .env
             try:
                 if self.ruleset:
+                    if (
+                        self.ruleset.trade_filter.entry_confirmation is not None
+                        or self.ruleset.strategy.range_atr_filter is not None
+                    ):
+                        from vibe.common.ruleset.support import require_supported
+                        require_supported(self.ruleset, "live")
                     for problem in unsupported_settings(self.ruleset, "live"):
                         self.logger.error(
                             f"Ruleset '{self.ruleset.name}' setting ignored by live trading: {problem}"

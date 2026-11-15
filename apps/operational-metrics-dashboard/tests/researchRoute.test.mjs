@@ -17,9 +17,11 @@ test("research route is static-export compatible and uses the shared client surf
   assert.match(layout, /localStorage\.getItem\("dashboard-theme"\)/);
   assert.match(layout, /document\.documentElement\.dataset\.theme = theme/);
   assert.match(layout, /dangerouslySetInnerHTML/);
-  assert.match(component, /Trades, fills, raw bars, ledgers, and equity curves are intentionally unavailable/);
+  assert.match(component, /Individual trades, fills, raw bars, and ledgers are unavailable/);
+  assert.match(component, /dynamic\(\(\) => import\("\.\/ResearchExperimentResults"\)\)/);
   assert.match(component, /DashboardSectionMenu/);
   assert.match(component, /READ ONLY/);
+  assert.doesNotMatch(component, /ResearchAnalyzer|Flexible analysis workspace/);
   assert.match(liveComponent, /READ ONLY/);
   assert.match(menu, /aria-label="Dashboard sections"/);
   assert.match(menu, /aria-label="Open dashboard navigation"/);

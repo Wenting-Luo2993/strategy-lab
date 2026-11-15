@@ -80,10 +80,10 @@ test("fixture overview counts validation attention without event-level data", as
   const adapter = new FixtureResearchDataAdapter();
   const overview = await adapter.getOverview();
   assert.deepEqual(overview, {
-    total: 6,
+    total: 8,
     runSummaries: 3,
     registryRecords: 3,
-    experimentEvents: 0,
+    experimentEvents: 2,
     completedRuns: 2,
     validationAttention: 1,
   });

@@ -14,6 +14,22 @@ import numpy as np
 import pandas as pd
 
 
+def ema_series(series: pd.Series, length: int) -> pd.Series:
+    """Causal EMA, first-observation seed, hidden until ``length`` observations.
+
+    Matches the incremental engine on uninterrupted data. Missing observations
+    invalidate the remainder rather than silently filling gaps.
+    """
+    if length < 1:
+        raise ValueError("length must be positive")
+    values = series.astype(float)
+    if np.isinf(values).any():
+        raise ValueError("EMA input must not contain infinity")
+    return values.ewm(span=length, adjust=False, min_periods=length).mean().mask(
+        values.isna().cummax()
+    )
+
+
 def atr_series(df: pd.DataFrame, length: int = 14) -> pd.Series:
     """
     Average True Range using Wilder's smoothing.

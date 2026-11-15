@@ -59,14 +59,23 @@ class RuleSetRunner:
             if s.entry_mode == FIRST_CANDLE_DIRECTION
             else "breakout"
         )
+        completed_bar_rules = (
+            s.breakout_evaluation == "close"
+            or s.range_atr_filter is not None
+            or ruleset.trade_filter.entry_confirmation is not None
+        )
         bar_minutes = (
             _timeframe_minutes(ruleset.instruments.timeframe)
-            if entry_mode == "first_candle_direction"
+            if entry_mode == "first_candle_direction" or completed_bar_rules
             else 5
         )
-        if entry_mode == "first_candle_direction" and s.orb_duration_minutes % bar_minutes:
+        if (
+            (entry_mode == "first_candle_direction" or completed_bar_rules)
+            and (bar_minutes < 1 or s.orb_duration_minutes < 1
+                 or s.orb_duration_minutes % bar_minutes)
+        ):
             raise UnsupportedRulesetSettingsError(
-                f"Ruleset {ruleset.name!r}: entry_mode='first_candle_direction' needs "
+                f"Ruleset {ruleset.name!r}: completed-bar entries need "
                 f"orb_duration_minutes ({s.orb_duration_minutes}) to be a whole number "
                 f"of {ruleset.instruments.timeframe} bars"
             )
@@ -86,6 +95,8 @@ class RuleSetRunner:
             market_close_time=exit_.eod_time if exit_.eod else "16:00",
             entry_mode=entry_mode,
             bar_minutes=bar_minutes,
+            entry_confirmation=ruleset.trade_filter.entry_confirmation,
+            range_atr_filter=s.range_atr_filter,
         )
         return ORBStrategy(config=config)
 

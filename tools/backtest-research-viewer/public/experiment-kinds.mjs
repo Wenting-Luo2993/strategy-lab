@@ -1,9 +1,11 @@
+import { mountTimeCharts, mountDiagnosticChart } from "./library-charts.mjs";
+
 const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[char]);
 const finite = Number.isFinite;
 const r = (value, digits = 3) => (finite(value) ? `${value.toFixed(digits)}R` : "n/a");
-const pct = (value) => (finite(value) ? `${(value * 100).toFixed(1)}%` : "n/a");
+const pct = (value) => (finite(value) ? `${(value * 100).toFixed(2)}%` : "n/a");
 const interval = (low, high) => (finite(low) && finite(high) ? `[${r(low)}, ${r(high)}]` : "n/a");
 const table = (headings, rows) => `<div class="table-wrap"><table><thead><tr>${headings
   .map((h) => `<th scope="col">${escape(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
@@ -270,8 +272,9 @@ function fixedRuleHtml(experiment) {
     <h3>Outcome ${badgeHtml(outcomeBadge(s.outcome))}</h3>
     <p>Mean net R ${r(p.mean_r)} over ${escape(p.n)} trades, interval ${interval(p.ci_low_r, p.ci_high_r)}.
       Minimum edge ${r(s.min_edge_r, 2)} · minimum detectable effect ${r(s.mde_r)}.</p>
+    ${performanceHtml(experiment)}
     <h3>Cumulative R and drawdown</h3><div data-kind-chart="r-series"><p class="empty">Loading…</p></div>
-    <h3>Net R distribution</h3>${renderHistogram(histogramModel(s.r_histogram))}
+    <h3>Net R distribution</h3><div data-kind-chart="histogram">${renderHistogram(histogramModel(s.r_histogram))}</div>
     <h3>By year</h3>${barRows(s.by_year, "Year")}
     <h3>By symbol</h3>${barRows(s.by_symbol, "Symbol")}
     <h3>Exit reasons</h3>${table(["Reason", "n", "Share", "Mean"], exitRows)}
@@ -279,6 +282,30 @@ function fixedRuleHtml(experiment) {
     <h3>Cost sensitivity</h3><p>Mean net R ${r(cost.mean_net_r)} · break-even extra cost ${finite(cost.breakeven_extra_cost_bps) ? `${cost.breakeven_extra_cost_bps.toFixed(1)} bps` : "n/a"}.</p>
     ${powerHtml(s.power)}${robustnessHtml(s.robustness)}${dollarsHtml(s.dollars)}
     ${conditionsHtml(s.conditions)}`;
+}
+
+export function performanceHtml(experiment) {
+  const summary = experiment.result || {};
+  const number = (v) => finite(v) ? v.toFixed(2) : "n/a";
+  const rows = (experiment.runs?.items || []).map((run) => {
+    const symbol = run.symbols || run.strategyId;
+    const estimate = summary.by_symbol?.[symbol] || {};
+    const m = run.metrics || {};
+    return `<tr><th scope="row">${escape(symbol)}</th><td>${escape(run.tradeCount ?? "n/a")}</td>
+      <td>${r(estimate.mean_r ?? run.meanNetR)}</td><td>${interval(estimate.ci_low_r, estimate.ci_high_r)}</td>
+      <td>${number(m.sharpe_ratio)}</td><td>${pct(m.max_drawdown)}</td>
+      <td>${finite(m.max_drawdown_duration_days) ? m.max_drawdown_duration_days : "n/a"}</td>
+      <td>${number(run.profitFactor)}</td><td>${usd(m.total_pnl)}</td>
+      <td>${run.equityAvailable ? `<button class="link" data-run="${escape(run.runId)}">Open equity curve</button>` : "Not retained"}</td></tr>`;
+  });
+  if (!rows.length) return "";
+  return `<h3>Performance by symbol</h3>
+    <p class="chart-note">Independent per-symbol accounts, not a shared-capital portfolio.
+      Sharpe and drawdown are stored equity metrics; profit factor is total winning net dollars / absolute losing net dollars.
+      Missing values are unavailable, not zero. Drawdown duration is calendar days.</p>
+    ${table(["Symbol", "Trades", "Net expectancy", "95% CI", "Sharpe", "Max drawdown", "DD days", "Profit factor", "Net P&L", "Equity curve"], rows)}
+    <p class="notice">Intraday equity curves require retained mark-to-market points. The separate reconstructed
+      daily closed-trade equity below uses complete net P&amp;L at exit sessions; it does not recover intraday risk.</p>`;
 }
 
 function pairedHtml(experiment) {
@@ -329,29 +356,54 @@ export function kindDetail(experiment) {
 }
 
 /** Fill the async placeholders of a rendered kind view. */
-export function renderKindExtras(host, experiment, { rSeries, excursions, trials } = {}) {
+export function renderKindExtras(host, experiment, { rSeries, excursions, trials, dailySeries } = {}) {
+  const disposers = [];
   const trial = host.querySelector("[data-kind-trial]");
   if (trial) trial.innerHTML = trialHtml(experiment.definition?.trial, trials);
   const rHost = host.querySelector('[data-kind-chart="r-series"]');
   if (rHost) {
-    if (!rSeries?.available) rHost.innerHTML = '<p class="empty">Trade-level R series are not available for this database.</p>';
+    if (dailySeries?.runs?.length) {
+      disposers.push(mountTimeCharts(rHost, dailySeries.runs.map((run) => ({
+        name: run.label, key: run.runId,
+        group: JSON.stringify([run.candidateId, experiment.definition?.kind === "fixed_rule" ? null : run.foldIndex, run.segmentRole]),
+        points: run.rAvailable ? run.dailyR : [], prices: run.dailyPrices,
+        closed: run.dailyClosedEquity, capital: run.startingEquity,
+      })), { comparison: true }));
+    } else if (dailySeries?.error) rHost.innerHTML = `<p class="notice">Daily comparison unavailable: ${escape(dailySeries.error)}</p>`;
+    else if (!rSeries?.available) rHost.innerHTML = '<p class="empty">Trade-level R series are not available for this database.</p>';
+    else if (rSeries.inputTruncated) rHost.innerHTML = '<p class="notice">Trade input exceeds the viewer bound. Selected-range calculations are unavailable rather than computed on partial history.</p>';
     else {
       const series = (rSeries.candidates || []).map((c) => ({
-        name: c.candidateId, points: c.series.map((p) => ({ date: p.date, value: p.cumulative_r })),
+        name: c.candidateId, points: (c.daily || []).map((p) => ({ date: p.date, value: p.r })),
       }));
-      const drawdown = (rSeries.candidates || []).map((c) => ({
-        name: c.candidateId, points: c.series.map((p) => ({ date: p.date, value: p.drawdown_r })),
-      }));
-      const truncated = (rSeries.candidates || []).some((c) => c.truncated);
-      rHost.innerHTML = `${renderLineChart(lineChartModel(series), "Cumulative R")}
-        ${renderLineChart(lineChartModel(drawdown, { height: 140 }), "Drawdown in R")}
-        ${truncated ? '<p class="notice">Series truncated to the viewer row bound.</p>' : ""}`;
+      disposers.push(mountTimeCharts(rHost, series));
     }
   }
   const eHost = host.querySelector('[data-kind-chart="excursions"]');
   if (eHost) {
     eHost.innerHTML = excursions?.available
-      ? `${renderScatter(scatterModel(excursions.rows))}${excursions.sampled ? `<p class="notice">Sampled ${escape(excursions.rows.length)} of ${escape(excursions.total)} trades.</p>` : ""}`
+      ? `<div data-excursion-plot>${renderScatter(scatterModel(excursions.rows))}</div>${excursions.sampled ? `<p class="notice">Sampled ${escape(excursions.rows.length)} of ${escape(excursions.total)} trades.</p>` : ""}`
       : '<p class="empty">Excursions are not available for this database.</p>';
+    if (excursions?.available && excursions.rows?.length) {
+      const reasons = [...new Set(excursions.rows.map((p) => p.exit_reason || "UNKNOWN"))];
+      disposers.push(mountDiagnosticChart(eHost.querySelector("[data-excursion-plot]"), {
+        tooltip: { trigger: "item", formatter: (p) => `${escape(p.seriesName)} · MAE ${numberR(p.value[0])} · MFE ${numberR(p.value[1])}` },
+        xAxis: { type: "value", name: "MAE (R)", axisLabel: { formatter: (v) => v.toFixed(2) } },
+        yAxis: { type: "value", name: "MFE (R)", axisLabel: { formatter: (v) => v.toFixed(2) } },
+        series: reasons.map((reason) => ({ name: reason, type: "scatter",
+          data: excursions.rows.filter((p) => (p.exit_reason || "UNKNOWN") === reason).map((p) => [p.mae_r, p.mfe_r]) })),
+      }));
+    }
   }
+  const hHost = host.querySelector('[data-kind-chart="histogram"]');
+  const histogram = histogramModel(experiment.result?.r_histogram);
+  if (hHost && histogram) disposers.push(mountDiagnosticChart(hHost, {
+    xAxis: { type: "category", data: histogram.bars.map((b) => b.label) },
+    yAxis: { type: "value", name: "Trades" },
+    dataZoom: [{ type: "inside" }, { type: "slider" }],
+    series: [{ type: "bar", data: histogram.bars.map((b) => b.count) }],
+  }));
+  return () => disposers.forEach((dispose) => dispose());
 }
+
+const numberR = (value) => finite(value) ? `${value.toFixed(3)}R` : "n/a";

@@ -22,7 +22,11 @@ import type {
   SortDirection,
 } from "@/data/researchTypes";
 import { DashboardSectionMenu } from "@/components/DashboardSectionMenu";
-import { ResearchAnalyzer } from "@/components/research/ResearchAnalyzer";
+import dynamic from "next/dynamic";
+import { researchNumber } from "@/data/researchSeries";
+import type { ResearchDataAdapter } from "@/data/researchTypes";
+
+const ResearchExperimentResults = dynamic(() => import("./ResearchExperimentResults"));
 
 type InitialResearchData = {
   overview: ResearchOverview;
@@ -54,7 +58,6 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
   const [result, setResult] = useState(initialData?.page ?? emptyPage);
   const [query, setQuery] = useState(defaultQuery);
   const [selected, setSelected] = useState<ResearchPublication | null>(null);
-  const [selectedExperimentEvents, setSelectedExperimentEvents] = useState<ResearchExperimentEvent[]>([]);
   const [loading, setLoading] = useState(!initialData || adapter.source === "supabase");
   const [error, setError] = useState<string | null>(null);
   const [conclusions, setConclusions] = useState<Record<string, ResearchExperimentConclusion>>({});
@@ -76,13 +79,10 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
     const selectedKey = new URL(window.location.href).searchParams.get("publication");
     if (!selectedKey) return;
     adapter.getPublication(selectedKey)
-      .then(async (publication) => {
+      .then((publication) => {
         setSelected(publication);
         if (publication && isExperimentEvent(publication)) {
           loadConclusions([publication]);
-          setSelectedExperimentEvents(
-            await adapter.getExperimentPublications(experimentIdOf(publication)),
-          );
         }
       })
       .catch((reason) => setError(message(reason)));
@@ -117,12 +117,8 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
 
   function selectPublication(publication: ResearchPublication): void {
     setSelected(publication);
-    setSelectedExperimentEvents([]);
     if (isExperimentEvent(publication)) {
       loadConclusions([publication]);
-      adapter.getExperimentPublications(experimentIdOf(publication))
-        .then(setSelectedExperimentEvents)
-        .catch((reason) => setError(message(reason)));
     }
     const url = new URL(window.location.href);
     url.searchParams.set("publication", publication.idempotencyKey);
@@ -131,7 +127,6 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
 
   function closeDetail(): void {
     setSelected(null);
-    setSelectedExperimentEvents([]);
     const url = new URL(window.location.href);
     url.searchParams.delete("publication");
     window.history.replaceState(null, "", url);
@@ -148,7 +143,7 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
       <header className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--surface)_88%,transparent)] backdrop-blur">
         <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-5 py-5 sm:px-8 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <p className="text-xs font-semibold uppercase text-[var(--muted)]">{adapter.source} · summary-only read model</p>
+            <p className="text-xs font-semibold uppercase text-[var(--muted)]">{adapter.source} · aggregate read model</p>
             <div className="mt-2 flex flex-wrap items-center gap-3">
               <h1 className="text-3xl font-bold">Backtest Research</h1>
               <span className="rounded-md border border-[var(--health)] px-3 py-1.5 text-xs font-semibold text-[var(--health)]">
@@ -156,7 +151,7 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
               </span>
             </div>
             <p className="mt-2 max-w-3xl text-sm text-[var(--muted)]">
-              Published methodology, validation, aggregate evidence, and lineage. Trades, fills, raw bars, ledgers, and equity curves are intentionally unavailable.
+              Published methodology, validation, daily aggregate research series, and lineage. Individual trades, fills, raw bars, and ledgers are unavailable.
             </p>
           </div>
         </div>
@@ -171,8 +166,6 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
           <OverviewMetric label="Completed runs" value={overview.completedRuns} />
           <OverviewMetric label="Needs validation review" value={overview.validationAttention} warning={overview.validationAttention > 0} />
         </section>
-
-        <ResearchAnalyzer adapter={adapter} />
 
         <section className="surface mt-5 rounded-lg border p-4" aria-labelledby="research-explorer-title">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -213,7 +206,7 @@ export function ResearchDashboardApp({ initialData }: { initialData: InitialRese
       {selected && (
         <PublicationDetail
           publication={selected}
-          experimentEvents={selectedExperimentEvents}
+          adapter={adapter}
           conclusion={isExperimentEvent(selected)
             ? conclusions[experimentIdOf(selected)] ?? null
             : null}
@@ -340,9 +333,9 @@ function PublicationTable({ publications, conclusions, onSelect }: {
   );
 }
 
-function PublicationDetail({ publication, experimentEvents, conclusion, onClose }: {
+function PublicationDetail({ publication, adapter, conclusion, onClose }: {
   publication: ResearchPublication;
-  experimentEvents: ResearchExperimentEvent[];
+  adapter: ResearchDataAdapter;
   conclusion: ResearchExperimentConclusion | null;
   onClose: () => void;
 }) {
@@ -350,8 +343,8 @@ function PublicationDetail({ publication, experimentEvents, conclusion, onClose 
     <div className="fixed inset-0 z-50 bg-black/45 p-3 sm:p-6" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
-      <aside aria-label="Research publication detail" className="surface ml-auto h-full w-full max-w-3xl overflow-y-auto rounded-lg border p-5 sm:p-6">
-        <div className="flex items-start justify-between gap-4">
+      <aside role="dialog" aria-modal="true" aria-label="Research publication detail" className="surface mx-auto h-full w-full max-w-[90rem] overflow-y-auto rounded-lg border p-5 sm:p-6">
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-4 bg-[var(--surface)] pb-4">
           <div>
             <p className="text-xs font-semibold uppercase text-[var(--muted)]">{publication.kind.replace("_", " ")} · schema v{publication.schemaVersion}</p>
             <h2 className="mt-2 break-all text-2xl font-bold">{primaryIdentity(publication)}</h2>
@@ -373,12 +366,12 @@ function PublicationDetail({ publication, experimentEvents, conclusion, onClose 
             : (
               <ExperimentEventDetail
                 publication={publication}
-                experimentEvents={experimentEvents}
+                adapter={adapter}
                 conclusion={conclusion}
               />
             )}
         <section className="mt-5 rounded-md border border-dashed border-[var(--border)] p-4 text-sm text-[var(--muted)]">
-          This public record deliberately contains no trades, fills, raw bars, trade ledger, or equity curve. Evidence is represented only by aggregate counts and checksums.
+          No individual trades, fills, raw bars, or trade ledgers are fetched. Daily derived series, when published, are loaded only for the opened experiment.
         </section>
       </aside>
     </div>
@@ -509,9 +502,9 @@ function RegistryDetail({ publication }: { publication: ResearchRegistryRecord }
   );
 }
 
-function ExperimentEventDetail({ publication, experimentEvents, conclusion }: {
+function ExperimentEventDetail({ publication, adapter, conclusion }: {
   publication: ResearchExperimentEvent;
-  experimentEvents: ResearchExperimentEvent[];
+  adapter: ResearchDataAdapter;
   conclusion: ResearchExperimentConclusion | null;
 }) {
   const reliability = publication.kind === "study_reliability"
@@ -539,26 +532,13 @@ function ExperimentEventDetail({ publication, experimentEvents, conclusion }: {
         {report && <DetailStat label="Decision reason" value={String(report.verdict_reason ?? "--")} />}
         {report && <DetailStat label="Procedure" value={statusLabel(String(report.procedure_state ?? "not_assessed"))} />}
       </DetailSection>
-      <section className="mt-6">
-        <h3 className="font-bold">Experiment timeline</h3>
-        <div className="mt-3 space-y-2">
-          {(experimentEvents.length ? experimentEvents : [publication]).map((event) => (
-            <div className="rounded-md border border-[var(--border)] p-3 text-sm" key={event.idempotencyKey}>
-              <strong>{publicationTypeLabel(event.kind)}</strong>
-              <div className="mt-1">{statusLabel(event.status ?? "not_assessed")}</div>
-              <div className="mt-1 text-xs text-[var(--muted)]">
-                {event.recordedAt ? formatDate(event.recordedAt) : "Timestamp unavailable"}
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-      <section className="mt-6">
-        <h3 className="font-bold">Selected event evidence</h3>
+      <ResearchExperimentResults key={experimentIdOf(publication)} adapter={adapter} experimentId={experimentIdOf(publication)} />
+      <details className="mt-6">
+        <summary className="font-bold">Raw selected event evidence (original precision)</summary>
         <pre className="mt-3 max-h-[32rem] overflow-auto rounded-md border border-[var(--border)] bg-[var(--surface-muted)] p-4 text-xs">
           {JSON.stringify(publication.eventData, null, 2)}
         </pre>
-      </section>
+      </details>
     </>
   );
 }
@@ -654,7 +634,7 @@ function formatNumber(value: number | null): string {
 
 function formatMetric(value: string | number | boolean | null): string {
   if (value === null) return "--";
-  if (typeof value === "number") return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  if (typeof value === "number" || (typeof value === "string" && value.trim() && Number.isFinite(Number(value)))) return researchNumber(value);
   return String(value);
 }
 

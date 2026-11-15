@@ -65,7 +65,7 @@ test("each scope has steps and stepsForScope keeps guide order", () => {
 
 test("guide headings still exist in the viewer markup and renderers", async () => {
   const sources = await Promise.all(
-    ["index.html", "app.mjs", "experiment-view.mjs", "experiment-kinds.mjs", "run-charts.mjs"].map((name) =>
+    ["index.html", "app.mjs", "experiment-view.mjs", "experiment-kinds.mjs", "run-charts.mjs", "library-charts.mjs"].map((name) =>
       readFile(join(PUBLIC_DIR, name), "utf8"),
     ),
   );

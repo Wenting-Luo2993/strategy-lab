@@ -44,6 +44,8 @@ def unsupported_settings(ruleset: StrategyRuleSet, context: Context) -> List[str
             f"strategy.entry_mode={strategy.entry_mode!r} is not implemented for {context}"
         )
     if strategy.entry_mode == FIRST_CANDLE_DIRECTION:
+        if ruleset.trade_filter.entry_confirmation is not None or strategy.range_atr_filter is not None:
+            problems.append("Entry confirmation/range filters require breakout entry mode")
         # No breakout bar exists in this mode, so breakout-bar filters would be
         # silently meaningless.
         if strategy.orb_body_pct_filter > 0:
@@ -107,6 +109,13 @@ def unsupported_settings(ruleset: StrategyRuleSet, context: Context) -> List[str
         problems.append("trade_filter.vix_max is not implemented")
     if ruleset.mtf_validation.enabled:
         problems.append("mtf_validation.enabled=true is not implemented")
+    if context == "live" and (
+        ruleset.trade_filter.entry_confirmation is not None or strategy.range_atr_filter is not None
+    ):
+        problems.append(
+            "entry_confirmation/range_atr_filter need full session-history feature preparation; "
+            "not implemented in live warm-up"
+        )
 
     if context == "backtest":
         default_entry_order = type(strategy.entry_order)()
@@ -172,6 +181,8 @@ def resting_stop_conflicts(ruleset: StrategyRuleSet) -> List[str]:
         problems.append(
             "trade_filter.volume_confirmation=true reads the completed breakout bar's volume"
         )
+    if ruleset.trade_filter.entry_confirmation is not None or ruleset.strategy.range_atr_filter is not None:
+        problems.append("Entry confirmation/range filters are not supported by resting stop entries")
     if ruleset.strategy.breakout_evaluation != "wick":
         problems.append(
             f"strategy.breakout_evaluation={ruleset.strategy.breakout_evaluation!r} "

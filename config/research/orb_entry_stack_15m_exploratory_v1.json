@@ -1,0 +1,79 @@
+{
+  "registration_version": 1,
+  "title": "15-minute ORB entry-confirmation stack",
+  "registered": "2026-11-14",
+  "source": "https://tradersentiments.com/trading-strategies/opening-range-breakout",
+  "research_question": "Does one fixed close-confirmed, participation/trend-qualified 15-minute ORB have useful net expectancy under the existing realistic fill and exit model?",
+  "evidence_label": "exploratory_reused_development_evidence",
+  "confirmation_claim_permitted": false,
+  "programme": "orb_edge_2026",
+  "n_trials": 1,
+  "variant_axes": [],
+  "symbols": ["AMZN", "GOOGL", "MSFT", "QQQ", "TSLA"],
+  "start": "2018-05-01",
+  "end": "2024-12-31",
+  "warmup_sessions": 0,
+  "warmup_policy": "History begins at 2018-05-01. Indicators warm up in place; no substitute values or entry before required history. First 20 sessions cannot satisfy all filters.",
+  "lock_hash": "6cba881723b0222d44b25f0a19bdcb8bacecf841dbbf26c559a3a770155218f5",
+  "ruleset_path": "config/research/variants/orb_edge_2026/entry_stack_15m.yaml",
+  "ruleset_sha256": "313265689f5e44b1f0033ca630d99801eeccf2a1af9aa9a843b091ef1744ba8a",
+  "source_base_commit": "2a3c80419b2e5503b55add9de4233e0241838ca4",
+  "source_dirty": true,
+  "source_provenance": "Local uncommitted implementation; these exact source files are fingerprinted. The base commit alone is not the tested implementation.",
+  "source_file_sha256": {
+    "vibe/backtester/core/engine.py": "1585feb985e7c141f2af81dbe6772b24b9ed715b937138bcc4f67ec80acf9c97",
+    "vibe/backtester/runner.py": "49f2f68093f56e9b28fc8b107457bb925db0c4415c551eb6479d421ab011a26f",
+    "vibe/common/indicators/batch.py": "ac836f1ea3c66aca25b3d1e0753494a084dd3555932709855cc7bfe08bd63f94",
+    "vibe/common/indicators/daily_atr.py": "2bf8c1925875a3b615dd059ea7d1c6871c2bfad57f5240dd6f364a9406f70247",
+    "vibe/common/indicators/session.py": "f37765894f7630a497f3b43e398dacd9ceb8f64fad660c68c467397462f10aa9",
+    "vibe/common/ruleset/models.py": "942c71d6d2c39283c7da4592e405f867ef20ebd52a395877b03c7920b9f6056e",
+    "vibe/common/ruleset/support.py": "b9dc5840a599e8513f8674f248cc546c192383e462882a70678f081de41ee250",
+    "vibe/common/strategies/orb.py": "31e8623ebc5aafe0dea78b11238dfaea316905b43c8b2847fd4ec14453fa36f5",
+    "vibe/trading_bot/core/orchestrator.py": "458496b0e97c24c1fe1d32fb5ae222b2b2907994cd1ff2925b030d8f3daac75a"
+  },
+  "data_file_sha256": {
+    "AMZN": "f8e9d0d35385f77b6f7301038cd1bddf60e6e1498610ed917f90ba865a763168",
+    "GOOGL": "5b6a8cefb0270ff26258733a87c7ed95b68edc3b0bb05cae4ac0cbc372357a37",
+    "MSFT": "dd2df644ceac566210a6d0be7893b33e76ff792c13273f999987fe3a3e658e58",
+    "QQQ": "8f1f8b31104d4098264e2ead3615d88f96194f843a8fed0939e3b0987022d1c2",
+    "TSLA": "dfebb145ccab3c91225a60cd42571ab471c5d38876894ba846f3ba417411896e"
+  },
+  "data_access": "Only the specified exploration interval is loaded into indicators/simulation. Hashes identify source files, not permission to run their later bars.",
+  "entry_definition": {
+    "opening_range": "09:30 inclusive to 09:45 exclusive, all three complete 5-minute bars required",
+    "close_confirmation": "Completed bar close at least $0.01 beyond ORH/ORL; body fraction >= 0.5",
+    "relative_volume": "Breakout 5-minute bar volume / arithmetic mean volume at the same exchange-local clock time over 20 prior observed regular sessions; strictly > 1.5",
+    "vwap": "Cumulative regular-session HLC3-weighted bar VWAP; long close above / short close below; no slope rule",
+    "ema": "First-observation seeded EMA9 and EMA20 on regular-session 5-minute closes, carried across sessions; directional fast-minus-slow spread strictly aligned and widening versus prior completed bar",
+    "range_atr": "Inclusive 0.25 to 0.60 of Wilder daily ATR20, shifted one session; first TR seed high-minus-low",
+    "entry_cutoff": "Signal bar starts before 15:00 ET",
+    "max_trades": "One filled entry per symbol per session"
+  },
+  "execution": {
+    "policy": "ExecutionRealismConfig.realistic(entry_fill_policy='at_next_bar_open')",
+    "entry_slippage": "2 ticks, $0.01 per tick",
+    "fill_timing": "New completed-bar consumer defers actual position booking to next bar open and checks that entry bar for exits; legacy consumers unchanged",
+    "stop": "Opposite opening-range extreme",
+    "take_profit": "None",
+    "trailing_stop": "None",
+    "exit": "15:55 ET, existing gap/slippage/ambiguous-bar rules",
+    "capital": 100000,
+    "risk_fraction": 0.01,
+    "portfolio_basis": "Independent per-symbol simulations, not a concurrent shared-capital portfolio"
+  },
+  "analysis": {
+    "selection": "No folds, tuning or threshold selection",
+    "confidence_level": 0.95,
+    "min_edge_r": 0.05,
+    "bootstrap_replicates": 1000,
+    "bootstrap_seed": 20261031,
+    "outputs": ["net R interval", "dollars and trade frequency", "year/symbol stability", "tail removal", "cost sensitivity", "gate evaluation counts"],
+    "interpretation": "Potential lead only; a positive mean or interval excluding zero does not establish a usable/confirmed edge. No selecting variants after viewing this result."
+  },
+  "limitations": [
+    "This is a declared interpretation of the article entry stack, not its midpoint-stop/scale-out/trailing strategy or a reproduction of its headline statistics.",
+    "Bar-based VWAP and feed-specific volume are not tick-exact consolidated market indicators.",
+    "Fixed-stack results cannot identify the separate causal contribution of individual filters.",
+    "Historical 5m/15m baselines differ in close qualification; comparisons to them are descriptive, not isolated paired effects."
+  ]
+}

@@ -1075,6 +1075,25 @@ test("S8 r-series, excursions and trial endpoints", async () => {
     assert.deepEqual(rule.series.map((p) => [p.date, p.r, p.cumulative_r, p.drawdown_r]),
       [["2026-01-05", 1, 1, 0], ["2026-01-06", -3, -2, -3]]);
     assert.equal(rule.truncated, false);
+    const dailyFolder = join(fixture.directory, "daily-series");
+    mkdirSync(dailyFolder, { recursive: true });
+    const dailyFile = join(dailyFolder, "fr-1.json");
+    const dailyRun = { runId: "run-a", dailyR: [{ date: "2026-01-05", value: 1 }],
+      dailyEquity: [], dailyPrices: [], dailyClosedEquity: [] };
+    writeFileSync(dailyFile, JSON.stringify({ version: 1, experimentId: "fr-1", runs: [dailyRun] }));
+    const prepared = await rawRequest(fixture.origin, "/api/experiments/fr-1/daily-series");
+    assert.equal(prepared.status, 200);
+    assert.equal(prepared.json.experimentId, "fr-1");
+    assert.deepEqual(prepared.json.runs[0].dailyR, dailyRun.dailyR);
+    writeFileSync(dailyFile, JSON.stringify({ version: 1, experimentId: "fr-1", runs: [{ ...dailyRun, runId: "run-big" }] }));
+    assert.equal((await rawRequest(fixture.origin, "/api/experiments/fr-1/daily-series")).status, 400);
+    writeFileSync(dailyFile, JSON.stringify({ version: 1, experimentId: "fr-1", runs: [{
+      ...dailyRun, dailyR: Array(50_001).fill({ date: "2026-01-05", value: 1 }),
+    }] }));
+    assert.equal((await rawRequest(fixture.origin, "/api/experiments/fr-1/daily-series")).status, 400);
+    writeFileSync(dailyFile, JSON.stringify({ version: 1, experimentId: "wrong", runs: [] }));
+    assert.equal((await rawRequest(fixture.origin, "/api/experiments/fr-1/daily-series")).status, 400);
+    assert.deepEqual(rule.daily, [{ date: "2026-01-05", r: 1 }, { date: "2026-01-06", r: -3 }]);
 
     const excursions = await rawRequest(fixture.origin, "/api/experiments/fr-1/excursions");
     assert.equal(excursions.json.total, 3);
@@ -1086,6 +1105,7 @@ test("S8 r-series, excursions and trial endpoints", async () => {
     const bigSeries = await rawRequest(fixture.origin, "/api/experiments/big/r-series");
     assert.equal(bigSeries.json.candidates[0].truncated, true);
     assert.equal(bigSeries.json.candidates[0].series.length, 5000);
+    assert.equal(bigSeries.json.candidates[0].daily.length, 5100);
     const bigExcursions = await rawRequest(fixture.origin, "/api/experiments/big/excursions");
     assert.equal(bigExcursions.json.total, 5100);
     assert.equal(bigExcursions.json.sampled, true);
@@ -1197,6 +1217,8 @@ test("session returns use full-curve closes, even when a close is skipped by the
     assert.equal(response.json.downsampled, true);
     assert.equal(response.json.points.some((point) => point.sequence === 2499), false);
     assert.equal(response.json.sessionReturns.length, 2);
+    assert.deepEqual(response.json.sessionEquity,
+      [{ date: "2026-01-02", value: 90000 }, { date: "2026-01-05", value: 100000 }]);
     assert.equal(response.json.sessionReturns[0].return, -0.1);
     assert.ok(Math.abs(response.json.sessionReturns[1].return - 1 / 9) < 1e-9);
   } finally {
@@ -1462,6 +1484,10 @@ test("static UI has strict security headers and local-only copy", async () => {
     assert.equal(charts.status, 200);
     assert.match(charts.headers["content-type"], /text\/javascript/);
     assert.match(charts.body, /export function mountPerformanceCharts/);
+    const linked = await rawRequest(fixture.origin, "/apps/operational-metrics-dashboard/src/data/linkedCharts.mjs");
+    assert.equal(linked.status, 200);
+    assert.match(linked.headers["content-type"], /text\/javascript/);
+    assert.match(linked.body, /export function createChartLink/);
     const app = await rawRequest(fixture.origin, "/app.mjs");
     assert.equal(app.status, 200);
     assert.match(app.body, /import \{ mountPerformanceCharts \} from "\.\/run-charts\.mjs"/);

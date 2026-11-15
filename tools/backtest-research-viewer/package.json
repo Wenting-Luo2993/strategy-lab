@@ -6,6 +6,10 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "dependencies": {
+    "echarts": "^6.0.0",
+    "lightweight-charts": "^5.2.0"
+  },
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test tests/*.test.mjs",

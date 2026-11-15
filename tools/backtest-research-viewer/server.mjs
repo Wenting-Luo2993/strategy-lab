@@ -56,6 +56,10 @@ const STATIC_FILES = new Map([
   ["/index.html", [join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8"]],
   ["/app.mjs", [join(PUBLIC_DIR, "app.mjs"), "text/javascript; charset=utf-8"]],
   ["/run-charts.mjs", [join(PUBLIC_DIR, "run-charts.mjs"), "text/javascript; charset=utf-8"]],
+  ["/library-charts.mjs", [join(PUBLIC_DIR, "library-charts.mjs"), "text/javascript; charset=utf-8"]],
+  ["/apps/operational-metrics-dashboard/src/data/linkedCharts.mjs", [join(HERE, "..", "..", "apps", "operational-metrics-dashboard", "src", "data", "linkedCharts.mjs"), "text/javascript; charset=utf-8"]],
+  ["/vendor/lightweight-charts.mjs", [join(HERE, "node_modules", "lightweight-charts", "dist", "lightweight-charts.standalone.production.mjs"), "text/javascript; charset=utf-8"]],
+  ["/vendor/echarts.js", [join(HERE, "node_modules", "echarts", "dist", "echarts.min.js"), "text/javascript; charset=utf-8"]],
   ["/experiment-view.mjs", [join(PUBLIC_DIR, "experiment-view.mjs"), "text/javascript; charset=utf-8"]],
   ["/experiment-kinds.mjs", [join(PUBLIC_DIR, "experiment-kinds.mjs"), "text/javascript; charset=utf-8"]],
   ["/guide.mjs", [join(PUBLIC_DIR, "guide.mjs"), "text/javascript; charset=utf-8"]],
@@ -804,6 +808,22 @@ function getExperiment(database, experimentId) {
       WHERE e.experiment_id = ? ORDER BY e.fold_index, e.segment_role, e.candidate_id LIMIT ?`,
     params: [experimentId], limit: MAX_DETAIL_ROWS,
   });
+  for (const run of runs.items) {
+    run.metrics = Object.fromEntries(database.prepare(
+      "SELECT metric_key, metric_value FROM run_metrics WHERE run_id = ? ORDER BY id",
+    ).all(run.runId).map((m) => [m.metric_key, numberOrNull(m.metric_value)]));
+    run.equityAvailable = hasTable(database, "run_equity_points") && Number(database.prepare(
+      "SELECT COUNT(*) AS n FROM run_equity_points WHERE run_id = ?",
+    ).get(run.runId).n) > 0;
+    run.profitFactor = null;
+    if (tradeColumns?.has("pnl") && tradeColumns.has("commission")) {
+      const sums = database.prepare(`SELECT
+        SUM(CASE WHEN pnl - commission > 0 THEN pnl - commission ELSE 0 END) AS wins,
+        SUM(CASE WHEN pnl - commission < 0 THEN commission - pnl ELSE 0 END) AS losses
+        FROM run_trades WHERE run_id = ?`).get(run.runId);
+      if (sums.losses > 0) run.profitFactor = sums.wins / sums.losses;
+    }
+  }
   const reliabilityRow = hasTable(database, "study_reliability_reports") ? database.prepare(
     "SELECT verdict, policy_hash AS policyHash, payload_json AS payloadJson, recorded_at AS recordedAt FROM study_reliability_reports WHERE experiment_id = ?",
   ).get(experimentId) : null;
@@ -959,7 +979,8 @@ function getRunEquity(database, runId) {
       maxDrawdown = drawdown;
       maxDrawdownAt = row.observed_at;
     }
-    sessionCloses.set(String(row.observed_at).slice(0, 10), { equity, observedAt: row.observed_at });
+    const sessionDate = nySessionDate(row.observed_at);
+    if (sessionDate !== null) sessionCloses.set(sessionDate, { equity, observedAt: row.observed_at });
     if (sequence % stride === 0 || sequence === lastSequence) {
       points.push({ sequence, observedAt: row.observed_at, equity, drawdown });
     }
@@ -997,6 +1018,7 @@ function getRunEquity(database, runId) {
     maxSessionDrawdownAt,
     startingCapital,
     sessionReturns,
+    sessionEquity: [...sessionCloses].map(([date, point]) => ({ date, value: point.equity })),
     startingEquity: rows.length ? Number(rows[0].equity) : null,
     endingEquity: rows.length ? Number(rows[rows.length - 1].equity) : null,
     points,
@@ -1059,7 +1081,7 @@ function getExperimentRSeries(database, experimentId) {
     const daily = [...days].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, value]) => ({ date, r: value }));
     const series = cumulativeR(daily);
     const truncated = series.length > MAX_DETAIL_ROWS;
-    return { candidateId, truncated, series: truncated ? series.slice(0, MAX_DETAIL_ROWS) : series };
+    return { candidateId, daily, truncated, series: truncated ? series.slice(0, MAX_DETAIL_ROWS) : series };
   });
   return { experimentId, available: true, inputTruncated: rows.length >= MAX_SERIES_TRADE_ROWS, candidates };
 }
@@ -1673,6 +1695,43 @@ function displayHost(host) {
 }
 
 function routeApi(database, pathname, searchParams, repositoryRoot, artifactStagingRoot, dbPath) {
+  const dailyMatch = pathname.match(/^\/api\/experiments\/([^/]+)\/daily-series$/);
+  if (dailyMatch) {
+    const id = decodeURIComponent(dailyMatch[1]);
+    validateIdentity(id, "experiment id");
+    requireExperiment(database, id);
+    const staged = join(dirname(dbPath), "daily-series", `${id}.json`);
+    try {
+      const info = statSync(staged);
+      if (info.size > 3 * 1024 * 1024) throw new HttpError(400, "Daily comparison file is too large.");
+      if (!realpathSync(staged).startsWith(realpathSync(dirname(dbPath)) + sep)) {
+        throw new HttpError(400, "Daily comparison must stay inside the database directory.");
+      }
+      const payload = JSON.parse(readFileSync(staged, "utf8"));
+      if (payload.version !== 1 || payload.experimentId !== id || !Array.isArray(payload.runs) || payload.runs.length > 200) {
+        throw new HttpError(400, "Daily comparison file identity is invalid.");
+      }
+      const members = new Set(database.prepare("SELECT run_id FROM research_experiment_runs WHERE experiment_id = ?").all(id).map((r) => r.run_id));
+      let points = 0;
+      for (const run of payload.runs) {
+        if (!members.has(run.runId)) throw new HttpError(400, "Daily comparison member is not part of this experiment.");
+        for (const key of ["dailyR", "dailyEquity", "dailyPrices", "dailyClosedEquity"]) {
+          if (!Array.isArray(run[key])) throw new HttpError(400, "Daily comparison series must be an array.");
+          points += run[key].length;
+        }
+      }
+      if (points > 50_000) throw new HttpError(400, "Daily comparison exceeds the point limit.");
+      return payload;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    const result = spawnSync(process.env.PYTHON || (platform() === "win32" ? "python" : "python3"),
+      ["-B", "-m", "vibe.research_pipeline.daily_series", "--db", dbPath, "--experiment", id],
+      { cwd: repositoryRoot, encoding: "utf8", maxBuffer: 3 * 1024 * 1024, timeout: 60_000, windowsHide: true });
+    if (result.error || result.status !== 0) throw new HttpError(500, `Daily comparison export failed: ${String(result.stderr || result.error?.message || "").trim()}`);
+    try { return JSON.parse(result.stdout); }
+    catch { throw new HttpError(500, "Daily comparison returned invalid JSON."); }
+  }
   if (pathname === "/api/meta") return null;
   if (pathname === "/api/overview") return getOverview(database);
   if (pathname === "/api/runs") return listRuns(database, searchParams);

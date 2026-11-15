@@ -19,6 +19,27 @@ const executionIdentity = {
   exit_slippage_ticks: { STOP: 2, EOD: 1, TP: 1 },
 };
 
+const interactiveFixtureRows: ResearchPublicationRow[] =
+  (["experiment_definition", "experiment_outcome"] as const).map((kind) => ({
+    idempotency_key: `${kind}:fixture-daily`,
+    aggregate_type: kind, aggregate_id: "fixture-daily",
+    schema_version: 1, publication_version: 1, payload_sha256: sha("9"),
+    acknowledged_at: "2026-11-14T00:00:00Z",
+    payload: {
+      identity: { experiment_id: "fixture-daily" },
+      timestamps: { recorded_at: "2026-11-14T00:00:00Z" },
+      ...(kind === "experiment_definition"
+        ? { definition: { kind: "fixed_rule", title: "Synthetic interactive-chart preview", evidence_role: "platform_validation" } }
+        : { outcome: { state: "completed", result: {
+          evidence_role: "platform_validation", outcome: "underpowered", min_edge_r: 0.05,
+          pooled: { n: 4, mean_r: 0.275, ci_low_r: -0.2, ci_high_r: 0.7 },
+          r_histogram: { counts: [0, 1, 3, 0], edges: [-1, 0, 1] },
+          by_year: { "2026": { n: 4, mean_r: 0.275 } },
+          robustness: { win_rate: 0.75, median_r: 0.3 },
+        } } }),
+    },
+  }));
+
 export const researchFixtureRows: ResearchPublicationRow[] = [
   runRow("run:01JQRESEARCH000000000000001", "01JQRESEARCH000000000000001", "EXP-104", "orb_production", "completed", "2026-10-10T18:45:00Z", {
     expectancy_r: 0.42,
@@ -37,6 +58,7 @@ export const researchFixtureRows: ResearchPublicationRow[] = [
     { relation: "tests", record_type: "hypothesis", record_id: "HYP-019" },
   ]),
   registryRow("experiment", "EXP-073", "completed", "2026-10-08T13:14:00Z", [], true),
+  ...interactiveFixtureRows,
 ];
 
 function runRow(
@@ -157,11 +179,11 @@ export function clonedResearchFixtures(): ResearchPublication[] {
   return researchFixtureRows.map((item) => decodeResearchPublication(structuredClone(item)));
 }
 
-/** The fixture rows contain no experiment events, so no conclusions either. */
+/** Synthetic experiments deliberately have no researcher-authored conclusion. */
 export const researchConclusionFixtures: ResearchExperimentConclusion[] = [];
 
 export const analysisFixtureRows: AnalysisRow[] = researchFixtureRows
-  .slice(0, 3)
+  .filter((row) => row.aggregate_type === "run_summary")
   .map((row, index) => {
     const publication = decodeResearchPublication(structuredClone(row)) as Extract<
       ResearchPublication,

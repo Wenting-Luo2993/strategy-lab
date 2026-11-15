@@ -1152,6 +1152,24 @@ class SupabaseResearchDestination:
             )
 
 
+    async def publish_daily_series(self, row: Mapping[str, Any]) -> None:
+        """Upsert derived aggregates, never alter immutable run publications."""
+        endpoint = f"{self.settings.url.rstrip('/')}/rest/v1/research_experiment_daily_series"
+        response = await self._request(
+            "POST", endpoint, headers=self._headers(),
+            params={"on_conflict": "experiment_id"}, json_body=dict(row),
+            timeout_seconds=self.settings.timeout_seconds,
+        )
+        if not 200 <= response.status < 300:
+            safe = redact_secrets(response.body, (self.settings.service_role_key,))
+            raise RuntimeError(f"Daily research publication failed: status={response.status} body={safe}")
+        returned = response.body[0] if isinstance(response.body, list) and response.body else response.body
+        if not isinstance(returned, Mapping) or any(
+            returned.get(key) != row.get(key) for key in ("experiment_id", "payload_sha256", "schema_version")
+        ):
+            raise RuntimeError("Daily research publication returned no matching acknowledgement")
+
+
 class ConclusionDestination(Protocol):
     async def upsert_conclusion(self, conclusion: ExperimentConclusion) -> None: ...
 

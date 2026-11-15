@@ -23,6 +23,7 @@ surface. The tool's `package.json` enforces the minimum. Prefer an LTS release
 From the repository root:
 
 ```powershell
+npm --prefix tools\backtest-research-viewer install
 node tools\backtest-research-viewer\server.mjs
 ```
 
@@ -116,6 +117,75 @@ walk-forward view):
   MAE/MFE scatter, cost sensitivity and labelled-diagnostic condition terciles;
 - programme trial counts and, for validation studies, a pass/review badge.
 
+Fixed-rule experiment details also show an upfront per-symbol performance
+table: net expectancy and its recorded interval, equity Sharpe, maximum
+drawdown and calendar-day duration, net-dollar profit factor and net P&L.
+Equity drill-down links appear only when equity points are actually retained.
+Diagnostic retention saves trades, not mark-to-market equity points: cumulative
+R is not an equity curve, and missing curves/metrics remain explicitly
+unavailable. Independent symbol-account Sharpes are not averaged into a
+portfolio Sharpe. Profit factor uses winning net dollars divided by absolute
+losing net dollars; no-loss samples are unavailable rather than infinite.
+
+Time charts now use locally served **TradingView Lightweight Charts**; R
+histograms and MAE/MFE scatter use **Apache ECharts**. No CDN or upload is
+involved. Chart modules load only when a detail view needs them and release
+charts/resize observers when it closes. Charts are centred, full-width, 440px
+high for time series and 400px for diagnostics. Metrics use 2-4 decimal places;
+stored JSON keeps its original precision.
+
+Date inputs and pan/zoom select a window; **All history** restores it.
+The four comparison charts share a live time window while dragging/zooming,
+then recalculate their range metrics when the gesture settles. Crosshairs share
+the same date and hovered ticker; each chart shows its own value and axis
+units. Leaving a chart clears the linked crosshairs.
+Initial ranges come from the complete data calendar, not the library's
+pre-paint placeholder. Container and price-axis resizing preserve that range,
+including on narrow panels; otherwise valid curves can appear flat or clipped.
+The **All** checkbox adds the sum of every independent ticker account,
+including hidden individual lines: the five $100,000 accounts start at
+$500,000, and cumulative R is summed. Combined R drawdown is recalculated
+from that summed curve, not added from individual drawdowns. All is not a
+shared-capital portfolio backtest. Different candidates/walk-forward folds/roles
+and repeated ticker accounts cannot be combined (fixed-rule symbol membership
+ordinals are not temporal folds), and missing member observations are not
+filled with zero or invented equity.
+Calendar-year buttons show only years with data. Each selects January 1 to
+December 31, clipped to the first/last available observation for partial
+dataset boundary years, and recalculates the same selected-range metrics.
+Cumulative R restarts at zero, and R drawdown resets its running peak.
+Run equity uses the complete last-retained-observation-per-market-session
+series, not a strided intraday subset. Window return/drawdown use the preceding
+retained session, or recorded starting capital for the first session. Daily
+drawdown does not replace the stored full-run intraday risk summary.
+Partial trade input is labelled and does not produce selected-range results.
+Missing retained equity remains unavailable rather than reconstructed from R.
+
+The experiment comparison now uses a responsive 2x2 grid: daily buy-and-hold
+benchmarks, cumulative R, reconstructed closed-trade equity, and drawdown in R.
+Ticker checkboxes hide/show independent accounts across the grid. Benchmark
+and closed-trade curves each rebase to recorded starting capital at the first
+selected daily close. They are not a combined portfolio. Reconstruction uses
+complete retained net P&L at exit sessions, never R or inferred position sizes.
+Daily prices come from regular-session closes in the local parquet directory;
+source file checksums are exported. No dividend cash flows or benchmark fees
+are explicitly added. Existing source prices are continuous across the checked
+AMZN, GOOGL and TSLA split dates; the viewer does not apply a second adjustment.
+Stored intraday equity/risk remains distinct from these derived daily curves.
+`/api/experiments/:id/daily-series` reads an explicitly prepared daily snapshot
+from `daily-series\<experiment-id>.json` beside the selected research SQLite
+file. This avoids price-reader stalls in Node-launched Windows processes.
+Prepare it with the read-only exporter:
+
+```powershell
+python -B -m vibe.research_pipeline.daily_series --db C:\local\research.sqlite3 `
+  --experiment <experiment-id> --prices vibe\data\parquet `
+  --output C:\local\daily-series\<experiment-id>.json
+```
+
+Without a prepared file, the endpoint derives closed-trade/R aggregates only;
+benchmark prices remain unavailable. It never reruns the trading strategy.
+
 Experiment-to-run links stay out of the way. Each study panel ends with a
 collapsed "Linked runs (N)" section listing the stored runs it recorded (symbol,
 segment role, trade count, mean net R, trade dates); a run alias opens its
@@ -136,10 +206,9 @@ by the supplied QuantConnect reference:
 
 - Headline equity, net profit, return, total costs, trade count, win rate,
   expectancy in R, and Sharpe. Missing values stay unavailable, not zero.
-- Performance: equity/return toggle, 1m/3m/1y/all windows, timestamp/value
-  inspection with pointer or keyboard-accessible observation sliders,
-  intraday drawdown, session-return bars, and recorded statistics with their
-  calculation versions.
+- Performance: daily equity/selected-window return toggle, date inputs and
+  pan/zoom, selected-window daily drawdown, session-return bars, and recorded
+  full-run intraday statistics with their calculation versions.
 - Trades: loaded-row P&L distribution and statistics, symbol/exit-reason and
   outcome filters, and a paginated ledger with entry/exit timestamps in their
   recorded exchange offsets. Filters operate on the loaded rows; the server's

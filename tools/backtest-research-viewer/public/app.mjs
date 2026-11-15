@@ -12,6 +12,7 @@ let detailRequest = 0;
 let experimentRequest = 0;
 let selectedExperiment;
 let disposeRunCharts;
+let disposeExperimentCharts;
 
 const elements = Object.fromEntries(
   [
@@ -29,6 +30,8 @@ elements.detail.addEventListener("close", () => {
 elements["experiment-dialog"].addEventListener("close", () => {
   experimentRequest += 1;
   selectedExperiment = undefined;
+  disposeExperimentCharts?.();
+  disposeExperimentCharts = undefined;
 });
 
 document.getElementById("refresh").addEventListener("click", () => loadAll());
@@ -107,6 +110,8 @@ async function showExperiment(experimentId, focus = true) {
   const request = ++experimentRequest;
   selectedExperiment = experimentId;
   const host = elements["experiment-detail"];
+  disposeExperimentCharts?.();
+  disposeExperimentCharts = undefined;
   host.innerHTML = loadingState();
   if (!elements["experiment-dialog"].open) elements["experiment-dialog"].showModal();
   if (focus) host.scrollTop = 0;
@@ -117,13 +122,14 @@ async function showExperiment(experimentId, focus = true) {
     if (host.querySelector("[data-kind-trial]")) {
       const base = `/api/experiments/${encodeURIComponent(experimentId)}`;
       const programme = experiment.definition?.trial?.programme;
-      const [rSeries, excursions, trials] = await Promise.all([
+      const [rSeries, excursions, trials, dailySeries] = await Promise.all([
         api(`${base}/r-series`).catch(() => null),
         api(`${base}/excursions`).catch(() => null),
         programme ? api(`/api/programmes/${encodeURIComponent(programme)}/trials`).catch(() => null) : null,
+        api(`${base}/daily-series`).catch((error) => ({ error: error.message })),
       ]);
       if (request !== experimentRequest) return;
-      renderKindExtras(host, experiment, { rSeries, excursions, trials });
+      disposeExperimentCharts = renderKindExtras(host, experiment, { rSeries, excursions, trials, dailySeries });
     }
     host.querySelectorAll("[data-run]").forEach((button) => {
       button.addEventListener("click", () => showRun(button.dataset.run));
@@ -889,7 +895,7 @@ function formatR(value) {
 function formatRate(value) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "—";
   const number = Number(value);
-  return `${(number > 1 ? number : number * 100).toFixed(1)}%`;
+  return `${(number > 1 ? number : number * 100).toFixed(2)}%`;
 }
 
 // Drawdown is recorded as a negative fraction. It is always a loss, so render
@@ -1060,6 +1066,8 @@ function formatDate(value) {
 function formatValue(value) {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "object") return formatJson(value);
+  if (typeof value === "number" && Number.isFinite(value) && !Number.isInteger(value)) return value.toFixed(3);
+  if (typeof value === "string" && /^[+-]?\d+\.\d+(e[+-]?\d+)?$/i.test(value) && Number.isFinite(Number(value))) return Number(value).toFixed(3);
   return String(value);
 }
 

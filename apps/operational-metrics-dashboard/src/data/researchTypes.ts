@@ -190,6 +190,7 @@ export type ResearchDataAdapter = {
   listPublications(query: ResearchListQuery): Promise<ResearchPage>;
   getPublication(idempotencyKey: string): Promise<ResearchPublication | null>;
   getExperimentPublications(experimentId: string): Promise<ResearchExperimentEvent[]>;
+  getExperimentDailySeries(experimentId: string): Promise<import("./researchSeries.ts").ResearchDailySeries | null>;
   /** Editable one-line conclusions keyed by experiment id; missing ids are omitted. */
   getExperimentConclusions(
     experimentIds: readonly string[],

@@ -379,7 +379,21 @@ polyline.chart-loss { fill: none; }
 .chart-crosshair { stroke: var(--muted); stroke-dasharray: 4 4; }
 .chart-scrubber { display: block; width: 100%; margin: .3rem 0; padding: 0; accent-color: var(--accent); }
 .chart-readout { display: block; min-height: 1.5em; color: var(--text); font-size: .8rem; font-variant-numeric: tabular-nums; }
-.experiment-detail svg, #experiment-detail svg { width: 100%; max-width: 760px; display: block; }
+.experiment-detail svg, #experiment-detail svg { width: 100%; max-width: 1200px; display: block; margin: 1rem auto; }
+.library-time-chart { width: 100%; height: 440px; }
+.library-diagnostic-chart { width: 100%; height: 400px; max-width: 1200px; margin: 1rem auto; }
+.run-dialog svg.chart { display: block; width: 100%; max-width: 1200px; height: 360px; margin: 1rem auto; }
+[data-library-main], [data-library-drawdown], [data-library-returns] { width: 100%; max-width: 1200px; margin: 1.5rem auto; }
+[data-library-main] h4, [data-library-drawdown] h4, [data-library-returns] h4, [data-range-summary] { text-align: center; }
+.research-range { display: flex; flex-wrap: wrap; gap: 1rem; align-items: end; justify-content: center; margin: 1rem 0; }
+.research-range input { display: block; margin-top: .3rem; }
+.research-years { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; margin: .75rem 0; }
+.research-tickers label { display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap; }
+.research-tickers input[type="checkbox"] { width: 1rem; height: 1rem; margin: 0; padding: 0; flex: none; }
+.comparison-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.comparison-grid > div { min-width: 0; }
+.comparison-grid h4, .comparison-grid .chart-readout { text-align: center; }
+@media (max-width: 760px) { .comparison-grid { grid-template-columns: 1fr; } }
 .chart-line.series-1, .legend.series-1 { stroke: var(--warning); color: var(--warning); }
 .scatter-0 { fill: var(--accent); } .scatter-1 { fill: var(--danger); } .scatter-2 { fill: var(--good); } .scatter-3 { fill: var(--warning); }
 .legend.scatter-0, .legend.scatter-1, .legend.scatter-2, .legend.scatter-3 { fill: none; }

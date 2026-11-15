@@ -20,6 +20,7 @@ except ImportError:
     pass
 
 from vibe.research_pipeline.paths import research_db_path
+from vibe.research_pipeline.daily_series import build_daily_series
 from vibe.research_pipeline.publishing import (
     ConclusionSyncResult,
     ResearchPublisher,
@@ -135,6 +136,12 @@ def _parser() -> argparse.ArgumentParser:
         "show", help="Show the stored conclusion and its sync state."
     )
     conclusion_show.add_argument("experiment_id")
+    series = subcommands.add_parser(
+        "daily-series", help="Build one finalized experiment's daily aggregates; read-only unless --publish."
+    )
+    series.add_argument("experiment_id")
+    series.add_argument("--price-dir", type=Path, help="Local parquet directory for daily ticker benchmarks.")
+    series.add_argument("--publish", action="store_true", help="Explicitly upload derived series to Supabase.")
     return parser
 
 
@@ -285,6 +292,17 @@ def _read_only_report(args: argparse.Namespace, path: Path) -> int:
 async def _main() -> int:
     args = _parser().parse_args()
     path = args.db or research_db_path(create_parents=True)
+    if args.command == "daily-series":
+        row = build_daily_series(path, args.experiment_id, args.price_dir)
+        if args.publish:
+            await _destination().publish_daily_series(row)
+        print(json.dumps({
+            "experiment_id": args.experiment_id,
+            "payload_sha256": row["payload_sha256"],
+            "members": len(row["payload"]["runs"]),
+            "published": args.publish,
+        }, sort_keys=True))
+        return 0
     if args.command == "orphan-run-summaries" or (
         args.command == "backfill-member-runs" and not args.apply
     ):

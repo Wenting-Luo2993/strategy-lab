@@ -223,6 +223,22 @@ class BacktestEngine:
                 "EntryFillPolicy.AT_STOP_TRIGGER would price it at a breakout level. "
                 "Use AT_NEXT_BAR_OPEN (or AT_SIGNAL_BAR_CLOSE)"
             )
+        self._completed_bar_entry = (
+            ruleset.trade_filter.entry_confirmation is not None
+            or ruleset.strategy.range_atr_filter is not None
+            or ruleset.strategy.breakout_evaluation == "close"
+        )
+        if self._completed_bar_entry and self.execution_realism.entry_fill_policy not in {
+            EntryFillPolicy.AT_NEXT_BAR_OPEN, EntryFillPolicy.AT_SIGNAL_BAR_CLOSE
+        }:
+            raise UnsupportedRulesetSettingsError(
+                "Completed-bar entry confirmation requires a close-based market fill policy"
+            )
+        if self._completed_bar_entry and execution_config is not None:
+            raise UnsupportedRulesetSettingsError(
+                "Completed-bar entry confirmation does not support custom execution_config; "
+                "use the standard execution_realism fill and cost policy"
+            )
         self._position_sizer = PositionSizer(
             risk_pct=config.value,
             max_position_size=getattr(config, "max_shares", None),
@@ -340,6 +356,12 @@ class BacktestEngine:
         )
         runner = RuleSetRunner(
             self.ruleset, reject_retraced_wick=entry_at_signal_close
+        )
+        df = runner.strategy.prepare_entry_features(df)
+        entry_filter_counts: dict[str, int] = {}
+        completed_next_open = (
+            self._completed_bar_entry
+            and self.execution_realism.entry_fill_policy is EntryFillPolicy.AT_NEXT_BAR_OPEN
         )
         
         # Reset pending orders for new backtest
@@ -475,6 +497,9 @@ class BacktestEngine:
                     signal_value, metadata = runner.generate_signal(
                         symbol, current_bar_dict, df.loc[:ts]
                     )
+                    if runner.strategy.needs_entry_features:
+                        reason = "passed" if signal_value else metadata.get("reason", "unspecified")
+                        entry_filter_counts[reason] = entry_filter_counts.get(reason, 0) + 1
 
                 if resting_entry is not None:
                     side, stop_price, rs_take_profit, rs_minutes, rs_trigger = (
@@ -598,9 +623,10 @@ class BacktestEngine:
             # Execute all orders eligible for this bar based on configured latency.
             eligible_orders = pending_queue.get_eligible_orders(
                 current_bar_index=bar_index,
-                latency_bars=execution_config.latency_bars,
+                latency_bars=1 if completed_next_open else execution_config.latency_bars,
             )
 
+            opened_at_current_open = False
             for order in eligible_orders:
                 fill_result = None
 
@@ -695,6 +721,7 @@ class BacktestEngine:
                         take_profit=take_profit,
                         timestamp=entry_time,
                     )
+                    opened_at_current_open = completed_next_open
                     runner.track_position(
                         symbol=order.symbol,
                         side=order.side,
@@ -720,6 +747,12 @@ class BacktestEngine:
 
             # Keep exposed state synchronized for tests/diagnostics.
             self.pending_orders = [entry.order for entry in pending_queue._orders]
+
+            if opened_at_current_open:
+                # This position did not exist in the pre-entry exit check.
+                portfolio.check_exits(current_bars, clock)
+                if symbol not in portfolio.positions:
+                    runner.close_position(symbol)
 
             # RESTING_STOP: the position exists from the fill minute, so its
             # exits are checked on the remaining minutes of this bar. The 5-min
@@ -808,6 +841,10 @@ class BacktestEngine:
                 # that warmup was actually supplied and actually excluded,
                 # rather than trusting the caller's intent.
                 "warmup_sessions_excluded": float(len(warmup_sessions_seen)),
+                **{
+                    f"entry_filter_evaluations_{reason}": float(count)
+                    for reason, count in entry_filter_counts.items()
+                },
                 **(self._resting_stop_diagnostics() if resting_stop else {}),
                 **(
                     self._portfolio_rule_diagnostics()

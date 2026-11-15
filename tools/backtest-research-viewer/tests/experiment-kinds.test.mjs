@@ -3,9 +3,30 @@ import assert from "node:assert/strict";
 import {
   isKnownKind, outcomeBadge, cumulativeR, histogramModel, renderHistogram,
   conditionsHtml, conclusionHtml, kindDetail, validationBadge, scatterModel, trialHtml, linkedRunsHtml,
-  oosHtml, powerHtml, robustnessHtml, dollarsHtml,
+  oosHtml, powerHtml, robustnessHtml, dollarsHtml, performanceHtml,
 } from "../public/experiment-kinds.mjs";
 import { experimentDetail, experimentList } from "../public/experiment-view.mjs";
+
+test("performance table uses recorded equity metrics and net-dollar PF without inventing pooled Sharpe", () => {
+  const html = performanceHtml({
+    result: { by_symbol: { QQQ: { mean_r: 0.045, ci_low_r: -0.023, ci_high_r: 0.114 } } },
+    runs: { items: [
+      { symbols: "QQQ", runId: "r1", tradeCount: 678, profitFactor: 1.103,
+        metrics: { sharpe_ratio: 0.398, max_drawdown: -0.134, max_drawdown_duration_days: 1601,
+          total_pnl: 18998.62 }, equityAvailable: false },
+      { symbols: "<script>", runId: "r2", metrics: {}, equityAvailable: true },
+    ] },
+  });
+  assert.match(html, /0\.40/);
+  assert.match(html, /-13\.40%/);
+  assert.match(html, /1\.10/);
+  assert.match(html, /Not retained/);
+  assert.match(html, /data-run="r2"/);
+  assert.match(html, /&lt;script&gt;/);
+  assert.match(html, /n\/a/);
+  assert.match(html, /not a shared-capital portfolio/);
+  assert.equal(performanceHtml({ result: {} }), "");
+});
 
 test("badge choice per outcome", () => {
   assert.deepEqual(outcomeBadge("supported"), { label: "Supported", tone: "good" });
@@ -80,7 +101,7 @@ test("OOS, power, robustness and dollar blocks render and tolerate absence", () 
     se_r: 0.023, deflation: 0.81, excluded_edge_r: 0.044, excluded_edge_deflated_r: 0.055,
     rows: [{ edge_r: 0.05, power_nonzero: 0.58, power_nonzero_deflated: 0.42, power_supported: 0.025, power_supported_deflated: 0.025 }],
   });
-  assert.match(power, /58\.0%/);
+  assert.match(power, /58\.00%/);
   assert.match(power, /excluded/);
   assert.equal(powerHtml(undefined), "");
   assert.match(robustnessHtml({ median_r: -0.81, skew: 3.7, mean_without_top_days_r: { 20: -0.051 }, mean_without_top_trades_r: {} }), /top 20 days/);
@@ -89,7 +110,7 @@ test("OOS, power, robustness and dollar blocks render and tolerate absence", () 
     sizing: { share_capped_by_buying_power: 0.77 },
   });
   assert.match(dollars, /−\$2\.10/);
-  assert.match(dollars, /77\.0%/);
+  assert.match(dollars, /77\.00%/);
   assert.equal(dollarsHtml(null), "");
 });
 

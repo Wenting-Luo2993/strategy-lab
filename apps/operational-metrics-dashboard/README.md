@@ -39,11 +39,13 @@ implementations:
   counts, and range pagination; catalog `GET` and a read-only PostgREST RPC
   provide the analysis surface.
 
-Both adapters implement the same field-catalog-driven analysis contract. The
-workspace supports typed AND/OR filters, selectable screening columns, arbitrary
+The **Flexible analysis workspace** section is no longer mounted in the
+research page; its catalog/analysis requests are not issued by that section.
+The existing adapter/analysis contract remains available to other consumers.
+It supports typed AND/OR filters, selectable screening columns, arbitrary
 grouping dimensions, aggregate measures, trust populations, and chart
 encodings. It intentionally has no fixed experiment compare tray. Operational
-limits are visible in the UI: 5,000 candidate runs, 500 groups, 500 response
+limits are enforced by the retained analysis contract: 5,000 candidate runs, 500 groups, 500 response
 rows, 300 chart marks, 512 KiB responses, 40 filter nodes at depth 5, 24
 screening columns, and 8 order rules. Queries above cost/cardinality policy are
 rejected rather than silently sampled. Truncation metadata remains visible
@@ -65,9 +67,91 @@ methodology, execution-realism identity, validation findings, aggregate evidence
 counts/checksums, lineage, legacy/pre-P2b/survivorship badges, publication
 versions, and reconciliation-visible IDs.
 
-P12 deliberately does not publish trades, fills, raw bars, trade ledgers, equity
-points, or equity curves. The remote research UI never requests or implies access
-to those local-only artifacts.
+P12 publications still exclude trades, fills, raw bars, trade ledgers and
+intraday equity points. The separately approved daily aggregate read model
+adds experiment-specific net R and last-retained-session equity; it does not
+change immutable publications or grant access to those local-only artifacts.
+
+### Experiment details and interactive charts
+
+Experiment dialogs load their timeline/outcome and daily series on opening,
+not on the explorer's initial page load. Requests share an in-flight promise;
+an LRU cache retains at most 12 experiments for five minutes, removes failed
+loads, and prevents a closed or replaced dialog receiving late results.
+Chart components/libraries are dynamically imported only with the detail view.
+
+Tables show net expectancy/CI, stored equity Sharpe, full-history drawdown and
+calendar duration, net-dollar profit factor and net P&L. Numeric summaries use
+three decimals (percentages/currency two); expanded raw evidence preserves
+original precision. Independent runs and train/validation/test roles are not
+silently aggregated into a portfolio.
+
+- **TradingView Lightweight Charts** (existing dependency): cumulative R,
+  equity and drawdown; attribution remains visible.
+- **Apache ECharts** (modular imports): distributions and year/symbol diagnostic
+  bars, with tooltip and category zoom. Its scatter/heatmap modules are not
+  loaded when no approved aggregate excursion data exists.
+
+Charts are centred and full-width in a wider dialog, with 440px time charts
+and 400px diagnostic charts. Date inputs or drag/zoom change the analysis
+window. Cumulative R restarts at zero; daily drawdown uses the preceding
+retained session equity (or recorded initial capital) as its baseline and
+recomputes the selected-window high-water mark. All-history restores the full
+data. Calendar-year buttons select January 1 through December 31, clipped to
+the selected member's first/last data dates for partial boundary years. Years
+without data are omitted; year selection recalculates the same range metrics.
+Calculations consume complete daily points, never a sampled display path.
+Daily drawdown is not the stored intraday max drawdown. Missing equity stays
+unavailable; it is never rebuilt from closed-trade P&L or cumulative R.
+
+A separate responsive 2x2 comparison grid displays daily buy-and-hold
+benchmarks, cumulative R, **reconstructed closed-trade equity**, and drawdown
+in R. Ticker toggles control the independent member curves. Shared
+time-window controls synchronize all four charts live during a drag or zoom;
+range metrics recalculate after the gesture settles. Linked crosshairs show
+the same hovered ticker and date, with each chart's own value and axis units.
+Initial ranges are seeded from the complete data calendar rather than the
+library's pre-paint range, and preserved when container or price-axis widths
+change. Narrow panels still show the complete selected window.
+The **All** checkbox adds the sum of every independent account, including
+hidden individual tickers. Five $100,000 accounts therefore start at $500,000;
+cumulative R is summed, and drawdown is recalculated from the combined R curve.
+This is not a shared-capital portfolio backtest. All is unavailable across
+different candidates, walk-forward folds, roles, or repeated ticker accounts;
+fixed-rule symbol membership ordinals are not temporal folds. Missing
+member observations remain unavailable instead of being filled with zero.
+Benchmark and
+closed-trade equity rebase to each account's recorded capital at the first
+selected daily close. Closed-trade equity uses complete retained exit-session
+net P&L and is not substituted for missing intraday equity. Source-price ratios
+do not explicitly credit dividends or charge benchmark costs.
+Use `daily-series <experiment-id> --price-dir vibe\data\parquet` in the trusted
+publication CLI to include daily benchmark aggregates. Existing payloads remain
+readable and show missing comparison data explicitly. This implementation does
+not apply the hosted schema, publish data or deploy the hosted frontend.
+
+Apply `docs/backtest-research-summaries/supabase-research-daily-series.sql` before
+enabling daily-series reads on the hosted release. It grants browser SELECT
+only and exposes rows only for published experiment outcomes. Trusted local
+Python builds one bounded derived row (200 members, 50,000 daily points,
+2 MiB compact JSON maximum) without modifying SQLite evidence:
+
+```powershell
+python -B scripts\publish_research.py --db <research-db> daily-series <experiment-id>
+# Explicit publication, after schema application and ordinary outcome publishing:
+python -B scripts\publish_research.py --db <research-db> daily-series <experiment-id> --publish
+```
+
+The command refuses partial retained trades/equity and reports a derived-payload
+checksum. Referenced trade/equity checksums identify the original evidence;
+they are not checksums of the daily downsample itself. No raw rows, credentials,
+broker account records or market bars are uploaded. Legacy runs with no retained
+trade series cannot produce R charts. The bundled `fixture-daily` experiment
+is explicitly synthetic; Supabase never falls back to it.
+
+**Rollout status:** implemented and previewed locally; daily-series SQL,
+data publication and the hosted static release have not been applied by this
+change. Row 12's original diagnostic retention contains no actual equity points.
 
 ### Browser credential boundary
 

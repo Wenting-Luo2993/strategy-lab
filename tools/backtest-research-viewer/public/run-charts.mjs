@@ -1,3 +1,5 @@
+import { mountTimeCharts } from "./library-charts.mjs";
+
 const PAD = { left: 82, right: 20, top: 22, bottom: 38 };
 
 function escape(value) {
@@ -137,67 +139,6 @@ function bindChart(container, model) {
 }
 
 export function mountPerformanceCharts(host, equity, startingEquity) {
-  let range = "all";
-  let kind = "equity";
-  function render() {
-    const stacked = window.matchMedia("(max-width: 760px)").matches;
-    const mainWidth = Math.max(280, (host.clientWidth || 934) - (stacked ? 24 : 34));
-    const options = { startingEquity, range, width: stacked ? mainWidth : Math.max(280, (host.clientWidth - 16) / 2 - 34) };
-    const main = chartModel(equity.points, { ...options, kind, width: mainWidth, height: stacked ? 260 : 340 });
-    const drawdown = chartModel(equity.points, { ...options, kind: "drawdown" });
-    const returns = chartModel(equity.sessionReturns || [], { ...options, kind: "sessionReturn" });
-    host.innerHTML = `
-      <section class="detail-section chart-panel">
-        <div class="chart-heading">
-          <h3>Strategy ${kind === "equity" ? "equity" : "return"}</h3>
-          <div class="chart-controls" role="group" aria-label="Chart display">
-            ${["equity", "return"].map((mode) => `<button data-chart-kind="${mode}" aria-pressed="${kind === mode}">${mode === "equity" ? "Equity" : "Return"}</button>`).join("")}
-          </div>
-          <div class="chart-controls" role="group" aria-label="Chart period">
-            ${["1m", "3m", "1y", "all"].map((period) => `<button data-chart-range="${period}" aria-pressed="${range === period}">${period === "all" ? "All" : period}</button>`).join("")}
-          </div>
-        </div>
-        <div data-plot="main">${renderTimeChart(main, "Strategy performance")}</div>
-        <p class="chart-note">Return uses recorded starting capital; changing the period does not rebase it. Times retain their recorded exchange offset.</p>
-      </section>
-      <div class="risk-charts">
-        <section class="detail-section chart-panel"><h3>Drawdown · intraday</h3>
-          <div data-plot="drawdown">${renderTimeChart(drawdown, "Intraday drawdown")}</div>
-          <p class="chart-note">Relative to the full-run high-water mark, not the selected period's peak.</p>
-        </section>
-        <section class="detail-section chart-panel"><h3>Session returns</h3>
-          <div data-plot="returns">${renderTimeChart(returns, "Session return")}</div>
-          <p class="chart-note">Last retained observation per session vs. the previous session; first session vs. starting capital. Not intraday OHLC.</p>
-        </section>
-      </div>
-      <p class="chart-note">${escape(equity.downsampled
-        ? `Curve: ${equity.returned.toLocaleString()} displayed / ${equity.total.toLocaleString()} stored observations (stride ${equity.stride}). Intraday extrema can be absent from the plotted subset.`
-        : `Curve: all ${equity.total.toLocaleString()} retained observations.`)}
-        Drawdown statistics and session returns use the full retained curve.</p>
-    `;
-    bindChart(host.querySelector('[data-plot="main"]'), main);
-    bindChart(host.querySelector('[data-plot="drawdown"]'), drawdown);
-    bindChart(host.querySelector('[data-plot="returns"]'), returns);
-    host.querySelectorAll("[data-chart-kind]").forEach((button) => button.addEventListener("click", () => {
-      kind = button.dataset.chartKind;
-      render();
-      host.querySelector(`[data-chart-kind="${kind}"]`).focus();
-    }));
-    host.querySelectorAll("[data-chart-range]").forEach((button) => button.addEventListener("click", () => {
-      range = button.dataset.chartRange;
-      render();
-      host.querySelector(`[data-chart-range="${range}"]`).focus();
-    }));
-  }
-  render();
-  let lastWidth = host.clientWidth;
-  const observer = new ResizeObserver(() => {
-    if (!host.isConnected) observer.disconnect();
-    else if (host.clientWidth > 0 && host.clientWidth !== lastWidth) {
-      lastWidth = host.clientWidth;
-      render();
-    }
-  });
-  observer.observe(host);
-  return () => observer.disconnect();
+  return mountTimeCharts(host, [{ name: "Strategy", points: equity.sessionEquity || [] }],
+    { kind: "equity", startingEquity });
 }

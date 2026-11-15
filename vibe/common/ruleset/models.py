@@ -301,6 +301,22 @@ class EntryOrderPolicy(BaseModel):
         return self
 
 
+class RangeATRFilter(BaseModel):
+    """Opening-range eligibility relative to completed prior-session ATR."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    period: int = Field(default=20, ge=1)
+    smoothing: Literal["simple", "wilder"] = "wilder"
+    min_ratio: float = Field(default=0.25, ge=0, allow_inf_nan=False)
+    max_ratio: float = Field(default=0.60, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def ordered_bounds(self) -> "RangeATRFilter":
+        if self.min_ratio > self.max_ratio:
+            raise ValueError("min_ratio must not exceed max_ratio")
+        return self
+
+
 class ORBStrategyParams(BaseModel):
     """ORB (Opening Range Breakout) strategy parameters."""
 
@@ -315,9 +331,9 @@ class ORBStrategyParams(BaseModel):
         default="symmetric",
         description="Which breakout directions are eligible to open a position",
     )
-    breakout_evaluation: Literal["wick", "body"] = Field(
+    breakout_evaluation: Literal["wick", "body", "close"] = Field(
         default="wick",
-        description="Use candle wicks or body extremes to evaluate breakout levels",
+        description="Use candle wicks, body extremes, or completed close to evaluate breakout levels",
     )
     entry_cutoff_time: str = Field(default="15:00", description="No entries after this time")
     entry_mode: str = Field(
@@ -335,6 +351,7 @@ class ORBStrategyParams(BaseModel):
     )
     allow_reentry: bool = Field(default=False, description="Allow re-entry after exit")
     entry_order: EntryOrderPolicy = Field(default_factory=EntryOrderPolicy)
+    range_atr_filter: Optional[RangeATRFilter] = None
 
     @model_validator(mode="after")
     def validate_times(self) -> "ORBStrategyParams":
@@ -455,6 +472,51 @@ class ExitConfig(BaseModel):
 # Trade Filters
 # ============================================================================
 
+class RelativeVolumeConfirmation(BaseModel):
+    """Breakout-bar volume versus the same clock slot in previous sessions."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    lookback_sessions: int = Field(default=20, ge=1)
+    min_ratio: float = Field(default=1.5, gt=0, allow_inf_nan=False)
+
+
+class VWAPConfirmation(BaseModel):
+    """Require close on the trade's side of regular-session VWAP."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    price_source: Literal["hlc3", "close"] = "hlc3"
+
+
+class EMAConfirmation(BaseModel):
+    """Require a directional EMA spread, optionally widening."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    fast_period: int = Field(default=9, ge=1)
+    slow_period: int = Field(default=20, ge=2)
+    require_expanding: bool = True
+
+    @model_validator(mode="after")
+    def fast_before_slow(self) -> "EMAConfirmation":
+        if self.fast_period >= self.slow_period:
+            raise ValueError("fast_period must be less than slow_period")
+        return self
+
+
+class EntryConfirmation(BaseModel):
+    """Independent opt-in completed-bar filters; thresholds are strategy policy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    relative_volume: Optional[RelativeVolumeConfirmation] = None
+    vwap: Optional[VWAPConfirmation] = None
+    ema: Optional[EMAConfirmation] = None
+
+    @model_validator(mode="after")
+    def at_least_one_filter(self) -> "EntryConfirmation":
+        if self.relative_volume is None and self.vwap is None and self.ema is None:
+            raise ValueError("entry_confirmation needs at least one filter")
+        return self
+
+
 class TradeFilterConfig(BaseModel):
     """Trade entry filters."""
 
@@ -470,6 +532,7 @@ class TradeFilterConfig(BaseModel):
         default=1.5,
         description="Volume must be > average * threshold",
     )
+    entry_confirmation: Optional[EntryConfirmation] = None
 
 
 # ============================================================================

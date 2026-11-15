@@ -1,0 +1,50 @@
+name: orb_edge_2026_entry_stack_15m
+version: "1.0.0"
+description: "Fixed exploratory 15m ORB: close, same-time RVOL, VWAP, expanding EMA and range/ATR filters"
+
+instruments:
+  symbols: [QQQ, AMZN, GOOGL, MSFT, TSLA]
+  timeframe: 5m
+
+strategy:
+  type: orb
+  orb_start_time: "09:30"
+  orb_duration_minutes: 15
+  orb_body_pct_filter: 0.5
+  direction_mode: symmetric
+  breakout_evaluation: close
+  entry_cutoff_time: "15:00"
+  range_atr_filter:
+    period: 20
+    smoothing: wilder
+    min_ratio: 0.25
+    max_ratio: 0.60
+
+position_size:
+  method: max_loss_pct
+  value: 0.01
+
+exit:
+  eod: true
+  eod_time: "15:55"
+  take_profit:
+    method: orb_range_multiple
+    multiplier: 0
+  stop_loss:
+    method: orb_level
+
+trade_filter:
+  volume_confirmation: false
+  entry_confirmation:
+    relative_volume:
+      lookback_sessions: 20
+      min_ratio: 1.5
+    vwap:
+      price_source: hlc3
+    ema:
+      fast_period: 9
+      slow_period: 20
+      require_expanding: true
+
+mtf_validation:
+  enabled: false
