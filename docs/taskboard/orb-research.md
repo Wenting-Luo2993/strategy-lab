@@ -8,6 +8,15 @@ or the [living results](../backtest-research-summaries/orb-exploration-results.m
 The seed reflects repository evidence reviewed November 14, not a fresh cloud-session audit.
 Completed experiments can have negative or inconclusive conclusions.
 
+Chat reports follow the repository's
+[`report-experiment-results` skill](../../.claude/skills/report-experiment-results/SKILL.md):
+indicator definitions and worked examples, actual experiment method, results,
+conclusions, then concrete next steps tied to the research objective.
+
+```taskboard-task
+{"id":"orb-chat-reporting-standard","title":"Standardize understandable experiment reports in chat","project":"orb-research","status":"done","milestone":"Research communication","note":"User-requested report-experiment-results skill and CLAUDE.md entry point define the reporting order, numeric teaching examples, existing-trade attribution versus new simulations, uncertainty and lessons, and concrete next steps tied to the strategy goal. This is a reporting standard, not new experiment evidence or authorization.","acceptance":"Create a repository-discoverable skill covering all requested report sections, with explicit method/provenance distinctions, illustrative versus measured numbers, and next-step/goal linkage; link it from repository guidance and the research roadmap.","reviewed":"2026-11-15","depends_on":[],"refs":["orb-roadmap","research-north-star"]}
+```
+
 ```taskboard-task
 {"id":"orb-exploration-baseline","title":"Record baseline, condition and entry exploration findings","project":"orb-research","status":"done","milestone":"Exploration evidence","note":"Rows 0-12 are summarized. Resting-stop row 10 and fixed-stack row 12 have small positive estimates but remain tail/cost-sensitive; completion does not mean a proven edge.","acceptance":"Experiment identities, costs, uncertainty and conclusions are recorded in the living results.","reviewed":"2026-11-14","depends_on":[],"refs":["orb-results"]}
 ```

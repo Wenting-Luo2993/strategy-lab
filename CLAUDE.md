@@ -18,6 +18,14 @@ Classify the work, associate it with a registered project and follow
 Prefer canonical sources, preserve historical evidence, and regenerate the
 read-only taskboard after documentation changes.
 
+## Research Experiment Reports in Chat
+
+When presenting backtest/research results, follow the
+[`report-experiment-results` skill](.claude/skills/report-experiment-results/SKILL.md).
+Explain new indicators with worked examples first, then what was actually
+tested (existing-trade labels versus new simulations), results, conclusions
+and concrete next steps connected to the high-level research goal.
+
 ---
 
 ## Discord Notification Pattern
