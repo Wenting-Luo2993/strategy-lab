@@ -37,6 +37,7 @@ broker/data-provider calls into indicator calculations.
 | `session.session_vwap_series` | Cumulative bar-price x volume / cumulative volume; resets at configured local regular-session open; HLC3 or close source; excludes extended hours |
 | `session.same_time_relative_volume_series` | Current bar volume / mean of matching clock-time bars in prior `lookback_sessions` observed sessions; current session excluded; requires every slot |
 | `daily_atr.add_daily_atr` | Prior-session ATR mapped to intraday rows; default simple TR mean remains unchanged; explicit `smoothing="wilder"` uses `batch.atr_series` and a distinct column |
+| `efficiency.session_efficiency_ratio` | Absolute net close change / absolute close-path length over a parameterized number of contiguous same-session changes; flat path is zero, missing/early windows NaN; available at bar close |
 | `engine.IncrementalIndicatorEngine` | Existing streaming EMA/SMA/RSI/ATR/MACD/Bollinger implementation |
 
 Session functions require sorted, unique, timezone-aware timestamps. Session
