@@ -104,7 +104,10 @@ async def test_cooldown_does_not_send_dashboard_publish_alert_when_clear(monkeyp
         yield
 
     monkeypatch.setattr(cooldown_module, "discord_notification_context", fake_discord_context)
-    manager = _manager({"published": 3, "failed": 0, "pending": 0, "dead_letter": 0})
+    manager = _manager({
+        "published": 3, "failed": 0, "pending": 0, "dead_letter": 0,
+        "recovered_dead_letter": 2,
+    })
 
     await manager._flush_dashboard_publisher()
 

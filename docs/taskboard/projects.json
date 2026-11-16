@@ -18,7 +18,7 @@
     "title": "Live-service reliability",
     "goal": "Demonstrate safe operation through warm-up, intraday failures, broker recovery, end-of-day exits and cooldown.",
     "stage": "Operational assurance",
-    "next_action": "Reconcile outstanding exposure through an authorized operational workflow; observe the next complete trading session."
+    "next_action": "Review the confirmed dashboard metric-identity conflict and incomplete parity; observe the next complete session after November 16 EOD flatness was verified."
   },
   {
     "id": "deployment-cicd",

@@ -15,10 +15,12 @@ Every host and every coding agent deploys the same way: merge to `main`, then ru
 |------|-------------------------------------|
 | Health report (read-only) | `bash deploy/ibkr-docker/deploy.sh status` |
 | Passive connection watch (read-only, Ctrl+C to stop) | `bash deploy/ibkr-docker/deploy.sh status --watch-connections` |
+| Record passive evidence (approval required; foreground, Ctrl+C to stop) | `bash deploy/ibkr-docker/deploy.sh status --watch-connections --record-connections` |
 | Preflight only | `bash deploy/ibkr-docker/deploy.sh check` |
 | Ship a code change | `bash deploy/ibkr-docker/deploy.sh bot` |
 | Gateway image/settings or IBKR password change | `bash deploy/ibkr-docker/deploy.sh gateway` |
 | Undo the last bot deploy | `bash deploy/ibkr-docker/deploy.sh rollback-bot` |
+| Retry reviewed dashboard metric conflicts (approval required) | `bash deploy/ibkr-docker/deploy.sh recover-dashboard-metrics` |
 
 `deploy.sh` refuses to change anything Mon–Fri 09:25–16:05 ET unless `--allow-market-hours` is given, and prompts before changing production unless `--yes` is given.
 
@@ -93,16 +95,73 @@ Gateway network namespace**, expected bot addresses discovered from the shared
 Docker network, local relay/probe connections, unexpected peers, and Gateway/host
 JVM PIDs. Multiple bot sockets and additional JVMs are flagged for investigation,
 not automatically disconnected. Only process names are read, never arguments or
-environment variables. Host memory and cumulative CPU/swap counters are included;
-compare successive samples for rates, not since-boot totals as current pressure.
+environment variables. Samples also include the legacy services/timer's activation
+metadata and Java/Python/IBC/Xvfb/relay processes outside the two containers.
+These are candidates for investigation, not proof that an unrelated Python/Java
+process uses IBKR. The audit excludes its own Python process.
+
+Host memory, pressure-stall metrics and cumulative CPU/swap counters are included.
+Watch mode adds interval I/O-wait/steal percentages and swap page rates (not
+since-boot averages); the first sample, a host reboot, or a failed collection
+cannot establish a valid rate. A transient collection failure is emitted as an
+`audit_error` JSON record, not an empty/healthy inventory, and watch mode retries
+after 60 seconds. One-shot inspection still exits nonzero on failure.
 
 This is not authentication or client-ID verification: a bot-IP connection need
 not be client 201; loopback connections may be probes or the socat relay. A short
 connection between samples can be missed. It cannot observe competing sessions
 held at IBKR, prove the source of `10197`, or certify live data/order protection.
-Warnings do not change trading or readiness. Save the foreground output if
-historical evidence is needed; no persistent watcher or recording is enabled
-automatically.
+Warnings do not change trading or readiness.
+
+With explicit operator approval, add `--record-connections` to the foreground
+watch. It appends metadata-only JSON lines to
+`deploy/ibkr-docker/logs/gateway-connections.jsonl`, retaining the current file
+and three backups at at most 5 MiB each (approximately 20 MiB total). New files
+are owner-only. Recording failure exits nonzero rather than silently losing
+evidence. Only one recording watcher should run against this file at a time.
+The plain `status` and `--watch-connections` paths write no audit files.
+No daemon, timer or unattended watcher is installed or enabled automatically:
+closing the terminal stops collection, and brief processes between samples can
+still be missed. Do not equate an available recorder with a recorded history.
+
+### Quote-timeout diagnostics
+
+Bot warnings tagged `[IB QUOTE TIMEOUT]` include symbol/client/generation,
+elapsed time, caller budget and overrun, local socket flag, last upstream code,
+and the phase (`qualification`, `subscription_lock`, `pacing`, `subscribing`,
+or `waiting_for_tick`). Shared subscription details include pacing delay,
+the ordinary/tick-by-tick request IDs, update/tick counts and the last error
+matching those request IDs. Missing IDs are explicitly `None`; unrelated
+symbols' errors are not attributed to the request.
+
+`[IB CONNECTIVITY]` records numeric upstream/session-conflict codes and request
+IDs without free-form broker text, account details or quote values. These logs
+do not certify broker health: a connected socket can coexist with `1100`, and
+the last upstream code can be historical. An overrun includes scheduling and
+cleanup latency; correlate it with the host's interval/pressure evidence rather
+than declaring VM contention or IBKR the sole cause. Timeout budgets, pacing,
+subscription ownership, cancellation and entry/readiness guards are unchanged.
+
+### Recover dashboard metric publication
+
+Follow the [dashboard operator procedure](../../docs/trading-bot-mvp/dashboards/live-dashboard-operator-notes.md#metric-identity-conflicts-http-409)
+before running `recover-dashboard-metrics`. The Supabase identity migration must
+be verified, all publishers must use `metric_id`, a consistent outbox backup must
+exist, and the reviewed recovery code must be deployed through `main`.
+
+The harness locks/preflights as a production change, previews the eligible
+latest dead letters and asks for confirmation. It creates immutable successors
+only for Supabase metric HTTP 409/23505 legacy-name/time conflicts. Original
+payloads, domain timestamps and failure rows remain unchanged; stale previews
+or changed predecessors fail explicitly. The existing publisher drains the
+successors on its next poll (normally within 300 seconds); no second publisher
+or broker session is started.
+
+Queued is not published. Inspect successor states and remote metric IDs before
+declaring recovery. Historical dead letters remain in raw SQLite counts; the
+cooldown summary reports them as `recovered_dead_letter` only after a newer
+successor is recorded in the durable publication ledger. Unrelated or still
+unresolved dead letters continue to alert.
 
 A healthy start logs `Connected to IB at ib-gateway:4004`, `Dashboard RemoteDataPublisher started` and `Trading loop started`. The gateway is healthy once its API port `4002` accepts connections, which takes about 1–2 minutes after start while IBC logs in.
 

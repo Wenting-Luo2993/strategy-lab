@@ -1446,7 +1446,9 @@ class PublishOutboxStore(_SQLiteStore):
         """)
         conn.commit()
 
-    def enqueue_event(self, event: PublishOutboxEvent) -> bool:
+    def enqueue_event(
+        self, event: PublishOutboxEvent, *, expected_dead_letter_id: Optional[str] = None,
+    ) -> bool:
         """Append an immutable payload version for a logical remote upsert."""
         now = _utc_now_iso()
         next_retry_at = _iso(event.next_retry_at) if event.next_retry_at else now
@@ -1485,6 +1487,14 @@ class PublishOutboxStore(_SQLiteStore):
                 else -1
             )
             latest_is_outbox = outbox_successor >= ledger_successor
+            if expected_dead_letter_id is not None and (
+                not latest_is_outbox
+                or latest is None
+                or latest["event_id"] != expected_dead_letter_id
+                or latest["status"] != "dead_letter"
+            ):
+                conn.rollback()
+                raise ValueError("Dead-letter predecessor changed; refresh the recovery plan")
             duplicate_latest = (
                 latest_is_outbox
                 and latest is not None
@@ -1889,14 +1899,21 @@ class PublishOutboxStore(_SQLiteStore):
         conn = self._get_connection()
         return conn.execute("SELECT COUNT(*) FROM publish_outbox WHERE status = ?", (status,)).fetchone()[0]
 
-    def status_counts(self) -> Dict[str, int]:
+    def status_counts(self, *, distinguish_recovered: bool = False) -> Dict[str, int]:
         conn = self._get_connection()
+        # A published successor resolves an alert without erasing its failed
+        # predecessor. The ledger survives pruning of published outbox rows.
         rows = conn.execute("""
-            SELECT status, COUNT(*) AS count
-            FROM publish_outbox
-            GROUP BY status
-        """).fetchall()
-        return {row["status"]: row["count"] for row in rows}
+            SELECT CASE WHEN ? AND original.status = 'dead_letter' AND EXISTS (
+                SELECT 1 FROM publication_ledger AS published
+                WHERE published.logical_event_id = original.logical_event_id
+                  AND published.successor_version > original.successor_version
+            ) THEN 'recovered_dead_letter' ELSE original.status END AS effective_status,
+            COUNT(*) AS count
+            FROM publish_outbox AS original
+            GROUP BY effective_status
+        """, (distinguish_recovered,)).fetchall()
+        return {row["effective_status"]: row["count"] for row in rows}
 
     def record_failure(self, event: Dict[str, Any], error: str) -> int:
         now = _utc_now_iso()

@@ -48,7 +48,11 @@ eligible raw rows; SQLite rolls the whole transaction back on interruption.
 
 Only after every publisher has moved to `metric_id`, create and review a
 separate migration that removes the legacy `(metric_name, timestamp)` unique
-constraint/index. Do not combine that cleanup with this rollout.
+constraint/index. Do not combine that cleanup with this rollout. The reviewed
+procedure now lives in
+[operator notes](live-dashboard-operator-notes.md#metric-identity-conflicts-http-409),
+with [supabase-metric-identity.sql](supabase-metric-identity.sql). Its application
+is a separate approval/verification step, not implied by the base migration.
 
 ## Post-deployment validation
 

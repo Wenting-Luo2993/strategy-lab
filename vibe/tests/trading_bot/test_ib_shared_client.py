@@ -48,6 +48,8 @@ class ControlledIB:
         self.events = []
         self.request_times = []
         self.fail_tick_subscription = False
+        self.wrapper = SimpleNamespace(ticker2ReqId={"mktData": {}, "BidAsk": {}})
+        self.next_request_id = 100
 
     def isConnected(self):
         return self.connected
@@ -82,6 +84,8 @@ class ControlledIB:
         ticker = Ticker(last=100.0)
         self.tickers[contract.symbol] = ticker
         self.events.append(("start", contract.symbol))
+        self.next_request_id += 1
+        self.wrapper.ticker2ReqId["mktData"][ticker] = self.next_request_id
         return ticker
 
     def reqTickByTickData(self, contract, *args):
@@ -89,6 +93,8 @@ class ControlledIB:
         if self.fail_tick_subscription:
             raise RuntimeError("Tick subscription rejected")
         self.started.put_nowait(contract.symbol)
+        self.next_request_id += 1
+        self.wrapper.ticker2ReqId["BidAsk"][self.tickers[contract.symbol]] = self.next_request_id
         return self.tickers[contract.symbol]
 
     def cancelMktData(self, contract):
@@ -242,7 +248,7 @@ async def test_socket_loss_without_ticks_fails_quote_without_waiting_for_timeout
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel_waiter", [False, True])
 async def test_waiter_timeout_or_cancellation_does_not_cancel_owner(
-    shared_broker, cancel_waiter
+    shared_broker, cancel_waiter, caplog
 ):
     broker, ib = shared_broker
     owner = asyncio.create_task(broker.get_market_data("QQQ", timeout_seconds=2))
@@ -256,6 +262,8 @@ async def test_waiter_timeout_or_cancellation_does_not_cancel_owner(
     else:
         with pytest.raises(TimeoutError, match="timestamped live market data"):
             await asyncio.wait_for(waiter, timeout=0.5)
+        assert "stage=waiting_for_tick" in caplog.text
+        assert "tick_request_id=102" in caplog.text
     assert ib.events == [("start", "QQQ")]
     timestamp = ib.emit("QQQ")
     assert (await asyncio.wait_for(owner, timeout=1)).timestamp == timestamp
@@ -297,7 +305,7 @@ async def test_last_caller_cancel_cleans_up_before_next_request(shared_broker):
 
 @pytest.mark.asyncio
 async def test_completed_quote_is_not_cached_and_next_request_obeys_ib_pacing(
-    shared_broker, monkeypatch
+    shared_broker, monkeypatch, caplog
 ):
     broker, ib = shared_broker
     monkeypatch.setattr(ib_module, "_TICK_BY_TICK_REQUEST_INTERVAL_SECONDS", 0.2)
@@ -307,6 +315,8 @@ async def test_completed_quote_is_not_cached_and_next_request_obeys_ib_pacing(
     assert (await asyncio.wait_for(first, 1)).timestamp == first_time
     with pytest.raises(TimeoutError):
         await broker.get_market_data("QQQ", timeout_seconds=0.02)
+    assert "stage=pacing" in caplog.text
+    assert "tick_request_id=None" in caplog.text
     assert len(ib.request_times) == 1
     assert not broker._quote_requests
     second = asyncio.create_task(broker.get_market_data("QQQ", timeout_seconds=1))
@@ -355,7 +365,7 @@ async def test_gap_quote_timeout_and_provider_cooldown_leave_execution_quote_ali
 
 
 @pytest.mark.asyncio
-async def test_quote_timeout_includes_contract_qualification(shared_broker):
+async def test_quote_timeout_includes_contract_qualification(shared_broker, caplog):
     broker, ib = shared_broker
     gate = asyncio.Event()
 
@@ -366,6 +376,30 @@ async def test_quote_timeout_includes_contract_qualification(shared_broker):
     with pytest.raises(TimeoutError, match="timestamped live market data"):
         await asyncio.wait_for(broker.get_market_data("QQQ", timeout_seconds=0.02), 0.5)
     assert not ib.events
+    assert "stage=qualification" in caplog.text
+    assert "request=None" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_timeout_diagnostics_correlate_only_own_request_and_exclude_error_text(
+    shared_broker, caplog,
+):
+    broker, ib = shared_broker
+    quote = asyncio.create_task(broker.get_market_data("QQQ", timeout_seconds=0.1))
+    await started(ib, "QQQ")
+    ib.errorEvent.emit(102, 10197, "sensitive account text")
+    ib.errorEvent.emit(900, 322, "another subscription")
+    ib.errorEvent.emit(-1, 1100, "upstream unavailable")
+    ib.tickers["QQQ"].updateEvent.emit(ib.tickers["QQQ"])
+    with pytest.raises(TimeoutError):
+        await quote
+    assert "client_id=201" in caplog.text
+    assert "socket_connected=True last_upstream_code=1100" in caplog.text
+    assert "update_events=1, timestamped_ticks=0" in caplog.text
+    assert "error_code=10197, error_request_id=102" in caplog.text
+    assert "sensitive account text" not in caplog.text
+    assert ib.errorEvent.handlers == [broker._handle_ib_error]
+    assert not broker._quote_requests
 
 
 @pytest.mark.asyncio
