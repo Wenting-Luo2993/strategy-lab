@@ -13,6 +13,17 @@ Chat reports follow the repository's
 indicator definitions and worked examples, actual experiment method, results,
 conclusions, then concrete next steps tied to the research objective.
 
+**Skill-loading follow-up (2026-11-15):** the saved file has valid YAML
+frontmatter, matching name/directory and a supported `.claude/skills` location.
+The current live loader still omits this newly added skill while loading the
+two older repository skills. This is consistent with a catalog-refresh issue,
+not evidence of an invalid skill file. `CLAUDE.md` now explicitly requires
+reading the saved skill when the loader cannot resolve it; this fallback is
+available without claiming native activation. No live catalog refresh has been
+verified from this app session. GitHub documents the separate interactive CLI's
+reload procedure in its
+[skill guide](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills).
+
 ```taskboard-task
 {"id":"orb-chat-reporting-standard","title":"Standardize understandable experiment reports in chat","project":"orb-research","status":"done","milestone":"Research communication","note":"User-requested report-experiment-results skill and CLAUDE.md entry point define the reporting order, numeric teaching examples, existing-trade attribution versus new simulations, uncertainty and lessons, and concrete next steps tied to the strategy goal. This is a reporting standard, not new experiment evidence or authorization.","acceptance":"Create a repository-discoverable skill covering all requested report sections, with explicit method/provenance distinctions, illustrative versus measured numbers, and next-step/goal linkage; link it from repository guidance and the research roadmap.","reviewed":"2026-11-15","depends_on":[],"refs":["orb-roadmap","research-north-star"]}
 ```

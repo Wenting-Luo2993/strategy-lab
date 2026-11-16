@@ -26,6 +26,12 @@ Explain new indicators with worked examples first, then what was actually
 tested (existing-trade labels versus new simulations), results, conclusions
 and concrete next steps connected to the high-level research goal.
 
+If the skill loader reports this name unavailable, read its repository
+`SKILL.md` directly and follow it as repository guidance. Skills added during
+an active session may not appear in that session's catalog until it is
+refreshed. Do not retry the same failed load, duplicate/move a valid skill,
+or claim tool activation merely because its file is valid.
+
 ---
 
 ## Discord Notification Pattern
