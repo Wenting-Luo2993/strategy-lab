@@ -530,6 +530,74 @@ Also preserve the coverage warning: ER is unavailable on 522 trades earning
 implementation choice. Baseline daily low correlation/zero overnight holds
 are context, not demonstrated filtered-strategy or portfolio improvement.
 
+#### Backtesting while paper-fill evidence accumulates (2026-11-15)
+
+**Status:** recommendations documented at the user's request for the next
+session. No follow-up protocol has been registered, implementation started or
+experiment run. Documentation approval is not execution approval. This is a
+separate research direction, not advancement of row 13's rejected gate
+candidates. Paper fills remain necessary to evaluate execution assumptions,
+but do not block bounded exploration under explicit, provisional cost models.
+
+**Recommended first: a matched two-arm comparison of the existing stack.**
+The question is whether the additional filter package improves useful
+all-session outcomes, rather than merely selecting fewer trades with a better
+conditional average. Older baselines differ in range/qualification/timing and
+cannot isolate that question.
+
+| Arm | Proposed definition |
+| --- | --- |
+| Control | Same 15-minute range and completed-5-minute-close/body breakout qualification as row 12; remove the additional RVOL, VWAP, EMA and range/ATR gates as a package |
+| Treatment | Unchanged row-12 full entry-confirmation stack |
+
+Keep the entry buffer, one-filled-trade-per-symbol/session policy, cutoff,
+next-bar-open fill timing, commissions/slippage, opposite-range stop, no
+target/trailing stop, EOD exit, starting capital and risk-sizing rules
+identical. Use the same five exploration symbols and May 2018-December 2024
+boundary with in-place warm-up and matching dataset/execution fingerprints.
+Identical sizing rules need not produce identical quantities once accounts
+diverge. Both arms require actual engine simulations; the original filtered
+ledger does not contain the control's rejected or replacement trades.
+
+Before any run, freeze the exact two rulesets, hypothesis/prediction, primary
+paired all-session net-dollar metric (including no-trade sessions), meaningful
+effect, uncertainty method, drawdown depth/duration criteria, capital/exposure
+basis, a small fixed cost-stress set, trial accounting and stopping rules.
+Preserve the programme's +0.05R meaningful-edge reference, but do not substitute
+conditional per-trade R for the primary session-level comparison. Report
+frequency, ticker/year stability, tails and costs without optimizing them.
+Cluster paired session differences by date across symbols. All of 2018-2024
+is reused exploration, not confirmation. This tests the filter package
+jointly, not the causal contribution of each individual gate.
+
+**Supporting work: explain the unchanged stack's payoff path.** On existing
+retained trades and, where needed, authorized exploration-only price paths,
+describe adverse movement, maximum open profit, giveback before exit, exit
+reason and holding time. First audit retained excursion/path coverage;
+unavailable fields stay unavailable unless a separate reconstruction is
+explicitly scoped. Ask whether losses are failed breakouts or surrendered
+open profits. Full-trade excursions use future information and are diagnostic
+outcomes, never permissible entry features. Do not select a new target,
+break-even level or time exit from these descriptions or repeat already
+rejected exit sweeps under a new label.
+
+**Later option: portfolio usefulness.** Separately design one fixed
+buy-and-hold-plus-ORB allocation against buy-and-hold alone. Freeze shared
+capital/risk constraints, allocation/rebalancing, cash yield, benchmark
+dividend/fee treatment, common dates and drawdown/downside acceptance before
+testing. This needs proper portfolio accounting, not summing independent
+$100k accounts or calling closed-trade equity intraday mark-to-market.
+It is a lower-priority option, not a prerequisite for the two-arm design.
+
+All three support the existing objective: positive net returns with less
+drawdown, limited overnight exposure and complementarity with buy-and-hold.
+Do not retune ATR/cost normalization or persistence windows after row 13,
+enable a gate, open confirmation/holdout data or treat a provisional cost
+scenario as observed execution. Start the next session with the
+[cross-device handoff](2026-11-15-orb-research-handoff.md).
+
+#### Original condition-study procedure (retained context)
+
 **Purpose:** find at most two conditions under which the edge looks stronger
 or weaker.  
 **Data:** exploration set: QQQ, AMZN, GOOGL, MSFT and TSLA, 2018 to 2024.

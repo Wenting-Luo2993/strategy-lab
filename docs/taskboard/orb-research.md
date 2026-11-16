@@ -8,6 +8,27 @@ or the [living results](../backtest-research-summaries/orb-exploration-results.m
 The seed reflects repository evidence reviewed November 14, not a fresh cloud-session audit.
 Completed experiments can have negative or inconclusive conclusions.
 
+For the next device/session, start with the
+[November 15 handoff](../backtest-research-summaries/2026-11-15-orb-research-handoff.md).
+The matched-control comparison and supporting payoff diagnostics below are
+documented recommendations, not registered or authorized experiments.
+
+```taskboard-task
+{"id":"orb-matched-stack-design","title":"Review and register the two-arm matched stack comparison","project":"orb-research","status":"backlog","milestone":"Bounded follow-up design","note":"Recommended first while paper-fill evidence accumulates: unchanged full stack versus a matched 15m close/body control without the additional filter package. User requested documentation and paused work; no rulesets, primary effect threshold, trial budget or execution authorization are newly frozen.","acceptance":"Obtain the next research decision, audit local-data prerequisites and freeze two exact rulesets with common execution/risk settings, paired all-session net-dollar metric, meaningful effect, uncertainty, drawdown/cost criteria, trial accounting and stop rules before outcome inspection.","reviewed":"2026-11-15","depends_on":["orb-entry-stack-experiment"],"refs":["orb-plan","orb-results","orb-continuation-handoff"]}
+```
+
+```taskboard-task
+{"id":"orb-matched-stack-experiment","title":"Execute and report the registered matched stack comparison","project":"orb-research","status":"backlog","milestone":"Bounded follow-up exploration","note":"Not started or authorized by this documentation request. Requires the reviewed registration, explicit run authorization and matching local exploration data. Both arms need actual engine runs; filtering row 12's ledger cannot create the control.","acceptance":"After authorization, record both arms and paired all-session effects, uncertainty, frequency, risk/drawdown, ticker/year and fixed cost/tail checks; preserve failed/inconclusive results, trial ledger and the five-part chat report without tuning or reserved-data access.","reviewed":"2026-11-15","depends_on":["orb-matched-stack-design"],"refs":["orb-plan","orb-results","orb-continuation-handoff"]}
+```
+
+```taskboard-task
+{"id":"orb-stack-payoff-diagnostics","title":"Explain the frozen stack's adverse movement and profit giveback","project":"orb-research","status":"backlog","milestone":"Payoff attribution","note":"Supporting recommendation, independent of the matched-control run. First audit usable retained trade/excursion/path data. No new target, stop or exit variant is selected or simulated; the user has only asked to document this work for later.","acceptance":"On authorized exploration evidence, report path coverage, adverse movement, maximum open profit, giveback, holding time and exit reasons with units/uncertainty; distinguish hindsight diagnostics from causal entry inputs and avoid outcome-selected exit rules.","reviewed":"2026-11-15","depends_on":["orb-entry-stack-experiment"],"refs":["orb-plan","orb-results","orb-continuation-handoff"]}
+```
+
+```taskboard-task
+{"id":"orb-portfolio-complement-design","title":"Design a fixed-allocation buy-and-hold plus ORB comparison","project":"orb-research","status":"backlog","milestone":"Portfolio objective design","note":"Lower-priority option; no allocation or portfolio experiment is approved. It does not block the matched-stack design. Existing low correlation and independent-account curves do not establish portfolio improvement.","acceptance":"If selected, freeze one allocation and common dates, capital/risk constraints, rebalancing/cash/benchmark assumptions, proper portfolio accounting and drawdown/downside acceptance before any result; distinguish observed fill evidence from provisional cost scenarios.","reviewed":"2026-11-15","depends_on":[],"refs":["orb-plan","research-north-star","orb-continuation-handoff"]}
+```
+
 Chat reports follow the repository's
 [`report-experiment-results` skill](../../.claude/skills/report-experiment-results/SKILL.md):
 indicator definitions and worked examples, actual experiment method, results,

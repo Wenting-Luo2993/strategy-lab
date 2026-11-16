@@ -4,7 +4,7 @@
     "title": "ORB strategy research",
     "goal": "Determine whether a precisely defined ORB rule can deliver credible positive net returns with less drawdown, limited overnight exposure and returns that complement buy-and-hold; preserve what each experiment teaches us.",
     "stage": "Exploration evidence review",
-    "next_action": "Review row 13's inconclusive persistence lead and opportunity stationarity/missingness lessons. Neither passes the frozen gate-advancement rule; do not retune or enable a filter. Any new exploration needs a distinct bounded protocol; keep confirmation and final holdout locked."
+    "next_action": "Resume from the November 15 handoff: review the recommended two-arm matched stack design, supported by payoff diagnostics, while paper-fill evidence accumulates. These are documented backlog proposals, not authorized runs. Close row 13 without retuning/enabling its gates; freeze any new protocol and keep confirmation/final holdout locked."
   },
   {
     "id": "execution-quality",

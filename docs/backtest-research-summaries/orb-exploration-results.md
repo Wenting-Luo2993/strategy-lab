@@ -440,6 +440,14 @@ Any future lead must be judged against the full count.
 
 ## What is left
 
+**Research discussion documented 2026-11-15:** while paper fills accumulate,
+the recommended first backtest is a separately registered two-arm matched
+control versus the unchanged full stack, supported by payoff-path diagnostics.
+A properly budgeted buy-and-hold-plus-ORB comparison is a later option.
+These are proposals, not new results or execution approval; row 13's failed
+advancement rule is unchanged. See the [design discussion](2026-10-31-orb-edge-research-plan.md#backtesting-while-paper-fill-evidence-accumulates-2026-11-15)
+and [cross-device handoff](2026-11-15-orb-research-handoff.md).
+
 | Option | Status |
 | --- | --- |
 | **Gap-aware resting-stop entry on 1-minute bars** (`--entry-fill-policy resting_stop`, commit `e00bfd8`) | Done, recorded (row 10): +0.062R [+0.010, +0.115], tail-dependent |
@@ -447,7 +455,10 @@ Any future lead must be judged against the full count.
 | **Fixed 15m close/RVOL/VWAP/EMA/range-ATR entry stack** | Done, recorded locally (row 12): small positive, below the usable-edge bar with confidence; review the mechanism before choosing any separately registered control or variant |
 | **2020/2022 attribution of the frozen entry stack** | Done, diagnostic only: 91.49% of dollars / 85.03% of net R comes from these two years; direction switches, and both remain best-day dependent |
 | **Movement-to-noise and pre-entry persistence** | Done as bounded diagnostics (row 13); neither passes the advance rule. Preserve the persistence lead and opportunity stationarity/missingness lessons, without retuning or enabling a gate |
-| **Measure real stop-order fills** (paper-trade the resting-stop entry, log slippage per fill) | **Next.** Row 10 survives up to about 6 extra ticks of slippage; only live fills can say which side of that it lands |
+| **Matched control versus the full 15m entry stack** | Recommended first follow-up design, not registered or run. Hold qualification/execution/exits/risk constant except for the additional filter package; assess all-session returns and risk, not only selected-trade means |
+| **Frozen-stack payoff-path attribution** | Proposed supporting diagnostics; audit retained excursion/path coverage first. No outcome-selected exit or new trade simulation is implied |
+| **Fixed-allocation buy-and-hold plus ORB** | Lower-priority design option; needs declared capital/risk accounting and acceptance, not independent-account curve addition |
+| **Measure real stop-order fills** (paper-trade the resting-stop entry, log slippage per fill) | Parallel execution-evidence priority. Row 10 survives up to about 6 extra ticks of slippage; observed matched fills are needed to judge that assumption. No production changes or fresh sample-sufficiency claim in this documentation update |
 | Dollar, power and robustness reporting | Done (commit `4ba9762`); printed by every study and shown in the local viewer, not yet on the Supabase dashboard |
 | Execution identity, dataset pin, member-run summaries, trial ledger (commit `4c942a5`) | Done in code. Ledger: 104 trials. Republishing rows 0–2 and backfilling run summaries for rows 3–8 is blocked: their local DB was lost |
 | Execution model v7 (minimum-risk floor, take-profit must trade through; commit `7bd69a6`) | Done. Baseline rerun under v7 recorded (row 9) |
