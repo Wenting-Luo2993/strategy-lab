@@ -1,5 +1,5 @@
 <!-- taskboard
-{"id":"gateway-evidence","title":"Gateway incidents and recovery evidence","projects":["live-reliability","execution-quality","deployment-cicd"],"status":"current","kind":"evidence","reviewed":"2026-11-16"}
+{"id":"gateway-evidence","title":"Gateway incidents and recovery evidence","projects":["live-reliability","execution-quality","deployment-cicd"],"status":"current","kind":"evidence","reviewed":"2026-11-17"}
 -->
 # IB Gateway Connection Troubleshooting
 
@@ -15,12 +15,17 @@ Production `385a516` reported repeated `10197`, then `1100` at 18:50 UTC and
 an IBC server-error dialog. All five symbols and account-risk reads were failing.
 Read-only inspection found no current legacy/duplicate Gateway process, but
 substantial swap, I/O-wait and CPU-steal pressure. The cause of the broker-side
-session conflict and failed upstream recovery remains unproven. Local diagnostic
-improvements are not deployed. The approved Gateway recovery restored fresh
+session conflict and failed upstream recovery remains unproven. Request/host
+diagnostics are deployed in v1.4.15 (`53016ce`); unattended recording remains off.
+The approved Gateway recovery restored fresh
 broker reads and completed live bars for all five symbols. A subsequent
 21:47 UTC read confirmed no nonzero broker positions or open orders. After-close
 investigation separated intermittent quote/history timeouts, three execution
-parity mismatches and a confirmed dashboard metric-identity conflict. See section L.
+parity mismatches and a confirmed dashboard metric-identity conflict. The approved
+bot-only release and metric recovery completed November 17 01:28 UTC
+(November 16 20:28 EST): all 110 historical dead letters have published successors,
+and Supabase readback verified all 29 affected metric IDs. The next complete
+market session and the upstream cause remain open. See section L.
 
 **Previous incident: 2026-11-13 intermittent live-data timeouts and `10197`.**
 Read-only inspection found missing quote snapshots followed by resumed bars,
@@ -1202,6 +1207,68 @@ an outbox backup and targeted metric recovery. Independent publication verificat
 and actual bot rollout/queue replay remain pending. No unattended recorder was
 approved or enabled.
 
+#### Approved v1.4.15 rollout and verified dashboard recovery
+
+The preparation checkpoint above is historical. With explicit operator approval,
+`53016cee5b1b350a4b090753e59d8e2897aa5129` was committed and pushed to `main`.
+[Deploy Guardrails run 43994723755](https://github.com/Wenting-Luo2993/strategy-lab/actions/runs/43994723755)
+passed for that exact SHA. No timeout, request concurrency, trading-policy or
+Gateway configuration change was included.
+
+All times in the following table are November 17 UTC / November 16 EST.
+
+| UTC / EST | Observed operation and result |
+|---|---|
+| 01:23:19 / 20:23:19 | Read-only status/preflight passed outside protected hours; no active legacy units, enabled legacy timer or foreign container. |
+| 01:24:01 / 20:24:01 | SQLite online backup completed: 63,242,240 bytes, mode `0600`, `quick_check=ok`; 110 dead letters and 591 failure-history rows retained. |
+| Before deployment | Authenticated read-only Supabase schema inspection confirmed `metric_id` as primary key after the operator-reported SQL migration. |
+| 01:25:09 / 20:25:09 | New bot container started under approved `deploy.sh bot --yes`. |
+| 01:26:28 / 20:26:28 | Harness recorded successful bot deployment, printed `Deploy OK at 53016ce.` and exited 0. |
+| 01:27:09 / 20:27:09 | Running version independently confirmed as 1.4.15. Gateway container ID, image, start time and restart count were unchanged. |
+| 01:27 / 20:27 | Approved `recover-dashboard-metrics --yes` preview selected seven latest eligible conflicts, then queued seven immutable successors and exited 0. Other historical dead letters already had published successors; none were blindly replayed. |
+| 01:28:03 / 20:28:03 | Existing publisher had published all seven successors. Queue: 1,742 published, 1,794 superseded, 110 historical dead letters; zero pending, failed or publishing rows. All 110 dead letters had newer ledger-confirmed publications. |
+| 01:28:57 / 20:28:57 | Independent remote readback and backup comparison passed; details below. |
+| 01:29:15 / 20:29:15 | Final read-only status exited 0: both containers healthy, `/api/health` 200, no unmanaged candidate process, one Gateway JVM and one expected bot API socket. |
+
+The deployment verified a healthy bot, `/api/health` HTTP 200 and new IB connection,
+trading-loop and dashboard-publisher startup markers, with no ERROR/Traceback lines
+in the harness window. The new image is
+`sha256:59ad7fcaf64afec3058840e82a01154e5595aa0a5d880d79a3042ed0eee015c4`.
+The Gateway remained container `54b8e02dd432`, started November 16
+19:46:23.517929128 UTC, with zero restarts. This bot-only deployment did not
+recreate or restart the Gateway.
+Final `/health/ready` was 503 outside warm-up/trading, as expected; startup
+success does not establish next-session data freshness.
+
+The consistent backup remains at
+`deploy/ibkr-docker/data/trading-bot/local/backups/publish_outbox_before_metric_recovery_20261117T012401Z.db`
+under `/opt/strategy-lab` (container path
+`/app/data/local/backups/publish_outbox_before_metric_recovery_20261117T012401Z.db`).
+Post-recovery read-only comparison established:
+
+- All 110 original dead-letter rows were unchanged, and all 591 original failure
+  records remained present. The seven targeted successors preserved their
+  predecessors' payloads and original event timestamps.
+- All 110 dead letters had newer ledger-confirmed published successors, covering
+  29 distinct metric IDs. Authenticated Supabase GETs matched all 29 latest
+  published versions, metric names and domain timestamps; none were missing.
+- AMZN, GOOGL, MSFT and TSLA `parity_symbol_matched` records coexist at
+  `2026-11-16T21:06:26.748586+00:00`. AMZN has publication version 1; the other
+  three have version 2. This verifies the actual previously colliding shape,
+  not just schema metadata or successful enqueueing.
+- A fresh recovery preview returned zero eligible rows. Effective alert counts
+  classify all 110 originals as `recovered_dead_letter`, with zero unresolved
+  dead letters. Raw dead-letter history is intentionally not deleted.
+
+Dashboard publication recovery is complete for this backlog; it does not change
+the parity findings themselves. Request-stage/numeric-error diagnostics and the
+optional host recorder are deployed, but no unattended watcher or recorder was
+started. Executor occupancy and event-loop lag were not instrumented. The
+`10197`/`1100` cause, intermittent quote/history timeouts, P&L-cancellation errors
+and placement/parity discrepancies remain unresolved. Next observations are the
+scheduled November 17 07:15 UTC Gateway restart and November 17 09:25 EST warm-up,
+followed by a complete session and cooldown.
+
 ## Recovery verification: what is enough to close an incident?
 
 Capture a timestamped post-recovery result for each relevant layer. Report which
@@ -1247,7 +1314,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-11 intraday failure: **connectivity recovered; exposure open** | Morning restart/warm-up succeeded; afternoon `10197`, then `1100`/IBC error and three failed EOD exits. Bot-only `d31d7a4` rollout failed against the stalled Gateway; separately approved Gateway recovery passed at Nov 12 00:08 UTC. Fresh positions: MSFT -3, AMZN -7, TSLA +4; no open orders returned. | Resolve open exposure/protection with operator authorization; investigate competing session/upstream cause and observe the next full session. Successful deployment is not successful flattening. See section I. |
 | 2026-11-12 intraday recurrence: **recovered; four positions open** | Scheduled login and initial trading succeeded; data/account failures, six `10197` events and an afternoon upstream stall followed. All five locally tracked EOD exits failed. Approved Gateway recovery succeeded Nov 13 03:38 UTC at `a1b5cab`. | Fresh broker positions: MSFT +3, TSLA +4, GOOGL +6, QQQ +2; no open orders returned. Resolve exposure, audit AMZN discrepancy, investigate recurring upstream cause and observe next full session. See section J. |
 | 2026-11-13 intermittent live-data failures: **identity repair deployed, TSLA exposure open** | Packet-buffer and summary-concurrency fixes deployed in approved Gateway recovery at `c3b7a7c`. Audit proved historical QQQ169 collided with the current TSLA stop. The v1.4.14 identity fix deployed bot-only at November 14 04:28 UTC, `385a516`; startup and journal-preservation checks passed. | Fresh November 14 04:29 UTC snapshot: TSLA -4 and **no open orders**. Deployment did not flatten exposure. Next live EOD remains unobserved. No outside sessions per operator. Quote timeouts and broker-side `10197` remain separate unresolved issues. See section K. |
-| 2026-11-16 recurrence: **recovered, EOD flat; diagnostics local only** | `385a516`: eleven retained `10197`, then `1100`/IBC stall; no observed legacy duplicate, but heavy host pressure. Approved Gateway recovery completed at 19:50:40 UTC, remote main `2a3c804`, same v1.4.14 image. Live bars resumed; a fresh 21:47 UTC read returned no nonzero positions or open orders. | Quote timeouts (QQQ/GOOGL), QQQ history timeout and P&L-cancellation errors remained. Parity: one match, three mismatches, one replay error. Dashboard HTTP 409s prove legacy name/time uniqueness conflicts with metric-ID publication; migration/requeue not performed. Upstream cause and next full session remain open. Local diagnostics are uncommitted, undeployed and not enabled. See section L. |
+| 2026-11-16 recurrence: **recovered, EOD flat; dashboard backlog recovered and diagnostics deployed** | `385a516`: eleven retained `10197`, then `1100`/IBC stall; no observed legacy duplicate, but heavy host pressure. Approved Gateway recovery completed at 19:50:40 UTC, remote main `2a3c804`, same v1.4.14 image. Live bars resumed; a fresh 21:47 UTC read returned no nonzero positions or open orders. Approved v1.4.15 / `53016ce` bot-only deployment passed November 17 01:27 UTC, leaving Gateway unchanged. Operator-applied metric-ID migration and seven targeted retries resolved the backlog: all 110 dead letters have published successors, all 29 affected metric IDs verified remotely, failure evidence preserved. | Quote timeouts (QQQ/GOOGL), QQQ history timeout and P&L-cancellation errors remain unexplained. Parity: one match, three mismatches, one replay error; publication repair does not resolve these discrepancies. Upstream cause and next full session remain open. Request/host diagnostics are deployed; unattended recording remains off pending separate approval. See section L. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved

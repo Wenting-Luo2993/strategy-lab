@@ -18,7 +18,7 @@
     "title": "Live-service reliability",
     "goal": "Demonstrate safe operation through warm-up, intraday failures, broker recovery, end-of-day exits and cooldown.",
     "stage": "Operational assurance",
-    "next_action": "Review the confirmed dashboard metric-identity conflict and incomplete parity; observe the next complete session after November 16 EOD flatness was verified."
+    "next_action": "Observe the next complete session on v1.4.15 / 53016ce and investigate incomplete parity/upstream timeouts. Dashboard backlog recovery is verified; unattended host recording still requires separate approval."
   },
   {
     "id": "deployment-cicd",
