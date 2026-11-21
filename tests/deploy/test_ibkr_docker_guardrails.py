@@ -185,7 +185,7 @@ def test_deploy_actions_documented_in_skill():
     skill = SKILL_MD.read_text(encoding="utf-8")
     actions = _deploy_actions()
     assert actions == {
-        "status", "check", "bot", "gateway", "rollback-bot", "recover-dashboard-metrics",
+        "status", "check", "bot", "gateway", "rollback-bot", "recover-dashboard-metrics", "stop",
     }
     for action in actions:
         assert f"deploy.sh {action}" in skill, f"SKILL.md does not document 'deploy.sh {action}'"
@@ -199,6 +199,64 @@ def test_skill_frontmatter():
     assert meta["name"] == SKILL_DIR.name
     assert len(meta["description"]) <= 1024
     assert "deploy" in meta["description"].lower()
+
+
+@pytest.mark.parametrize(
+    ("preflight_result", "confirmation_result", "stop_result", "running", "inspect_result", "expected_stops", "success"),
+    [
+        (0, 0, 0, "false", 0, 2, True),
+        (1, 0, 0, "false", 0, 0, False),
+        (0, 1, 0, "false", 0, 0, False),
+        (0, 0, 1, "false", 0, 1, False),
+        (0, 0, 0, "true", 0, 1, False),
+        (0, 0, 0, "false", 1, 1, False),
+    ],
+)
+def test_stop_preserves_resources_and_aborts_before_gateway_on_failure(
+    preflight_result, confirmation_result, stop_result, running, inspect_result, expected_stops, success,
+):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("Bash is required for deployment behavior validation")
+    text = DEPLOY_SH.read_text(encoding="utf-8")
+    body = re.search(r"^do_stop\(\) \{\n.*?^\}", text, re.MULTILINE | re.DOTALL)
+    assert body
+    script = f"""
+set -euo pipefail
+COMPOSE=(docker compose -f paper.yml)
+BOT=strategy-lab-trading-bot
+GW=strategy-lab-ib-gateway
+SCRIPT_DIR=/deploy
+acquire_lock() {{ :; }}
+preflight() {{ return {preflight_result}; }}
+confirm() {{ return {confirmation_result}; }}
+warn() {{ :; }}
+step() {{ :; }}
+ok() {{ :; }}
+record() {{ printf 'record:%s\\n' "$*"; }}
+die() {{ echo "$*" >&2; exit 1; }}
+git() {{ echo test-revision; }}
+docker() {{
+  if [[ "$1" == inspect ]]; then
+    echo {running}
+    return {inspect_result}
+  fi
+  printf 'docker:%s\\n' "$*"
+  return {stop_result}
+}}
+{body.group(0)}
+do_stop
+"""
+    result = subprocess.run([bash, "-c", script], capture_output=True, text=True, timeout=10)
+    stops = [line for line in result.stdout.splitlines() if line.startswith("docker:")]
+    assert len(stops) == expected_stops
+    assert stops == [
+        f"docker:compose -f paper.yml stop --timeout 60 {service}"
+        for service in ["trading-bot", "ib-gateway"][:expected_stops]
+    ]
+    assert (result.returncode == 0) is success
+    assert ("Stack stopped" in result.stdout) is success
+    assert ("record:stop ok" in result.stdout) is success
 
 
 def test_deploy_script_guards():

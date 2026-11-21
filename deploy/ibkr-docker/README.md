@@ -20,6 +20,7 @@ Every host and every coding agent deploys the same way: merge to `main`, then ru
 | Ship a code change | `bash deploy/ibkr-docker/deploy.sh bot` |
 | Gateway image/settings or IBKR password change | `bash deploy/ibkr-docker/deploy.sh gateway` |
 | Undo the last bot deploy | `bash deploy/ibkr-docker/deploy.sh rollback-bot` |
+| Pause this host without deleting containers/data | `bash deploy/ibkr-docker/deploy.sh stop` |
 | Retry reviewed dashboard metric conflicts (approval required) | `bash deploy/ibkr-docker/deploy.sh recover-dashboard-metrics` |
 
 `deploy.sh` refuses to change anything Mon–Fri 09:25–16:05 ET unless `--allow-market-hours` is given, and prompts before changing production unless `--yes` is given.
@@ -67,6 +68,87 @@ sudo chown -R 1000:1000 data/trading-bot logs/trading-bot state/tws_settings
 bash deploy.sh check
 bash deploy.sh gateway        # first start: brings up ib-gateway, then the bot
 ```
+
+## Windows PC / WSL2 cutover
+
+Use Docker Desktop's Linux engine and enable integration for the deployment's
+Ubuntu WSL2 distribution in Settings -> Resources -> WSL Integration. Run the
+same production harness **inside WSL**, as a non-root deploy user, from a
+separate clean `main` checkout on Linux storage. Do not run the Linux harness
+from Git Bash, deploy a research worktree, or use the local-development Compose
+file. Store SQLite/credentials under Linux storage, not a `/mnt/c` checkout.
+Use the existing Fresh Host Setup prerequisites and ownership rules.
+
+For a new dedicated WSL deploy user, an operator can provision it once:
+
+```powershell
+wsl -d Ubuntu -u root -- useradd --uid 1000 --create-home --shell /bin/bash trading-deploy
+wsl -d Ubuntu -u root -- usermod -aG sudo,docker trading-deploy
+wsl -d Ubuntu -u root -- passwd trading-deploy
+wsl -d Ubuntu -u trading-deploy
+```
+
+First check that UID 1000 is unused and the `docker` group exists. If either
+check fails, review the existing user/socket permissions instead of overwriting
+them. The operator enters the Linux password privately. Inside that user's
+shell, clone this repository's `main` to `~/strategy-lab` and check Docker
+access. The credentials required for repository access are also operator-owned.
+No Gateway or bot should start during preparation.
+The root `.dockerignore` excludes credentials, durable deployment data and the
+research worktree's temporary artifacts from the Docker build context.
+
+### Cutover order
+
+1. Prepare the destination's Docker/Compose, clean `main`, disk/headroom and
+   image build before interrupting the source. Review fresh broker positions
+   and working orders; old dashboard rows or container health do not establish
+   a flat account. Do not place/cancel/flatten orders implicitly.
+2. After main's deployment guardrails pass, obtain approval to stop the source.
+   On the VM, update only through `git pull --ff-only origin main`, then run
+   `bash deploy/ibkr-docker/deploy.sh stop`. The harness preflights, prompts,
+   stops the bot before the Gateway and verifies both stopped. It does not
+   delete containers, images, data, settings, credentials or the Oracle instance.
+   A failed stop must be resolved before proceeding.
+3. With source writers stopped, use an operator-approved private transfer of
+   **all** `data/trading-bot/` files (including SQLite WAL/SHM), plus retained
+   logs. Never delete the originals. Do not start with a fresh execution journal:
+   broker/order identity, session risk state and publisher IDs must survive.
+   Verify transfer completeness and SQLite integrity before destination start.
+   Credentials are entered through hidden helpers or copied by the operator;
+   agents never read them and no private files belong in Git/chat.
+4. Restore ownership/access for UID 1000; prepare destination settings or
+   privately transfer them while the source Gateway is stopped. Verify the
+   source remains stopped, then run destination `deploy.sh check`. Ask for the
+   separate destination `gateway` approval and use the normal harness.
+5. Verify running image/version, paper account, broker reconciliation, API
+   liveness, persistence and publishing. Outside market hours, readiness 503
+   and absent live ticks are expected; observe the next real warm-up/session,
+   EOD positions/orders and cooldown before claiming collection is trustworthy.
+
+An explicitly stopped `unless-stopped` container stays stopped across Docker
+daemon restarts. Do not resume the preserved VM while the PC owns the login.
+If returning to the VM, first stop the PC through its harness and reconcile
+and privately transfer the newer durable state; starting the VM with its old
+journal is not a valid failback. Resume only with an approved `gateway` action.
+
+### Continuous PC operation and expansion
+
+Docker restart policies do not start Windows, Docker Desktop or WSL after every
+reboot by themselves. Configure and verify Docker Desktop startup, required
+user sign-in/WSL availability, Windows AC sleep settings and planned Windows
+updates **with the operator**. Do not globally disable updates, security
+controls or sleep without approval. Test actual recovery; a logged-in session
+is not unattended boot assurance. Retain rotating logs and monitor disk,
+resource pressure, broker data freshness and alert delivery.
+
+For the initial migration, preserve `orb_resting_stop_paper_5sym`, its symbol
+priority and all risk caps. Review three consecutive complete, reconciled
+sessions as an operational shakedown, not statistical proof. Ten symbols are a
+later separately versioned configuration: review symbols/entitlements and the
+five-position/notional limits, which can otherwise prevent extra entries.
+Do not increase leverage or risk silently to create samples. Keep added-symbol
+observations separately identifiable; paper fills cannot establish real-money
+queue position or slippage, and same-day observations are correlated.
 
 ## Health Checks
 
