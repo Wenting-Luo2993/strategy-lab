@@ -12,6 +12,7 @@
 #   bash deploy/ibkr-docker/deploy.sh gateway        pull main, recreate ib-gateway then trading-bot, verify
 #   bash deploy/ibkr-docker/deploy.sh rollback-bot   restore the trading-bot image from before the last deploy
 #   bash deploy/ibkr-docker/deploy.sh recover-dashboard-metrics   queue reviewed metric-conflict retries
+#   bash deploy/ibkr-docker/deploy.sh stop           stop bot then gateway; preserve containers and all data
 #
 # Options:
 #   --yes                  skip the confirmation prompt
@@ -48,11 +49,11 @@ warn() { echo "WARN: $*" >&2; }
 step() { echo; echo "==> $*"; }
 ok() { echo "  ok   $*"; }
 
-usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 for arg in "$@"; do
   case "$arg" in
-    status|check|bot|gateway|rollback-bot|recover-dashboard-metrics) [[ -z "$ACTION" ]] || die "only one action allowed"; ACTION="$arg" ;;
+    status|check|bot|gateway|rollback-bot|recover-dashboard-metrics|stop) [[ -z "$ACTION" ]] || die "only one action allowed"; ACTION="$arg" ;;
     --yes|-y) ASSUME_YES=true ;;
     --allow-market-hours) ALLOW_MARKET_HOURS=true ;;
     --watch-connections) WATCH_CONNECTIONS=true ;;
@@ -280,6 +281,34 @@ do_status() {
   python3 "$SCRIPT_DIR/monitor_gateway_connections.py" "${audit_args[@]}"
 }
 
+do_stop() {
+  acquire_lock
+  preflight change
+  warn "Stopping processes does not flatten positions or cancel broker-held orders."
+  warn "Confirm current broker exposure and preserve execution state before a host cutover."
+  confirm "Stop trading-bot, then ib-gateway, preserving containers, volumes, credentials and the VM?"
+
+  local service container running
+  for service in trading-bot ib-gateway; do
+    container="$BOT"
+    [[ "$service" == ib-gateway ]] && container="$GW"
+    step "Stopping $service (up to 60 seconds for shutdown)"
+    if ! "${COMPOSE[@]}" stop --timeout 60 "$service"; then
+      record stop failed "service=$service"
+      die "$service stop failed; inspect state before continuing"
+    fi
+    if ! running="$(docker inspect -f '{{.State.Running}}' "$container")" || [[ "$running" != false ]]; then
+      record stop verify-failed "service=$service"
+      die "$container is not confirmed stopped; no further service will be stopped"
+    fi
+    ok "$container stopped; container and persistent files retained"
+  done
+  record stop ok
+  echo; echo "Stack stopped at $(git rev-parse --short HEAD). No resources deleted."
+  echo "Do not resume this host while another host uses the same paper login."
+  echo "Resume only with operator approval: bash $SCRIPT_DIR/deploy.sh gateway"
+}
+
 do_bot() {
   acquire_lock
   preflight change
@@ -389,4 +418,5 @@ case "$ACTION" in
   gateway) do_gateway ;;
   rollback-bot) do_rollback_bot ;;
   recover-dashboard-metrics) do_recover_dashboard_metrics ;;
+  stop) do_stop ;;
 esac

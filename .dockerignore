@@ -1,0 +1,12 @@
+.git
+**/.env
+**/.env.*
+**/__pycache__
+**/*.pyc
+**/node_modules
+deploy/ibkr-docker/secrets
+deploy/ibkr-docker/data
+deploy/ibkr-docker/logs
+deploy/ibkr-docker/state
+deploy/ibkr-docker/runtime
+tmp
