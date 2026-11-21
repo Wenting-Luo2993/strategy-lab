@@ -1,6 +1,9 @@
+<!-- taskboard
+{"id":"dashboard-operations","title":"Live dashboard operations and recovery","projects":["live-reliability"],"status":"current","kind":"reference","reviewed":"2026-11-16"}
+-->
 # Live Dashboard Operator Notes
 
-**Last Updated:** 2026-07-20  
+**Last Updated:** 2026-11-16
 **Related TDS:** [TDS-live-dashboard.md](TDS-live-dashboard.md)  
 **Execution Tracker:** [live-dashboard-execution-checklist.md](live-dashboard-execution-checklist.md)
 
@@ -46,7 +49,7 @@ Remote upserts are idempotent by aggregate key:
 | `price_bar` | `price_bars` | `symbol,timeframe,bar_start` |
 | `equity_snapshot` | `equity_snapshots` | `snapshot_id` |
 | `position` | `positions` | `position_id` |
-| `metric` | `operational_metrics` | `metric_name,timestamp` |
+| `metric` | `operational_metrics` | `metric_id` |
 | `strategy_annotation` | `strategy_annotations` | `annotation_id` |
 
 ---
@@ -73,3 +76,39 @@ Operational response during an outage:
 2. Inspect `publish_outbox` status counts for `pending`, `failed`, `publishing`, and `dead_letter` rows.
 3. Let cooldown reconciliation retry due rows before pruning local dashboard data.
 4. Treat unresolved failed or dead-letter rows as dashboard degradation; cooldown sends the standard Discord alert when notification settings are configured.
+
+### Metric identity conflicts (HTTP 409)
+
+`23505` on the legacy `(metric_name, timestamp)` primary/unique key is a
+permanent identity conflict, not a reason to restart Gateway or lengthen HTTP
+timeouts. Different symbols intentionally share a metric name and timestamp.
+
+1. Inventory all writers. Current bot publishers use `metric_id`; upgrade or
+   retire any writer still using `on_conflict=metric_name,timestamp` first.
+2. Obtain approval, back up Supabase and take a consistent SQLite outbox backup
+   with SQLite's backup API (not a bare copy of a live WAL database).
+3. Apply [supabase-metric-identity.sql](supabase-metric-identity.sql) after the base
+   read-model migration, using a privileged SQL editor connection. It takes a
+   bounded exclusive lock, verifies existing IDs and drops only name/time
+   uniqueness. It preserves rows/IDs/timestamps and aborts on dependencies rather
+   than cascading. Reapplication is safe. The updated base schema does not
+   recreate the legacy index after finalization.
+4. Verify constraints and same-name/time, different-ID upserts. Do not retry
+   failed publications before the schema is corrected.
+5. Deploy the reviewed bot/recovery code from `main` through the deployment
+   harness. With separate operator approval, run
+   `bash deploy/ibkr-docker/deploy.sh recover-dashboard-metrics`.
+6. Wait for the existing publisher to consume the new pending successors;
+   verify their `published` state and matching remote `metric_id` rows. The
+   recovery command reports queueing only. It leaves unrelated failures alone.
+
+The recovery preview is read-only. Applying it checks its fingerprint and each
+latest dead-letter predecessor before enqueueing an immutable retry with the
+original payload/time and a new publication version. Original dead-letter and
+failure records are retained. Cooldown distinguishes `recovered_dead_letter`
+from unresolved `dead_letter` via the durable publication ledger, including
+after published successors have been pruned.
+
+Rollback to a name/time-conflict-target publisher is **not compatible** with
+this finalized schema. Re-adding legacy uniqueness can fail once distinct
+same-name/time rows exist; do not delete those rows to force a rollback.

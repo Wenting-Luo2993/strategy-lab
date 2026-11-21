@@ -409,4 +409,4 @@ class RemoteDataPublisher:
         return deleted
 
     def publish_cooldown_summary(self) -> Dict[str, int]:
-        return self.outbox_store.status_counts()
+        return self.outbox_store.status_counts(distinguish_recovered=True)

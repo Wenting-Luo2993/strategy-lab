@@ -18,7 +18,7 @@
     "title": "Live-service reliability",
     "goal": "Demonstrate safe operation through warm-up, intraday failures, broker recovery, end-of-day exits and cooldown.",
     "stage": "Operational assurance",
-    "next_action": "Reconcile outstanding exposure through an authorized operational workflow; observe the next complete trading session."
+    "next_action": "Observe the next complete session on v1.4.15 / 53016ce and investigate incomplete parity/upstream timeouts. Dashboard backlog recovery is verified; unattended host recording still requires separate approval."
   },
   {
     "id": "deployment-cicd",

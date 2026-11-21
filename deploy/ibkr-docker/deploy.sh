@@ -11,11 +11,13 @@
 #   bash deploy/ibkr-docker/deploy.sh bot            pull main, rebuild + recreate trading-bot, verify
 #   bash deploy/ibkr-docker/deploy.sh gateway        pull main, recreate ib-gateway then trading-bot, verify
 #   bash deploy/ibkr-docker/deploy.sh rollback-bot   restore the trading-bot image from before the last deploy
+#   bash deploy/ibkr-docker/deploy.sh recover-dashboard-metrics   queue reviewed metric-conflict retries
 #
 # Options:
 #   --yes                  skip the confirmation prompt
 #   --allow-market-hours   permit changes 09:25-16:05 ET on weekdays (incident fixes only)
 #   --watch-connections    status only: audit API sockets every 60s until Ctrl+C
+#   --record-connections   with --watch-connections: retain rotating metadata logs
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,6 +40,7 @@ OPTIONAL_MARKERS=("Dashboard RemoteDataPublisher started")
 ASSUME_YES=false
 ALLOW_MARKET_HOURS=false
 WATCH_CONNECTIONS=false
+RECORD_CONNECTIONS=false
 ACTION=""
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -45,14 +48,15 @@ warn() { echo "WARN: $*" >&2; }
 step() { echo; echo "==> $*"; }
 ok() { echo "  ok   $*"; }
 
-usage() { sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 for arg in "$@"; do
   case "$arg" in
-    status|check|bot|gateway|rollback-bot) [[ -z "$ACTION" ]] || die "only one action allowed"; ACTION="$arg" ;;
+    status|check|bot|gateway|rollback-bot|recover-dashboard-metrics) [[ -z "$ACTION" ]] || die "only one action allowed"; ACTION="$arg" ;;
     --yes|-y) ASSUME_YES=true ;;
     --allow-market-hours) ALLOW_MARKET_HOURS=true ;;
     --watch-connections) WATCH_CONNECTIONS=true ;;
+    --record-connections) RECORD_CONNECTIONS=true ;;
     -h|--help) usage 0 ;;
     *) echo "unknown argument: $arg" >&2; usage 2 ;;
   esac
@@ -60,6 +64,9 @@ done
 [[ -n "$ACTION" ]] || usage 2
 if $WATCH_CONNECTIONS && [[ "$ACTION" != status ]]; then
   die "--watch-connections is supported only with status"
+fi
+if $RECORD_CONNECTIONS && ! $WATCH_CONNECTIONS; then
+  die "--record-connections requires status --watch-connections"
 fi
 
 cd "$REPO_DIR"
@@ -269,6 +276,7 @@ do_status() {
   step "Gateway connection audit (TCP metadata, not brokerage sessions)"
   local audit_args=()
   $WATCH_CONNECTIONS && audit_args+=(--watch)
+  $RECORD_CONNECTIONS && audit_args+=(--record)
   python3 "$SCRIPT_DIR/monitor_gateway_connections.py" "${audit_args[@]}"
 }
 
@@ -349,10 +357,36 @@ do_rollback_bot() {
   fi
 }
 
+do_recover_dashboard_metrics() {
+  acquire_lock
+  preflight change
+  step "Previewing metric identity conflicts (read-only)"
+  local plan fingerprint eligible
+  plan="$(docker exec "$BOT" python -B -m vibe.trading_bot.publishing.recover_metrics)" \
+    || die "recovery preview failed; deploy the reviewed recovery code first"
+  printf '%s\n' "$plan"
+  fingerprint="$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["plan_sha"])')"
+  eligible="$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["eligible"])')"
+  if [[ "$eligible" == 0 ]]; then
+    echo "No eligible metric dead letters. No recovery rows queued."
+    return
+  fi
+  confirm "Supabase metric-identity migration verified and outbox backed up? Queue $eligible metric retries without deleting failure history?"
+  if docker exec "$BOT" python -B -m vibe.trading_bot.publishing.recover_metrics \
+      --apply --schema-verified --expected-plan-sha "$fingerprint"; then
+    record recover-dashboard-metrics queued "eligible=$eligible"
+    echo "Metric recovery queued. The existing publisher will drain it; verify publication separately."
+  else
+    record recover-dashboard-metrics failed
+    die "metric recovery failed; inspect the current plan before retrying"
+  fi
+}
+
 case "$ACTION" in
   status) do_status ;;
   check) preflight check; echo; echo "Preflight OK." ;;
   bot) do_bot ;;
   gateway) do_gateway ;;
   rollback-bot) do_rollback_bot ;;
+  recover-dashboard-metrics) do_recover_dashboard_metrics ;;
 esac

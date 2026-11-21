@@ -8,7 +8,7 @@ from datetime import datetime
 
 
 # Manual version - increment this with each deployment
-VERSION = "1.4.14"  # durable IB order identity and safe restored-stop exits
+VERSION = "1.4.15"  # dashboard metric recovery and request diagnostics
 
 
 def get_build_timestamp() -> str:

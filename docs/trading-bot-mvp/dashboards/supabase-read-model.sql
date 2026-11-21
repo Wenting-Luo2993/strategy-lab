@@ -369,13 +369,27 @@ alter table public.operational_metrics alter column metric_id set not null;
 -- Mixed-version rollout compatibility:
 -- * current publishers use metric_id as the durable conflict target;
 -- * origin/main and older publishers still use (metric_name, timestamp).
--- Keep both unique identities until every publisher has been upgraded. A later,
--- separately reviewed cleanup migration may remove the legacy index and replace
--- a legacy composite primary key; do not drop either during this rollout.
+-- Retain compatibility only on legacy tables. A later, separately reviewed
+-- cleanup migration (supabase-metric-identity.sql) removes the composite key.
+-- Never recreate legacy uniqueness on a fresh or already-migrated table.
 create unique index if not exists operational_metrics_metric_id_key
     on public.operational_metrics(metric_id);
-create unique index if not exists operational_metrics_legacy_name_timestamp_key
-    on public.operational_metrics(metric_name, timestamp);
+do $$
+begin
+    if exists (
+        select 1 from pg_constraint
+        where conrelid = 'public.operational_metrics'::regclass
+          and contype in ('p', 'u')
+          and (select array_agg(attname::text order by attname)
+               from pg_attribute
+               where attrelid = conrelid and attnum = any(conkey))
+              = array['metric_name', 'timestamp']
+    ) then
+        create unique index if not exists operational_metrics_legacy_name_timestamp_key
+            on public.operational_metrics(metric_name, timestamp);
+    end if;
+end;
+$$;
 
 do $$
 begin

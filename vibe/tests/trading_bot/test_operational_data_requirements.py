@@ -37,13 +37,20 @@ def _isolate_relative_storage_paths(tmp_path, monkeypatch):
 
 
 class _ErrorEvent:
+    def __init__(self):
+        self.handlers = []
+
     def __iadd__(self, handler):
-        self.handler = handler
+        self.handlers.append(handler)
+        return self
+
+    def __isub__(self, handler):
+        self.handlers.remove(handler)
         return self
 
     def emit(self, *args):
-        if hasattr(self, "handler"):
-            self.handler(*args)
+        for handler in list(self.handlers):
+            handler(*args)
 
 
 class _AccountSummaryIB:

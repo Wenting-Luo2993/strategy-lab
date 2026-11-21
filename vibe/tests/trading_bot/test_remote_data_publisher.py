@@ -1,6 +1,7 @@
 """Tests for remote dashboard outbox publishing."""
 
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
@@ -12,6 +13,7 @@ from vibe.trading_bot.publishing.remote_data_publisher import (
     SupabaseRestDestination,
 )
 from vibe.trading_bot.storage.dashboard_store import PublishOutboxEvent, PublishOutboxStore
+from vibe.trading_bot.publishing.recover_metrics import apply_recovery, main as recovery_main, recovery_plan
 
 
 class FakeDestination:
@@ -162,6 +164,84 @@ async def test_flush_pending_publishes_and_marks_rows_published(tmp_path):
     assert row["original_event_timestamp"] == "2026-07-20T13:30:00"
     assert destination.published[0]["payload"]["trade_id"] == "1"
     outbox.close()
+
+
+def _failed_metric(outbox, name="metric:AMZN", error=None):
+    observed = datetime(2026, 11, 16, 21, 6)
+    event = PublishOutboxEvent(
+        event_id=name, event_type="upsert", aggregate_type="metric",
+        aggregate_id=name, destination="supabase",
+        payload={"metric_id": name, "metric_name": "parity_symbol_matched",
+                 "timestamp": observed.isoformat()},
+        original_event_timestamp=observed, next_retry_at=observed,
+    )
+    outbox.enqueue_event(event)
+    claimed = outbox.claim_pending(1, "worker", now=observed)[0]
+    error = error or 'Supabase publish failed: status=409 body=' + json.dumps({
+        "code": "23505",
+        "message": 'duplicate key value violates unique constraint "operational_metrics_pkey"',
+        "details": 'Key (metric_name, "timestamp")=(parity_symbol_matched, 2026-11-16) already exists.',
+    })
+    outbox.record_failure(claimed, error)
+    outbox.mark_dead_letter(claimed["event_id"], error,
+                           expected_payload_version=claimed["payload_version"])
+    return event
+
+
+@pytest.mark.asyncio
+async def test_metric_recovery_preserves_evidence_and_resolves_only_after_publication(tmp_path):
+    path = tmp_path / "outbox.db"
+    outbox = PublishOutboxStore(str(path))
+    _failed_metric(outbox)
+    original = outbox.get_event("metric:AMZN")
+    failures = outbox.get_failures()
+    before = path.read_bytes()
+    summary, _ = recovery_plan(path)
+    assert path.read_bytes() == before
+    assert summary["eligible"] == 1
+    assert apply_recovery(path, summary["plan_sha"]) == 1
+    rows = outbox.get_event_successors("metric:AMZN")
+    assert rows[0] == original
+    assert rows[1]["payload"] == original["payload"]
+    assert rows[1]["original_event_timestamp"] == original["original_event_timestamp"]
+    assert rows[1]["publication_version"] > original["publication_version"]
+    assert outbox.get_failures() == failures
+    publisher = RemoteDataPublisher(outbox, FakeDestination())
+    assert publisher.publish_cooldown_summary()["dead_letter"] == 1
+    result = await publisher.flush_pending(timeout_seconds=5, max_batches=1)
+    assert result.published == 1
+    assert publisher.publish_cooldown_summary() == {
+        "recovered_dead_letter": 1, "published": 1,
+    }
+    outbox.prune_published_before(datetime(2100, 1, 1))
+    assert publisher.publish_cooldown_summary() == {"recovered_dead_letter": 1}
+    assert recovery_plan(path)[0]["eligible"] == 0
+    assert outbox.count_by_status("dead_letter") == 1
+    outbox.close()
+
+
+def test_metric_recovery_excludes_other_failures_and_rejects_stale_preview(tmp_path):
+    path = tmp_path / "outbox.db"
+    outbox = PublishOutboxStore(str(path))
+    event = _failed_metric(outbox)
+    _failed_metric(outbox, "metric:MSFT", error="network unavailable")
+    plan, candidates = recovery_plan(path)
+    assert [row["event_id"] for row in candidates] == ["metric:AMZN"]
+    outbox.enqueue_event(event)
+    with pytest.raises(ValueError, match="plan changed"):
+        apply_recovery(path, plan["plan_sha"])
+    with pytest.raises(ValueError, match="predecessor changed"):
+        outbox.enqueue_event(event, expected_dead_letter_id="metric:AMZN")
+    assert len(outbox.get_event_successors("metric:AMZN")) == 2
+    assert recovery_plan(path)[0]["eligible"] == 0
+    outbox.close()
+
+
+def test_metric_recovery_apply_requires_schema_and_preview_confirmation(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        recovery_main(["--apply", "--outbox-db", str(tmp_path / "missing.db")])
+    assert exc.value.code == 2
+    assert not (tmp_path / "missing.db").exists()
 
 
 @pytest.mark.asyncio

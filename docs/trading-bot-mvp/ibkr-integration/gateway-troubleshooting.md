@@ -1,5 +1,5 @@
 <!-- taskboard
-{"id":"gateway-evidence","title":"Gateway incidents and recovery evidence","projects":["live-reliability","execution-quality","deployment-cicd"],"status":"current","kind":"evidence","reviewed":"2026-11-14"}
+{"id":"gateway-evidence","title":"Gateway incidents and recovery evidence","projects":["live-reliability","execution-quality","deployment-cicd"],"status":"current","kind":"evidence","reviewed":"2026-11-17"}
 -->
 # IB Gateway Connection Troubleshooting
 
@@ -10,7 +10,24 @@ recurs; keep observed evidence separate from suspected causes and deployed fixes
 For proposed testing gates and operational assurance outcomes, see the
 [reliability testing product specification](reliability-testing-product-spec.md).
 
-**Current incident: 2026-11-13 intermittent live-data timeouts and `10197`.**
+**Current incident: 2026-11-16 upstream stall; recovery observed, cause unresolved.**
+Production `385a516` reported repeated `10197`, then `1100` at 18:50 UTC and
+an IBC server-error dialog. All five symbols and account-risk reads were failing.
+Read-only inspection found no current legacy/duplicate Gateway process, but
+substantial swap, I/O-wait and CPU-steal pressure. The cause of the broker-side
+session conflict and failed upstream recovery remains unproven. Request/host
+diagnostics are deployed in v1.4.15 (`53016ce`); unattended recording remains off.
+The approved Gateway recovery restored fresh
+broker reads and completed live bars for all five symbols. A subsequent
+21:47 UTC read confirmed no nonzero broker positions or open orders. After-close
+investigation separated intermittent quote/history timeouts, three execution
+parity mismatches and a confirmed dashboard metric-identity conflict. The approved
+bot-only release and metric recovery completed November 17 01:28 UTC
+(November 16 20:28 EST): all 110 historical dead letters have published successors,
+and Supabase readback verified all 29 affected metric IDs. The next complete
+market session and the upstream cause remain open. See section L.
+
+**Previous incident: 2026-11-13 intermittent live-data timeouts and `10197`.**
 Read-only inspection found missing quote snapshots followed by resumed bars,
 overlapping account-summary requests, and intermittent VM scheduling/swap pressure.
 Local regressions reproduce a packet-buffer race and account-summary overlap;
@@ -898,6 +915,360 @@ The independent upstream `10197`/quote-timeout investigation remains open.
 This identity defect explains the observed TSLA exit refusal, not those
 connectivity errors or the exact cause of the DAY stop's later disappearance.
 
+### L. November 16: upstream stall, no observed legacy duplicate, host pressure
+
+The operator reported a realtime-data Discord alert and asked to investigate
+both the Docker and legacy system-command deployment paths. Inspection began
+at **19:27 UTC / 14:27 EST**, during trading. The VM checkout and last successful
+bot deployment remained **`385a516` (v1.4.14)**. Gateway was started November 13
+20:49:55 UTC; bot November 14 04:26:55 UTC. Both had zero Docker restarts and
+no OOM flag. Harness status/check passed; process health was 200, but readiness
+was **503 during trading**, not the normal after-hours condition.
+
+| UTC timestamp | EST | Evidence |
+|---|---|---|
+| 07:15:01 / 07:16:30 | 02:15:01 / 02:16:30 | Scheduled Gateway restart, then IBC login completion. |
+| 14:26:27 / 14:30:06 | 09:26:27 / 09:30:06 | Initial warm-up reported failed checks; intraday retry became ready. |
+| 14:30:22 | 09:30:22 | First retained QQQ timestamped-live-quote timeout. |
+| 16:08:55 / 16:18:20 | 11:08:55 / 11:18:20 | First retained AMZN / GOOGL timeouts. |
+| 16:18:27-18:33:19 | 11:18:27-13:33:19 | Eleven retained `10197` errors: broker reports competing live market-data session. Some carry AMZN/GOOGL/MSFT contracts; many lack contract context. |
+| 16:47:38 | 11:47:38 | First retained MSFT quote timeout. |
+| 18:16:35 | 13:16:35 | Account-risk evaluation began failing with `TimeoutError`; logs say entries blocked. |
+| 18:28:29 | 13:28:29 | First retained TSLA quote timeout. Two dependency-alert rejection messages also appeared around 18:28-29; receipt of one Discord alert does not establish delivery of every alert. |
+| 18:50:13 | 13:50:13 | Three `1100` upstream-connectivity-lost errors. |
+| 18:50:27 | 13:50:27 | IBC displayed `Attempt 3: server error, will retry in seconds...`. |
+| Through approximately 19:28 | Through approximately 14:28 | Retained quote-failure counts: QQQ 40, AMZN 32, GOOGL 25, MSFT 24, TSLA 21; account-risk failures 34. These are failed requests, not distinct outage counts. |
+| 19:27:40 | 14:27:40 | Passive audit: one expected bot API socket, one loopback relay socket, one JVM; no unexpected peers. |
+
+Both timeline pipelines completed successfully. No `1101`/`1102` restoration
+appeared in that retained timeline; this does not establish later state.
+The bot continued logging local GOOGL/MSFT/TSLA positions, but no fresh broker
+position/open-order request was made. Do not equate cached stops or positions
+with current broker exposure/protection. The final refresh was interrupted by
+an SSH connection reset; the investigator cancelled the incomplete local
+PowerShell input rather than sending further Linux commands to Windows.
+After the operator reconnected, the 19:40 UTC refresh still showed readiness
+503 and recent quote failures for all five symbols, plus account-risk timeouts.
+
+#### Legacy process investigation
+
+- All known legacy services and the start timer were disabled/nonrunning.
+  `x11vnc-ibkr` remained in an old failed state with `MainPID=0`; it is not a
+  running competing Gateway.
+- Host process-name inventory matched Java, Python, IBC, Xvfb and socat PIDs to
+  the two expected containers. No additional candidate process was present.
+- Retained systemd-manager events showed the old timer stopped on November 10
+  at 00:37:16 UTC, Gateway at 00:37:50 and Xvfb at 00:37:55. A separate November
+  16 query returned no legacy-manager entries. The old November 9 conflict is
+  confirmed history, not evidence that it recurred today.
+- The `enabled` vendor-preset column in `list-unit-files` is not actual enabled
+  state; `UnitFileState=disabled`, `ActiveState`, main PID and process inventory
+  must be interpreted together.
+
+These observations weaken the residual-local-process hypothesis. They cannot
+exclude processes between snapshots, processes renamed to unrelated names,
+unretained history or stale sessions inside IBKR. There was no unattended
+connection recorder running. The prior operator report of no outside IBKR
+sessions must not be replaced with an unsupported outside-login diagnosis.
+
+#### Observed host contention, not a proven single cause
+
+The VM has approximately 956 MiB RAM and 4 GiB swap. Five one-second `vmstat`
+intervals (excluding its since-boot first row) showed **42-78% I/O wait,
+13-42% CPU steal**, 4,000-7,924 KiB/s swap-in and up to 11,820 KiB/s swap-out.
+Memory PSI `some avg60` was 27.85%, `full avg60` 14.55%; I/O PSI `some avg60`
+49.79%, `full avg60` 21.32%. These establish pressure during collection,
+not the resource state at the earlier `10197` or upstream-loss timestamp.
+Free disk was 15 GiB; the inspection found no container OOM/restart.
+
+Scheduling delays, swap thrashing and synchronous bot work can consume quote
+deadlines, but these samples do not prove why IBKR reported a competing session
+or why Gateway did not recover. Do not fix this by accepting stale/delayed quotes,
+removing readiness guards, increasing timeouts indiscriminately or killing a
+process merely because its name is Java/Python.
+
+#### Local-only diagnostic follow-up
+
+The working checkout adds `[IB QUOTE TIMEOUT]` diagnostics for qualification,
+subscription-lock wait, pacing and tick wait, including caller budget/overrun,
+client/generation, subscription request IDs, update/tick counts and only
+request-correlated error codes. Numeric connectivity events are separately
+logged; free-form broker text and account data are not added. Shared-consumer
+ownership, timeouts, pacing and all entry/exit guards are unchanged.
+
+The passive monitor now includes legacy activation metadata, unmanaged candidate
+processes, pressure-stall metrics and interval CPU/swap rates. Opt-in
+`status --watch-connections --record-connections` retains rotating owner-only
+metadata logs (approximately 20 MiB maximum); collection failures are explicit
+records, watch mode retries, and recording failures exit nonzero. No service is
+installed and no recording has been enabled on the VM. See the
+[runbook](../../../deploy/ibkr-docker/README.md#passive-gateway-connection-audit).
+
+Focused local broker/deployment regressions passed, including request-error
+isolation, shared-waiter cleanup, recording rotation/failure handling and invalid
+resource baselines. This is diagnostic validation, not live recovery.
+
+#### Recovery and further diagnosis
+
+1. Re-establish SSH and preserve current evidence. Reconcile positions/working
+   orders through an authorized read-only broker check before claiming protection
+   or flatness. A stalled Gateway may prevent that check.
+2. If recovery is approved, use only `deploy.sh gateway`, with explicit
+   market-hours approval when applicable. It has restored connectivity in prior
+   incidents, but is a mitigation, not proof of root cause. Bot-only restart does
+   not repair Gateway's upstream session. Verify broker/data readiness and exits
+   afterward; do not clear journals or risk state.
+3. After the diagnostics reach main through the approved workflow, deploy and
+   explicitly enable one recording watcher. Correlate failure times with
+   legacy activation, unexpected processes/peers, CPU steal, swap and quote-stage
+   overruns. A foreground watcher stops with its terminal; no durable service
+   is claimed by this implementation.
+4. Review Oracle host CPU capacity/credits and move to adequately provisioned
+   memory/CPU if sustained pressure is confirmed. Host resizing/migration is a
+   separate approved operation; this investigation does not select a billable
+   shape or establish a sufficient capacity target.
+5. Escalate the recurring `10197`/`1100` timeline to IBKR to investigate its
+   session/entitlement state, and evaluate a deliberate pinned Gateway upgrade.
+   IBKR's [troubleshooting guidance](https://www.interactivebrokers.com/docs/tws-api/doc/troubleshooting-support/api-troubleshooting-support)
+   recommends supported current builds and logs for escalation. With approval,
+   enable [API message logs](https://www.interactivebrokers.com/docs/tws-api/doc/troubleshooting-support/log-files/api-logs)
+   through Gateway's API settings (Create API message log file; Detail level).
+   These encrypted logs recycle after seven days and may contain private trading
+   data; do not dump them, enable full market-data logging indiscriminately on
+   this constrained VM, or upload them automatically.
+
+#### Approved market-hours recovery and fresh broker snapshot
+
+The operator explicitly approved
+`bash deploy/ibkr-docker/deploy.sh gateway --yes --allow-market-hours` for the
+existing remote-main release, not the uncommitted local diagnostics.
+Fresh preflight passed at 19:44 UTC. The latest relevant Deploy Guardrails run
+for `c3b7a7c` was successful; neither of the two newer remote-main commits since
+`385a516` changed deployment code or the Dockerfile.
+
+| UTC timestamp | EST | Evidence |
+|---|---|---|
+| 19:46:23 | 14:46:23 | Gateway container recreated through the harness. |
+| 19:48:31-33 | 14:48:31-33 | IBC login completed; daily restart remained 07:15 UTC and Read-Only API false. |
+| 19:48:41 | 14:48:41 | Bot recreated. Image `386819f7f0ce...` was reused from cache: this is the same v1.4.14 code, not the local diagnostic patch. |
+| 19:49:26 | 14:49:26 | Startup restored four open broker orders into lifecycle monitoring. |
+| 19:49:50 | 14:49:50 | Warm-up execution health passed; intraday carryover flattening was explicitly skipped and the existing session equity snapshot reused. |
+| 19:50:14 | 14:50:14 | One post-restart QQQ quote timeout. A preceding `10185` P&L-cancellation error accounts for the other error line reported by the harness. Recovery was not error-free. |
+| 19:50:40 | 14:50:40 | Harness recorded `action=gateway result=ok sha=2a3c804`, printed `Gateway + bot OK`, exit 0. Both containers healthy; IB/loop/publisher markers and API health 200. |
+| 19:51:58 | 14:51:58 | Readiness 200. This alone is not per-symbol freshness verification. |
+| 19:52:24 | 14:52:24 | Fresh read-only client 9291 obtained server time, positions and all-open-orders responses. Positions: MSFT -3, AMZN -7, TSLA -5, GOOGL -6. Matching BUY STP orders for quantities 3/7/5/6 were all `PreSubmitted`. Probe codes were 2104/2106/2158. |
+| 19:53:02 | 14:53:02 | After probe disconnect, passive audit returned one expected bot socket, one loopback relay and one JVM; no unexpected peers. Readiness remained 200. |
+| 19:55:01 / 19:56:15 | 14:55:01 / 14:56:15 | TSLA, then QQQ/AMZN/GOOGL/MSFT emitted completed 14:50 bars from live quote samples. Per-symbol ingestion resumed; these are sampled-quote aggregates, not complete exchange trade-volume bars. |
+
+Client 9291 disconnected in `finally`, used no execution journal, submitted or
+cancelled no orders, and opened no market-data subscriptions. This is a current
+exposure/protection snapshot, not flatness or guaranteed future/overnight
+protection. Normal bot order management resumed after the approved restart.
+
+Three post-recovery one-second resource samples showed 0-1% I/O wait/steal and
+0-180 KiB/s swap-in, no swap-out. The immediate pressure was lower; this does not
+establish that the small VM has adequate capacity for a full session.
+The initial 19:53 completed-bar query returned no matches while the first
+post-restart five-minute interval was still in progress; absence there was not
+classified as a new data outage. A `10185` P&L-cancellation error recurred at
+19:55 UTC; it remains unresolved despite current data recovery.
+
+The diagnostics and optional recorder remain **local, uncommitted and
+undeployed**. No recording watcher was enabled. Root cause, sustained per-symbol
+data delivery and subsequent EOD reconciliation remain separate from this short
+recovery verification. Next daily Gateway restart is November 17 07:15 UTC;
+next regular warm-up is November 17 09:25 EST.
+
+#### After-close follow-up: market data, parity and dashboard alerts
+
+The operator reported three Discord alerts after the recovery. Read-only
+inspection at 21:45-21:47 UTC (16:45-16:47 EST) found the same host revision
+`2a3c804` and v1.4.14 image. Both containers were healthy, health/readiness
+returned 200, preflight passed, and the passive audit still showed one expected
+bot connection and one JVM. Legacy services/timer remained disabled and
+nonrunning. No restart, deployment, schema change or queue replay was performed.
+
+| Alert / UTC time | EST | Evidence and interpretation |
+|---|---|---|
+| Quote timeouts, 19:50:14 and 20:27:35 | 14:50:14 and 15:27:35 | QQQ and GOOGL respectively timed out waiting for timestamped live quotes; system-error sends followed at 19:50:22 and 20:27:38. These were the only retained provider quote-error lines in the 19:49-21:44 window. |
+| Live bars after the failures | 14:50-15:50 bar timestamps | All five symbols emitted 13 completed five-minute sampled-quote bars each. GOOGL emitted its 15:25 bar at 20:30:03 and 15:30 bar at 20:35:55 UTC after its timeout. Last observed completed bar was 15:50, emitted around 20:55:12 UTC; this does not establish a completed 15:55 bar or full tick coverage. |
+| QQQ historical replay failure, 21:06:02 | 16:06:02 | Traceback ends in `TimeoutError` around `reqHistoricalDataAsync` in `get_session_minute_bars`, whose outer budget is at least 30 seconds. The report stores `str(exc)`, so its QQQ error text is empty, not evidence that no error occurred. |
+| Parity report, 21:06:26 | 16:06:26 | One symbol matched (AMZN), three mismatched (GOOGL/MSFT/TSLA), and QQQ was excluded because history failed. This is an incomplete session comparison, not four or five successful comparisons. |
+| Dashboard flush/alert, 21:06:44-45 | 16:06:44-45 | Flush claimed/published zero rows while the circuit was open. Status: 100 dead-letter, 266 pending, 20 publishing, 1,561 published, 1,783 superseded. The dead-letter rows made the alert error-severity. |
+| Fresh broker snapshot, 21:47:43 | 16:47:43 | Read-only client 9292 obtained server time, positions and all-open-orders responses: no nonzero positions and no open orders. Codes were 2104/2106/2158; the client disconnected in `finally`. No orders, market-data subscriptions or execution journal were created by the probe. |
+
+Five `10185` P&L-cancellation errors also occurred after recovery. No new
+`10197` or `1100` error lines appeared in the inspected post-recovery bot-log
+window. Intermittent quote/history failures remain unexplained; the absence of
+those codes is not proof of permanently healthy upstream service. No new host
+pressure interval was measured at the quote timeout itself.
+
+**Parity detail.** GOOGL was classified as a late placement: submission was
+36.98 seconds after 09:35, with entry-price and R mismatches; its live short
+entry was 70 ticks below the replay entry. MSFT's entry was 55 ticks below
+replay, causing an entry-price mismatch. TSLA entered at 09:46 versus 09:35 in
+replay, causing an entry-minute mismatch; the precise reason needs separate
+order/quote evidence. Quantities, sides and replay opening-range levels matched
+for all four compared symbols, and all four reported EOD exit reasons.
+Normal-fill slippage was 4/57/8 ticks, mean 23 and median 8, versus the 2-tick
+model; GOOGL's late-placement slippage (74 ticks) was separate. Do not treat
+three normal fills from a disrupted paper session as a calibrated slippage model.
+
+Some EOD log messages called GOOGL/MSFT/TSLA closes "partial" immediately after
+fills, while cooldown logged no unclosed positions. The later authoritative
+broker snapshot establishes flatness at 21:47, not the precise cause of those
+earlier messages or a guarantee about future sessions.
+
+**Confirmed dashboard failure mechanism.** Read-only SQLite queries against
+`/app/data/local/publish_outbox.db` found 120 failed publication attempts on
+November 16 with HTTP 409 / PostgreSQL `23505`:
+`duplicate key value violates unique constraint "operational_metrics_pkey"`.
+The response's conflict columns were `metric_name, "timestamp"`. Nine other
+attempts had empty persisted exception text (seven price-bar, two metric);
+their exception types cannot be established from those rows.
+
+The publisher upserts metrics on `metric_id`
+(`publishing/remote_data_publisher.py`), but the destination still rejects
+different IDs sharing the legacy name/time pair. `record_parity_report` creates
+the four `parity_symbol_matched` records with distinct symbol-specific IDs and
+the same timestamp: AMZN published; GOOGL/MSFT/TSLA were failed at 21:47.
+The checked-in `supabase-read-model.sql` deliberately retains the legacy unique
+name/time index and does not replace a legacy composite primary key, so merely
+rerunning that schema script would not fix this incompatibility.
+
+At 21:47:34 UTC the outbox had 107 dead-letter metrics, three failed metrics,
+200 pending rows, 2,094 published and 1,786 superseded. The 107 dead-letter rows
+had original timestamps on November 12-13; they were not 107 new failures from
+today's parity run. Publication was still advancing for nonconflicting rows:
+published counts rose from 2,044 to 2,094 between the two read-only snapshots.
+The circuit repeatedly opens after five failures and leaves unattempted claimed
+rows for stale-claim reset, delaying unrelated publication as well. This is
+not evidence of a complete Supabase/network outage.
+
+**Follow-ups, not executed:** review a migration to one canonical metric identity
+after inventorying legacy writers; preserve colliding records and then explicitly
+requeue affected rows with operator approval. Do not delete the outbox, alter
+timestamps to conceal collisions or blindly retry permanent HTTP 409 errors.
+Improve historical-fetch error text with exception type and consider bounded
+retry for the missing QQQ replay; investigate placement/fill timing separately.
+Previously prepared request/host diagnostics remain local and undeployed.
+
+#### Timeout/capacity follow-up and prepared dashboard repair
+
+At 22:59:41 UTC (17:59:41 EST), selected non-secret deployed settings showed
+`ib_connect_timeout=30`, `ib_account_data_timeout_seconds=5`, and both position
+and no-position poll intervals set to 60 seconds. The active ruleset was
+`orb_resting_stop_paper_5sym`, not the three-symbol application default.
+
+| Request path | Timeout / cadence |
+|---|---|
+| Ordinary live quote | 15 seconds per caller, including qualification and pacing wait |
+| Same-instrument tick-by-tick request spacing | At least 15 seconds between subscriptions |
+| Session minute history for parity | `max(connect_timeout, 30)`, therefore 30 seconds in production |
+| Opening-range minute history | 10 seconds |
+| Account summary / P&L update | 5 seconds per bounded wait; multiple steps can take longer overall |
+| Connect | 30 seconds per attempt; retries are separate |
+| Polling loop | Sequential quote requests for five symbols, then 60 seconds sleep; not a fixed 60-second start-to-start period |
+| Resting-entry quote peek | 1-second quote budget, with a 1.5-second outer wait |
+
+`get_multiple_latest_bars` loops through symbols sequentially. Each quote uses
+per-contract `reqMktData` and tick-by-tick `BidAsk`, cancelling both after the
+shared request finishes. Same-contract callers share a request, but there is no
+single multi-symbol TWS wire request. Bounded concurrency could reduce head-of-line
+delay, but it would still consume per-symbol subscriptions. IBKR documents
+15-second same-instrument spacing and a simultaneous tick-by-tick allowance of
+5% of market-data lines. Account entitlement must be checked before changing
+concurrency; increasing timeouts or replacing exchange timestamps with local
+receipt times is not a diagnosed fix.
+
+The five one-second `vmstat` intervals after the since-boot row showed about
+99% idle, no swap-in/out, 0-1% I/O wait and zero steal. One Docker sample showed
+bot CPU 0.16% and Gateway 1.84%; PID/thread totals were 10 and 129 respectively.
+This quiet after-hours sample does not explain the earlier intraday timeouts.
+Those PID totals are not worker-pool occupancy measurements. IB quote/history
+requests use asynchronous socket callbacks, not a blocking executor job per
+ticker. Yahoo fetches use the default executor; cooldown runs each replay in
+`asyncio.to_thread`. Neither executor queue delay nor event-loop lag was measured
+during the incident. Correlate future request-phase/overrun logs with recorded
+CPU steal, I/O wait, swap and pressure intervals; no recorder is running yet.
+
+The local dashboard repair adds a separate transactional metric-identity
+migration and prevents the base schema from recreating legacy uniqueness after
+finalization. Guarded recovery creates immutable successors only for latest
+dead letters with the confirmed metric-name/time conflict; it preserves failure
+history and checks for concurrent successors. Cooldown distinguishes recovered
+historical dead letters only after a newer publication is durably recorded.
+Focused Python checks and isolated PostgreSQL migration exercises passed,
+including repeat application, distinct-symbol upserts and rollback on invalid
+IDs or dependent foreign keys. These changes are **local, not deployed** at this preparation checkpoint.
+The operator reported running the supplied SQL migration and approved committing/
+pushing the dashboard repair with the prior diagnostics, a bot-only deployment,
+an outbox backup and targeted metric recovery. Independent publication verification
+and actual bot rollout/queue replay remain pending. No unattended recorder was
+approved or enabled.
+
+#### Approved v1.4.15 rollout and verified dashboard recovery
+
+The preparation checkpoint above is historical. With explicit operator approval,
+`53016cee5b1b350a4b090753e59d8e2897aa5129` was committed and pushed to `main`.
+[Deploy Guardrails run 43994723755](https://github.com/Wenting-Luo2993/strategy-lab/actions/runs/43994723755)
+passed for that exact SHA. No timeout, request concurrency, trading-policy or
+Gateway configuration change was included.
+
+All times in the following table are November 17 UTC / November 16 EST.
+
+| UTC / EST | Observed operation and result |
+|---|---|
+| 01:23:19 / 20:23:19 | Read-only status/preflight passed outside protected hours; no active legacy units, enabled legacy timer or foreign container. |
+| 01:24:01 / 20:24:01 | SQLite online backup completed: 63,242,240 bytes, mode `0600`, `quick_check=ok`; 110 dead letters and 591 failure-history rows retained. |
+| Before deployment | Authenticated read-only Supabase schema inspection confirmed `metric_id` as primary key after the operator-reported SQL migration. |
+| 01:25:09 / 20:25:09 | New bot container started under approved `deploy.sh bot --yes`. |
+| 01:26:28 / 20:26:28 | Harness recorded successful bot deployment, printed `Deploy OK at 53016ce.` and exited 0. |
+| 01:27:09 / 20:27:09 | Running version independently confirmed as 1.4.15. Gateway container ID, image, start time and restart count were unchanged. |
+| 01:27 / 20:27 | Approved `recover-dashboard-metrics --yes` preview selected seven latest eligible conflicts, then queued seven immutable successors and exited 0. Other historical dead letters already had published successors; none were blindly replayed. |
+| 01:28:03 / 20:28:03 | Existing publisher had published all seven successors. Queue: 1,742 published, 1,794 superseded, 110 historical dead letters; zero pending, failed or publishing rows. All 110 dead letters had newer ledger-confirmed publications. |
+| 01:28:57 / 20:28:57 | Independent remote readback and backup comparison passed; details below. |
+| 01:29:15 / 20:29:15 | Final read-only status exited 0: both containers healthy, `/api/health` 200, no unmanaged candidate process, one Gateway JVM and one expected bot API socket. |
+
+The deployment verified a healthy bot, `/api/health` HTTP 200 and new IB connection,
+trading-loop and dashboard-publisher startup markers, with no ERROR/Traceback lines
+in the harness window. The new image is
+`sha256:59ad7fcaf64afec3058840e82a01154e5595aa0a5d880d79a3042ed0eee015c4`.
+The Gateway remained container `54b8e02dd432`, started November 16
+19:46:23.517929128 UTC, with zero restarts. This bot-only deployment did not
+recreate or restart the Gateway.
+Final `/health/ready` was 503 outside warm-up/trading, as expected; startup
+success does not establish next-session data freshness.
+
+The consistent backup remains at
+`deploy/ibkr-docker/data/trading-bot/local/backups/publish_outbox_before_metric_recovery_20261117T012401Z.db`
+under `/opt/strategy-lab` (container path
+`/app/data/local/backups/publish_outbox_before_metric_recovery_20261117T012401Z.db`).
+Post-recovery read-only comparison established:
+
+- All 110 original dead-letter rows were unchanged, and all 591 original failure
+  records remained present. The seven targeted successors preserved their
+  predecessors' payloads and original event timestamps.
+- All 110 dead letters had newer ledger-confirmed published successors, covering
+  29 distinct metric IDs. Authenticated Supabase GETs matched all 29 latest
+  published versions, metric names and domain timestamps; none were missing.
+- AMZN, GOOGL, MSFT and TSLA `parity_symbol_matched` records coexist at
+  `2026-11-16T21:06:26.748586+00:00`. AMZN has publication version 1; the other
+  three have version 2. This verifies the actual previously colliding shape,
+  not just schema metadata or successful enqueueing.
+- A fresh recovery preview returned zero eligible rows. Effective alert counts
+  classify all 110 originals as `recovered_dead_letter`, with zero unresolved
+  dead letters. Raw dead-letter history is intentionally not deleted.
+
+Dashboard publication recovery is complete for this backlog; it does not change
+the parity findings themselves. Request-stage/numeric-error diagnostics and the
+optional host recorder are deployed, but no unattended watcher or recorder was
+started. Executor occupancy and event-loop lag were not instrumented. The
+`10197`/`1100` cause, intermittent quote/history timeouts, P&L-cancellation errors
+and placement/parity discrepancies remain unresolved. Next observations are the
+scheduled November 17 07:15 UTC Gateway restart and November 17 09:25 EST warm-up,
+followed by a complete session and cooldown.
+
 ## Recovery verification: what is enough to close an incident?
 
 Capture a timestamped post-recovery result for each relevant layer. Report which
@@ -943,6 +1314,7 @@ approved read-only diagnostic; do not run the full production warm-up as a probe
 | 2026-11-11 intraday failure: **connectivity recovered; exposure open** | Morning restart/warm-up succeeded; afternoon `10197`, then `1100`/IBC error and three failed EOD exits. Bot-only `d31d7a4` rollout failed against the stalled Gateway; separately approved Gateway recovery passed at Nov 12 00:08 UTC. Fresh positions: MSFT -3, AMZN -7, TSLA +4; no open orders returned. | Resolve open exposure/protection with operator authorization; investigate competing session/upstream cause and observe the next full session. Successful deployment is not successful flattening. See section I. |
 | 2026-11-12 intraday recurrence: **recovered; four positions open** | Scheduled login and initial trading succeeded; data/account failures, six `10197` events and an afternoon upstream stall followed. All five locally tracked EOD exits failed. Approved Gateway recovery succeeded Nov 13 03:38 UTC at `a1b5cab`. | Fresh broker positions: MSFT +3, TSLA +4, GOOGL +6, QQQ +2; no open orders returned. Resolve exposure, audit AMZN discrepancy, investigate recurring upstream cause and observe next full session. See section J. |
 | 2026-11-13 intermittent live-data failures: **identity repair deployed, TSLA exposure open** | Packet-buffer and summary-concurrency fixes deployed in approved Gateway recovery at `c3b7a7c`. Audit proved historical QQQ169 collided with the current TSLA stop. The v1.4.14 identity fix deployed bot-only at November 14 04:28 UTC, `385a516`; startup and journal-preservation checks passed. | Fresh November 14 04:29 UTC snapshot: TSLA -4 and **no open orders**. Deployment did not flatten exposure. Next live EOD remains unobserved. No outside sessions per operator. Quote timeouts and broker-side `10197` remain separate unresolved issues. See section K. |
+| 2026-11-16 recurrence: **recovered, EOD flat; dashboard backlog recovered and diagnostics deployed** | `385a516`: eleven retained `10197`, then `1100`/IBC stall; no observed legacy duplicate, but heavy host pressure. Approved Gateway recovery completed at 19:50:40 UTC, remote main `2a3c804`, same v1.4.14 image. Live bars resumed; a fresh 21:47 UTC read returned no nonzero positions or open orders. Approved v1.4.15 / `53016ce` bot-only deployment passed November 17 01:27 UTC, leaving Gateway unchanged. Operator-applied metric-ID migration and seven targeted retries resolved the backlog: all 110 dead letters have published successors, all 29 affected metric IDs verified remotely, failure evidence preserved. | Quote timeouts (QQQ/GOOGL), QQQ history timeout and P&L-cancellation errors remain unexplained. Parity: one match, three mismatches, one replay error; publication repair does not resolve these discrepancies. Upstream cause and next full session remain open. Request/host diagnostics are deployed; unattended recording remains off pending separate approval. See section L. |
 
 For each follow-up, append the UTC/ET timeline, deployed code/image, affected
 symbols/operations, sanitized evidence, confirmed cause versus hypotheses, approved

@@ -9,6 +9,7 @@ secrets, pinned gateway image, and the deploy harness/skill staying in sync.
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 from datetime import date, datetime, time, timezone
 from pathlib import Path
@@ -183,7 +184,9 @@ def _deploy_actions() -> set[str]:
 def test_deploy_actions_documented_in_skill():
     skill = SKILL_MD.read_text(encoding="utf-8")
     actions = _deploy_actions()
-    assert actions == {"status", "check", "bot", "gateway", "rollback-bot"}
+    assert actions == {
+        "status", "check", "bot", "gateway", "rollback-bot", "recover-dashboard-metrics",
+    }
     for action in actions:
         assert f"deploy.sh {action}" in skill, f"SKILL.md does not document 'deploy.sh {action}'"
 
@@ -205,6 +208,25 @@ def test_deploy_script_guards():
     assert "git pull -q --ff-only origin main" in text
     assert "--no-deps" in text, "bot redeploys must not recreate the gateway"
     assert "in_market_hours" in text
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["status", "--record-connections"], "requires status --watch-connections"),
+        (["bot", "--watch-connections", "--record-connections"], "only with status"),
+    ],
+)
+def test_recording_options_reject_unsafe_combinations_before_preflight(arguments, message):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("Bash is required for deployment argument validation")
+    result = subprocess.run(
+        [bash, str(DEPLOY_SH), *arguments], capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert "Preflight" not in result.stdout
 
 
 def _bash_array(text, name):

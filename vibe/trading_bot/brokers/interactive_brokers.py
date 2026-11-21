@@ -51,9 +51,28 @@ _TICK_BY_TICK_REQUEST_INTERVAL_SECONDS = 15.0
 
 
 @dataclass
+class _QuoteDiagnostics:
+    stage: str = "pacing"
+    pacing_delay_seconds: float = 0.0
+    market_request_id: Optional[int] = None
+    tick_request_id: Optional[int] = None
+    update_events: int = 0
+    timestamped_ticks: int = 0
+    error_code: Optional[int] = None
+    error_request_id: Optional[int] = None
+
+
+@dataclass
 class _SharedQuoteRequest:
     task: asyncio.Task[BrokerQuote]
+    diagnostics: _QuoteDiagnostics
     users: int = 0
+
+
+@dataclass
+class _QuoteWaitContext:
+    stage: str = "qualification"
+    request: Optional[_SharedQuoteRequest] = None
 
 
 class IBOperatorActionRequired(RuntimeError):
@@ -108,6 +127,7 @@ class InteractiveBrokersAPI:
         self.ib = IB()
         self._last_error_code: Optional[int] = None
         self._last_error_message: Optional[str] = None
+        self._last_upstream_code: Optional[int] = None
         self.ib.errorEvent += self._handle_ib_error
         self._connection_generation = 0
         if hasattr(self.ib, "disconnectedEvent"):
@@ -132,6 +152,15 @@ class InteractiveBrokersAPI:
         """Capture IB API errors emitted during async connection and requests."""
         self._last_error_code = error_code
         self._last_error_message = error_string
+        if error_code in {1100, 1101, 1102, 2110}:
+            self._last_upstream_code = error_code
+        if error_code in {1100, 1101, 1102, 2110, 10197, 326, 322}:
+            logger.warning(
+                "[IB CONNECTIVITY] client_id=%s generation=%s req_id=%s code=%s "
+                "socket_connected=%s",
+                self.client_id, self._connection_generation, req_id, error_code,
+                self.ib.isConnected(),
+            )
         if error_code == 10141:
             logger.error("IB Gateway requires paper trading disclaimer acceptance before API use")
 
@@ -244,19 +273,33 @@ class InteractiveBrokersAPI:
             raise RuntimeError(
                 "Delayed/frozen IB market data cannot be used for execution benchmarking"
             )
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        context = _QuoteWaitContext()
         try:
             # Include qualification and queueing in the caller's latency budget.
             return await asyncio.wait_for(
-                self._get_market_data(symbol, qualified_contract),
+                self._get_market_data(symbol, qualified_contract, context),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
+            elapsed = loop.time() - started
+            diagnostics = context.request.diagnostics if context.request else None
+            logger.warning(
+                "[IB QUOTE TIMEOUT] symbol=%s client_id=%s generation=%s "
+                "elapsed_s=%.3f budget_s=%.3f overrun_s=%.3f "
+                "socket_connected=%s last_upstream_code=%s stage=%s request=%s",
+                symbol, self.client_id, self._connection_generation, elapsed,
+                timeout_seconds, max(0.0, elapsed - timeout_seconds),
+                self.ib.isConnected(), self._last_upstream_code,
+                diagnostics.stage if diagnostics else context.stage, diagnostics,
+            )
             raise TimeoutError(
                 f"Timed out waiting for timestamped live market data for {symbol}"
             ) from exc
 
     async def _get_market_data(
-        self, symbol: str, qualified_contract: Any
+        self, symbol: str, qualified_contract: Any, context: _QuoteWaitContext
     ) -> BrokerQuote:
         contract = qualified_contract or await self.qualify_contract(symbol)
         con_id = getattr(contract, "conId", 0)
@@ -264,15 +307,20 @@ class InteractiveBrokersAPI:
             "stock", contract.symbol, self.exchange, self.currency
         )
         lock = self._quote_locks.setdefault(key, asyncio.Lock())
+        context.stage = "subscription_lock"
         async with lock:
             request = self._quote_requests.get(key)
             if request is None:
+                diagnostics = _QuoteDiagnostics()
                 request = _SharedQuoteRequest(
                     asyncio.create_task(self._request_market_data(
-                        symbol, contract, key, self._connection_generation
-                    ))
+                        symbol, contract, key, self._connection_generation,
+                        diagnostics,
+                    )),
+                    diagnostics,
                 )
                 self._quote_requests[key] = request
+            context.request = request
             request.users += 1
         try:
             return replace(await asyncio.shield(request.task), symbol=symbol)
@@ -299,10 +347,12 @@ class InteractiveBrokersAPI:
                     del self._quote_requests[key]
 
     async def _request_market_data(
-        self, symbol: str, contract: Any, key: tuple, generation: int
+        self, symbol: str, contract: Any, key: tuple, generation: int,
+        diagnostics: _QuoteDiagnostics,
     ) -> BrokerQuote:
         loop = asyncio.get_running_loop()
         delay = self._quote_request_after.get(key, 0.0) - loop.time()
+        diagnostics.pacing_delay_seconds = max(0.0, delay)
         if delay > 0:
             await asyncio.sleep(delay)
         if generation != self._connection_generation:
@@ -312,6 +362,21 @@ class InteractiveBrokersAPI:
         timestamped_ticker = None
         quote_future: asyncio.Future[BrokerQuote] = loop.create_future()
         disconnect_event = getattr(self.ib, "disconnectedEvent", None)
+
+        def request_id(ticker: Any, tick_type: str) -> Optional[int]:
+            wrapper = getattr(self.ib, "wrapper", None)
+            mapping = getattr(wrapper, "ticker2ReqId", {})
+            request_ids = mapping.get(tick_type)
+            return request_ids.get(ticker) if request_ids else None
+
+        def on_error(req_id: int, code: int, _message: str, *args: Any) -> None:
+            # Only correlate this subscription's requests, never another symbol's
+            # error or free-form broker text (which can include account details).
+            if req_id in {
+                diagnostics.market_request_id, diagnostics.tick_request_id,
+            }:
+                diagnostics.error_code = code
+                diagnostics.error_request_id = req_id
 
         def on_disconnect() -> None:
             if not quote_future.done():
@@ -325,6 +390,8 @@ class InteractiveBrokersAPI:
             if generation != self._connection_generation:
                 on_disconnect()
                 return
+            diagnostics.update_events += 1
+            diagnostics.timestamped_ticks += len(updated_ticker.tickByTicks)
             # ib_insync clears tickByTicks on the next network packet, so
             # capture the tick inside its update callback, never by polling.
             for tick in reversed(updated_ticker.tickByTicks):
@@ -345,7 +412,10 @@ class InteractiveBrokersAPI:
         try:
             if disconnect_event is not None:
                 disconnect_event += on_disconnect
+            self.ib.errorEvent += on_error
+            diagnostics.stage = "subscribing"
             ticker = self.ib.reqMktData(contract, "", False, False)
+            diagnostics.market_request_id = request_id(ticker, "mktData")
             # IB allows one tick-by-tick request per instrument per 15 seconds.
             self._quote_request_after[key] = (
                 loop.time() + _TICK_BY_TICK_REQUEST_INTERVAL_SECONDS
@@ -353,12 +423,15 @@ class InteractiveBrokersAPI:
             timestamped_ticker = self.ib.reqTickByTickData(
                 contract, "BidAsk", 0, False
             )
+            diagnostics.tick_request_id = request_id(timestamped_ticker, "BidAsk")
             timestamped_ticker.updateEvent += on_update
+            diagnostics.stage = "waiting_for_tick"
             quote = await quote_future
             if generation != self._connection_generation:
                 raise ConnectionError("IB connection changed while requesting market data")
             return quote
         finally:
+            self.ib.errorEvent -= on_error
             if timestamped_ticker is not None:
                 timestamped_ticker.updateEvent -= on_update
             if disconnect_event is not None:
