@@ -10,15 +10,15 @@
     "id": "execution-quality",
     "title": "Execution-quality measurement",
     "goal": "Compare observed paper fills and strategy behavior with backtest assumptions, without treating paper execution as real-money proof.",
-    "stage": "Evidence collection",
-    "next_action": "Audit usable sessions and matched fills before declaring the slippage sample sufficient."
+    "stage": "Dedicated laptop preparation",
+    "next_action": "Follow the November 24 Windows/WSL2 laptop handoff: prepare main-only images without broker login, then arrange separately approved Oracle stop, private-state transfer and laptop startup. Preserve five-symbol risk settings; require complete-session evidence before reviewing ten-symbol expansion. Continue auditing existing matched fills."
   },
   {
     "id": "live-reliability",
     "title": "Live-service reliability",
     "goal": "Demonstrate safe operation through warm-up, intraday failures, broker recovery, end-of-day exits and cooldown.",
     "stage": "Operational assurance",
-    "next_action": "Observe the next complete session on v1.4.15 / 53016ce and investigate incomplete parity/upstream timeouts. Dashboard backlog recovery is verified; unattended host recording still requires separate approval."
+    "next_action": "Prepare the dedicated laptop without stopping Oracle or starting a competing login. After approved cutover, observe complete reconciled sessions and retain unresolved upstream/parity findings. More compute and process liveness alone do not establish collection readiness; unattended recording still requires approval."
   },
   {
     "id": "deployment-cicd",

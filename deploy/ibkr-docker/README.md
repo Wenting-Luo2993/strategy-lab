@@ -71,6 +71,12 @@ bash deploy.sh gateway        # first start: brings up ib-gateway, then the bot
 
 ## Windows PC / WSL2 cutover
 
+For the dedicated laptop assignment, preparation-only stop point and dated
+handoff evidence, read the
+[November 24 laptop handoff](../../docs/trading-bot-mvp/ibkr-integration/2026-11-24-laptop-paper-bot-handoff.md).
+The user deferred the research-PC cutover and will approve the Oracle stop
+only after the laptop is prepared. This link adds no operational authorization.
+
 Use Docker Desktop's Linux engine and enable integration for the deployment's
 Ubuntu WSL2 distribution in Settings -> Resources -> WSL Integration. Run the
 same production harness **inside WSL**, as a non-root deploy user, from a
